@@ -7,6 +7,7 @@ pub mod doc_id;
 pub mod embedding;
 pub mod embedding_db;
 pub mod error;
+pub mod incremental;
 pub mod ingestion;
 pub mod model_manager;
 pub mod reranker;
