@@ -25,6 +25,12 @@ pub enum Error {
     #[error("database commit error: {0}")]
     RedbCommit(#[from] redb::CommitError),
 
+    #[error("search index error: {0}")]
+    Tantivy(#[from] tantivy::TantivyError),
+
+    #[error("query parse error: {0}")]
+    QueryParse(#[from] tantivy::query::QueryParserError),
+
     #[error("configuration error: {0}")]
     Config(String),
 

@@ -8,6 +8,7 @@ description = "A powerful semantic search CLI for your documents"
 [dependencies]
 clap = { version = "4.5.57", features = ["derive"] }
 redb = "3.1.0"
+tantivy = "0.22"
 thiserror = "2"
 xdg = "3.0.0"
 

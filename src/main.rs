@@ -6,6 +6,7 @@ pub mod data_dir;
 pub mod doc_id;
 pub mod embedding_db;
 pub mod error;
+pub mod tantivy_index;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
 use data_dir::DataDir;
