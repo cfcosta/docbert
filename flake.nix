@@ -114,6 +114,11 @@
               cudnn
             ];
           };
+          docbert-mkl = mkDocbert {
+            name = "docbert-mkl";
+            extraFeatures = [ "mkl" ];
+            extraBuildInputs = [ pkgs.mkl ];
+          };
         };
 
         formatter = formatter;
