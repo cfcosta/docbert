@@ -6,6 +6,7 @@ pub mod data_dir;
 pub mod doc_id;
 pub mod embedding_db;
 pub mod error;
+pub mod ingestion;
 pub mod model_manager;
 pub mod tantivy_index;
 pub mod walker;
