@@ -154,6 +154,18 @@ impl ConfigDb {
         Ok(result)
     }
 
+    /// Return all (doc_id, metadata_bytes) pairs in a single read transaction.
+    pub fn list_all_document_metadata(&self) -> Result<Vec<(u64, Vec<u8>)>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(DOCUMENT_METADATA)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            result.push((k.value(), v.value().to_vec()));
+        }
+        Ok(result)
+    }
+
     // -- Settings --
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {

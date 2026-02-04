@@ -170,12 +170,10 @@ fn collection_remove(
     search_index.delete_collection(&writer, name);
     writer.commit()?;
 
-    // Delete embeddings for all documents in this collection
+    // Delete embeddings and metadata for all documents in this collection
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    for doc_id in config_db.list_document_ids()? {
-        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) =
-                incremental::DocumentMetadata::deserialize(&bytes)
+    for (doc_id, bytes) in config_db.list_all_document_metadata()? {
+        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes)
             && meta.collection == name
         {
             embedding_db.remove(doc_id)?;
@@ -307,11 +305,8 @@ fn resolve_by_doc_id(
     config_db: &ConfigDb,
     short_id: &str,
 ) -> error::Result<(String, String)> {
-    for doc_id in config_db.list_document_ids()? {
-        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) =
-                incremental::DocumentMetadata::deserialize(&bytes)
-        {
+    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
+        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes) {
             let did =
                 doc_id::DocumentId::new(&meta.collection, &meta.relative_path);
             if did.to_string().contains(short_id) || did.short == short_id {
@@ -329,10 +324,8 @@ fn resolve_by_path(
     config_db: &ConfigDb,
     path: &str,
 ) -> error::Result<(String, String)> {
-    for doc_id in config_db.list_document_ids()? {
-        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) =
-                incremental::DocumentMetadata::deserialize(&bytes)
+    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
+        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes)
             && meta.relative_path == path
         {
             return Ok((meta.collection, meta.relative_path));
@@ -357,11 +350,8 @@ fn cmd_multi_get(
     // Collect matching documents
     let mut matches: Vec<(String, String)> = Vec::new(); // (collection, relative_path)
 
-    for doc_id in config_db.list_document_ids()? {
-        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) =
-                incremental::DocumentMetadata::deserialize(&bytes)
-        {
+    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
+        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes) {
             // Filter by collection if specified
             if let Some(ref coll) = args.collection
                 && meta.collection != *coll
@@ -513,26 +503,15 @@ fn cmd_rebuild(
             writer.commit()?;
         }
 
-        // Delete existing embeddings for this collection
-        if !args.index_only {
-            for doc_id in config_db.list_document_ids()? {
-                if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-                    && let Some(meta) =
-                        incremental::DocumentMetadata::deserialize(&bytes)
-                    && meta.collection == *name
-                {
-                    embedding_db.remove(doc_id)?;
-                }
-            }
-        }
-
-        // Remove old metadata for this collection
-        for doc_id in config_db.list_document_ids()? {
-            if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-                && let Some(meta) =
-                    incremental::DocumentMetadata::deserialize(&bytes)
+        // Delete existing embeddings and metadata for this collection
+        for (doc_id, bytes) in config_db.list_all_document_metadata()? {
+            if let Some(meta) =
+                incremental::DocumentMetadata::deserialize(&bytes)
                 && meta.collection == *name
             {
+                if !args.index_only {
+                    embedding_db.remove(doc_id)?;
+                }
                 config_db.remove_document_metadata(doc_id)?;
             }
         }

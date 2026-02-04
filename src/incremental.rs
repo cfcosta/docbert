@@ -62,9 +62,8 @@ pub fn diff_collection(
     // Build a map of all known documents for this collection.
     let mut known: HashMap<String, (u64, u64)> = HashMap::new(); // path -> (doc_id, mtime)
 
-    for doc_id in config_db.list_document_ids()? {
-        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) = DocumentMetadata::deserialize(&bytes)
+    for (doc_id, bytes) in config_db.list_all_document_metadata()? {
+        if let Some(meta) = DocumentMetadata::deserialize(&bytes)
             && meta.collection == collection
         {
             known.insert(meta.relative_path.clone(), (doc_id, meta.mtime));
