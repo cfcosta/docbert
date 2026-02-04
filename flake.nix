@@ -96,6 +96,8 @@
             buildFeatures = extraFeatures;
             buildInputs = [ pkgs.dbus.dev ] ++ extraBuildInputs;
             nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
+
+            RUSTFLAGS = "-C target-cpu=native";
           };
       in
       {
@@ -113,11 +115,6 @@
               cudatoolkit
               cudnn
             ];
-          };
-          docbert-mkl = mkDocbert {
-            name = "docbert-mkl";
-            extraFeatures = [ "mkl" ];
-            extraBuildInputs = [ pkgs.mkl ];
           };
         };
 
