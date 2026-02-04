@@ -42,4 +42,7 @@ pub enum Error {
 
     #[error("model error: {0}")]
     Colbert(#[from] pylate_rs::ColbertError),
+
+    #[error("tensor error: {0}")]
+    Candle(#[from] candle_core::Error),
 }

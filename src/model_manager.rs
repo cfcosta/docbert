@@ -96,9 +96,14 @@ impl ModelManager {
     }
 
     /// Encodes a query string into ColBERT token-level embeddings.
+    ///
+    /// Returns a 2D tensor of shape `[Q, D]` where Q is the number of query
+    /// tokens and D is the embedding dimension.
     pub fn encode_query(&mut self, query: &str) -> Result<Tensor> {
         let model = self.ensure_loaded()?;
-        Ok(model.encode(&[query.to_string()], true)?)
+        let embeddings = model.encode(&[query.to_string()], true)?;
+        // Squeeze the batch dimension: [1, Q, D] -> [Q, D]
+        Ok(embeddings.squeeze(0)?)
     }
 
     /// Computes MaxSim similarity scores between query and document embeddings.

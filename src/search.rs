@@ -479,4 +479,231 @@ mod tests {
         assert!(!r.doc_id.is_empty());
         assert!(r.doc_num_id > 0);
     }
+
+    /// Helper to set up index + embeddings for end-to-end tests.
+    ///
+    /// Creates documents, indexes them in tantivy, computes ColBERT
+    /// embeddings, and returns everything needed for search.
+    fn setup_e2e() -> (SearchIndex, EmbeddingDb, ModelManager, tempfile::TempDir)
+    {
+        use crate::embedding::embed_and_store;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let idx = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+        let mut model = ModelManager::new();
+
+        let mut writer = idx.writer(15_000_000).unwrap();
+
+        let docs: Vec<(&str, &str, &str, &str)> = vec![
+            (
+                "notes",
+                "rust-guide.md",
+                "The Rust Programming Language",
+                "Rust is a systems programming language focused on safety, \
+                 concurrency, and performance. It achieves memory safety \
+                 without garbage collection through its ownership system \
+                 and borrow checker.",
+            ),
+            (
+                "notes",
+                "python-intro.md",
+                "Introduction to Python",
+                "Python is a high-level interpreted programming language \
+                 known for its readability and simplicity. It supports \
+                 multiple programming paradigms including object-oriented \
+                 and functional programming.",
+            ),
+            (
+                "docs",
+                "cooking-pasta.md",
+                "How to Cook Pasta",
+                "Boil water in a large pot. Add salt generously. Cook the \
+                 pasta according to package directions until al dente. \
+                 Drain and serve with your favorite sauce.",
+            ),
+            (
+                "docs",
+                "gardening.md",
+                "Gardening Tips for Beginners",
+                "Water your plants regularly in the morning. Ensure proper \
+                 sunlight exposure. Use compost for healthy soil. Prune \
+                 dead leaves periodically to promote growth.",
+            ),
+            (
+                "notes",
+                "machine-learning.md",
+                "Machine Learning Basics",
+                "Machine learning is a subset of artificial intelligence \
+                 that enables systems to learn from data. Neural networks \
+                 and deep learning are popular approaches for tasks like \
+                 image recognition and natural language processing.",
+            ),
+        ];
+
+        let mut embed_docs: Vec<(u64, String)> = Vec::new();
+
+        for (collection, path, title, body) in &docs {
+            let doc_id = DocumentId::new(collection, path);
+            idx.add_document(
+                &writer,
+                &doc_id.short,
+                doc_id.numeric,
+                collection,
+                path,
+                title,
+                body,
+                1000,
+            )
+            .unwrap();
+            // Include both title and body in the embedding text
+            embed_docs.push((doc_id.numeric, format!("{title}\n{body}")));
+        }
+
+        writer.commit().unwrap();
+
+        // Compute and store ColBERT embeddings
+        let count =
+            embed_and_store(&mut model, &embedding_db, &embed_docs).unwrap();
+        assert_eq!(count, docs.len(), "all docs should be embedded");
+
+        (idx, embedding_db, model, tmp)
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_search_with_reranking_returns_results() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        let mut args = make_search_args("rust programming language");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty(), "reranked search should return results");
+        // Rust guide should be the top result for "rust programming language"
+        assert_eq!(
+            results[0].path, "rust-guide.md",
+            "Rust guide should rank first after ColBERT reranking"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranking_improves_relevance() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        // Query about cooking - should rank pasta doc highest
+        let mut args = make_search_args("how to cook food");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty());
+        assert_eq!(
+            results[0].path, "cooking-pasta.md",
+            "cooking doc should rank first for cooking query after reranking"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranked_scores_are_descending() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        let mut args = make_search_args("programming");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(results.len() >= 2);
+        for window in results.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "reranked scores should be in descending order: {} >= {}",
+                window[0].score,
+                window[1].score,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranking_with_min_score() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        // First get all results to find a reasonable threshold
+        let mut args = make_search_args("rust");
+        args.bm25_only = false;
+        args.all = true;
+
+        let all_results =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        assert!(!all_results.is_empty());
+
+        // Use the median score as threshold - should filter out ~half
+        let mid = all_results.len() / 2;
+        let threshold = all_results[mid].score;
+
+        args.min_score = threshold;
+        let filtered =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(
+            filtered.len() <= all_results.len(),
+            "min_score filter should reduce result count"
+        );
+        for r in &filtered {
+            assert!(
+                r.score >= threshold,
+                "all results should meet min_score threshold"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_semantic_search_understands_meaning() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        // "memory management" doesn't appear verbatim, but is
+        // semantically related to Rust's ownership/borrow checker
+        let mut args = make_search_args("memory management");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(
+            !results.is_empty(),
+            "semantic search should find related docs"
+        );
+        // The Rust doc discusses memory safety - should rank high
+        let rust_pos = results.iter().position(|r| r.path == "rust-guide.md");
+        assert!(
+            rust_pos.is_some(),
+            "Rust guide should appear in semantic search for 'memory management'"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_all_result_fields_populated() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        let mut args = make_search_args("gardening plants");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty());
+        let r = &results[0];
+        assert!(!r.doc_id.is_empty(), "doc_id should be populated");
+        assert!(r.doc_num_id > 0, "doc_num_id should be non-zero");
+        assert!(!r.collection.is_empty(), "collection should be populated");
+        assert!(!r.path.is_empty(), "path should be populated");
+        assert!(!r.title.is_empty(), "title should be populated");
+        assert!(r.score > 0.0, "score should be positive");
+        assert_eq!(r.rank, 1, "first result should have rank 1");
+    }
 }
