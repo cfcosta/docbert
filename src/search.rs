@@ -218,3 +218,265 @@ fn print_json_string(s: &str) {
     }
     print!("\"");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::doc_id::DocumentId;
+
+    fn make_search_args(query: &str) -> SearchArgs {
+        SearchArgs {
+            query: query.to_string(),
+            count: 10,
+            collection: None,
+            json: false,
+            all: false,
+            files: false,
+            min_score: 0.0,
+            bm25_only: true,
+            no_fuzzy: false,
+        }
+    }
+
+    /// Set up a search index with sample documents and commit them.
+    fn setup_index_with_docs() -> (SearchIndex, EmbeddingDb, tempfile::TempDir)
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let idx = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+
+        let mut writer = idx.writer(15_000_000).unwrap();
+
+        let docs = vec![
+            (
+                "notes",
+                "rust-guide.md",
+                "The Rust Programming Language",
+                "Rust is a systems programming language focused on safety, \
+                 concurrency, and performance. It achieves memory safety \
+                 without garbage collection.",
+            ),
+            (
+                "notes",
+                "python-intro.md",
+                "Introduction to Python",
+                "Python is a high-level interpreted programming language \
+                 known for its readability and simplicity. It supports \
+                 multiple programming paradigms.",
+            ),
+            (
+                "docs",
+                "cooking-pasta.md",
+                "How to Cook Pasta",
+                "Boil water in a large pot. Add salt. Cook the pasta \
+                 according to package directions. Drain and serve with \
+                 your favorite sauce.",
+            ),
+            (
+                "docs",
+                "gardening.md",
+                "Gardening Tips",
+                "Water your plants regularly. Ensure proper sunlight \
+                 exposure. Use compost for healthy soil. Prune dead \
+                 leaves periodically.",
+            ),
+            (
+                "notes",
+                "machine-learning.md",
+                "Machine Learning Basics",
+                "Machine learning is a subset of artificial intelligence \
+                 that enables systems to learn from data. Neural networks \
+                 and deep learning are popular approaches.",
+            ),
+        ];
+
+        for (collection, path, title, body) in &docs {
+            let doc_id = DocumentId::new(collection, path);
+            idx.add_document(
+                &writer,
+                &doc_id.short,
+                doc_id.numeric,
+                collection,
+                path,
+                title,
+                body,
+                1000,
+            )
+            .unwrap();
+        }
+
+        writer.commit().unwrap();
+        (idx, embedding_db, tmp)
+    }
+
+    #[test]
+    fn bm25_only_returns_relevant_results() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let args = make_search_args("rust programming");
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty(), "search should return results");
+        // The Rust guide should be the top result
+        assert_eq!(
+            results[0].path, "rust-guide.md",
+            "Rust guide should rank first for 'rust programming'"
+        );
+    }
+
+    #[test]
+    fn bm25_only_results_have_correct_ranks() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let args = make_search_args("programming");
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(results.len() >= 2, "should find multiple programming docs");
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(
+                r.rank,
+                i + 1,
+                "ranks should be 1-indexed and sequential"
+            );
+        }
+    }
+
+    #[test]
+    fn bm25_only_respects_count_limit() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("programming");
+        args.count = 1;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert_eq!(results.len(), 1, "should respect count limit");
+    }
+
+    #[test]
+    fn bm25_only_respects_min_score() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("programming");
+        args.min_score = 999.0; // impossibly high threshold
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(
+            results.is_empty(),
+            "no results should pass a very high min_score"
+        );
+    }
+
+    #[test]
+    fn bm25_only_collection_filter() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("programming");
+        args.collection = Some("notes".to_string());
+        args.no_fuzzy = true;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(
+                r.collection, "notes",
+                "all results should be from the 'notes' collection"
+            );
+        }
+    }
+
+    #[test]
+    fn bm25_only_no_results_for_unrelated_query() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let args = make_search_args("xyzzy_nonexistent_term_12345");
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(results.is_empty(), "should return no results for gibberish");
+    }
+
+    #[test]
+    fn bm25_only_all_flag_returns_everything() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("programming");
+        args.all = true;
+        args.count = 1; // should be ignored when all=true
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(
+            results.len() > 1,
+            "all=true should return more than count=1"
+        );
+    }
+
+    #[test]
+    fn bm25_only_scores_are_descending() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let args = make_search_args("programming language");
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        for window in results.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "scores should be in descending order"
+            );
+        }
+    }
+
+    #[test]
+    fn bm25_only_fuzzy_matching_finds_typos() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        // "programing" (one 'm') should fuzzy-match "programming"
+        let args = make_search_args("programing");
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(
+            !results.is_empty(),
+            "fuzzy search should find results despite typo"
+        );
+    }
+
+    #[test]
+    fn bm25_only_no_fuzzy_flag() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("rust");
+        args.no_fuzzy = true;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty(), "exact search should find 'rust'");
+        assert_eq!(results[0].path, "rust-guide.md");
+    }
+
+    #[test]
+    fn bm25_only_result_fields_populated() {
+        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let mut model = ModelManager::new();
+        let mut args = make_search_args("pasta");
+        args.no_fuzzy = true;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.collection, "docs");
+        assert_eq!(r.path, "cooking-pasta.md");
+        assert_eq!(r.title, "How to Cook Pasta");
+        assert!(r.score > 0.0);
+        assert!(!r.doc_id.is_empty());
+        assert!(r.doc_num_id > 0);
+    }
+}
