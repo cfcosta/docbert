@@ -6,6 +6,28 @@ use crate::error::Result;
 const DEFAULT_MODEL: &str = "lightonai/GTE-ModernColBERT-v1";
 const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
+/// Select the best available compute device.
+///
+/// Uses CUDA when compiled with the `cuda` feature, Metal when compiled with
+/// the `metal` feature, and falls back to CPU otherwise.
+fn default_device() -> Device {
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(device) = Device::new_cuda(0) {
+            return device;
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(device) = Device::new_metal(0) {
+            return device;
+        }
+    }
+
+    Device::Cpu
+}
+
 /// Manages the ColBERT model lifecycle, supporting lazy loading on first use.
 pub struct ModelManager {
     model: Option<ColBERT>,
@@ -57,8 +79,9 @@ impl ModelManager {
     /// Ensures the model is loaded, downloading from HuggingFace Hub if needed.
     fn ensure_loaded(&mut self) -> Result<&mut ColBERT> {
         if self.model.is_none() {
+            let device = default_device();
             let colbert: ColBERT = ColBERT::from(&self.model_id)
-                .with_device(Device::Cpu)
+                .with_device(device)
                 .try_into()?;
             self.model = Some(colbert);
         }
