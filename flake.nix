@@ -88,17 +88,21 @@
             extraFeatures ? [ ],
             extraBuildInputs ? [ ],
             extraNativeBuildInputs ? [ ],
+            extraEnv ? { },
           }:
-          rustPlatform.buildRustPackage {
-            inherit name;
-            src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
-            buildFeatures = extraFeatures;
-            buildInputs = [ pkgs.dbus.dev ] ++ extraBuildInputs;
-            nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
+          rustPlatform.buildRustPackage (
+            {
+              inherit name;
+              src = ./.;
+              cargoLock.lockFile = ./Cargo.lock;
+              buildFeatures = extraFeatures;
+              buildInputs = [ pkgs.dbus.dev ] ++ extraBuildInputs;
+              nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
 
-            RUSTFLAGS = "-C target-cpu=native";
-          };
+              RUSTFLAGS = "-C target-cpu=native";
+            }
+            // extraEnv
+          );
       in
       {
         packages = {
@@ -115,6 +119,16 @@
               cudatoolkit
               cudnn
             ];
+
+            extraEnv = {
+              # Required so bindgen_cuda doesn't try to run nvidia-smi
+              # (unavailable in the nix build sandbox).
+              # Targets Ampere (sm_80) for broad forward compatibility.
+              CUDA_COMPUTE_CAP = "80";
+              # Point bindgen_cuda to the CUDA toolkit in the nix store
+              # instead of searching /usr/local/cuda and other standard paths.
+              CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
+            };
           };
         };
 
