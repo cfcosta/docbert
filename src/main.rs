@@ -9,6 +9,7 @@ pub mod embedding_db;
 pub mod error;
 pub mod ingestion;
 pub mod model_manager;
+pub mod reranker;
 pub mod tantivy_index;
 pub mod walker;
 
