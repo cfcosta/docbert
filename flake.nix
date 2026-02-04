@@ -105,7 +105,13 @@
           docbert-cuda = mkDocbert {
             name = "docbert-cuda";
             extraFeatures = [ "cuda" ];
+
+            extraNativeBuildInputs = with pkgs.cudaPackages; [
+              cuda_nvcc
+            ];
+
             extraBuildInputs = with pkgs.cudaPackages; [
+              cuda_nvcc
               cudatoolkit
               cudnn
             ];
