@@ -39,4 +39,7 @@ pub enum Error {
 
     #[error("data directory does not exist and could not be created: {0}")]
     DataDir(PathBuf),
+
+    #[error("model error: {0}")]
+    Colbert(#[from] pylate_rs::ColbertError),
 }
