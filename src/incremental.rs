@@ -7,7 +7,7 @@ use crate::{
     walker::DiscoveredFile,
 };
 
-/// Metadata stored per document in config.redb.
+/// Metadata stored per document in config.db.
 ///
 /// Serialized as: "collection\0relative_path\0mtime"
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +149,7 @@ mod tests {
 
     fn test_db() -> (tempfile::TempDir, ConfigDb) {
         let tmp = tempfile::tempdir().unwrap();
-        let db = ConfigDb::open(&tmp.path().join("config.redb")).unwrap();
+        let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         (tmp, db)
     }
 

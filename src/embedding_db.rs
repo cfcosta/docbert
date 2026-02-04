@@ -201,7 +201,7 @@ mod tests {
     fn test_db() -> (tempfile::TempDir, EmbeddingDb) {
         let tmp = tempfile::tempdir().unwrap();
         let db =
-            EmbeddingDb::open(&tmp.path().join("embeddings.redb")).unwrap();
+            EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
         (tmp, db)
     }
 
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn reopen_preserves_data() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("embeddings.redb");
+        let path = tmp.path().join("embeddings.db");
 
         {
             let db = EmbeddingDb::open(&path).unwrap();

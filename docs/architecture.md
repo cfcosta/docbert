@@ -115,8 +115,8 @@ All persistent data is stored under the XDG data directory (`$XDG_DATA_HOME/docb
 
 ```
 docbert/
-  config.redb          # Collection definitions, context strings, settings
-  embeddings.redb      # ColBERT token embeddings for all documents
+  config.db          # Collection definitions, context strings, settings
+  embeddings.db      # ColBERT token embeddings for all documents
   tantivy/             # Tantivy index directory (managed by Tantivy)
     meta.json
     <segment files>

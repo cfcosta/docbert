@@ -242,7 +242,7 @@ mod tests {
 
     fn test_db() -> (tempfile::TempDir, ConfigDb) {
         let tmp = tempfile::tempdir().unwrap();
-        let db = ConfigDb::open(&tmp.path().join("config.redb")).unwrap();
+        let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         (tmp, db)
     }
 
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn reopen_preserves_data() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.redb");
+        let path = tmp.path().join("config.db");
 
         {
             let db = ConfigDb::open(&path).unwrap();

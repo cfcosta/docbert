@@ -110,14 +110,14 @@ mod tests {
     #[test]
     fn load_nonexistent_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         assert!(load_embedding_tensor(&db, 999).unwrap().is_none());
     }
 
     #[test]
     fn roundtrip_tensor_through_db() {
         let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 
         // Manually store an embedding (3 tokens, 4 dimensions)
         let data: Vec<f32> = (0..12).map(|i| i as f32).collect();

@@ -38,11 +38,11 @@ impl DataDir {
     }
 
     pub fn config_db(&self) -> PathBuf {
-        self.root.join("config.redb")
+        self.root.join("config.db")
     }
 
     pub fn embeddings_db(&self) -> PathBuf {
-        self.root.join("embeddings.redb")
+        self.root.join("embeddings.db")
     }
 
     pub fn tantivy_dir(&self) -> Result<PathBuf> {
@@ -63,8 +63,8 @@ mod tests {
         let dir = DataDir::resolve(Some(tmp.path())).unwrap();
 
         assert_eq!(dir.root(), tmp.path());
-        assert_eq!(dir.config_db(), tmp.path().join("config.redb"));
-        assert_eq!(dir.embeddings_db(), tmp.path().join("embeddings.redb"));
+        assert_eq!(dir.config_db(), tmp.path().join("config.db"));
+        assert_eq!(dir.embeddings_db(), tmp.path().join("embeddings.db"));
     }
 
     #[test]

@@ -30,9 +30,9 @@ Register a directory as a named collection and index its contents.
 Behavior:
 
 1. Validate the directory exists and is readable
-2. Store the collection definition in config.redb
+2. Store the collection definition in config.db
 3. Walk the directory, index all documents into Tantivy
-4. Compute ColBERT embeddings for all documents, store in embeddings.redb
+4. Compute ColBERT embeddings for all documents, store in embeddings.db
 5. Print a summary: number of documents indexed, time taken, storage used
 
 If the collection already exists, this re-indexes (incremental: only changed files).
@@ -41,7 +41,7 @@ If the collection already exists, this re-indexes (incremental: only changed fil
 
 Remove a collection and all its indexed data.
 
-- Removes the collection definition from config.redb
+- Removes the collection definition from config.db
 - Deletes all Tantivy entries for documents in this collection
 - Deletes all embeddings for documents in this collection
 - Deletes the context string if one exists
@@ -78,7 +78,7 @@ Add or update a context string for a collection.
 - `<uri>`: Collection URI in the form `bert://<name>` (e.g., `bert://notes`)
 - `<description>`: Free-text description
 
-Context strings are stored in config.redb and displayed in search results to help users (and AI agents) understand what a collection contains.
+Context strings are stored in config.db and displayed in search results to help users (and AI agents) understand what a collection contains.
 
 #### `docbert context remove <uri>`
 

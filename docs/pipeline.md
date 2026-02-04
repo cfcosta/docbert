@@ -6,7 +6,7 @@
 
 When a user adds a collection (`docbert collection add ~/notes --name notes`), the system:
 
-1. Records the collection definition (name, directory path) in `config.redb`
+1. Records the collection definition (name, directory path) in `config.db`
 2. Walks the directory tree recursively, collecting all eligible files
 3. For each file, computes a stable document ID by hashing the collection name + relative path
 4. Compares file modification times against stored values to identify new or changed documents
@@ -31,7 +31,7 @@ For each new or modified document:
 2. Split the document body into chunks if it exceeds the model's maximum document length (typically 180 tokens after tokenization). Chunking strategy: split on paragraph boundaries, with overlap
 3. Encode each chunk with `model.encode(&chunks, false)` (is_query=false)
 4. Optionally apply hierarchical pooling with a configurable pool factor (default: 1, no pooling) to reduce token count
-5. Serialize the resulting `[num_tokens, 128]` f32 matrix as bytes and store in `embeddings.redb` keyed by the document's internal numeric ID
+5. Serialize the resulting `[num_tokens, 128]` f32 matrix as bytes and store in `embeddings.db` keyed by the document's internal numeric ID
 6. For chunked documents, store the concatenated embeddings of all chunks with chunk boundary markers
 
 ### Incremental Re-indexing
@@ -39,7 +39,7 @@ For each new or modified document:
 On subsequent runs of `docbert collection add` or a future `docbert sync` command:
 
 1. Walk the directory tree again
-2. Compare mtimes against stored values in config.redb
+2. Compare mtimes against stored values in config.db
 3. Only re-process documents that are new or have changed
 4. Remove embeddings and Tantivy entries for documents that no longer exist on disk
 
@@ -68,7 +68,7 @@ On subsequent runs of `docbert collection add` or a future `docbert sync` comman
 
 ### Step 4: Reranking (MaxSim)
 
-1. For each of the 1000 candidate documents, load the pre-computed embedding matrix from `embeddings.redb`
+1. For each of the 1000 candidate documents, load the pre-computed embedding matrix from `embeddings.db`
 2. Compute `similarity_matrix = query_embeddings @ doc_embeddings.T` yielding shape `[32, num_doc_tokens]`
 3. For each query token (row), take the maximum value across all document tokens (columns)
 4. Sum these 32 maximum values to get the final MaxSim score for this document

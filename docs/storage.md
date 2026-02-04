@@ -16,8 +16,8 @@ All data lives under the XDG data directory: `$XDG_DATA_HOME/docbert/` (typicall
 
 ```
 ~/.local/share/docbert/
-  config.redb              # Configuration and metadata database
-  embeddings.redb          # ColBERT embedding vectors
+  config.db              # Configuration and metadata database
+  embeddings.db          # ColBERT embedding vectors
   tantivy/                 # Tantivy index directory
     meta.json              # Tantivy metadata
     <uuid>.<ext>           # Tantivy segment files
@@ -25,7 +25,7 @@ All data lives under the XDG data directory: `$XDG_DATA_HOME/docbert/` (typicall
 
 The `xdg` crate (already a dependency) handles platform-appropriate directory resolution.
 
-## config.redb Schema
+## config.db Schema
 
 ### Table: collections
 
@@ -71,7 +71,7 @@ Settings include:
 - `pool_factor`: hierarchical pooling factor (default: `1`)
 - `index_version`: schema version for migration support
 
-## embeddings.redb Schema
+## embeddings.db Schema
 
 ### Table: embeddings
 
@@ -94,7 +94,7 @@ Example: a document with 200 tokens at 128 dimensions:
 
 ### Why a separate redb file?
 
-The embeddings database is kept separate from config.redb because:
+The embeddings database is kept separate from config.db because:
 
 1. **Size**: Embeddings dominate storage. Keeping them separate allows independent compaction and backup strategies
 2. **Access patterns**: During search, only embeddings for the ~1000 candidate documents are read. The config database is rarely accessed during search

@@ -248,7 +248,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 
         let mut writer = idx.writer(15_000_000).unwrap();
 
@@ -495,7 +495,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.redb")).unwrap();
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut model = ModelManager::new();
 
         let mut writer = idx.writer(15_000_000).unwrap();
