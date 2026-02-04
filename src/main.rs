@@ -308,7 +308,8 @@ fn resolve_by_path(
 ) -> error::Result<(String, String)> {
     for doc_id in config_db.list_document_ids()? {
         if let Some(bytes) = config_db.get_document_metadata(doc_id)?
-            && let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes)
+            && let Some(meta) =
+                incremental::DocumentMetadata::deserialize(&bytes)
             && meta.relative_path == path
         {
             return Ok((meta.collection, meta.relative_path));

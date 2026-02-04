@@ -33,15 +33,25 @@ pub fn execute_search(
 ) -> Result<Vec<FinalResult>> {
     let bm25_limit = 1000;
 
-    // Stage 1: BM25 retrieval
-    let bm25_results = if let Some(ref collection) = args.collection {
-        search_index.search_in_collection(
+    // Stage 1: BM25 retrieval (with optional fuzzy matching)
+    let bm25_results = if args.no_fuzzy {
+        // Pure BM25 without fuzzy
+        if let Some(ref collection) = args.collection {
+            search_index.search_in_collection(
+                &args.query,
+                collection,
+                bm25_limit,
+            )?
+        } else {
+            search_index.search(&args.query, bm25_limit)?
+        }
+    } else {
+        // BM25 + fuzzy matching
+        search_index.search_fuzzy(
             &args.query,
-            collection,
+            args.collection.as_deref(),
             bm25_limit,
         )?
-    } else {
-        search_index.search(&args.query, bm25_limit)?
     };
 
     if bm25_results.is_empty() {

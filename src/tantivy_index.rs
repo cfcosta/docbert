@@ -306,6 +306,91 @@ impl SearchIndex {
         Ok(results)
     }
 
+    /// Search with BM25 + fuzzy matching combined.
+    ///
+    /// Creates FuzzyTermQuery with Levenshtein distance 1 for each query
+    /// term on the body field, then ORs them with the BM25 query.
+    /// Deduplicates results by doc_id.
+    pub fn search_fuzzy(
+        &self,
+        query_str: &str,
+        collection: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let f = self.fields();
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+
+        // BM25 query
+        let mut parser =
+            QueryParser::for_index(&self.index, vec![f.title, f.body]);
+        parser.set_field_boost(f.title, 2.0);
+        let (bm25_query, _errors) = parser.parse_query_lenient(query_str);
+
+        // Build fuzzy queries for each significant term
+        let terms: Vec<&str> = query_str.split_whitespace().collect();
+        let mut should_clauses: Vec<(
+            tantivy::query::Occur,
+            Box<dyn tantivy::query::Query>,
+        )> = vec![(tantivy::query::Occur::Should, bm25_query)];
+
+        for term_str in &terms {
+            if term_str.len() >= 3 {
+                let term = tantivy::Term::from_field_text(
+                    f.body,
+                    &term_str.to_lowercase(),
+                );
+                let fuzzy = tantivy::query::FuzzyTermQuery::new(term, 1, true);
+                should_clauses
+                    .push((tantivy::query::Occur::Should, Box::new(fuzzy)));
+            }
+        }
+
+        let combined_query: Box<dyn tantivy::query::Query> =
+            Box::new(tantivy::query::BooleanQuery::new(should_clauses));
+
+        // Optionally filter by collection
+        let final_query: Box<dyn tantivy::query::Query> = if let Some(coll) =
+            collection
+        {
+            let coll_term = tantivy::Term::from_field_text(f.collection, coll);
+            let coll_query = tantivy::query::TermQuery::new(
+                coll_term,
+                IndexRecordOption::Basic,
+            );
+            Box::new(tantivy::query::BooleanQuery::new(vec![
+                (tantivy::query::Occur::Must, combined_query),
+                (tantivy::query::Occur::Must, Box::new(coll_query)),
+            ]))
+        } else {
+            combined_query
+        };
+
+        let top_docs =
+            searcher.search(&*final_query, &TopDocs::with_limit(limit))?;
+
+        // Deduplicate by doc_id (keep highest score)
+        let mut seen = std::collections::HashSet::new();
+        let mut results = Vec::with_capacity(top_docs.len());
+        for (score, doc_address) in top_docs {
+            let doc: TantivyDocument = searcher.doc(doc_address)?;
+            let doc_id = extract_text(&doc, f.doc_id);
+            if seen.insert(doc_id.clone()) {
+                results.push(SearchResult {
+                    score,
+                    doc_id,
+                    doc_num_id: extract_u64(&doc, f.doc_num_id),
+                    collection: extract_text(&doc, f.collection),
+                    path: extract_text(&doc, f.path),
+                    title: extract_text(&doc, f.title),
+                    mtime: extract_u64(&doc, f.mtime),
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
