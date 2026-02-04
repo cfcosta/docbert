@@ -1,4 +1,5 @@
 use candle_core::Tensor;
+use rayon::prelude::*;
 
 use crate::{
     embedding::load_embedding_tensor,
@@ -27,20 +28,19 @@ pub fn rerank(
     candidate_ids: &[u64],
     embedding_db: &EmbeddingDb,
 ) -> Result<Vec<RankedDocument>> {
-    let mut ranked = Vec::with_capacity(candidate_ids.len());
-
-    for &doc_id in candidate_ids {
-        let doc_embedding = match load_embedding_tensor(embedding_db, doc_id)? {
-            Some(t) => t,
-            None => continue, // Skip documents without embeddings
-        };
-
-        let score = maxsim(query_embedding, &doc_embedding)?;
-        ranked.push(RankedDocument {
-            doc_num_id: doc_id,
-            score,
-        });
-    }
+    // Load embeddings and compute MaxSim in parallel across candidates.
+    let mut ranked: Vec<RankedDocument> = candidate_ids
+        .par_iter()
+        .filter_map(|&doc_id| {
+            let doc_embedding =
+                load_embedding_tensor(embedding_db, doc_id).ok().flatten()?;
+            let score = maxsim(query_embedding, &doc_embedding).ok()?;
+            Some(RankedDocument {
+                doc_num_id: doc_id,
+                score,
+            })
+        })
+        .collect();
 
     // Sort by score descending.
     ranked.sort_by(|a, b| {
