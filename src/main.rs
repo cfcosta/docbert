@@ -1,4 +1,5 @@
 use clap::Parser;
+use tracing_subscriber::EnvFilter;
 
 pub mod cli;
 pub mod config_db;
@@ -22,8 +23,30 @@ use embedding_db::EmbeddingDb;
 use model_manager::ModelManager;
 use tantivy_index::SearchIndex;
 
+fn init_tracing(verbose: u8, quiet: bool) {
+    let filter = if let Ok(env) = std::env::var("DOCBERT_LOG") {
+        EnvFilter::new(env)
+    } else if quiet {
+        EnvFilter::new("warn")
+    } else {
+        match verbose {
+            0 => EnvFilter::new("info"),
+            1 => EnvFilter::new("debug"),
+            _ => EnvFilter::new("trace"),
+        }
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
+}
+
 fn main() -> error::Result<()> {
     let cli = Cli::parse();
+    init_tracing(cli.verbose, cli.quiet);
+
     let data_dir = DataDir::resolve(cli.data_dir.as_deref())?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
 
