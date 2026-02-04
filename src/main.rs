@@ -1,3 +1,6 @@
+pub mod data_dir;
+pub mod error;
+
 #[derive(Debug, Clone, clap::Parser)]
 pub enum Options {
     Collection,
