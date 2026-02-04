@@ -1,0 +1,8 @@
+[package]
+name = "docbert"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "A powerful semantic search CLI for your documents"
+
+[dependencies]
