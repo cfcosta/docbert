@@ -8,6 +8,7 @@ description = "A powerful semantic search CLI for your documents"
 [dependencies]
 candle-core = "0.9.1"
 clap = { version = "4.5.57", features = ["derive"] }
+globset = "0.4"
 pylate-rs = "1.0"
 redb = "3.1.0"
 tantivy = "0.22"

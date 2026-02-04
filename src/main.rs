@@ -74,10 +74,10 @@ fn main() -> error::Result<()> {
             cmd_get(&config_db, &args)?;
         }
         Command::MultiGet(args) => {
-            eprintln!("TODO: multi-get {}", args.pattern);
+            cmd_multi_get(&config_db, &args)?;
         }
-        Command::Rebuild(_args) => {
-            eprintln!("TODO: rebuild");
+        Command::Rebuild(args) => {
+            cmd_rebuild(&config_db, &data_dir, &args)?;
         }
         Command::Status(args) => {
             cmd_status(&config_db, &data_dir, args.json)?;
@@ -321,6 +321,107 @@ fn resolve_by_path(
     })
 }
 
+fn cmd_multi_get(
+    config_db: &ConfigDb,
+    args: &cli::MultiGetArgs,
+) -> error::Result<()> {
+    let glob = globset::Glob::new(&args.pattern)
+        .map_err(|e| {
+            error::Error::Config(format!("invalid glob pattern: {e}"))
+        })?
+        .compile_matcher();
+
+    // Collect matching documents
+    let mut matches: Vec<(String, String)> = Vec::new(); // (collection, relative_path)
+
+    for doc_id in config_db.list_document_ids()? {
+        if let Some(bytes) = config_db.get_document_metadata(doc_id)?
+            && let Some(meta) =
+                incremental::DocumentMetadata::deserialize(&bytes)
+        {
+            // Filter by collection if specified
+            if let Some(ref coll) = args.collection
+                && meta.collection != *coll
+            {
+                continue;
+            }
+
+            if glob.is_match(&meta.relative_path) {
+                matches.push((meta.collection, meta.relative_path));
+            }
+        }
+    }
+
+    matches.sort();
+
+    if args.json {
+        print!("[");
+        for (i, (collection, path)) in matches.iter().enumerate() {
+            if i > 0 {
+                print!(",");
+            }
+            let collection_path = config_db.get_collection(collection)?;
+            print!("{{\"collection\":");
+            search::print_json_string_pub(collection);
+            print!(",\"path\":");
+            search::print_json_string_pub(path);
+            if let Some(ref cp) = collection_path {
+                let full_path =
+                    std::path::Path::new(cp).join(path);
+                print!(",\"file\":");
+                search::print_json_string_pub(
+                    &full_path.to_string_lossy(),
+                );
+                if args.full
+                    && let Ok(content) =
+                        std::fs::read_to_string(&full_path)
+                {
+                    print!(",\"content\":");
+                    search::print_json_string_pub(&content);
+                }
+            }
+            print!("}}");
+        }
+        println!("]");
+    } else if args.files {
+        for (collection, path) in &matches {
+            if let Ok(Some(collection_path)) =
+                config_db.get_collection(collection)
+            {
+                let full_path =
+                    std::path::Path::new(&collection_path).join(path);
+                println!("{}", full_path.display());
+            }
+        }
+    } else if args.full {
+        for (collection, path) in &matches {
+            if let Ok(Some(collection_path)) =
+                config_db.get_collection(collection)
+            {
+                let full_path =
+                    std::path::Path::new(&collection_path).join(path);
+                println!("--- {collection}:{path} ---");
+                if let Ok(content) = std::fs::read_to_string(&full_path)
+                {
+                    print!("{content}");
+                    if !content.ends_with('\n') {
+                        println!();
+                    }
+                }
+            }
+        }
+    } else if matches.is_empty() {
+        println!("No documents match '{}'", args.pattern);
+    } else {
+        for (collection, path) in &matches {
+            println!("{collection}:{path}");
+        }
+        println!("\n{} match(es)", matches.len());
+    }
+
+    Ok(())
+}
+
 fn cmd_status(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -346,5 +447,128 @@ fn cmd_status(
         }
         println!("Documents: {doc_count}");
     }
+    Ok(())
+}
+
+fn cmd_rebuild(
+    config_db: &ConfigDb,
+    data_dir: &DataDir,
+    args: &cli::RebuildArgs,
+) -> error::Result<()> {
+    let collections: Vec<(String, String)> =
+        if let Some(ref name) = args.collection {
+            let path =
+                config_db.get_collection(name)?.ok_or_else(|| {
+                    error::Error::NotFound {
+                        kind: "collection",
+                        name: name.clone(),
+                    }
+                })?;
+            vec![(name.clone(), path)]
+        } else {
+            config_db.list_collections()?
+        };
+
+    if collections.is_empty() {
+        eprintln!("No collections to rebuild.");
+        return Ok(());
+    }
+
+    let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
+    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
+    let mut model = ModelManager::default();
+
+    for (name, path) in &collections {
+        let root = std::path::Path::new(path);
+        if !root.is_dir() {
+            eprintln!(
+                "Warning: collection '{name}' path does not exist: {path}"
+            );
+            continue;
+        }
+
+        eprintln!("Rebuilding collection '{name}'...");
+
+        // Delete existing Tantivy entries for this collection
+        if !args.embeddings_only {
+            let mut writer = search_index.writer(15_000_000)?;
+            search_index.delete_collection(&writer, name);
+            writer.commit()?;
+        }
+
+        // Delete existing embeddings for this collection
+        if !args.index_only {
+            for doc_id in config_db.list_document_ids()? {
+                if let Some(bytes) =
+                    config_db.get_document_metadata(doc_id)?
+                    && let Some(meta) =
+                        incremental::DocumentMetadata::deserialize(&bytes)
+                    && meta.collection == *name
+                {
+                    embedding_db.remove(doc_id)?;
+                }
+            }
+        }
+
+        // Remove old metadata for this collection
+        for doc_id in config_db.list_document_ids()? {
+            if let Some(bytes) = config_db.get_document_metadata(doc_id)?
+                && let Some(meta) =
+                    incremental::DocumentMetadata::deserialize(&bytes)
+                && meta.collection == *name
+            {
+                config_db.remove_document_metadata(doc_id)?;
+            }
+        }
+
+        // Discover files
+        let files = walker::discover_files(root)?;
+        eprintln!("  Found {} files", files.len());
+
+        // Re-index into Tantivy
+        if !args.embeddings_only {
+            let mut writer = search_index.writer(15_000_000)?;
+            let count = ingestion::ingest_files(
+                &search_index,
+                &mut writer,
+                name,
+                &files,
+            )?;
+            eprintln!("  Indexed {count} documents");
+        }
+
+        // Re-compute embeddings
+        if !args.index_only {
+            let mut docs_to_embed = Vec::new();
+            for file in &files {
+                let content =
+                    match std::fs::read_to_string(&file.absolute_path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                let rel_path = file.relative_path.to_string_lossy();
+                let doc_id = doc_id::DocumentId::new(name, &rel_path);
+                docs_to_embed.push((doc_id.numeric, content));
+            }
+
+            if !docs_to_embed.is_empty() {
+                let count = embedding::embed_and_store(
+                    &mut model,
+                    &embedding_db,
+                    &docs_to_embed,
+                )?;
+                eprintln!("  Embedded {count} documents");
+            }
+        }
+
+        // Store metadata for all files
+        for file in &files {
+            incremental::store_metadata(config_db, name, file)?;
+        }
+
+        eprintln!("  Done.");
+    }
+
+    eprintln!("Rebuild complete.");
     Ok(())
 }
