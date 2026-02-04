@@ -32,6 +32,7 @@ pub fn embed_and_store(
     })?;
     let (batch_size, _num_tokens, dimension) = dims;
 
+    let mut entries = Vec::with_capacity(batch_size);
     for (i, (doc_id, _)) in documents.iter().enumerate().take(batch_size) {
         let doc_embedding = embeddings.get(i).map_err(|e| {
             crate::error::Error::Config(format!(
@@ -42,8 +43,9 @@ pub fn embed_and_store(
         let flat = tensor_to_flat_f32(&doc_embedding)?;
         let num_tokens = flat.len() / dimension;
 
-        db.store(*doc_id, num_tokens as u32, dimension as u32, &flat)?;
+        entries.push((*doc_id, num_tokens as u32, dimension as u32, flat));
     }
+    db.batch_store(&entries)?;
 
     Ok(batch_size)
 }

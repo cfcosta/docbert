@@ -143,6 +143,44 @@ impl ConfigDb {
         Ok(removed)
     }
 
+    /// Remove multiple document metadata entries in a single transaction.
+    pub fn batch_remove_document_metadata(
+        &self,
+        doc_ids: &[u64],
+    ) -> Result<()> {
+        if doc_ids.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(DOCUMENT_METADATA)?;
+            for &doc_id in doc_ids {
+                table.remove(doc_id)?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Set multiple document metadata entries in a single transaction.
+    pub fn batch_set_document_metadata(
+        &self,
+        entries: &[(u64, Vec<u8>)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(DOCUMENT_METADATA)?;
+            for (doc_id, data) in entries {
+                table.insert(*doc_id, data.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     pub fn list_document_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;

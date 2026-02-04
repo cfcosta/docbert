@@ -115,6 +115,59 @@ impl EmbeddingDb {
         Ok(removed)
     }
 
+    /// Remove multiple embedding entries in a single transaction.
+    pub fn batch_remove(&self, doc_ids: &[u64]) -> Result<()> {
+        if doc_ids.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(EMBEDDINGS)?;
+            for &doc_id in doc_ids {
+                table.remove(doc_id)?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Store multiple embedding matrices in a single transaction.
+    pub fn batch_store(
+        &self,
+        entries: &[(u64, u32, u32, Vec<f32>)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(EMBEDDINGS)?;
+            for (doc_id, num_tokens, dimension, data) in entries {
+                assert_eq!(
+                    data.len(),
+                    (*num_tokens as usize) * (*dimension as usize),
+                    "data length must equal num_tokens * dimension"
+                );
+
+                let byte_len =
+                    HEADER_SIZE + std::mem::size_of_val(data.as_slice());
+                let mut guard = table.insert_reserve(*doc_id, byte_len)?;
+                let dest = guard.as_mut();
+
+                dest[0..4].copy_from_slice(&num_tokens.to_le_bytes());
+                dest[4..8].copy_from_slice(&dimension.to_le_bytes());
+
+                for (i, &val) in data.iter().enumerate() {
+                    let offset = HEADER_SIZE + i * 4;
+                    dest[offset..offset + 4]
+                        .copy_from_slice(&val.to_le_bytes());
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// List all stored document IDs.
     pub fn list_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;

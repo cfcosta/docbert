@@ -172,14 +172,16 @@ fn collection_remove(
 
     // Delete embeddings and metadata for all documents in this collection
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    for (doc_id, bytes) in config_db.list_all_document_metadata()? {
-        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes)
-            && meta.collection == name
-        {
-            embedding_db.remove(doc_id)?;
-            config_db.remove_document_metadata(doc_id)?;
-        }
-    }
+    let doc_ids: Vec<u64> = config_db
+        .list_all_document_metadata()?
+        .into_iter()
+        .filter_map(|(doc_id, bytes)| {
+            let meta = incremental::DocumentMetadata::deserialize(&bytes)?;
+            (meta.collection == name).then_some(doc_id)
+        })
+        .collect();
+    embedding_db.batch_remove(&doc_ids)?;
+    config_db.batch_remove_document_metadata(&doc_ids)?;
 
     // Remove collection definition
     config_db.remove_collection(name)?;
@@ -504,17 +506,18 @@ fn cmd_rebuild(
         }
 
         // Delete existing embeddings and metadata for this collection
-        for (doc_id, bytes) in config_db.list_all_document_metadata()? {
-            if let Some(meta) =
-                incremental::DocumentMetadata::deserialize(&bytes)
-                && meta.collection == *name
-            {
-                if !args.index_only {
-                    embedding_db.remove(doc_id)?;
-                }
-                config_db.remove_document_metadata(doc_id)?;
-            }
+        let old_doc_ids: Vec<u64> = config_db
+            .list_all_document_metadata()?
+            .into_iter()
+            .filter_map(|(doc_id, bytes)| {
+                let meta = incremental::DocumentMetadata::deserialize(&bytes)?;
+                (meta.collection == *name).then_some(doc_id)
+            })
+            .collect();
+        if !args.index_only {
+            embedding_db.batch_remove(&old_doc_ids)?;
         }
+        config_db.batch_remove_document_metadata(&old_doc_ids)?;
 
         // Discover files
         let files = walker::discover_files(root)?;
@@ -557,9 +560,7 @@ fn cmd_rebuild(
         }
 
         // Store metadata for all files
-        for file in &files {
-            incremental::store_metadata(config_db, name, file)?;
-        }
+        incremental::batch_store_metadata(config_db, name, &files)?;
 
         eprintln!("  Done.");
     }

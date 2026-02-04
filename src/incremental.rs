@@ -119,6 +119,28 @@ pub fn store_metadata(
     Ok(())
 }
 
+/// Store metadata for multiple documents in a single transaction.
+pub fn batch_store_metadata(
+    config_db: &ConfigDb,
+    collection: &str,
+    files: &[DiscoveredFile],
+) -> Result<()> {
+    let entries: Vec<(u64, Vec<u8>)> = files
+        .iter()
+        .map(|file| {
+            let rel_path = file.relative_path.to_string_lossy().to_string();
+            let doc_id = DocumentId::new(collection, &rel_path);
+            let meta = DocumentMetadata {
+                collection: collection.to_string(),
+                relative_path: rel_path,
+                mtime: file.mtime,
+            };
+            (doc_id.numeric, meta.serialize())
+        })
+        .collect();
+    config_db.batch_set_document_metadata(&entries)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
