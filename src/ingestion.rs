@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use rayon::prelude::*;
 use tantivy::IndexWriter;
 
 use crate::{
@@ -42,34 +43,33 @@ pub fn ingest_files(
     collection: &str,
     files: &[DiscoveredFile],
 ) -> Result<usize> {
-    let mut count = 0;
+    // Read files in parallel, then index sequentially (IndexWriter is not Send).
+    let loaded: Vec<_> = files
+        .par_iter()
+        .filter_map(|file| {
+            let content = std::fs::read_to_string(&file.absolute_path).ok()?;
+            let title = extract_title(&content, &file.relative_path);
+            let rel_path_str = file.relative_path.to_string_lossy().to_string();
+            let doc_id = DocumentId::new(collection, &rel_path_str);
+            Some((doc_id, rel_path_str, title, content, file.mtime))
+        })
+        .collect();
 
-    for file in files {
-        let content = match std::fs::read_to_string(&file.absolute_path) {
-            Ok(c) => c,
-            Err(_) => continue, // Skip unreadable files
-        };
-
-        let title = extract_title(&content, &file.relative_path);
-        let rel_path_str = file.relative_path.to_string_lossy();
-        let doc_id = DocumentId::new(collection, &rel_path_str);
-
+    for (doc_id, rel_path_str, title, content, mtime) in &loaded {
         index.add_document(
             writer,
             &doc_id.to_string(),
             doc_id.numeric,
             collection,
-            &rel_path_str,
-            &title,
-            &content,
-            file.mtime,
+            rel_path_str,
+            title,
+            content,
+            *mtime,
         )?;
-
-        count += 1;
     }
 
     writer.commit()?;
-    Ok(count)
+    Ok(loaded.len())
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use clap::Parser;
+use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 pub mod cli;
@@ -537,17 +538,16 @@ fn cmd_rebuild(
 
         // Re-compute embeddings
         if !args.index_only {
-            let mut docs_to_embed = Vec::new();
-            for file in &files {
-                let content = match std::fs::read_to_string(&file.absolute_path)
-                {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let rel_path = file.relative_path.to_string_lossy();
-                let doc_id = doc_id::DocumentId::new(name, &rel_path);
-                docs_to_embed.push((doc_id.numeric, content));
-            }
+            let docs_to_embed: Vec<(u64, String)> = files
+                .par_iter()
+                .filter_map(|file| {
+                    let content =
+                        std::fs::read_to_string(&file.absolute_path).ok()?;
+                    let rel_path = file.relative_path.to_string_lossy();
+                    let doc_id = doc_id::DocumentId::new(name, &rel_path);
+                    Some((doc_id.numeric, content))
+                })
+                .collect();
 
             if !docs_to_embed.is_empty() {
                 let count = embedding::embed_and_store(

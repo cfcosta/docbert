@@ -793,6 +793,7 @@ dependencies = [
  "clap",
  "globset",
  "pylate-rs",
+ "rayon",
  "redb",
  "tantivy",
  "tempfile",
