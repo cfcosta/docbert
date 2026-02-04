@@ -31,6 +31,7 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ (import rust-overlay) ];
+          config.allowUnfree = true;
         };
         inherit (pkgs) mkShell;
 
@@ -80,14 +81,35 @@
             };
           };
         };
+
+        mkDocbert =
+          {
+            name ? "docbert",
+            extraFeatures ? [ ],
+            extraBuildInputs ? [ ],
+            extraNativeBuildInputs ? [ ],
+          }:
+          rustPlatform.buildRustPackage {
+            inherit name;
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            buildFeatures = extraFeatures;
+            buildInputs = [ pkgs.dbus.dev ] ++ extraBuildInputs;
+            nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
+          };
       in
       {
-        packages.default = rustPlatform.buildRustPackage {
-          name = "docbert";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          buildInputs = [ pkgs.dbus.dev ];
-          nativeBuildInputs = [ pkgs.pkg-config ];
+        packages = {
+          default = mkDocbert { };
+          docbert = mkDocbert { };
+          docbert-cuda = mkDocbert {
+            name = "docbert-cuda";
+            extraFeatures = [ "cuda" ];
+            extraBuildInputs = with pkgs.cudaPackages; [
+              cudatoolkit
+              cudnn
+            ];
+          };
         };
 
         formatter = formatter;

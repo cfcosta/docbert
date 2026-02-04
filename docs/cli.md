@@ -8,11 +8,11 @@ docbert <subcommand> [options]
 
 ### Global Options
 
-| Option | Description |
-|--------|-------------|
-| `--data-dir <path>` | Override the XDG data directory |
-| `--verbose` / `-v` | Increase log verbosity (can be repeated) |
-| `--quiet` / `-q` | Suppress non-essential output |
+| Option              | Description                              |
+| ------------------- | ---------------------------------------- |
+| `--data-dir <path>` | Override the XDG data directory          |
+| `--verbose` / `-v`  | Increase log verbosity (can be repeated) |
+| `--quiet` / `-q`    | Suppress non-essential output            |
 
 ## Subcommands
 
@@ -28,6 +28,7 @@ Register a directory as a named collection and index its contents.
 - `--name <name>`: Human-readable collection name (required)
 
 Behavior:
+
 1. Validate the directory exists and is readable
 2. Store the collection definition in config.redb
 3. Walk the directory, index all documents into Tantivy
@@ -50,6 +51,7 @@ Remove a collection and all its indexed data.
 List all registered collections with their paths and document counts.
 
 Output format (human):
+
 ```
 notes       ~/notes                 142 documents
 meetings    ~/Documents/meetings     37 documents
@@ -57,6 +59,7 @@ docs        ~/work/docs             891 documents
 ```
 
 Output format (JSON, with `--json`):
+
 ```json
 [
   {"name": "notes", "path": "/home/user/notes", "document_count": 142},
@@ -91,16 +94,16 @@ Search across all collections (or a specific one).
 
 #### Options
 
-| Option | Description |
-|--------|-------------|
-| `-n <count>` | Number of results to return (default: 10) |
-| `-c <collection>` | Search only within this collection |
-| `--json` | Output results as JSON |
-| `--all` | Return all results above the score threshold (ignores `-n`) |
-| `--files` | Output only file paths (one per line) |
-| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0) |
-| `--bm25-only` | Skip ColBERT reranking, return BM25 results directly |
-| `--no-fuzzy` | Disable fuzzy matching in the first stage |
+| Option                | Description                                                 |
+| --------------------- | ----------------------------------------------------------- |
+| `-n <count>`          | Number of results to return (default: 10)                   |
+| `-c <collection>`     | Search only within this collection                          |
+| `--json`              | Output results as JSON                                      |
+| `--all`               | Return all results above the score threshold (ignores `-n`) |
+| `--files`             | Output only file paths (one per line)                       |
+| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
+| `--bm25-only`         | Skip ColBERT reranking, return BM25 results directly        |
+| `--no-fuzzy`          | Disable fuzzy matching in the first stage                   |
 
 #### Behavior
 
@@ -108,6 +111,7 @@ Search across all collections (or a specific one).
 2. Format and display results
 
 Human output format:
+
 ```
 [1] (0.847) notes/project-ideas.md                    #a1b2c3
     Project Timeline and Milestones
@@ -119,6 +123,7 @@ Human output format:
 ```
 
 JSON output format:
+
 ```json
 {
   "query": "project timeline",
@@ -148,10 +153,10 @@ Retrieve a document's full content.
 
 #### Options
 
-| Option | Description |
-|--------|-------------|
+| Option   | Description                                                |
+| -------- | ---------------------------------------------------------- |
 | `--full` | Print full document content (default for single documents) |
-| `--json` | Output as JSON with metadata |
+| `--json` | Output as JSON with metadata                               |
 | `--meta` | Print only metadata (path, collection, mtime, token count) |
 
 ### `docbert multi-get <pattern>`
@@ -163,12 +168,12 @@ Retrieve multiple documents matching a glob pattern.
 
 #### Options
 
-| Option | Description |
-|--------|-------------|
-| `-c <collection>` | Restrict to a specific collection |
-| `--json` | Output as JSON array |
-| `--files` | Output only file paths |
-| `--full` | Include full document content (can be large) |
+| Option            | Description                                  |
+| ----------------- | -------------------------------------------- |
+| `-c <collection>` | Restrict to a specific collection            |
+| `--json`          | Output as JSON array                         |
+| `--files`         | Output only file paths                       |
+| `--full`          | Include full document content (can be large) |
 
 ### `docbert rebuild`
 
@@ -176,17 +181,18 @@ Rebuild indexes from source files.
 
 #### Options
 
-| Option | Description |
-|--------|-------------|
-| `-c <collection>` | Rebuild only this collection |
+| Option              | Description                       |
+| ------------------- | --------------------------------- |
+| `-c <collection>`   | Rebuild only this collection      |
 | `--embeddings-only` | Only recompute ColBERT embeddings |
-| `--index-only` | Only rebuild the Tantivy index |
+| `--index-only`      | Only rebuild the Tantivy index    |
 
 ### `docbert status`
 
 Show system status and statistics.
 
 Output:
+
 ```
 Data directory: ~/.local/share/docbert/
 Model: lightonai/GTE-ModernColBERT-v1
@@ -202,21 +208,21 @@ Total: 1070 documents, 107.0 MB embeddings, 12.3 MB index
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Invalid arguments |
-| 3 | Collection not found |
-| 4 | Document not found |
-| 5 | Index corruption (suggest `docbert rebuild`) |
+| Code | Meaning                                      |
+| ---- | -------------------------------------------- |
+| 0    | Success                                      |
+| 1    | General error                                |
+| 2    | Invalid arguments                            |
+| 3    | Collection not found                         |
+| 4    | Document not found                           |
+| 5    | Index corruption (suggest `docbert rebuild`) |
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `DOCBERT_DATA_DIR` | Override XDG data directory |
-| `DOCBERT_MODEL` | Override default model name |
-| `DOCBERT_LOG` | Log level (trace, debug, info, warn, error) |
-| `HF_HOME` | HuggingFace Hub cache directory (used by pylate-rs) |
-| `NO_COLOR` | Disable colored output (standard) |
+| Variable           | Description                                         |
+| ------------------ | --------------------------------------------------- |
+| `DOCBERT_DATA_DIR` | Override XDG data directory                         |
+| `DOCBERT_MODEL`    | Override default model name                         |
+| `DOCBERT_LOG`      | Log level (trace, debug, info, warn, error)         |
+| `HF_HOME`          | HuggingFace Hub cache directory (used by pylate-rs) |
+| `NO_COLOR`         | Disable colored output (standard)                   |

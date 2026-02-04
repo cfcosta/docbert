@@ -26,6 +26,7 @@ bd sync               # Sync with git
    - File P0 issues if quality gates are broken
 3. **Update beads issues** - close finished work, update status
 4. **PUSH TO REMOTE - NON-NEGOTIABLE** - This step is MANDATORY. Execute ALL commands below:
+
    ```bash
    # Fetch and rebase to catch any remote changes
    jj git fetch
@@ -48,6 +49,7 @@ bd sync               # Sync with git
    ```
 
    **CRITICAL RULES:**
+
    - The plane has NOT landed until `jj git push` completes successfully
    - NEVER stop before `jj git push` - that leaves work stranded locally
    - NEVER say "ready to push when you are!" - YOU must push, not the user

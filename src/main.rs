@@ -389,15 +389,11 @@ fn cmd_multi_get(
             print!(",\"path\":");
             search::print_json_string_pub(path);
             if let Some(ref cp) = collection_path {
-                let full_path =
-                    std::path::Path::new(cp).join(path);
+                let full_path = std::path::Path::new(cp).join(path);
                 print!(",\"file\":");
-                search::print_json_string_pub(
-                    &full_path.to_string_lossy(),
-                );
+                search::print_json_string_pub(&full_path.to_string_lossy());
                 if args.full
-                    && let Ok(content) =
-                        std::fs::read_to_string(&full_path)
+                    && let Ok(content) = std::fs::read_to_string(&full_path)
                 {
                     print!(",\"content\":");
                     search::print_json_string_pub(&content);
@@ -424,8 +420,7 @@ fn cmd_multi_get(
                 let full_path =
                     std::path::Path::new(&collection_path).join(path);
                 println!("--- {collection}:{path} ---");
-                if let Ok(content) = std::fs::read_to_string(&full_path)
-                {
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
                     print!("{content}");
                     if !content.ends_with('\n') {
                         println!();
@@ -480,13 +475,12 @@ fn cmd_rebuild(
 ) -> error::Result<()> {
     let collections: Vec<(String, String)> =
         if let Some(ref name) = args.collection {
-            let path =
-                config_db.get_collection(name)?.ok_or_else(|| {
-                    error::Error::NotFound {
-                        kind: "collection",
-                        name: name.clone(),
-                    }
-                })?;
+            let path = config_db.get_collection(name)?.ok_or_else(|| {
+                error::Error::NotFound {
+                    kind: "collection",
+                    name: name.clone(),
+                }
+            })?;
             vec![(name.clone(), path)]
         } else {
             config_db.list_collections()?
@@ -522,8 +516,7 @@ fn cmd_rebuild(
         // Delete existing embeddings for this collection
         if !args.index_only {
             for doc_id in config_db.list_document_ids()? {
-                if let Some(bytes) =
-                    config_db.get_document_metadata(doc_id)?
+                if let Some(bytes) = config_db.get_document_metadata(doc_id)?
                     && let Some(meta) =
                         incremental::DocumentMetadata::deserialize(&bytes)
                     && meta.collection == *name
@@ -564,11 +557,11 @@ fn cmd_rebuild(
         if !args.index_only {
             let mut docs_to_embed = Vec::new();
             for file in &files {
-                let content =
-                    match std::fs::read_to_string(&file.absolute_path) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
+                let content = match std::fs::read_to_string(&file.absolute_path)
+                {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
                 let rel_path = file.relative_path.to_string_lossy();
                 let doc_id = doc_id::DocumentId::new(name, &rel_path);
                 docs_to_embed.push((doc_id.numeric, content));

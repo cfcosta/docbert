@@ -78,13 +78,16 @@ On subsequent runs of `docbert collection add` or a future `docbert sync` comman
 ### Step 5: Result Formatting
 
 For human-readable output:
+
 - Show rank, score, collection name, relative path, and a text snippet
 - Display the short document ID (e.g., `#abc123`) for use with `docbert get`
 
 For JSON output (`--json`):
+
 - Emit a JSON array of objects with fields: rank, score, doc_id, collection, path, title, snippet
 
 For file-list output (`--files`):
+
 - Emit only the file paths, one per line (useful for piping to other tools)
 
 ## Performance Expectations
@@ -106,12 +109,12 @@ For file-list output (`--files`):
 
 Per document (assuming average 200 effective tokens after punctuation filtering):
 
-| Component | Size per Document |
-|-----------|------------------|
-| Tantivy index entry | ~1-2 KB |
-| ColBERT embeddings (f32, 128-dim) | ~100 KB |
-| redb overhead | negligible |
-| **Total** | **~100 KB** |
+| Component                         | Size per Document |
+| --------------------------------- | ----------------- |
+| Tantivy index entry               | ~1-2 KB           |
+| ColBERT embeddings (f32, 128-dim) | ~100 KB           |
+| redb overhead                     | negligible        |
+| **Total**                         | **~100 KB**       |
 
 For a 10,000 document corpus: ~1 GB total storage.
 For a 100,000 document corpus: ~10 GB total storage.

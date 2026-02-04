@@ -4,11 +4,11 @@
 
 docbert uses three storage systems, each chosen for its strengths:
 
-| System | Purpose | Format |
-|--------|---------|--------|
-| **redb** (config) | Collection definitions, document metadata, settings | Typed key-value store |
-| **redb** (embeddings) | ColBERT per-token embedding matrices | Binary key-value store |
-| **Tantivy** | Full-text search index (BM25 + fuzzy) | Inverted index on disk |
+| System                | Purpose                                             | Format                 |
+| --------------------- | --------------------------------------------------- | ---------------------- |
+| **redb** (config)     | Collection definitions, document metadata, settings | Typed key-value store  |
+| **redb** (embeddings) | ColBERT per-token embedding matrices                | Binary key-value store |
+| **Tantivy**           | Full-text search index (BM25 + fuzzy)               | Inverted index on disk |
 
 All data lives under the XDG data directory: `$XDG_DATA_HOME/docbert/` (typically `~/.local/share/docbert/`).
 
@@ -49,6 +49,7 @@ Stores per-document metadata for incremental indexing.
 - **Value**: `&[u8]` (serialized struct containing: collection name, relative path, mtime as u64, file size as u64, number of tokens as u32)
 
 The serialization format for document metadata is a simple fixed-layout binary format:
+
 - 4 bytes: collection name length (u32 LE)
 - N bytes: collection name (UTF-8)
 - 4 bytes: relative path length (u32 LE)
@@ -65,6 +66,7 @@ Stores global configuration values.
 - **Value**: `&str` (setting value)
 
 Settings include:
+
 - `model_name`: the HuggingFace model ID (default: `lightonai/GTE-ModernColBERT-v1`)
 - `pool_factor`: hierarchical pooling factor (default: `1`)
 - `index_version`: schema version for migration support
@@ -79,13 +81,15 @@ Stores pre-computed ColBERT token embeddings.
 - **Value**: `&[u8]` (binary embedding data)
 
 The binary format for embeddings:
+
 - 4 bytes: number of tokens `T` (u32 LE)
 - 4 bytes: embedding dimension `D` (u32 LE, always 128 currently)
 - `T * D * 4` bytes: the embedding matrix as contiguous little-endian f32 values, row-major (token-major) order
 
 Example: a document with 200 tokens at 128 dimensions:
+
 - Header: 8 bytes
-- Data: 200 * 128 * 4 = 102,400 bytes
+- Data: 200 _ 128 _ 4 = 102,400 bytes
 - Total: 102,408 bytes (~100 KB)
 
 ### Why a separate redb file?
@@ -100,15 +104,15 @@ The embeddings database is kept separate from config.redb because:
 
 ### Fields
 
-| Field | Type | Options | Purpose |
-|-------|------|---------|---------|
-| `doc_id` | STRING | STORED | Short hash ID (e.g. "abc123") for display and `docbert get` |
-| `doc_num_id` | u64 | STORED, FAST | Numeric ID matching redb keys |
-| `collection` | STRING | STORED, FAST | Collection name for filtering |
-| `path` | STRING | STORED | Relative file path within collection |
-| `title` | TEXT | STORED | Document title (first heading or filename) |
-| `body` | TEXT | (not stored) | Full document text for search |
-| `mtime` | u64 | STORED, FAST | File modification time (epoch seconds) |
+| Field        | Type   | Options      | Purpose                                                     |
+| ------------ | ------ | ------------ | ----------------------------------------------------------- |
+| `doc_id`     | STRING | STORED       | Short hash ID (e.g. "abc123") for display and `docbert get` |
+| `doc_num_id` | u64    | STORED, FAST | Numeric ID matching redb keys                               |
+| `collection` | STRING | STORED, FAST | Collection name for filtering                               |
+| `path`       | STRING | STORED       | Relative file path within collection                        |
+| `title`      | TEXT   | STORED       | Document title (first heading or filename)                  |
+| `body`       | TEXT   | (not stored) | Full document text for search                               |
+| `mtime`      | u64    | STORED, FAST | File modification time (epoch seconds)                      |
 
 ### Tokenizer Configuration
 
