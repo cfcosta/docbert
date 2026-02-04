@@ -112,8 +112,12 @@ fn rerank_results(
 
     let candidate_ids: Vec<u64> =
         bm25_results.iter().map(|r| r.doc_num_id).collect();
-    let ranked =
-        reranker::rerank(&query_embedding, &candidate_ids, embedding_db)?;
+    let ranked = reranker::rerank(
+        &query_embedding,
+        &candidate_ids,
+        embedding_db,
+        model,
+    )?;
 
     // Build a lookup from doc_num_id to BM25 result for metadata.
     let bm25_lookup: std::collections::HashMap<u64, &SearchResult> =

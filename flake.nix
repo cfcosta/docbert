@@ -85,20 +85,21 @@
         mkDocbert =
           {
             name ? "docbert",
-            extraFeatures ? [ ],
-            extraBuildInputs ? [ ],
-            extraNativeBuildInputs ? [ ],
+            buildFeatures ? [ ],
+            buildInputs ? [ ],
+            nativeBuildInputs ? [ ],
             extraEnv ? { },
           }:
           rustPlatform.buildRustPackage (
             {
-              inherit name;
+              inherit
+                name
+                buildInputs
+                nativeBuildInputs
+                buildFeatures
+                ;
               src = ./.;
               cargoLock.lockFile = ./Cargo.lock;
-              buildFeatures = extraFeatures;
-              buildInputs = [ pkgs.dbus.dev ] ++ extraBuildInputs;
-              nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
-
               RUSTFLAGS = "-C target-cpu=native";
             }
             // extraEnv
@@ -110,11 +111,11 @@
           docbert = mkDocbert { };
           docbert-cuda = mkDocbert {
             name = "docbert-cuda";
-            extraFeatures = [ "cuda" ];
+            buildFeatures = [ "cuda" ];
 
-            extraNativeBuildInputs = with pkgs.cudaPackages; [ cuda_nvcc ];
+            nativeBuildInputs = with pkgs.cudaPackages; [ cuda_nvcc ];
 
-            extraBuildInputs = with pkgs.cudaPackages; [
+            buildInputs = with pkgs.cudaPackages; [
               cuda_nvcc
               cudatoolkit
               cudnn
@@ -125,6 +126,7 @@
               # (unavailable in the nix build sandbox).
               # Targets Ampere (sm_80) for broad forward compatibility.
               CUDA_COMPUTE_CAP = "80";
+
               # Point bindgen_cuda to the CUDA toolkit in the nix store
               # instead of searching /usr/local/cuda and other standard paths.
               CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
@@ -146,9 +148,6 @@
             cargo-nextest
             cargo-mutants
             bacon
-
-            pkg-config
-            dbus.dev
           ];
         };
       }
