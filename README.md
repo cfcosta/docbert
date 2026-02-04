@@ -6,6 +6,7 @@ A ColBERT-style indexer and search interface for documents.
 
 1. Use [PyLate-rs](https://lightonai.github.io/pylate-rs/) to compute ColBERT embeddings for all the documents in a directory.
 2. Use [Tantivy](https://github.com/quickwit-oss/tantivy) to index the documents, and do both BM25 and Fuzzy matching.
+3. Use [redb](https://github.com/cberner/redb) to save the embeddings for all documents.
 
 The pipeline goes like this: we use Tantivy BM25 and Fuzzy to find the top 1k docs, then use ColBERT late interaction (with SIMD) to rerank the results.
 
@@ -55,3 +56,7 @@ docbert query "error handling" --all --files --min-score 0.4
 # Retrieve full document content
 docbert get "docs/api-reference.md" --full
 ```
+
+## Notes
+
+1. Tantivy indexes and embeddings should be saved on the correct xdg data dir.
