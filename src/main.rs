@@ -1,6 +1,7 @@
 use clap::Parser;
 
 pub mod cli;
+pub mod config_db;
 pub mod data_dir;
 pub mod doc_id;
 pub mod error;

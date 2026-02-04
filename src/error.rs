@@ -10,6 +10,9 @@ pub enum Error {
     #[error("database error: {0}")]
     Redb(#[from] redb::Error),
 
+    #[error("database error: {0}")]
+    RedbDatabase(#[from] redb::DatabaseError),
+
     #[error("database storage error: {0}")]
     RedbStorage(#[from] redb::StorageError),
 
