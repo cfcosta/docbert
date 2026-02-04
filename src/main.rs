@@ -24,15 +24,13 @@ use embedding_db::EmbeddingDb;
 use model_manager::ModelManager;
 use tantivy_index::SearchIndex;
 
-fn init_tracing(verbose: u8, quiet: bool) {
+fn init_tracing(verbose: u8) {
     let filter = if let Ok(env) = std::env::var("DOCBERT_LOG") {
         EnvFilter::new(env)
-    } else if quiet {
-        EnvFilter::new("warn")
     } else {
         match verbose {
-            0 => EnvFilter::new("info"),
-            1 => EnvFilter::new("debug"),
+            1 => EnvFilter::new("info"),
+            2 => EnvFilter::new("debug"),
             _ => EnvFilter::new("trace"),
         }
     };
@@ -46,7 +44,10 @@ fn init_tracing(verbose: u8, quiet: bool) {
 
 fn main() -> error::Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose, cli.quiet);
+
+    if cli.verbose > 0 {
+        init_tracing(cli.verbose);
+    }
 
     let data_dir = DataDir::resolve(cli.data_dir.as_deref())?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;

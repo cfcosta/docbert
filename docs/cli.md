@@ -12,7 +12,6 @@ docbert <subcommand> [options]
 | ------------------- | ---------------------------------------- |
 | `--data-dir <path>` | Override the XDG data directory          |
 | `--verbose` / `-v`  | Increase log verbosity (can be repeated) |
-| `--quiet` / `-q`    | Suppress non-essential output            |
 
 ## Subcommands
 

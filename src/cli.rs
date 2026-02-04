@@ -16,10 +16,6 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
-    /// Suppress non-essential output
-    #[arg(short, long, global = true)]
-    pub quiet: bool,
-
     #[command(subcommand)]
     pub command: Command,
 }
