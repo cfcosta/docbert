@@ -8,6 +8,7 @@ pub mod embedding_db;
 pub mod error;
 pub mod model_manager;
 pub mod tantivy_index;
+pub mod walker;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
 use config_db::ConfigDb;
