@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config_db;
 pub mod data_dir;
 pub mod doc_id;
+pub mod embedding_db;
 pub mod error;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
