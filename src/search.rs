@@ -706,4 +706,114 @@ mod tests {
         assert!(r.score > 0.0, "score should be positive");
         assert_eq!(r.rank, 1, "first result should have rank 1");
     }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranking_with_collection_filter() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        let mut args = make_search_args("programming");
+        args.bm25_only = false;
+        args.collection = Some("notes".to_string());
+        args.no_fuzzy = true;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(
+                r.collection, "notes",
+                "all reranked results should be from 'notes' collection"
+            );
+        }
+        // "docs" collection results should be excluded
+        assert!(
+            results.iter().all(|r| r.collection == "notes"),
+            "no results from other collections"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranking_count_and_score_combined() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        // First get all results
+        let mut args = make_search_args("programming language");
+        args.bm25_only = false;
+        args.all = true;
+
+        let all_results =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        assert!(
+            all_results.len() >= 2,
+            "should have multiple results to test filtering"
+        );
+
+        // Apply count limit
+        args.all = false;
+        args.count = 1;
+        let limited = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        assert_eq!(limited.len(), 1, "count=1 should limit to 1 result");
+        assert_eq!(
+            limited[0].path, all_results[0].path,
+            "limited result should be the top-ranked one"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_bm25_and_reranked_return_same_docs() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        // BM25-only
+        let mut bm25_args = make_search_args("rust safety");
+        bm25_args.bm25_only = true;
+        bm25_args.all = true;
+        let bm25_results =
+            execute_search(&bm25_args, &idx, &emb_db, &mut model).unwrap();
+
+        // With reranking
+        let mut rerank_args = make_search_args("rust safety");
+        rerank_args.bm25_only = false;
+        rerank_args.all = true;
+        let reranked_results =
+            execute_search(&rerank_args, &idx, &emb_db, &mut model).unwrap();
+
+        // Both should find results
+        assert!(!bm25_results.is_empty());
+        assert!(!reranked_results.is_empty());
+
+        // Reranked should contain a subset of BM25 results (only those
+        // with embeddings, but we embedded everything)
+        let bm25_paths: std::collections::HashSet<&str> =
+            bm25_results.iter().map(|r| r.path.as_str()).collect();
+        let reranked_paths: std::collections::HashSet<&str> =
+            reranked_results.iter().map(|r| r.path.as_str()).collect();
+
+        assert!(
+            reranked_paths.is_subset(&bm25_paths),
+            "reranked results should be a subset of BM25 results"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_reranking_ranks_are_sequential() {
+        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+
+        let mut args = make_search_args("programming");
+        args.bm25_only = false;
+
+        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+
+        assert!(results.len() >= 2);
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(
+                r.rank,
+                i + 1,
+                "reranked ranks should be 1-indexed and sequential"
+            );
+        }
+    }
 }
