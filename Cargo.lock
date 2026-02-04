@@ -789,6 +789,7 @@ dependencies = [
 name = "docbert"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "candle-core",
  "clap",
  "globset",

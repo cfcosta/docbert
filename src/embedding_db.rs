@@ -57,11 +57,7 @@ impl EmbeddingDb {
 
             dest[0..4].copy_from_slice(&num_tokens.to_le_bytes());
             dest[4..8].copy_from_slice(&dimension.to_le_bytes());
-
-            for (i, &val) in data.iter().enumerate() {
-                let offset = HEADER_SIZE + i * 4;
-                dest[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
-            }
+            dest[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
         }
         txn.commit()?;
         Ok(())
@@ -92,10 +88,8 @@ impl EmbeddingDb {
             return Ok(None);
         }
 
-        let data: Vec<f32> = bytes[HEADER_SIZE..]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let data: Vec<f32> =
+            bytemuck::cast_slice(&bytes[HEADER_SIZE..]).to_vec();
 
         Ok(Some(EmbeddingMatrix {
             num_tokens,
@@ -156,12 +150,7 @@ impl EmbeddingDb {
 
                 dest[0..4].copy_from_slice(&num_tokens.to_le_bytes());
                 dest[4..8].copy_from_slice(&dimension.to_le_bytes());
-
-                for (i, &val) in data.iter().enumerate() {
-                    let offset = HEADER_SIZE + i * 4;
-                    dest[offset..offset + 4]
-                        .copy_from_slice(&val.to_le_bytes());
-                }
+                dest[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
             }
         }
         txn.commit()?;

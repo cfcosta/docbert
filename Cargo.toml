@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "A powerful semantic search CLI for your documents"
 
 [dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.9.1"
 clap = { version = "4.5.57", features = ["derive"] }
 globset = "0.4"
