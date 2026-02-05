@@ -11,17 +11,21 @@ use crate::{
 /// Takes (doc_numeric_id, document_text) pairs, encodes them via the
 /// ColBERT model, and stores the resulting per-token embeddings.
 ///
+/// Consumes the input to avoid cloning document content.
+///
 /// Returns the number of documents successfully embedded.
 pub fn embed_and_store(
     model: &mut ModelManager,
     db: &EmbeddingDb,
-    documents: &[(u64, String)],
+    documents: Vec<(u64, String)>,
 ) -> Result<usize> {
     if documents.is_empty() {
         return Ok(0);
     }
 
-    let texts: Vec<String> = documents.iter().map(|(_, t)| t.clone()).collect();
+    // Unzip to avoid cloning - we take ownership of the strings
+    let (doc_ids, texts): (Vec<u64>, Vec<String>) =
+        documents.into_iter().unzip();
     let embeddings = model.encode_documents(&texts)?;
 
     // embeddings shape: [batch_size, num_tokens, dimension]
@@ -33,7 +37,7 @@ pub fn embed_and_store(
     let (batch_size, _num_tokens, dimension) = dims;
 
     let mut entries = Vec::with_capacity(batch_size);
-    for (i, (doc_id, _)) in documents.iter().enumerate().take(batch_size) {
+    for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
         let doc_embedding = embeddings.get(i).map_err(|e| {
             crate::error::Error::Config(format!(
                 "failed to extract embedding for doc index {i}: {e}"
@@ -43,7 +47,7 @@ pub fn embed_and_store(
         let flat = tensor_to_flat_f32(&doc_embedding)?;
         let num_tokens = flat.len() / dimension;
 
-        entries.push((*doc_id, num_tokens as u32, dimension as u32, flat));
+        entries.push((doc_id, num_tokens as u32, dimension as u32, flat));
     }
     db.batch_store(&entries)?;
 

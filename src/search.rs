@@ -569,7 +569,7 @@ mod tests {
 
         // Compute and store ColBERT embeddings
         let count =
-            embed_and_store(&mut model, &embedding_db, &embed_docs).unwrap();
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
         (idx, embedding_db, model, tmp)

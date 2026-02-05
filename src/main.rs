@@ -564,7 +564,7 @@ fn cmd_rebuild(
                 let count = embedding::embed_and_store(
                     &mut model,
                     &embedding_db,
-                    &docs_to_embed,
+                    docs_to_embed,
                 )?;
                 eprintln!("  Embedded {count} documents");
             }
@@ -692,7 +692,7 @@ fn cmd_sync(
                 let count = embedding::embed_and_store(
                     &mut model,
                     &embedding_db,
-                    &docs_to_embed,
+                    docs_to_embed,
                 )?;
                 eprintln!("  Embedded {count} documents");
             }
