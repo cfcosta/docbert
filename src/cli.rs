@@ -38,8 +38,10 @@ pub enum Command {
     Get(GetArgs),
     /// Retrieve multiple documents matching a glob pattern
     MultiGet(MultiGetArgs),
-    /// Rebuild indexes from source files
+    /// Rebuild indexes from source files (full rebuild)
     Rebuild(RebuildArgs),
+    /// Sync collections with source files (incremental)
+    Sync(SyncArgs),
     /// Show system status and statistics
     Status(StatusArgs),
 }
@@ -192,6 +194,15 @@ pub struct RebuildArgs {
     /// Only rebuild the Tantivy index
     #[arg(long)]
     pub index_only: bool,
+}
+
+// -- Sync --
+
+#[derive(Debug, Parser)]
+pub struct SyncArgs {
+    /// Sync only this collection
+    #[arg(short = 'c', long)]
+    pub collection: Option<String>,
 }
 
 // -- Status --

@@ -200,8 +200,7 @@ mod tests {
 
     fn test_db() -> (tempfile::TempDir, EmbeddingDb) {
         let tmp = tempfile::tempdir().unwrap();
-        let db =
-            EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
         (tmp, db)
     }
 

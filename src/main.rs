@@ -104,6 +104,9 @@ fn main() -> error::Result<()> {
         Command::Rebuild(args) => {
             cmd_rebuild(&config_db, &data_dir, &args)?;
         }
+        Command::Sync(args) => {
+            cmd_sync(&config_db, &data_dir, &args)?;
+        }
         Command::Status(args) => {
             cmd_status(&config_db, &data_dir, args.json)?;
         }
@@ -567,5 +570,137 @@ fn cmd_rebuild(
     }
 
     eprintln!("Rebuild complete.");
+    Ok(())
+}
+
+/// Convert a numeric document ID to its display string (e.g., "#a1b2c3").
+fn numeric_to_doc_id_string(numeric: u64) -> String {
+    let full = format!("{numeric:016x}");
+    format!("#{}", &full[..6])
+}
+
+fn cmd_sync(
+    config_db: &ConfigDb,
+    data_dir: &DataDir,
+    args: &cli::SyncArgs,
+) -> error::Result<()> {
+    let collections: Vec<(String, String)> =
+        if let Some(ref name) = args.collection {
+            let path = config_db.get_collection(name)?.ok_or_else(|| {
+                error::Error::NotFound {
+                    kind: "collection",
+                    name: name.clone(),
+                }
+            })?;
+            vec![(name.clone(), path)]
+        } else {
+            config_db.list_collections()?
+        };
+
+    if collections.is_empty() {
+        eprintln!("No collections to sync.");
+        return Ok(());
+    }
+
+    let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
+    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
+    let mut model = ModelManager::default();
+
+    for (name, path) in &collections {
+        let root = std::path::Path::new(path);
+        if !root.is_dir() {
+            eprintln!(
+                "Warning: collection '{name}' path does not exist: {path}"
+            );
+            continue;
+        }
+
+        // Discover files on disk
+        let files = walker::discover_files(root)?;
+
+        // Diff against stored metadata
+        let diff = incremental::diff_collection(config_db, name, &files)?;
+
+        if diff.new_files.is_empty()
+            && diff.changed_files.is_empty()
+            && diff.deleted_ids.is_empty()
+        {
+            eprintln!("Collection '{name}' is up to date.");
+            continue;
+        }
+
+        eprintln!("Syncing collection '{name}'...");
+        eprintln!(
+            "  {} new, {} changed, {} deleted",
+            diff.new_files.len(),
+            diff.changed_files.len(),
+            diff.deleted_ids.len()
+        );
+
+        // Handle deleted documents
+        if !diff.deleted_ids.is_empty() {
+            let mut writer = search_index.writer(15_000_000)?;
+            for &doc_id in &diff.deleted_ids {
+                let display = numeric_to_doc_id_string(doc_id);
+                search_index.delete_document(&writer, &display);
+            }
+            writer.commit()?;
+
+            embedding_db.batch_remove(&diff.deleted_ids)?;
+            config_db.batch_remove_document_metadata(&diff.deleted_ids)?;
+            eprintln!("  Removed {} documents", diff.deleted_ids.len());
+        }
+
+        // Combine new and changed files for processing
+        let files_to_process: Vec<_> = diff
+            .new_files
+            .into_iter()
+            .chain(diff.changed_files.into_iter())
+            .collect();
+
+        if !files_to_process.is_empty() {
+            // Index into Tantivy (add_document handles delete-before-add)
+            let mut writer = search_index.writer(15_000_000)?;
+            let count = ingestion::ingest_files(
+                &search_index,
+                &mut writer,
+                name,
+                &files_to_process,
+            )?;
+            eprintln!("  Indexed {count} documents");
+
+            // Compute embeddings for new/changed files
+            let docs_to_embed: Vec<(u64, String)> = files_to_process
+                .par_iter()
+                .filter_map(|file| {
+                    let content =
+                        std::fs::read_to_string(&file.absolute_path).ok()?;
+                    let rel_path = file.relative_path.to_string_lossy();
+                    let doc_id = doc_id::DocumentId::new(name, &rel_path);
+                    Some((doc_id.numeric, content))
+                })
+                .collect();
+
+            if !docs_to_embed.is_empty() {
+                let count = embedding::embed_and_store(
+                    &mut model,
+                    &embedding_db,
+                    &docs_to_embed,
+                )?;
+                eprintln!("  Embedded {count} documents");
+            }
+
+            // Store metadata for processed files
+            incremental::batch_store_metadata(
+                config_db,
+                name,
+                &files_to_process,
+            )?;
+        }
+
+        eprintln!("  Done.");
+    }
+
+    eprintln!("Sync complete.");
     Ok(())
 }

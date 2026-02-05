@@ -118,14 +118,17 @@ docbert multi-get "*.md" -c notes
 # Show system status
 docbert status
 
-# Rebuild all indexes
+# Sync changes incrementally (fast, only processes changed files)
+docbert sync
+
+# Sync specific collection
+docbert sync -c notes
+
+# Full rebuild (deletes everything and re-indexes from scratch)
 docbert rebuild
 
 # Rebuild specific collection
 docbert rebuild -c notes
-
-# Rebuild only embeddings (faster)
-docbert rebuild --embeddings-only
 ```
 
 ## How It Works

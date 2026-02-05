@@ -174,9 +174,21 @@ Retrieve multiple documents matching a glob pattern.
 | `--files`         | Output only file paths                       |
 | `--full`          | Include full document content (can be large) |
 
+### `docbert sync`
+
+Incrementally sync collections with source files. Only processes new, changed, or deleted files based on modification time.
+
+#### Options
+
+| Option            | Description                 |
+| ----------------- | --------------------------- |
+| `-c <collection>` | Sync only this collection   |
+
+This is the recommended command for regular updates. It's much faster than `rebuild` because it only processes files that have changed since the last sync.
+
 ### `docbert rebuild`
 
-Rebuild indexes from source files.
+Full rebuild of indexes from source files. Deletes all existing data and re-indexes everything from scratch.
 
 #### Options
 
@@ -185,6 +197,8 @@ Rebuild indexes from source files.
 | `-c <collection>`   | Rebuild only this collection      |
 | `--embeddings-only` | Only recompute ColBERT embeddings |
 | `--index-only`      | Only rebuild the Tantivy index    |
+
+Use this when you need to force a complete re-index (e.g., after index corruption or model changes).
 
 ### `docbert status`
 
