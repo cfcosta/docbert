@@ -2,6 +2,7 @@ use clap::Parser;
 use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+pub mod chunking;
 pub mod cli;
 pub mod config_db;
 pub mod data_dir;
@@ -547,9 +548,10 @@ fn cmd_rebuild(
             eprintln!("  Indexed {count} documents");
         }
 
-        // Re-compute embeddings
+        // Re-compute embeddings with chunking for long documents
         if !args.index_only {
-            let docs_to_embed: Vec<(u64, String)> = files
+            // Read files in parallel
+            let file_contents: Vec<(u64, String)> = files
                 .par_iter()
                 .filter_map(|file| {
                     let content =
@@ -560,13 +562,31 @@ fn cmd_rebuild(
                 })
                 .collect();
 
+            // Chunk documents (sequential to avoid complexity)
+            let docs_to_embed: Vec<(u64, String)> = file_contents
+                .into_iter()
+                .flat_map(|(doc_id, content)| {
+                    chunking::chunk_text(
+                        &content,
+                        chunking::DEFAULT_CHUNK_SIZE,
+                        chunking::DEFAULT_CHUNK_OVERLAP,
+                    )
+                    .into_iter()
+                    .map(move |chunk| {
+                        let chunk_id =
+                            chunking::chunk_doc_id(doc_id, chunk.index);
+                        (chunk_id, chunk.text)
+                    })
+                })
+                .collect();
+
             if !docs_to_embed.is_empty() {
                 let count = embedding::embed_and_store(
                     &mut model,
                     &embedding_db,
                     docs_to_embed,
                 )?;
-                eprintln!("  Embedded {count} documents");
+                eprintln!("  Embedded {count} chunks");
             }
         }
 
@@ -676,8 +696,8 @@ fn cmd_sync(
             )?;
             eprintln!("  Indexed {count} documents");
 
-            // Compute embeddings for new/changed files
-            let docs_to_embed: Vec<(u64, String)> = files_to_process
+            // Read files in parallel
+            let file_contents: Vec<(u64, String)> = files_to_process
                 .par_iter()
                 .filter_map(|file| {
                     let content =
@@ -688,13 +708,31 @@ fn cmd_sync(
                 })
                 .collect();
 
+            // Chunk documents (sequential to avoid complexity)
+            let docs_to_embed: Vec<(u64, String)> = file_contents
+                .into_iter()
+                .flat_map(|(doc_id, content)| {
+                    chunking::chunk_text(
+                        &content,
+                        chunking::DEFAULT_CHUNK_SIZE,
+                        chunking::DEFAULT_CHUNK_OVERLAP,
+                    )
+                    .into_iter()
+                    .map(move |chunk| {
+                        let chunk_id =
+                            chunking::chunk_doc_id(doc_id, chunk.index);
+                        (chunk_id, chunk.text)
+                    })
+                })
+                .collect();
+
             if !docs_to_embed.is_empty() {
                 let count = embedding::embed_and_store(
                     &mut model,
                     &embedding_db,
                     docs_to_embed,
                 )?;
-                eprintln!("  Embedded {count} documents");
+                eprintln!("  Embedded {count} chunks");
             }
 
             // Store metadata for processed files
