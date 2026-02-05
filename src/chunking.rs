@@ -28,11 +28,12 @@ pub struct Chunk {
 /// For English text, ~4 characters ≈ 1 token on average.
 ///
 /// If the text is shorter than `chunk_size`, returns a single chunk.
+/// Properly handles UTF-8 multi-byte characters (emojis, etc.).
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
-    let text_len = text.len();
+    let char_count = text.chars().count();
 
     // Short text doesn't need chunking
-    if text_len <= chunk_size {
+    if char_count <= chunk_size {
         return vec![Chunk {
             text: text.to_string(),
             index: 0,
@@ -40,35 +41,46 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
         }];
     }
 
+    // Build a map of char index -> byte index for O(1) lookups
+    let char_to_byte: Vec<usize> = text
+        .char_indices()
+        .map(|(byte_idx, _)| byte_idx)
+        .chain(std::iter::once(text.len()))
+        .collect();
+
     let step = chunk_size.saturating_sub(overlap).max(1);
     let mut chunks = Vec::new();
-    let mut start = 0;
+    let mut start_char = 0;
     let mut index = 0;
 
-    while start < text_len {
-        let end = (start + chunk_size).min(text_len);
+    while start_char < char_count {
+        let end_char = (start_char + chunk_size).min(char_count);
 
         // Try to break at word boundary
-        let chunk_end = if end < text_len {
-            find_word_boundary(text, end)
+        let chunk_end_char = if end_char < char_count {
+            find_word_boundary_char(text, &char_to_byte, end_char)
         } else {
-            end
+            end_char
         };
 
-        let chunk_text = &text[start..chunk_end];
+        let start_byte = char_to_byte[start_char];
+        let end_byte = char_to_byte[chunk_end_char];
+
+        let chunk_text = &text[start_byte..end_byte];
         if !chunk_text.trim().is_empty() {
             chunks.push(Chunk {
                 text: chunk_text.to_string(),
                 index,
-                start_offset: start,
+                start_offset: start_byte,
             });
             index += 1;
         }
 
-        start += step;
+        start_char += step;
 
         // Avoid creating a tiny final chunk
-        if text_len.saturating_sub(start) < chunk_size / 4 && !chunks.is_empty()
+        if char_count.saturating_sub(start_char) < chunk_size / 4
+            && !chunks.is_empty()
         {
             break;
         }
@@ -77,19 +89,35 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
     chunks
 }
 
-/// Find a word boundary near the given position, preferring to break
+/// Find a word boundary near the given char position, preferring to break
 /// at whitespace or punctuation.
-fn find_word_boundary(text: &str, pos: usize) -> usize {
+fn find_word_boundary_char(
+    text: &str,
+    char_to_byte: &[usize],
+    pos_char: usize,
+) -> usize {
     // Look back up to 100 chars for a good break point
-    let search_start = pos.saturating_sub(100);
-    let search_region = &text[search_start..pos];
+    let search_start_char = pos_char.saturating_sub(100);
+
+    let start_byte = char_to_byte[search_start_char];
+    let end_byte = char_to_byte[pos_char];
+    let search_region = &text[start_byte..end_byte];
 
     // Find the last whitespace in the region
-    if let Some(ws_offset) = search_region.rfind(|c: char| c.is_whitespace()) {
-        return search_start + ws_offset + 1;
+    if let Some(ws_byte_offset) =
+        search_region.rfind(|c: char| c.is_whitespace())
+    {
+        // Convert byte offset back to char position
+        let ws_byte = start_byte + ws_byte_offset;
+        // Find the char index for this byte position
+        for (char_idx, &byte_idx) in char_to_byte.iter().enumerate() {
+            if byte_idx > ws_byte {
+                return char_idx;
+            }
+        }
     }
 
-    pos
+    pos_char
 }
 
 /// Generate a chunk-specific document ID by combining the base ID with chunk index.
@@ -177,5 +205,35 @@ mod tests {
         let last = chunks.last().unwrap();
         let last_end = last.start_offset + last.text.len();
         assert!(last_end >= text.len() - 250, "should cover most of text");
+    }
+
+    #[test]
+    fn handles_emoji_and_multibyte_chars() {
+        // Create text with emojis that would cause byte/char boundary issues
+        let emoji_text = "Hello 👉 world 🌍 test ".repeat(100);
+        let chunks = chunk_text(&emoji_text, 200, 50);
+
+        // Should not panic and should produce valid chunks
+        assert!(!chunks.is_empty());
+
+        // Each chunk should be valid UTF-8 (implicitly tested by String)
+        for chunk in &chunks {
+            assert!(!chunk.text.is_empty());
+            // Verify we can iterate chars (proves valid UTF-8)
+            let _: usize = chunk.text.chars().count();
+        }
+    }
+
+    #[test]
+    fn handles_mixed_length_unicode() {
+        // Mix of ASCII (1 byte), accented chars (2 bytes), and emoji (4 bytes)
+        let text = "café ☕ naïve 日本語 🎉 ".repeat(50);
+        let chunks = chunk_text(&text, 100, 20);
+
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            // Should be valid UTF-8
+            assert!(chunk.text.chars().count() > 0);
+        }
     }
 }
