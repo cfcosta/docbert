@@ -1,4 +1,5 @@
 use clap::Parser;
+use kdam::{BarExt, Spinner, tqdm};
 use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -473,6 +474,49 @@ fn cmd_status(
     Ok(())
 }
 
+/// Batch size for embedding operations (balances progress granularity vs overhead)
+const EMBEDDING_BATCH_SIZE: usize = 32;
+
+/// Create a progress bar with consistent styling.
+fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
+    tqdm!(
+        total = total,
+        ncols = 80,
+        force_refresh = true,
+        desc = desc,
+        bar_format = "{desc suffix=' '}|{animation}| {spinner} {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s, eta: {remaining human=true})",
+        spinner = Spinner::new(
+            &[
+                "▁▂▃",
+                "▂▃▄",
+                "▃▄▅",
+                "▄▅▆",
+                "▅▆▇",
+                "▆▇█",
+                "▇█▇",
+                "█▇▆",
+                "▇▆▅",
+                "▆▅▄",
+                "▅▄▃",
+                "▄▃▂",
+                "▃▂▁"
+            ],
+            30.0,
+            1.0,
+        )
+    )
+}
+
+/// Finalize a progress bar (clear spinner, show final state).
+fn finish_progress_bar(pb: &mut kdam::Bar) {
+    let _ = pb.set_bar_format(
+        "{desc suffix=' '}|{animation}| {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s)",
+    );
+    let _ = pb.clear();
+    let _ = pb.refresh();
+    eprintln!();
+}
+
 fn cmd_rebuild(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -550,7 +594,8 @@ fn cmd_rebuild(
 
         // Re-compute embeddings with chunking for long documents
         if !args.index_only {
-            // Read files in parallel
+            // Read files in parallel (progress shown after completion)
+            eprintln!("  Reading {} files...", files.len());
             let file_contents: Vec<(u64, String)> = files
                 .par_iter()
                 .filter_map(|file| {
@@ -562,31 +607,43 @@ fn cmd_rebuild(
                 })
                 .collect();
 
-            // Chunk documents (sequential to avoid complexity)
-            let docs_to_embed: Vec<(u64, String)> = file_contents
-                .into_iter()
-                .flat_map(|(doc_id, content)| {
-                    chunking::chunk_text(
-                        &content,
-                        chunking::DEFAULT_CHUNK_SIZE,
-                        chunking::DEFAULT_CHUNK_OVERLAP,
-                    )
-                    .into_iter()
-                    .map(move |chunk| {
-                        let chunk_id =
-                            chunking::chunk_doc_id(doc_id, chunk.index);
-                        (chunk_id, chunk.text)
-                    })
-                })
-                .collect();
+            // Chunk documents with progress
+            let mut pb = create_progress_bar(file_contents.len(), "Chunking");
+            let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
+            for (doc_id, content) in file_contents {
+                let chunks = chunking::chunk_text(
+                    &content,
+                    chunking::DEFAULT_CHUNK_SIZE,
+                    chunking::DEFAULT_CHUNK_OVERLAP,
+                );
+                for chunk in chunks {
+                    let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
+                    docs_to_embed.push((chunk_id, chunk.text));
+                }
+                let _ = pb.update(1);
+            }
+            finish_progress_bar(&mut pb);
 
+            // Embed documents in batches with progress
             if !docs_to_embed.is_empty() {
-                let count = embedding::embed_and_store(
-                    &mut model,
-                    &embedding_db,
-                    docs_to_embed,
-                )?;
-                eprintln!("  Embedded {count} chunks");
+                let total_chunks = docs_to_embed.len();
+                let mut pb = create_progress_bar(total_chunks, "Embedding");
+                let mut embedded_count = 0;
+
+                for batch in docs_to_embed.chunks(EMBEDDING_BATCH_SIZE) {
+                    let batch_vec: Vec<(u64, String)> = batch
+                        .iter()
+                        .map(|(id, text)| (*id, text.clone()))
+                        .collect();
+                    let count = embedding::embed_and_store(
+                        &mut model,
+                        &embedding_db,
+                        batch_vec,
+                    )?;
+                    embedded_count += count;
+                    let _ = pb.update_to(embedded_count);
+                }
+                finish_progress_bar(&mut pb);
             }
         }
 
@@ -696,7 +753,8 @@ fn cmd_sync(
             )?;
             eprintln!("  Indexed {count} documents");
 
-            // Read files in parallel
+            // Read files in parallel (progress shown after completion)
+            eprintln!("  Reading {} files...", files_to_process.len());
             let file_contents: Vec<(u64, String)> = files_to_process
                 .par_iter()
                 .filter_map(|file| {
@@ -708,31 +766,43 @@ fn cmd_sync(
                 })
                 .collect();
 
-            // Chunk documents (sequential to avoid complexity)
-            let docs_to_embed: Vec<(u64, String)> = file_contents
-                .into_iter()
-                .flat_map(|(doc_id, content)| {
-                    chunking::chunk_text(
-                        &content,
-                        chunking::DEFAULT_CHUNK_SIZE,
-                        chunking::DEFAULT_CHUNK_OVERLAP,
-                    )
-                    .into_iter()
-                    .map(move |chunk| {
-                        let chunk_id =
-                            chunking::chunk_doc_id(doc_id, chunk.index);
-                        (chunk_id, chunk.text)
-                    })
-                })
-                .collect();
+            // Chunk documents with progress
+            let mut pb = create_progress_bar(file_contents.len(), "Chunking");
+            let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
+            for (doc_id, content) in file_contents.into_iter() {
+                let chunks = chunking::chunk_text(
+                    &content,
+                    chunking::DEFAULT_CHUNK_SIZE,
+                    chunking::DEFAULT_CHUNK_OVERLAP,
+                );
+                for chunk in chunks {
+                    let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
+                    docs_to_embed.push((chunk_id, chunk.text));
+                }
+                let _ = pb.update(1);
+            }
+            finish_progress_bar(&mut pb);
 
+            // Embed documents in batches with progress
             if !docs_to_embed.is_empty() {
-                let count = embedding::embed_and_store(
-                    &mut model,
-                    &embedding_db,
-                    docs_to_embed,
-                )?;
-                eprintln!("  Embedded {count} chunks");
+                let total_chunks = docs_to_embed.len();
+                let mut pb = create_progress_bar(total_chunks, "Embedding");
+                let mut embedded_count = 0;
+
+                for batch in docs_to_embed.chunks(EMBEDDING_BATCH_SIZE) {
+                    let batch_vec: Vec<(u64, String)> = batch
+                        .iter()
+                        .map(|(id, text)| (*id, text.clone()))
+                        .collect();
+                    let count = embedding::embed_and_store(
+                        &mut model,
+                        &embedding_db,
+                        batch_vec,
+                    )?;
+                    embedded_count += count;
+                    let _ = pb.update_to(embedded_count);
+                }
+                finish_progress_bar(&mut pb);
             }
 
             // Store metadata for processed files
