@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -44,6 +45,9 @@ pub enum Command {
     Sync(SyncArgs),
     /// Show system status and statistics
     Status(StatusArgs),
+    /// Generate shell completions
+    #[command(hide = true)]
+    Completions(CompletionsArgs),
 }
 
 // -- Collection subcommands --
@@ -212,4 +216,26 @@ pub struct StatusArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+}
+
+// -- Completions --
+
+#[derive(Debug, Parser)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    #[arg(value_enum)]
+    pub shell: Shell,
+}
+
+impl CompletionsArgs {
+    /// Generate shell completions and print to stdout.
+    pub fn generate(&self) {
+        let mut cmd = Cli::command();
+        clap_complete::generate(
+            self.shell,
+            &mut cmd,
+            "docbert",
+            &mut std::io::stdout(),
+        );
+    }
 }

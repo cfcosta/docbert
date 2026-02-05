@@ -9,6 +9,7 @@ description = "A powerful semantic search CLI for your documents"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.9.1"
 clap = { version = "4.5.57", features = ["derive"] }
+clap_complete = "4.5"
 globset = "0.4"
 pylate-rs = "1.0"
 rayon = "1.11.0"

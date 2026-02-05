@@ -46,6 +46,8 @@ nix build github:cfcosta/docbert
 nix build github:cfcosta/docbert#docbert-cuda
 ```
 
+Shell completions for bash, zsh, and fish are automatically installed with the Nix package.
+
 ### From source
 
 ```bash

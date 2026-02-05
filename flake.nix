@@ -101,6 +101,17 @@
               src = ./.;
               cargoLock.lockFile = ./Cargo.lock;
               RUSTFLAGS = "-C target-cpu=native";
+
+              postInstall = ''
+                # Generate shell completions
+                mkdir -p $out/share/bash-completion/completions
+                mkdir -p $out/share/zsh/site-functions
+                mkdir -p $out/share/fish/vendor_completions.d
+
+                $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+                $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+                $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+              '';
             }
             // extraEnv
           );

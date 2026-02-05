@@ -49,10 +49,17 @@ fn main() -> error::Result<()> {
         init_tracing(cli.verbose);
     }
 
+    // Handle completions early (doesn't need data_dir or config_db)
+    if let Command::Completions(args) = &cli.command {
+        args.generate();
+        return Ok(());
+    }
+
     let data_dir = DataDir::resolve(cli.data_dir.as_deref())?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
 
     match cli.command {
+        Command::Completions(_) => unreachable!(), // Handled above
         Command::Collection { action } => match action {
             CollectionAction::Add { path, name } => {
                 collection_add(&config_db, &path, &name)?;
