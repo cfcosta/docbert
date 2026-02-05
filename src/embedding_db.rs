@@ -157,6 +157,57 @@ impl EmbeddingDb {
         Ok(())
     }
 
+    /// Load multiple embedding matrices in a single transaction.
+    ///
+    /// Returns a vector of (doc_id, Option<EmbeddingMatrix>) preserving input order.
+    /// Missing embeddings return None.
+    pub fn batch_load(
+        &self,
+        doc_ids: &[u64],
+    ) -> Result<Vec<(u64, Option<EmbeddingMatrix>)>> {
+        if doc_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(EMBEDDINGS)?;
+
+        let mut results = Vec::with_capacity(doc_ids.len());
+        for &doc_id in doc_ids {
+            let matrix = if let Some(guard) = table.get(doc_id)? {
+                let bytes = guard.value();
+                if bytes.len() >= HEADER_SIZE {
+                    let num_tokens =
+                        u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+                    let dimension =
+                        u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                    let expected_len = HEADER_SIZE
+                        + (num_tokens as usize) * (dimension as usize) * 4;
+
+                    if bytes.len() == expected_len {
+                        let data: Vec<f32> =
+                            bytemuck::cast_slice(&bytes[HEADER_SIZE..])
+                                .to_vec();
+                        Some(EmbeddingMatrix {
+                            num_tokens,
+                            dimension,
+                            data,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            results.push((doc_id, matrix));
+        }
+
+        Ok(results)
+    }
+
     /// List all stored document IDs.
     pub fn list_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;
@@ -259,6 +310,30 @@ mod tests {
         let mut ids = db.list_ids().unwrap();
         ids.sort();
         assert_eq!(ids, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn batch_load_retrieves_multiple() {
+        let (_tmp, db) = test_db();
+
+        db.store(10, 1, 2, &[1.0, 2.0]).unwrap();
+        db.store(20, 1, 2, &[3.0, 4.0]).unwrap();
+        db.store(30, 1, 2, &[5.0, 6.0]).unwrap();
+
+        // Load in different order, including missing ID
+        let results = db.batch_load(&[30, 99, 10]).unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, 30);
+        assert!(results[0].1.is_some());
+        assert_eq!(results[0].1.as_ref().unwrap().data, vec![5.0, 6.0]);
+
+        assert_eq!(results[1].0, 99);
+        assert!(results[1].1.is_none()); // Missing
+
+        assert_eq!(results[2].0, 10);
+        assert!(results[2].1.is_some());
+        assert_eq!(results[2].1.as_ref().unwrap().data, vec![1.0, 2.0]);
     }
 
     #[test]

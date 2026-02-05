@@ -1,7 +1,7 @@
 use candle_core::Tensor;
 
 use crate::{
-    embedding::load_embedding_tensor,
+    embedding::batch_load_embedding_tensors,
     embedding_db::EmbeddingDb,
     error::Result,
     model_manager::ModelManager,
@@ -17,7 +17,7 @@ pub struct RankedDocument {
 /// Rerank candidate documents using ColBERT MaxSim scoring via pylate-rs.
 ///
 /// For each candidate document:
-/// 1. Load its embedding matrix from the database
+/// 1. Load its embedding matrix from the database (batch load for efficiency)
 /// 2. Use pylate's similarity function to compute MaxSim score
 ///
 /// Returns candidates sorted by score descending.
@@ -31,12 +31,14 @@ pub fn rerank(
     // Query is [Q, D], unsqueeze to [1, Q, D]
     let query_3d = query_embedding.unsqueeze(0)?;
 
-    let mut ranked: Vec<RankedDocument> = candidate_ids
-        .iter()
-        .filter_map(|&doc_id| {
-            // Load doc embedding as [T, D], unsqueeze to [1, T, D]
-            let doc_embedding =
-                load_embedding_tensor(embedding_db, doc_id).ok().flatten()?;
+    // Batch load all embeddings in a single transaction
+    let embeddings = batch_load_embedding_tensors(embedding_db, candidate_ids)?;
+
+    let mut ranked: Vec<RankedDocument> = embeddings
+        .into_iter()
+        .filter_map(|(doc_id, doc_embedding_opt)| {
+            // Skip documents without embeddings
+            let doc_embedding = doc_embedding_opt?;
             let doc_3d = doc_embedding.unsqueeze(0).ok()?;
 
             // Use pylate's similarity: returns Similarities { data: [[score]] }

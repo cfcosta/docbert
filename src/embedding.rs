@@ -68,6 +68,47 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
     Ok(flat)
 }
 
+/// Load multiple document embeddings from the database and convert to Tensors.
+///
+/// Returns a vector of (doc_id, Option<Tensor>) preserving input order.
+/// Uses a single database transaction for efficiency.
+pub fn batch_load_embedding_tensors(
+    db: &EmbeddingDb,
+    doc_ids: &[u64],
+) -> Result<Vec<(u64, Option<Tensor>)>> {
+    let matrices = db.batch_load(doc_ids)?;
+
+    matrices
+        .into_iter()
+        .map(|(doc_id, matrix_opt)| {
+            let tensor_opt = match matrix_opt {
+                Some(matrix) => Some(matrix_to_tensor(&matrix)?),
+                None => None,
+            };
+            Ok((doc_id, tensor_opt))
+        })
+        .collect()
+}
+
+/// Convert an EmbeddingMatrix to a Tensor.
+fn matrix_to_tensor(
+    matrix: &crate::embedding_db::EmbeddingMatrix,
+) -> Result<Tensor> {
+    let num_tokens = matrix.num_tokens as usize;
+    let dimension = matrix.dimension as usize;
+
+    Tensor::from_vec(
+        matrix.data.clone(),
+        (num_tokens, dimension),
+        &candle_core::Device::Cpu,
+    )
+    .map_err(|e| {
+        crate::error::Error::Config(format!(
+            "failed to create tensor from embedding data: {e}"
+        ))
+    })
+}
+
 /// Load a document's embedding from the database and convert to a Tensor.
 ///
 /// Returns None if the document has no stored embedding.
