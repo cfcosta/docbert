@@ -7,17 +7,66 @@
 //! Chunking splits long documents into windows (optionally overlapping)
 //! that can each be embedded separately.
 
+use std::path::Path;
+
+use serde::Deserialize;
+
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
 /// Default document length in tokens (from the default pylate-rs model config).
-const DEFAULT_DOCUMENT_TOKENS: usize = 300;
+const DEFAULT_DOCUMENT_TOKENS: usize = 4096;
 
 /// Default chunk size in characters (roughly ~300 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
+
+/// Chunking configuration derived from model settings.
+#[derive(Debug, Clone, Copy)]
+pub struct ChunkingConfig {
+    pub chunk_size: usize,
+    pub overlap: usize,
+    pub document_length: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SentenceTransformersConfig {
+    document_length: Option<usize>,
+}
+
+fn chars_for_tokens(tokens: usize) -> usize {
+    tokens.saturating_mul(CHARS_PER_TOKEN).max(1)
+}
+
+fn load_document_length(model_dir: &Path) -> Option<usize> {
+    let config_path = model_dir.join("config_sentence_transformers.json");
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    let config: SentenceTransformersConfig =
+        serde_json::from_str(&contents).ok()?;
+    config.document_length
+}
+
+/// Resolve chunking settings from a model path (if local), falling back to defaults.
+pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
+    let model_path = Path::new(model_id);
+    if model_path.is_dir() {
+        if let Some(doc_len) = load_document_length(model_path) {
+            return ChunkingConfig {
+                chunk_size: chars_for_tokens(doc_len),
+                overlap: DEFAULT_CHUNK_OVERLAP,
+                document_length: Some(doc_len),
+            };
+        }
+    }
+
+    ChunkingConfig {
+        chunk_size: DEFAULT_CHUNK_SIZE,
+        overlap: DEFAULT_CHUNK_OVERLAP,
+        document_length: None,
+    }
+}
 
 /// A chunk of text from a larger document.
 #[derive(Debug, Clone)]
@@ -157,6 +206,8 @@ pub fn parse_chunk_doc_id(chunk_id: u64) -> (u64, usize) {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -247,5 +298,26 @@ mod tests {
             // Should be valid UTF-8
             assert!(chunk.text.chars().count() > 0);
         }
+    }
+
+    #[test]
+    fn resolve_chunking_config_from_model_dir() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config_sentence_transformers.json");
+        std::fs::write(&config_path, "{\"document_length\": 512}").unwrap();
+
+        let config = resolve_chunking_config(&dir.path().to_string_lossy());
+        assert_eq!(config.document_length, Some(512));
+        assert_eq!(config.chunk_size, 512 * CHARS_PER_TOKEN);
+        assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
+    }
+
+    #[test]
+    fn resolve_chunking_config_defaults_without_config() {
+        let dir = tempdir().unwrap();
+        let config = resolve_chunking_config(&dir.path().to_string_lossy());
+        assert_eq!(config.document_length, None);
+        assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
+        assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
     }
 }

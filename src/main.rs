@@ -693,6 +693,13 @@ fn cmd_rebuild(
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
+    let chunking_config = chunking::resolve_chunking_config(model_id);
+    if let Some(doc_len) = chunking_config.document_length {
+        eprintln!(
+            "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
+            chunking_config.chunk_size
+        );
+    }
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -763,8 +770,8 @@ fn cmd_rebuild(
             for (doc_id, content) in file_contents {
                 let chunks = chunking::chunk_text(
                     &content,
-                    chunking::DEFAULT_CHUNK_SIZE,
-                    chunking::DEFAULT_CHUNK_OVERLAP,
+                    chunking_config.chunk_size,
+                    chunking_config.overlap,
                 );
                 for chunk in chunks {
                     let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
@@ -840,6 +847,13 @@ fn cmd_sync(
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
+    let chunking_config = chunking::resolve_chunking_config(model_id);
+    if let Some(doc_len) = chunking_config.document_length {
+        eprintln!(
+            "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
+            chunking_config.chunk_size
+        );
+    }
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -923,8 +937,8 @@ fn cmd_sync(
             for (doc_id, content) in file_contents.into_iter() {
                 let chunks = chunking::chunk_text(
                     &content,
-                    chunking::DEFAULT_CHUNK_SIZE,
-                    chunking::DEFAULT_CHUNK_OVERLAP,
+                    chunking_config.chunk_size,
+                    chunking_config.overlap,
                 );
                 for chunk in chunks {
                     let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
