@@ -200,6 +200,20 @@ Full rebuild of indexes from source files. Deletes all existing data and re-inde
 
 Use this when you need to force a complete re-index (e.g., after index corruption or model changes).
 
+### `docbert model`
+
+Manage the default ColBERT model stored in `config.db`.
+
+#### Subcommands
+
+| Command | Description |
+| ------- | ----------- |
+| `docbert model show` | Show the resolved model (and source) |
+| `docbert model set <model>` | Persist a HuggingFace model ID or local path |
+| `docbert model clear` | Clear the stored model setting |
+
+You can also override the model per command with `--model`.
+
 ### `docbert status`
 
 Show system status and statistics.
@@ -209,14 +223,12 @@ Output:
 ```
 Data directory: ~/.local/share/docbert/
 Model: lightonai/GTE-ModernColBERT-v1
-Pool factor: 1
-
-Collections:
-  notes       142 docs   14.2 MB embeddings
-  meetings     37 docs    3.7 MB embeddings
-  docs        891 docs   89.1 MB embeddings
-
-Total: 1070 documents, 107.0 MB embeddings, 12.3 MB index
+Model source: default
+Collections: 3
+  notes: /path/to/notes
+  meetings: /path/to/meetings
+  docs: /path/to/docs
+Documents: 1070
 ```
 
 ### `docbert mcp`
@@ -254,7 +266,7 @@ Example configuration (Claude Desktop / Claude Code):
 | Variable           | Description                                         |
 | ------------------ | --------------------------------------------------- |
 | `DOCBERT_DATA_DIR` | Override XDG data directory                         |
-| `DOCBERT_MODEL`    | Override default model name                         |
+| `DOCBERT_MODEL`    | Override default model name (lower priority than `--model`) |
 | `DOCBERT_LOG`      | Log level (trace, debug, info, warn, error)         |
 | `HF_HOME`          | HuggingFace Hub cache directory (used by pylate-rs) |
 | `NO_COLOR`         | Disable colored output (standard)                   |

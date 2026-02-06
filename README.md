@@ -194,6 +194,36 @@ docbert --data-dir /custom/path search "query"
 - `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/GTE-ModernColBERT-v1`)
 - `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
 
+### Model Selection
+
+Persist a default model in `config.db`:
+
+```bash
+docbert model set /path/to/model
+docbert model show
+docbert model clear
+```
+
+Override per command:
+
+```bash
+docbert --model /path/to/model search "query"
+```
+
+### Using Jina ColBERT v2
+
+`jinaai/jina-colbert-v2` requires custom model code, so you must export it to a
+local PyLate-compatible directory first.
+
+```bash
+pip install pylate
+python scripts/prepare_jina_colbert_v2.py --output ~/.local/share/docbert/models/jina-colbert-v2
+docbert model set ~/.local/share/docbert/models/jina-colbert-v2
+docbert rebuild
+```
+
+Note: `jinaai/jina-colbert-v2` is released under CC-BY-NC-4.0 (non-commercial).
+
 ## Supported File Types
 
 - Markdown (`.md`)

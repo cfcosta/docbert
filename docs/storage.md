@@ -67,7 +67,7 @@ Stores global configuration values.
 
 Settings include:
 
-- `model_name`: the HuggingFace model ID (default: `lightonai/GTE-ModernColBERT-v1`)
+- `model_name`: the HuggingFace model ID or local PyLate model path (default: `lightonai/GTE-ModernColBERT-v1`)
 - `pool_factor`: hierarchical pooling factor (default: `1`)
 - `index_version`: schema version for migration support
 

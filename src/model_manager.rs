@@ -3,8 +3,8 @@ use pylate_rs::{ColBERT, Similarities};
 
 use crate::error::Result;
 
-const DEFAULT_MODEL: &str = "lightonai/GTE-ModernColBERT-v1";
-const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
+pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
+pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Select the best available compute device.
 ///
@@ -49,7 +49,7 @@ impl ModelManager {
     /// `encode_query`, or `similarity`.
     pub fn new() -> Self {
         let model_id = std::env::var(MODEL_ENV_VAR)
-            .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+            .unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
 
         Self {
             model: None,
@@ -132,8 +132,8 @@ mod tests {
 
     #[test]
     fn with_model_id_not_loaded_by_default() {
-        let manager = ModelManager::with_model_id(DEFAULT_MODEL.to_string());
+        let manager = ModelManager::with_model_id(DEFAULT_MODEL_ID.to_string());
         assert!(!manager.is_loaded());
-        assert_eq!(manager.model_id(), DEFAULT_MODEL);
+        assert_eq!(manager.model_id(), DEFAULT_MODEL_ID);
     }
 }

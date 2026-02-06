@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use clap::Parser;
 use kdam::{BarExt, Spinner, tqdm};
 use rayon::prelude::*;
@@ -24,7 +26,7 @@ use cli::{Cli, CollectionAction, Command, ContextAction};
 use config_db::ConfigDb;
 use data_dir::DataDir;
 use embedding_db::EmbeddingDb;
-use model_manager::ModelManager;
+use model_manager::{DEFAULT_MODEL_ID, MODEL_ENV_VAR, ModelManager};
 use tantivy_index::SearchIndex;
 
 fn init_tracing(verbose: u8) {
@@ -45,6 +47,61 @@ fn init_tracing(verbose: u8) {
         .init();
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ModelSource {
+    Cli,
+    Env,
+    Config,
+    Default,
+}
+
+impl ModelSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ModelSource::Cli => "cli",
+            ModelSource::Env => "env",
+            ModelSource::Config => "config",
+            ModelSource::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ModelResolution {
+    model_id: String,
+    source: ModelSource,
+    env_model: Option<String>,
+    config_model: Option<String>,
+    cli_model: Option<String>,
+}
+
+fn resolve_model(
+    config_db: &ConfigDb,
+    cli_model: Option<&str>,
+) -> error::Result<ModelResolution> {
+    let env_model = std::env::var(MODEL_ENV_VAR).ok();
+    let config_model = config_db.get_setting("model_name")?;
+    let cli_model = cli_model.map(|s| s.to_string());
+
+    let (model_id, source) = if let Some(cli) = cli_model.clone() {
+        (cli, ModelSource::Cli)
+    } else if let Some(env) = env_model.clone() {
+        (env, ModelSource::Env)
+    } else if let Some(cfg) = config_model.clone() {
+        (cfg, ModelSource::Config)
+    } else {
+        (DEFAULT_MODEL_ID.to_string(), ModelSource::Default)
+    };
+
+    Ok(ModelResolution {
+        model_id,
+        source,
+        env_model,
+        config_model,
+        cli_model,
+    })
+}
+
 fn main() -> error::Result<()> {
     let cli = Cli::parse();
 
@@ -60,6 +117,7 @@ fn main() -> error::Result<()> {
 
     let data_dir = DataDir::resolve(cli.data_dir.as_deref())?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
+    let model_resolution = resolve_model(&config_db, cli.model.as_deref())?;
 
     match cli.command {
         Command::Completions(_) => unreachable!(), // Handled above
@@ -88,7 +146,8 @@ fn main() -> error::Result<()> {
         Command::Search(args) => {
             let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
             let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-            let mut model = ModelManager::default();
+            let mut model =
+                ModelManager::with_model_id(model_resolution.model_id.clone());
 
             let results = search::execute_search(
                 &args,
@@ -112,17 +171,33 @@ fn main() -> error::Result<()> {
             cmd_multi_get(&config_db, &args)?;
         }
         Command::Rebuild(args) => {
-            cmd_rebuild(&config_db, &data_dir, &args)?;
+            cmd_rebuild(
+                &config_db,
+                &data_dir,
+                &args,
+                &model_resolution.model_id,
+            )?;
         }
         Command::Sync(args) => {
-            cmd_sync(&config_db, &data_dir, &args)?;
+            cmd_sync(&config_db, &data_dir, &args, &model_resolution.model_id)?;
         }
         Command::Status(args) => {
-            cmd_status(&config_db, &data_dir, args.json)?;
+            cmd_status(&config_db, &data_dir, &model_resolution, args.json)?;
         }
         Command::Mcp => {
-            mcp::run_mcp(data_dir, config_db)?;
+            mcp::run_mcp(data_dir, config_db, model_resolution.model_id)?;
         }
+        Command::Model { action } => match action {
+            cli::ModelAction::Show { json } => {
+                cmd_model_show(&model_resolution, json);
+            }
+            cli::ModelAction::Set { model } => {
+                cmd_model_set(&config_db, &model)?;
+            }
+            cli::ModelAction::Clear => {
+                cmd_model_clear(&config_db)?;
+            }
+        },
     }
 
     Ok(())
@@ -453,27 +528,97 @@ fn cmd_multi_get(
 fn cmd_status(
     config_db: &ConfigDb,
     data_dir: &DataDir,
+    model_resolution: &ModelResolution,
     json: bool,
 ) -> error::Result<()> {
     let collections = config_db.list_collections()?;
     let doc_count = config_db.list_document_ids()?.len();
-    let model_name = config_db
-        .get_setting_or("model_name", "lightonai/GTE-ModernColBERT-v1")?;
+    let model_name = &model_resolution.model_id;
 
     if json {
         println!(
-            "{{\"data_dir\":\"{}\",\"model\":\"{model_name}\",\"collections\":{},\"documents\":{doc_count}}}",
+            "{{\"data_dir\":\"{}\",\"model\":\"{model_name}\",\"model_source\":\"{}\",\"collections\":{},\"documents\":{doc_count}}}",
             data_dir.root().display(),
+            model_resolution.source.as_str(),
             collections.len()
         );
     } else {
         println!("Data directory: {}", data_dir.root().display());
         println!("Model: {model_name}");
+        println!("Model source: {}", model_resolution.source.as_str());
         println!("Collections: {}", collections.len());
         for (name, path) in &collections {
             println!("  {name}: {path}");
         }
         println!("Documents: {doc_count}");
+    }
+    Ok(())
+}
+
+fn print_json_optional_string(value: Option<&str>) {
+    match value {
+        Some(v) => search::print_json_string_pub(v),
+        None => print!("null"),
+    }
+}
+
+fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
+    if json {
+        print!("{{\"resolved\":");
+        search::print_json_string_pub(&model_resolution.model_id);
+        print!(",\"source\":");
+        search::print_json_string_pub(model_resolution.source.as_str());
+        print!(",\"cli\":");
+        print_json_optional_string(model_resolution.cli_model.as_deref());
+        print!(",\"env\":");
+        print_json_optional_string(model_resolution.env_model.as_deref());
+        print!(",\"config\":");
+        print_json_optional_string(model_resolution.config_model.as_deref());
+        println!("}}");
+    } else {
+        println!("Resolved model: {}", model_resolution.model_id);
+        println!("Source: {}", model_resolution.source.as_str());
+        if let Some(cli) = model_resolution.cli_model.as_deref() {
+            println!("CLI override: {cli}");
+        }
+        if let Some(env) = model_resolution.env_model.as_deref() {
+            println!("{MODEL_ENV_VAR}: {env}");
+        }
+        if let Some(cfg) = model_resolution.config_model.as_deref() {
+            println!("Config setting: {cfg}");
+        } else {
+            println!("Config setting: (unset)");
+        }
+    }
+}
+
+fn cmd_model_set(config_db: &ConfigDb, model: &str) -> error::Result<()> {
+    config_db.set_setting("model_name", model)?;
+
+    let model_path = Path::new(model);
+    if model.contains("jina-colbert-v2") && !model_path.is_dir() {
+        eprintln!(
+            "Note: jina-colbert-v2 requires a PyLate-exported local model directory. See scripts/prepare_jina_colbert_v2.py"
+        );
+    } else if model_path.is_dir() {
+        let st_config = model_path.join("config_sentence_transformers.json");
+        if !st_config.exists() {
+            eprintln!(
+                "Warning: {} is missing config_sentence_transformers.json; pylate-rs may not load this model.",
+                model_path.display()
+            );
+        }
+    }
+
+    println!("Stored model_name: {model}");
+    Ok(())
+}
+
+fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
+    if config_db.remove_setting("model_name")? {
+        println!("Cleared model_name setting.");
+    } else {
+        println!("model_name setting was already unset.");
     }
     Ok(())
 }
@@ -525,6 +670,7 @@ fn cmd_rebuild(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     args: &cli::RebuildArgs,
+    model_id: &str,
 ) -> error::Result<()> {
     let collections: Vec<(String, String)> =
         if let Some(ref name) = args.collection {
@@ -546,7 +692,7 @@ fn cmd_rebuild(
 
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model = ModelManager::default();
+    let mut model = ModelManager::with_model_id(model_id.to_string());
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -671,6 +817,7 @@ fn cmd_sync(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     args: &cli::SyncArgs,
+    model_id: &str,
 ) -> error::Result<()> {
     let collections: Vec<(String, String)> =
         if let Some(ref name) = args.collection {
@@ -692,7 +839,7 @@ fn cmd_sync(
 
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model = ModelManager::default();
+    let mut model = ModelManager::with_model_id(model_id.to_string());
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);

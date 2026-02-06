@@ -13,6 +13,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
 
+    /// Override the ColBERT model ID or local model path
+    #[arg(long, global = true)]
+    pub model: Option<String>,
+
     /// Increase log verbosity (can be repeated: -v, -vv)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -47,6 +51,11 @@ pub enum Command {
     Status(StatusArgs),
     /// Start MCP server for AI agent integration
     Mcp,
+    /// Manage the ColBERT model configuration
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
     /// Generate shell completions
     #[command(hide = true)]
     Completions(CompletionsArgs),
@@ -99,6 +108,25 @@ pub enum ContextAction {
         #[arg(long)]
         json: bool,
     },
+}
+
+// -- Model --
+
+#[derive(Debug, Subcommand)]
+pub enum ModelAction {
+    /// Show the currently resolved model
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Persist a default model ID or local path in config.db
+    Set {
+        /// Model ID (HuggingFace) or local path
+        model: String,
+    },
+    /// Clear the stored model setting (revert to default)
+    Clear,
 }
 
 // -- Search --

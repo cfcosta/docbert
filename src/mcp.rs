@@ -879,7 +879,11 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
     )
 }
 
-pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb) -> error::Result<()> {
+pub fn run_mcp(
+    data_dir: DataDir,
+    config_db: ConfigDb,
+    model_id: String,
+) -> error::Result<()> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
@@ -888,7 +892,7 @@ pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb) -> error::Result<()> {
         config_db,
         search_index,
         embedding_db,
-        model: Mutex::new(ModelManager::default()),
+        model: Mutex::new(ModelManager::with_model_id(model_id)),
     };
 
     let server = DocbertMcpServer::new(state);

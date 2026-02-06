@@ -222,6 +222,16 @@ impl ConfigDb {
         Ok(table.get(key)?.map(|v| v.value().to_string()))
     }
 
+    pub fn remove_setting(&self, key: &str) -> Result<bool> {
+        let txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = txn.open_table(SETTINGS)?;
+            table.remove(key)?.is_some()
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
     /// Get a setting, returning the default if not set.
     pub fn get_setting_or(&self, key: &str, default: &str) -> Result<String> {
         Ok(self
@@ -328,6 +338,9 @@ mod tests {
             db.get_setting_or("model_name", "default-model").unwrap(),
             "custom-model"
         );
+
+        assert!(db.remove_setting("model_name").unwrap());
+        assert_eq!(db.get_setting("model_name").unwrap(), None);
     }
 
     #[test]
