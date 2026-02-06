@@ -219,6 +219,25 @@ Collections:
 Total: 1070 documents, 107.0 MB embeddings, 12.3 MB index
 ```
 
+### `docbert mcp`
+
+Start the MCP (Model Context Protocol) server for AI agents.
+
+The MCP server exposes tools for search and retrieval over stdio.
+
+Example configuration (Claude Desktop / Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "docbert": {
+      "command": "docbert",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Exit Codes
 
 | Code | Meaning                                      |

@@ -34,6 +34,42 @@ docbert search "rust ownership" --json
 docbert search "todo" --files | xargs -I {} code {}
 ```
 
+## MCP Server
+
+docbert exposes an MCP (Model Context Protocol) server for AI agent integrations.
+
+**Tools exposed:**
+- `docbert_search` - Keyword + semantic search (supports collection filters)
+- `docbert_get` - Retrieve a document by path or `#doc_id`
+- `docbert_multi_get` - Retrieve multiple documents by glob pattern
+- `docbert_status` - Index health and collection summary
+
+**Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "docbert": {
+      "command": "docbert",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Claude Code** (`~/.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "docbert": {
+      "command": "docbert",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Installation
 
 ### With Nix (recommended)

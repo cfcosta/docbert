@@ -10,16 +10,25 @@ use percent_encoding::{
     utf8_percent_encode,
 };
 use rmcp::{
+    RoleServer,
     ServerHandler,
     ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::{
+        router::{prompt::PromptRouter, tool::ToolRouter},
+        wrapper::Parameters,
+    },
     model::{
         AnnotateAble,
         CallToolResult,
         Content,
+        GetPromptRequestParams,
+        GetPromptResult,
         Implementation,
+        ListPromptsResult,
         ListResourceTemplatesResult,
         PaginatedRequestParams,
+        PromptMessage,
+        PromptMessageRole,
         RawResourceTemplate,
         ReadResourceRequestParams,
         ReadResourceResult,
@@ -27,6 +36,10 @@ use rmcp::{
         ServerCapabilities,
         ServerInfo,
     },
+    prompt,
+    prompt_handler,
+    prompt_router,
+    service::RequestContext,
     tool,
     tool_handler,
     tool_router,
@@ -54,6 +67,7 @@ const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 const DEFAULT_MULTI_GET_MAX_BYTES: u64 = 10_240;
 
 struct DocbertState {
+    data_dir: DataDir,
     config_db: ConfigDb,
     search_index: SearchIndex,
     embedding_db: EmbeddingDb,
@@ -64,6 +78,7 @@ struct DocbertState {
 pub struct DocbertMcpServer {
     state: Arc<DocbertState>,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
 }
 
 impl DocbertMcpServer {
@@ -71,6 +86,7 @@ impl DocbertMcpServer {
         Self {
             state: Arc::new(state),
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 }
@@ -341,9 +357,112 @@ impl DocbertMcpServer {
 
         Ok(CallToolResult::success(content))
     }
+
+    /// Show index status and collection summary.
+    #[tool(
+        name = "docbert_status",
+        description = "Show index status, collections, and document counts."
+    )]
+    pub async fn docbert_status(
+        &self,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let collections = self
+            .state
+            .config_db
+            .list_collections()
+            .map_err(|e| mcp_error("failed to list collections", e))?;
+        let doc_ids = self
+            .state
+            .config_db
+            .list_document_ids()
+            .map_err(|e| mcp_error("failed to list document ids", e))?;
+        let model_name = self
+            .state
+            .config_db
+            .get_setting_or("model_name", "lightonai/GTE-ModernColBERT-v1")
+            .map_err(|e| mcp_error("failed to read model setting", e))?;
+
+        let mut counts = std::collections::HashMap::new();
+        for (_doc_id, bytes) in self
+            .state
+            .config_db
+            .list_all_document_metadata()
+            .map_err(|e| mcp_error("failed to load document metadata", e))?
+        {
+            if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
+                *counts.entry(meta.collection).or_insert(0usize) += 1;
+            }
+        }
+
+        let mut collection_status = Vec::with_capacity(collections.len());
+        for (name, path) in collections {
+            let documents = counts.get(&name).copied().unwrap_or(0);
+            collection_status.push(StatusCollection {
+                name,
+                path,
+                documents,
+            });
+        }
+
+        let data_dir = self.state.data_dir.root().display().to_string();
+        let summary = format_status_summary(
+            &data_dir,
+            &model_name,
+            doc_ids.len(),
+            &collection_status,
+        );
+
+        let structured = serde_json::to_value(StatusResponse {
+            data_dir,
+            model: model_name,
+            documents: doc_ids.len(),
+            collections: collection_status,
+        })
+        .map_err(|e| mcp_error("failed to serialize status", e))?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(summary)],
+            structured_content: Some(structured),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+}
+
+#[prompt_router]
+impl DocbertMcpServer {
+    /// Docbert MCP query guide.
+    #[prompt(
+        name = "docbert_query",
+        title = "Docbert Query Guide",
+        description = "How to search and retrieve documents with docbert MCP"
+    )]
+    pub async fn query_guide(&self) -> Vec<PromptMessage> {
+        vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            r#"# Docbert MCP Quick Guide
+
+docbert indexes local document collections and provides MCP tools for search and retrieval.
+
+## Tools
+
+- docbert_search: keyword + semantic search (use collection filters when possible)
+- docbert_get: fetch a single document by path or #doc_id
+- docbert_multi_get: fetch multiple documents by glob pattern
+- docbert_status: index health and collection summary
+
+## Tips
+
+- Use min_score to filter low-confidence results
+- Use bm25_only for fast keyword-only search
+- docbert_get supports from_line/max_lines and optional line numbers
+"#,
+        )]
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for DocbertMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -359,7 +478,7 @@ impl ServerHandler for DocbertMcpServer {
                 website_url: Some("https://github.com/cfcosta/docbert".to_string()),
             },
             instructions: Some(
-                "Use docbert_search to find documents by keyword or concept. Use collection filters when possible."
+                "Use docbert_search to find documents, then docbert_get or docbert_multi_get to retrieve content. Use docbert_status for index health."
                     .to_string(),
             ),
             ..Default::default()
@@ -476,6 +595,23 @@ struct SearchResultItem {
     snippet: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusResponse {
+    data_dir: String,
+    model: String,
+    documents: usize,
+    collections: Vec<StatusCollection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusCollection {
+    name: String,
+    path: String,
+    documents: usize,
+}
+
 fn format_search_summary(results: &[SearchResultItem], query: &str) -> String {
     if results.is_empty() {
         return format!("No results found for \"{query}\"");
@@ -493,6 +629,27 @@ fn format_search_summary(results: &[SearchResultItem], query: &str) -> String {
         lines.push(format!("{} {:.3} {}", item.doc_id, item.score, item.file));
     }
 
+    lines.join("\n")
+}
+
+fn format_status_summary(
+    data_dir: &str,
+    model: &str,
+    documents: usize,
+    collections: &[StatusCollection],
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("Docbert index status:".to_string());
+    lines.push(format!("  Data dir: {data_dir}"));
+    lines.push(format!("  Model: {model}"));
+    lines.push(format!("  Documents: {documents}"));
+    lines.push(format!("  Collections: {}", collections.len()));
+    for collection in collections {
+        lines.push(format!(
+            "    - {} ({} docs) {}",
+            collection.name, collection.documents, collection.path
+        ));
+    }
     lines.join("\n")
 }
 
@@ -727,6 +884,7 @@ pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb) -> error::Result<()> {
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
     let state = DocbertState {
+        data_dir,
         config_db,
         search_index,
         embedding_db,
@@ -767,7 +925,8 @@ mod tests {
         let collection_dir = tmp.path().join("notes");
         std::fs::create_dir_all(&collection_dir).unwrap();
 
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let data_dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         config_db
             .set_collection("notes", collection_dir.to_str().unwrap())
             .unwrap();
@@ -777,7 +936,7 @@ mod tests {
 
         let search_index = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
 
         let mut writer = search_index.writer(15_000_000).unwrap();
         let mut doc_ids = Vec::new();
@@ -819,6 +978,7 @@ mod tests {
         writer.commit().unwrap();
 
         let server = DocbertMcpServer::new(DocbertState {
+            data_dir,
             config_db,
             search_index,
             embedding_db,
@@ -958,5 +1118,30 @@ mod tests {
             }
             _ => panic!("expected text resource"),
         }
+    }
+
+    #[tokio::test]
+    async fn status_tool_returns_structured_content() {
+        let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust\n")]);
+
+        let result = server.docbert_status().await.unwrap();
+        let structured = result.structured_content.expect("structured");
+
+        assert_eq!(
+            structured.get("documents").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        let collections = structured
+            .get("collections")
+            .and_then(|v| v.as_array())
+            .expect("collections array");
+        assert_eq!(collections.len(), 1);
+    }
+
+    #[test]
+    fn prompt_router_includes_query_guide() {
+        let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust\n")]);
+        let prompts = server.prompt_router.list_all();
+        assert!(prompts.iter().any(|p| p.name == "docbert_query"));
     }
 }
