@@ -1,8 +1,13 @@
 use std::path::{Path, PathBuf};
 
+use redb::{Database, TableDefinition};
 use rmcp::{
     ServiceExt,
-    model::CallToolRequestParams,
+    model::{
+        CallToolRequestParams,
+        ReadResourceRequestParams,
+        ResourceContents,
+    },
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::json;
@@ -27,6 +32,43 @@ use tantivy::{
         TextAnalyzer,
     },
 };
+
+const COLLECTIONS: TableDefinition<&str, &str> =
+    TableDefinition::new("collections");
+const CONTEXTS: TableDefinition<&str, &str> = TableDefinition::new("contexts");
+const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
+    TableDefinition::new("document_metadata");
+const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
+
+fn setup_config(
+    data_dir: &Path,
+    collection_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::create(data_dir.join("config.db"))?;
+    let txn = db.begin_write()?;
+    {
+        let mut table = txn.open_table(COLLECTIONS)?;
+        table.insert("notes", collection_path.to_str().unwrap())?;
+    }
+    {
+        let mut table = txn.open_table(CONTEXTS)?;
+        table.insert("bert://notes", "Test notes")?;
+    }
+    txn.open_table(DOCUMENT_METADATA)?;
+    txn.open_table(SETTINGS)?;
+    txn.commit()?;
+    Ok(())
+}
+
+fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let collection_dir = data_dir.join("notes");
+    std::fs::create_dir_all(&collection_dir)?;
+    let file_path = collection_dir.join("hello.md");
+    std::fs::write(&file_path, "Hello world\nSecond line\n")?;
+    setup_config(data_dir, &collection_dir)?;
+    build_index(data_dir)?;
+    Ok(())
+}
 
 fn build_index(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let tantivy_dir = data_dir.join("tantivy");
@@ -87,7 +129,7 @@ fn build_index(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 {
     let tempdir = tempfile::tempdir()?;
-    build_index(tempdir.path())?;
+    setup_fixture(tempdir.path())?;
 
     let bin = docbert_bin()?;
     let transport = TokioChildProcess::new(
@@ -127,6 +169,49 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
         results[0].get("collection").and_then(|v| v.as_str()),
         Some("notes")
     );
+
+    let get_args = json!({
+        "reference": "notes:hello.md",
+        "lineNumbers": true,
+        "maxLines": 1
+    });
+    let get_result = client
+        .peer()
+        .call_tool(CallToolRequestParams {
+            meta: None,
+            name: "docbert_get".into(),
+            arguments: Some(get_args.as_object().unwrap().clone()),
+            task: None,
+        })
+        .await?;
+    let get_resource = get_result
+        .content
+        .iter()
+        .find_map(|c| c.as_resource())
+        .expect("docbert_get resource");
+    match &get_resource.resource {
+        ResourceContents::TextResourceContents { text, .. } => {
+            assert!(text.contains("<!-- Context: Test notes -->"));
+            assert!(text.contains("1: Hello world"));
+        }
+        _ => panic!("expected text resource"),
+    }
+
+    let resource_result = client
+        .peer()
+        .read_resource(ReadResourceRequestParams {
+            meta: None,
+            uri: "bert://notes/hello.md".to_string(),
+        })
+        .await?;
+    let resource = resource_result.contents.first().expect("resource content");
+    match resource {
+        ResourceContents::TextResourceContents { text, .. } => {
+            assert!(text.contains("<!-- Context: Test notes -->"));
+            assert!(text.contains("1: Hello world"));
+        }
+        _ => panic!("expected text resource"),
+    }
 
     client.cancel().await?;
     Ok(())
