@@ -45,6 +45,8 @@ pub enum Command {
     Sync(SyncArgs),
     /// Show system status and statistics
     Status(StatusArgs),
+    /// Start MCP server for AI agent integration
+    Mcp,
     /// Generate shell completions
     #[command(hide = true)]
     Completions(CompletionsArgs),

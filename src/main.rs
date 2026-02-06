@@ -13,6 +13,7 @@ pub mod embedding_db;
 pub mod error;
 pub mod incremental;
 pub mod ingestion;
+pub mod mcp;
 pub mod model_manager;
 pub mod reranker;
 pub mod search;
@@ -118,6 +119,9 @@ fn main() -> error::Result<()> {
         }
         Command::Status(args) => {
             cmd_status(&config_db, &data_dir, args.json)?;
+        }
+        Command::Mcp => {
+            mcp::run_mcp(data_dir, config_db)?;
         }
     }
 
