@@ -1,15 +1,23 @@
 //! Chunking utilities for splitting long documents into overlapping segments.
 //!
-//! ColBERT models typically have a max sequence length of ~512 tokens.
-//! Documents longer than this are truncated, losing semantic signal.
-//! Chunking splits long documents into overlapping windows that can each
-//! be embedded separately.
+//! ColBERT models have a maximum document length defined in the model config.
+//! Pylate-rs reads `config_sentence_transformers.json`; the default model
+//! (GTE-ModernColBERT) uses a 300-token document length. Longer documents
+//! are truncated, losing semantic signal.
+//! Chunking splits long documents into windows (optionally overlapping)
+//! that can each be embedded separately.
 
-/// Default chunk size in characters (roughly ~400 tokens).
-pub const DEFAULT_CHUNK_SIZE: usize = 1600;
+/// Approximate characters per token for English text.
+const CHARS_PER_TOKEN: usize = 4;
 
-/// Default overlap between chunks in characters (roughly ~50 tokens).
-pub const DEFAULT_CHUNK_OVERLAP: usize = 200;
+/// Default document length in tokens (from the default pylate-rs model config).
+const DEFAULT_DOCUMENT_TOKENS: usize = 300;
+
+/// Default chunk size in characters (roughly ~300 tokens).
+pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
+
+/// Default overlap between chunks in characters (0 to minimize chunk count).
+pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 
 /// A chunk of text from a larger document.
 #[derive(Debug, Clone)]
@@ -22,7 +30,7 @@ pub struct Chunk {
     pub start_offset: usize,
 }
 
-/// Split text into overlapping chunks.
+/// Split text into chunks (optionally overlapping).
 ///
 /// Uses character-based splitting as a rough approximation of token count.
 /// For English text, ~4 characters ≈ 1 token on average.
@@ -153,7 +161,11 @@ mod tests {
 
     #[test]
     fn short_text_single_chunk() {
-        let chunks = chunk_text("Hello, world!", 1600, 200);
+        let chunks = chunk_text(
+            "Hello, world!",
+            DEFAULT_CHUNK_SIZE,
+            DEFAULT_CHUNK_OVERLAP,
+        );
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "Hello, world!");
         assert_eq!(chunks[0].index, 0);
