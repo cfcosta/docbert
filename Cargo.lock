@@ -864,6 +864,7 @@ dependencies = [
  "clap_complete",
  "globset",
  "kdam",
+ "percent-encoding",
  "pylate-rs",
  "rayon",
  "redb",

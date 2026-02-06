@@ -3,14 +3,27 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use globset::Glob;
+use percent_encoding::{
+    NON_ALPHANUMERIC,
+    percent_decode_str,
+    utf8_percent_encode,
+};
 use rmcp::{
     ServerHandler,
     ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
+        AnnotateAble,
         CallToolResult,
         Content,
         Implementation,
+        ListResourceTemplatesResult,
+        PaginatedRequestParams,
+        RawResourceTemplate,
+        ReadResourceRequestParams,
+        ReadResourceResult,
+        ResourceContents,
         ServerCapabilities,
         ServerInfo,
     },
@@ -26,8 +39,10 @@ use crate::{
     cli::SearchArgs,
     config_db::ConfigDb,
     data_dir::DataDir,
+    doc_id::DocumentId,
     embedding_db::EmbeddingDb,
     error,
+    incremental::DocumentMetadata,
     model_manager::ModelManager,
     search,
     tantivy_index::SearchIndex,
@@ -36,6 +51,7 @@ use crate::{
 const DEFAULT_SEARCH_LIMIT: usize = 10;
 const DEFAULT_SNIPPET_LINES: usize = 6;
 const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
+const DEFAULT_MULTI_GET_MAX_BYTES: u64 = 10_240;
 
 struct DocbertState {
     config_db: ConfigDb,
@@ -142,13 +158,199 @@ impl DocbertMcpServer {
             meta: None,
         })
     }
+
+    /// Retrieve a document by reference (collection:path, #doc_id, or path).
+    #[tool(
+        name = "docbert_get",
+        description = "Retrieve a document by reference (collection:path, #doc_id, or path). Supports optional line ranges."
+    )]
+    pub async fn docbert_get(
+        &self,
+        params: Parameters<GetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let params = params.0;
+
+        let mut reference = params.reference.clone();
+        let mut from_line = params.from_line;
+
+        if from_line.is_none()
+            && let Some((base, line_str)) = reference.rsplit_once(':')
+            && !line_str.is_empty()
+            && line_str.chars().all(|c| c.is_ascii_digit())
+        {
+            from_line = line_str.parse::<usize>().ok();
+            reference = base.to_string();
+        }
+
+        let (collection, path) =
+            resolve_reference(&self.state.config_db, &reference)?;
+
+        let full_path =
+            resolve_full_path(&self.state.config_db, &collection, &path)
+                .ok_or_else(|| {
+                    rmcp::ErrorData::resource_not_found(
+                        format!("collection not found: {collection}"),
+                        None,
+                    )
+                })?;
+
+        if let Some(max_bytes) = params.max_bytes {
+            let size = std::fs::metadata(&full_path)
+                .map(|m| m.len())
+                .unwrap_or_default();
+            if size > max_bytes {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    format!(
+                        "File too large ({} bytes > {}): {}",
+                        size,
+                        max_bytes,
+                        full_path.display()
+                    ),
+                )]));
+            }
+        }
+
+        let content = std::fs::read_to_string(&full_path)
+            .map_err(|e| mcp_error("failed to read document", e))?;
+
+        let start_line = from_line.unwrap_or(1);
+        let mut body =
+            apply_line_limits(&content, start_line, params.max_lines);
+
+        if params.line_numbers.unwrap_or(false) {
+            body = add_line_numbers(&body, start_line);
+        }
+
+        if let Some(context) =
+            context_for_doc(&self.state.config_db, &collection, &path)
+        {
+            body = format!("<!-- Context: {context} -->\n\n{body}");
+        }
+
+        let uri = format!("bert://{}/{}", collection, encode_bert_path(&path));
+        let resource = ResourceContents::TextResourceContents {
+            uri,
+            mime_type: Some("text/markdown".to_string()),
+            text: body,
+            meta: None,
+        };
+
+        Ok(CallToolResult::success(vec![Content::resource(resource)]))
+    }
+
+    /// Retrieve multiple documents by glob pattern.
+    #[tool(
+        name = "docbert_multi_get",
+        description = "Retrieve multiple documents by glob pattern. Supports collection filters and size limits."
+    )]
+    pub async fn docbert_multi_get(
+        &self,
+        params: Parameters<MultiGetParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let params = params.0;
+        let matcher = Glob::new(&params.pattern)
+            .map_err(|e| {
+                rmcp::ErrorData::invalid_params(
+                    format!("invalid glob pattern: {e}"),
+                    None,
+                )
+            })?
+            .compile_matcher();
+
+        let mut matches: Vec<(String, String)> = Vec::new();
+        let metadata = self
+            .state
+            .config_db
+            .list_all_document_metadata()
+            .map_err(|e| mcp_error("failed to load document metadata", e))?;
+
+        for (_doc_id, bytes) in metadata {
+            if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
+                if let Some(ref collection) = params.collection
+                    && meta.collection != *collection
+                {
+                    continue;
+                }
+
+                if matcher.is_match(&meta.relative_path) {
+                    matches.push((meta.collection, meta.relative_path));
+                }
+            }
+        }
+
+        matches.sort();
+
+        if matches.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "No documents match '{}'",
+                params.pattern
+            ))]));
+        }
+
+        let max_bytes = params.max_bytes.unwrap_or(DEFAULT_MULTI_GET_MAX_BYTES);
+        let mut content: Vec<Content> = Vec::new();
+
+        for (collection, path) in matches {
+            let full_path =
+                resolve_full_path(&self.state.config_db, &collection, &path);
+            let Some(full_path) = full_path else {
+                content.push(Content::text(format!(
+                    "[SKIPPED: {collection}:{path} - collection not found]"
+                )));
+                continue;
+            };
+
+            let size = std::fs::metadata(&full_path)
+                .map(|m| m.len())
+                .unwrap_or_default();
+            if size > max_bytes {
+                content.push(Content::text(format!(
+                    "[SKIPPED: {collection}:{path} - {size} bytes exceeds limit {max_bytes}]"
+                )));
+                continue;
+            }
+
+            let Ok(mut body) = std::fs::read_to_string(&full_path) else {
+                content.push(Content::text(format!(
+                    "[SKIPPED: {collection}:{path} - failed to read]"
+                )));
+                continue;
+            };
+
+            body = apply_line_limits(&body, 1, params.max_lines);
+            if params.line_numbers.unwrap_or(false) {
+                body = add_line_numbers(&body, 1);
+            }
+
+            if let Some(context) =
+                context_for_doc(&self.state.config_db, &collection, &path)
+            {
+                body = format!("<!-- Context: {context} -->\n\n{body}");
+            }
+
+            let uri =
+                format!("bert://{}/{}", collection, encode_bert_path(&path));
+            let resource = ResourceContents::TextResourceContents {
+                uri,
+                mime_type: Some("text/markdown".to_string()),
+                text: body,
+                meta: None,
+            };
+            content.push(Content::resource(resource));
+        }
+
+        Ok(CallToolResult::success(content))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DocbertMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
             server_info: Implementation {
                 name: "docbert".to_string(),
                 title: Some("docbert MCP".to_string()),
@@ -162,6 +364,43 @@ impl ServerHandler for DocbertMcpServer {
             ),
             ..Default::default()
         }
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
+        let template = RawResourceTemplate {
+            uri_template: "bert://{+path}".to_string(),
+            name: "docbert-document".to_string(),
+            title: Some("docbert document".to_string()),
+            description: Some(
+                "A document from your docbert index. Use search tools to discover documents."
+                    .to_string(),
+            ),
+            mime_type: Some("text/markdown".to_string()),
+            icons: None,
+        }
+        .no_annotation();
+
+        Ok(ListResourceTemplatesResult {
+            meta: None,
+            next_cursor: None,
+            resource_templates: vec![template],
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+        let contents =
+            read_resource_contents(&self.state.config_db, &request.uri)?;
+        Ok(ReadResourceResult {
+            contents: vec![contents],
+        })
     }
 }
 
@@ -184,6 +423,36 @@ pub struct SearchParams {
     pub all: Option<bool>,
     /// Include a snippet preview (default: true).
     pub include_snippet: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetParams {
+    /// Document reference: collection:path, #doc_id, or path.
+    pub reference: String,
+    /// Start from this line number (1-indexed).
+    pub from_line: Option<usize>,
+    /// Maximum number of lines to return.
+    pub max_lines: Option<usize>,
+    /// Maximum bytes to read before skipping.
+    pub max_bytes: Option<u64>,
+    /// Include line numbers in the output.
+    pub line_numbers: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiGetParams {
+    /// Glob pattern to match relative paths.
+    pub pattern: String,
+    /// Restrict to a specific collection.
+    pub collection: Option<String>,
+    /// Maximum lines per file.
+    pub max_lines: Option<usize>,
+    /// Maximum bytes per file (default: 10240).
+    pub max_bytes: Option<u64>,
+    /// Include line numbers in output.
+    pub line_numbers: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,6 +537,161 @@ fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
     Some((snippet, start + 1))
 }
 
+fn apply_line_limits(
+    text: &str,
+    start_line: usize,
+    max_lines: Option<usize>,
+) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let start_idx = start_line.saturating_sub(1).min(lines.len());
+    if start_idx >= lines.len() {
+        return String::new();
+    }
+
+    let end_idx = match max_lines {
+        Some(max) => (start_idx + max).min(lines.len()),
+        None => lines.len(),
+    };
+
+    let mut slice = lines[start_idx..end_idx].join("\n");
+    if max_lines.is_some() && end_idx < lines.len() {
+        slice.push_str(&format!(
+            "\n\n[... truncated {} more lines]",
+            lines.len() - end_idx
+        ));
+    }
+
+    slice
+}
+
+fn resolve_reference(
+    config_db: &ConfigDb,
+    reference: &str,
+) -> Result<(String, String), rmcp::ErrorData> {
+    if let Some(short_id) = reference.strip_prefix('#') {
+        return resolve_by_doc_id(config_db, short_id).ok_or_else(|| {
+            rmcp::ErrorData::resource_not_found(
+                format!("document not found: #{short_id}"),
+                None,
+            )
+        });
+    }
+
+    if let Some((collection, path)) = reference.split_once(':') {
+        return Ok((collection.to_string(), path.to_string()));
+    }
+
+    resolve_by_path(config_db, reference).ok_or_else(|| {
+        rmcp::ErrorData::resource_not_found(
+            format!("document not found: {reference}"),
+            None,
+        )
+    })
+}
+
+fn resolve_by_doc_id(
+    config_db: &ConfigDb,
+    short_id: &str,
+) -> Option<(String, String)> {
+    let entries = config_db.list_all_document_metadata().ok()?;
+    for (_doc_id, bytes) in entries {
+        let meta = DocumentMetadata::deserialize(&bytes)?;
+        let did = DocumentId::new(&meta.collection, &meta.relative_path);
+        if did.short == short_id || did.to_string().contains(short_id) {
+            return Some((meta.collection, meta.relative_path));
+        }
+    }
+    None
+}
+
+fn resolve_by_path(
+    config_db: &ConfigDb,
+    path: &str,
+) -> Option<(String, String)> {
+    let entries = config_db.list_all_document_metadata().ok()?;
+    for (_doc_id, bytes) in entries {
+        let meta = DocumentMetadata::deserialize(&bytes)?;
+        if meta.relative_path == path {
+            return Some((meta.collection, meta.relative_path));
+        }
+    }
+    None
+}
+
+fn encode_bert_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn decode_bert_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            percent_decode_str(segment).decode_utf8_lossy().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn parse_bert_uri(uri: &str) -> Result<(String, String), rmcp::ErrorData> {
+    let stripped = uri.strip_prefix("bert://").ok_or_else(|| {
+        rmcp::ErrorData::resource_not_found(
+            format!("unsupported uri: {uri}"),
+            None,
+        )
+    })?;
+
+    let decoded = decode_bert_path(stripped);
+    let mut parts = decoded.split('/');
+    let collection = parts.next().unwrap_or("");
+    let path = parts.collect::<Vec<_>>().join("/");
+
+    if collection.is_empty() || path.is_empty() {
+        return Err(rmcp::ErrorData::resource_not_found(
+            format!("invalid bert uri: {uri}"),
+            None,
+        ));
+    }
+
+    Ok((collection.to_string(), path))
+}
+
+fn read_resource_contents(
+    config_db: &ConfigDb,
+    uri: &str,
+) -> Result<ResourceContents, rmcp::ErrorData> {
+    let (collection, path) = parse_bert_uri(uri)?;
+    let full_path = resolve_full_path(config_db, &collection, &path)
+        .ok_or_else(|| {
+            rmcp::ErrorData::resource_not_found(
+                format!("collection not found: {collection}"),
+                None,
+            )
+        })?;
+
+    let mut text = std::fs::read_to_string(&full_path)
+        .map_err(|e| mcp_error("failed to read resource", e))?;
+    text = add_line_numbers(&text, 1);
+
+    if let Some(context) = context_for_doc(config_db, &collection, &path) {
+        text = format!("<!-- Context: {context} -->\n\n{text}");
+    }
+
+    Ok(ResourceContents::TextResourceContents {
+        uri: uri.to_string(),
+        mime_type: Some("text/markdown".to_string()),
+        text,
+        meta: None,
+    })
+}
+
 fn resolve_full_path(
     config_db: &ConfigDb,
     collection: &str,
@@ -335,19 +759,13 @@ pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb) -> error::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc_id::DocumentId;
 
-    #[tokio::test]
-    async fn search_tool_returns_structured_results() {
+    fn build_server(
+        files: &[(&str, &str)],
+    ) -> (DocbertMcpServer, tempfile::TempDir, Vec<DocumentId>) {
         let tmp = tempfile::tempdir().unwrap();
         let collection_dir = tmp.path().join("notes");
         std::fs::create_dir_all(&collection_dir).unwrap();
-        let file_path = collection_dir.join("rust.md");
-        std::fs::write(
-            &file_path,
-            "Rust is fast.\nOwnership keeps memory safe.\n",
-        )
-        .unwrap();
 
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         config_db
@@ -362,19 +780,42 @@ mod tests {
             EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
 
         let mut writer = search_index.writer(15_000_000).unwrap();
-        let doc_id = DocumentId::new("notes", "rust.md");
-        search_index
-            .add_document(
-                &writer,
-                &doc_id.short,
-                doc_id.numeric,
-                "notes",
-                "rust.md",
-                "Rust Intro",
-                "Rust is fast. Ownership keeps memory safe.",
-                1,
-            )
-            .unwrap();
+        let mut doc_ids = Vec::new();
+
+        for (path, body) in files {
+            let file_path = collection_dir.join(path);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&file_path, body).unwrap();
+
+            let doc_id = DocumentId::new("notes", path);
+            search_index
+                .add_document(
+                    &writer,
+                    &doc_id.short,
+                    doc_id.numeric,
+                    "notes",
+                    path,
+                    path,
+                    body,
+                    1,
+                )
+                .unwrap();
+            config_db
+                .set_document_metadata(
+                    doc_id.numeric,
+                    &DocumentMetadata {
+                        collection: "notes".to_string(),
+                        relative_path: path.to_string(),
+                        mtime: 1,
+                    }
+                    .serialize(),
+                )
+                .unwrap();
+            doc_ids.push(doc_id);
+        }
+
         writer.commit().unwrap();
 
         let server = DocbertMcpServer::new(DocbertState {
@@ -383,6 +824,16 @@ mod tests {
             embedding_db,
             model: Mutex::new(ModelManager::new()),
         });
+
+        (server, tmp, doc_ids)
+    }
+
+    #[tokio::test]
+    async fn search_tool_returns_structured_results() {
+        let (server, _tmp, _doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
 
         let params = SearchParams {
             query: "Rust".to_string(),
@@ -426,5 +877,86 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap_or_default();
         assert!(summary.contains("Found 1 result"));
+    }
+
+    #[tokio::test]
+    async fn get_tool_returns_resource_with_line_numbers() {
+        let (server, _tmp, doc_ids) =
+            build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let params = GetParams {
+            reference: format!("#{}", doc_id.short),
+            from_line: Some(1),
+            max_lines: Some(1),
+            max_bytes: None,
+            line_numbers: Some(true),
+        };
+
+        let result = server.docbert_get(Parameters(params)).await.unwrap();
+        let resource = result
+            .content
+            .first()
+            .and_then(|c| c.as_resource())
+            .expect("resource content");
+
+        match &resource.resource {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(text.contains("1: Rust is fast."));
+                assert!(text.contains("truncated"));
+            }
+            _ => panic!("expected text resource"),
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_get_skips_large_files() {
+        let (server, _tmp, _doc_ids) = build_server(&[
+            ("small.md", "tiny\n"),
+            ("large.md", "this is a larger file\nwith more content\n"),
+        ]);
+
+        let params = MultiGetParams {
+            pattern: "*.md".to_string(),
+            collection: Some("notes".to_string()),
+            max_lines: None,
+            max_bytes: Some(10),
+            line_numbers: None,
+        };
+
+        let result =
+            server.docbert_multi_get(Parameters(params)).await.unwrap();
+
+        let mut saw_resource = false;
+        let mut saw_skip = false;
+
+        for item in &result.content {
+            if item.as_resource().is_some() {
+                saw_resource = true;
+            }
+            if let Some(text) = item.as_text()
+                && text.text.contains("SKIPPED")
+            {
+                saw_skip = true;
+            }
+        }
+
+        assert!(saw_resource);
+        assert!(saw_skip);
+    }
+
+    #[test]
+    fn read_resource_decodes_uri() {
+        let (server, _tmp, _doc_ids) =
+            build_server(&[("space name.md", "Hello world\n")]);
+        let uri = "bert://notes/space%20name.md";
+        let contents =
+            read_resource_contents(&server.state.config_db, uri).unwrap();
+        match contents {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(text.contains("1: Hello world"));
+            }
+            _ => panic!("expected text resource"),
+        }
     }
 }
