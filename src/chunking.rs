@@ -2,7 +2,7 @@
 //!
 //! ColBERT models have a maximum document length defined in the model config.
 //! Pylate-rs reads `config_sentence_transformers.json`; the default model
-//! (GTE-ModernColBERT) uses a 300-token document length. Longer documents
+//! (jina-colbert-v2 export) uses a 300-token document length. Longer documents
 //! are truncated, losing semantic signal.
 //! Chunking splits long documents into windows (optionally overlapping)
 //! that can each be embedded separately.
@@ -15,8 +15,8 @@ use serde::Deserialize;
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default document length in tokens (from the default pylate-rs model config).
-const DEFAULT_DOCUMENT_TOKENS: usize = 4096;
+/// Default document length in tokens (from the default model config).
+const DEFAULT_DOCUMENT_TOKENS: usize = 300;
 
 /// Default chunk size in characters (roughly ~300 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;

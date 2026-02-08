@@ -56,7 +56,7 @@ use crate::{
     embedding_db::EmbeddingDb,
     error,
     incremental::DocumentMetadata,
-    model_manager::ModelManager,
+    model_manager::{DEFAULT_MODEL_ID, ModelManager},
     search,
     tantivy_index::SearchIndex,
 };
@@ -379,7 +379,7 @@ impl DocbertMcpServer {
         let model_name = self
             .state
             .config_db
-            .get_setting_or("model_name", "lightonai/GTE-ModernColBERT-v1")
+            .get_setting_or("model_name", DEFAULT_MODEL_ID)
             .map_err(|e| mcp_error("failed to read model setting", e))?;
 
         let mut counts = std::collections::HashMap::new();

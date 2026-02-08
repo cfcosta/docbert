@@ -220,7 +220,7 @@ Output:
 
 ```
 Data directory: ~/.local/share/docbert/
-Model: lightonai/GTE-ModernColBERT-v1
+Model: jinaai/jina-colbert-v2
 Model source: default
 Collections: 3
   notes: /path/to/notes

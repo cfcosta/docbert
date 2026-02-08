@@ -175,7 +175,7 @@ docbert uses a two-stage retrieval pipeline:
 
 1. **BM25 Retrieval** (via [Tantivy](https://github.com/quickwit-oss/tantivy)): Fast full-text search with fuzzy matching retrieves the top 1000 candidates
 
-2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using the [GTE-ModernColBERT](https://huggingface.co/lightonai/GTE-ModernColBERT-v1) model
+2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using the [jina-colbert-v2](https://huggingface.co/jinaai/jina-colbert-v2) model
 
 This approach gives you the speed of traditional search with the semantic understanding of neural models.
 
@@ -191,7 +191,7 @@ docbert --data-dir /custom/path search "query"
 
 ### Environment Variables
 
-- `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/GTE-ModernColBERT-v1`)
+- `DOCBERT_MODEL`: Override the ColBERT model (default: `jinaai/jina-colbert-v2`)
 - `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
 
 ### Model Selection
@@ -210,7 +210,7 @@ Override per command:
 docbert --model /path/to/model search "query"
 ```
 
-### Using Jina ColBERT v2
+### Using Jina ColBERT v2 (default)
 
 `jinaai/jina-colbert-v2` requires custom model code, so you must export it to a
 local PyLate-compatible directory first.
@@ -223,6 +223,10 @@ docbert rebuild
 ```
 
 Note: `jinaai/jina-colbert-v2` is released under CC-BY-NC-4.0 (non-commercial).
+
+If you prefer to use another model without a local export step, set
+`DOCBERT_MODEL` (or `docbert model set`) to a different pylate-rs-compatible
+model directory.
 
 ## Supported File Types
 

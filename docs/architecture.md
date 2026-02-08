@@ -45,8 +45,8 @@ Stores pre-computed ColBERT token-level embeddings for all indexed documents.
 
 Computes ColBERT embeddings using the pylate-rs crate, which wraps the Candle ML framework.
 
-- Model: `lightonai/GTE-ModernColBERT-v1` (or user-configurable)
-- Downloads model weights from HuggingFace Hub on first use, caches locally
+- Model: `jinaai/jina-colbert-v2` (or user-configurable)
+- Downloads model weights from HuggingFace Hub on first use, caches locally (for jina-colbert-v2, use a local PyLate export)
 - Encodes queries with `[Q]` prefix and `[MASK]` padding (query_length from `config_sentence_transformers.json`, default 32)
 - Encodes documents with `[D]` prefix; documents are padded to the longest sequence in the batch and truncated to `document_length`
 - Output: per-token embeddings of dimension 128, L2-normalized
