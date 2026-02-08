@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use serde::Deserialize;
 
 /// Approximate characters per token for English text.
@@ -48,17 +49,38 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
     config.document_length
 }
 
+fn load_document_length_remote(model_id: &str) -> Option<usize> {
+    let api = Api::new().ok()?;
+    let repo = api.repo(Repo::with_revision(
+        model_id.to_string(),
+        RepoType::Model,
+        "main".to_string(),
+    ));
+    let config_path = repo.get("config_sentence_transformers.json").ok()?;
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    let config: SentenceTransformersConfig =
+        serde_json::from_str(&contents).ok()?;
+    config.document_length
+}
+
 /// Resolve chunking settings from a model path (if local), falling back to defaults.
 pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
     let model_path = Path::new(model_id);
-    if model_path.is_dir() {
-        if let Some(doc_len) = load_document_length(model_path) {
-            return ChunkingConfig {
-                chunk_size: chars_for_tokens(doc_len),
-                overlap: DEFAULT_CHUNK_OVERLAP,
-                document_length: Some(doc_len),
-            };
-        }
+    if model_path.is_dir()
+        && let Some(doc_len) = load_document_length(model_path)
+    {
+        return ChunkingConfig {
+            chunk_size: chars_for_tokens(doc_len),
+            overlap: DEFAULT_CHUNK_OVERLAP,
+            document_length: Some(doc_len),
+        };
+    }
+    if let Some(doc_len) = load_document_length_remote(model_id) {
+        return ChunkingConfig {
+            chunk_size: chars_for_tokens(doc_len),
+            overlap: DEFAULT_CHUNK_OVERLAP,
+            document_length: Some(doc_len),
+        };
     }
 
     ChunkingConfig {

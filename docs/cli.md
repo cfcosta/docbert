@@ -11,6 +11,7 @@ docbert <subcommand> [options]
 | Option              | Description                              |
 | ------------------- | ---------------------------------------- |
 | `--data-dir <path>` | Override the XDG data directory          |
+| `--model <id>`      | Override the ColBERT model ID or local path |
 | `--verbose` / `-v`  | Increase log verbosity (can be repeated) |
 
 ## Subcommands
@@ -21,7 +22,7 @@ Manage document collections.
 
 #### `docbert collection add <path> --name <name>`
 
-Register a directory as a named collection and index its contents.
+Register a directory as a named collection.
 
 - `<path>`: Path to the directory (resolved to absolute)
 - `--name <name>`: Human-readable collection name (required)
@@ -30,11 +31,10 @@ Behavior:
 
 1. Validate the directory exists and is readable
 2. Store the collection definition in config.db
-3. Walk the directory, index all documents into Tantivy
-4. Compute ColBERT embeddings for all documents, store in embeddings.db
-5. Print a summary: number of documents indexed, time taken, storage used
+3. Print a confirmation message
 
-If the collection already exists, this re-indexes (incremental: only changed files).
+If the collection already exists, this returns an error. Use `docbert sync` or
+`docbert rebuild` to (re)index collections.
 
 #### `docbert collection remove <name>`
 
@@ -43,25 +43,25 @@ Remove a collection and all its indexed data.
 - Removes the collection definition from config.db
 - Deletes all Tantivy entries for documents in this collection
 - Deletes all embeddings for documents in this collection
-- Deletes the context string if one exists
+Note: context strings are not removed automatically.
 
 #### `docbert collection list`
 
-List all registered collections with their paths and document counts.
+List all registered collections with their paths.
 
 Output format (human):
 
 ```
-notes       ~/notes                 142 documents
-meetings    ~/Documents/meetings     37 documents
-docs        ~/work/docs             891 documents
+notes       ~/notes
+meetings    ~/Documents/meetings
+docs        ~/work/docs
 ```
 
 Output format (JSON, with `--json`):
 
 ```json
 [
-  {"name": "notes", "path": "/home/user/notes", "document_count": 142},
+  {"name": "notes", "path": "/home/user/notes"},
   ...
 ]
 ```
@@ -112,13 +112,11 @@ Search across all collections (or a specific one).
 Human output format:
 
 ```
-[1] (0.847) notes/project-ideas.md                    #a1b2c3
-    Project Timeline and Milestones
-    ...snippet with matching context...
+  1. [0.847] notes:project-ideas.md ##a1b2c3
+     Project Timeline and Milestones
 
-[2] (0.812) docs/roadmap.md                           #d4e5f6
-    Q1 2025 Roadmap
-    ...snippet with matching context...
+  2. [0.812] docs:roadmap.md ##d4e5f6
+     Q1 2025 Roadmap
 ```
 
 JSON output format:
@@ -126,15 +124,15 @@ JSON output format:
 ```json
 {
   "query": "project timeline",
+  "result_count": 1,
   "results": [
     {
       "rank": 1,
       "score": 0.847,
-      "doc_id": "a1b2c3",
+      "doc_id": "#a1b2c3",
       "collection": "notes",
       "path": "project-ideas.md",
-      "title": "Project Timeline and Milestones",
-      "snippet": "...matching context..."
+      "title": "Project Timeline and Milestones"
     }
   ]
 }
@@ -154,9 +152,9 @@ Retrieve a document's full content.
 
 | Option   | Description                                                |
 | -------- | ---------------------------------------------------------- |
-| `--full` | Print full document content (default for single documents) |
+| `--full` | Print full document content (default behavior; flag is currently redundant) |
 | `--json` | Output as JSON with metadata                               |
-| `--meta` | Print only metadata (path, collection, mtime, token count) |
+| `--meta` | Print only metadata (collection, path, full file path) |
 
 ### `docbert multi-get <pattern>`
 
@@ -255,11 +253,7 @@ Example configuration (Claude Desktop / Claude Code):
 | Code | Meaning                                      |
 | ---- | -------------------------------------------- |
 | 0    | Success                                      |
-| 1    | General error                                |
-| 2    | Invalid arguments                            |
-| 3    | Collection not found                         |
-| 4    | Document not found                           |
-| 5    | Index corruption (suggest `docbert rebuild`) |
+| 1    | General error (default on any failure)       |
 
 ## Environment Variables
 

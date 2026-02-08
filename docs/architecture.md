@@ -11,7 +11,7 @@ docbert is a hybrid document search system that combines lexical retrieval (BM25
 Responsible for managing the mapping between named collections and filesystem directories. A collection is a named reference to a directory tree on disk.
 
 - Stores collection definitions (name -> directory path) in the redb database
-- Watches for file changes to trigger re-indexing (future)
+- Re-indexing is triggered explicitly via `docbert sync` or `docbert rebuild`
 - Supports user-defined context strings per collection (for display purposes and future LLM integration)
 
 ### 2. Document Ingester
@@ -29,14 +29,14 @@ Provides the first-stage retrieval using Tantivy's inverted index.
 
 - Schema fields: document ID (STRING, STORED), collection name (STRING, STORED, FAST), relative file path (STRING, STORED), title (TEXT, STORED), body (TEXT), file modification time (u64, STORED, FAST)
 - BM25 scoring is Tantivy's default and requires no configuration
-- Fuzzy matching is available via FuzzyTermQuery (Levenshtein distance 1-2)
+- Fuzzy matching is available via FuzzyTermQuery (Levenshtein distance 1)
 - Returns the top-1000 candidates for reranking
 
 ### 4. Embedding Store (redb)
 
 Stores pre-computed ColBERT token-level embeddings for all indexed documents.
 
-- Key: document ID (u64)
+- Key: document ID (u64); chunked documents use chunk-specific IDs for embeddings
 - Value: serialized token embedding matrix (`[num_tokens, 128]` as a flat `&[u8]` array of little-endian f32 values, prefixed with a u32 token count)
 - Uses `insert_reserve` for zero-copy writes during bulk indexing
 - Single database file stored in the XDG data directory
@@ -47,10 +47,9 @@ Computes ColBERT embeddings using the pylate-rs crate, which wraps the Candle ML
 
 - Model: `lightonai/GTE-ModernColBERT-v1` (or user-configurable)
 - Downloads model weights from HuggingFace Hub on first use, caches locally
-- Encodes queries with `[Q]` prefix and `[MASK]` padding (32 tokens)
-- Encodes documents with `[D]` prefix, no padding, punctuation tokens filtered
+- Encodes queries with `[Q]` prefix and `[MASK]` padding (query_length from `config_sentence_transformers.json`, default 32)
+- Encodes documents with `[D]` prefix; documents are padded to the longest sequence in the batch and truncated to `document_length`
 - Output: per-token embeddings of dimension 128, L2-normalized
-- Supports hierarchical pooling to reduce document token count (configurable pool factor)
 
 ### 6. MaxSim Reranker
 
@@ -94,7 +93,7 @@ Query string
      |
      +---> Tantivy BM25 + Fuzzy -> top-1000 candidate doc IDs
      |
-     +---> ColBERT encode query -> query token embeddings [32, 128]
+     +---> ColBERT encode query -> query token embeddings [query_length, 128]
                 |
                 v
      Load candidate doc embeddings from redb

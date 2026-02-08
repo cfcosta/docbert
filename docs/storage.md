@@ -46,17 +46,7 @@ Stores user-defined context strings for collections.
 Stores per-document metadata for incremental indexing.
 
 - **Key**: `u64` (document numeric ID)
-- **Value**: `&[u8]` (serialized struct containing: collection name, relative path, mtime as u64, file size as u64, number of tokens as u32)
-
-The serialization format for document metadata is a simple fixed-layout binary format:
-
-- 4 bytes: collection name length (u32 LE)
-- N bytes: collection name (UTF-8)
-- 4 bytes: relative path length (u32 LE)
-- N bytes: relative path (UTF-8)
-- 8 bytes: mtime (u64 LE, seconds since epoch)
-- 8 bytes: file size (u64 LE)
-- 4 bytes: token count (u32 LE)
+- **Value**: `&[u8]` (UTF-8 string serialized as `collection\0relative_path\0mtime`, where mtime is seconds since epoch)
 
 ### Table: settings
 
@@ -68,8 +58,7 @@ Stores global configuration values.
 Settings include:
 
 - `model_name`: the HuggingFace model ID or local PyLate model path (default: `lightonai/GTE-ModernColBERT-v1`)
-- `pool_factor`: hierarchical pooling factor (default: `1`)
-- `index_version`: schema version for migration support
+  (this is the only setting currently used by the codebase)
 
 ## embeddings.db Schema
 
@@ -77,7 +66,7 @@ Settings include:
 
 Stores pre-computed ColBERT token embeddings.
 
-- **Key**: `u64` (document numeric ID, same as in document_metadata)
+- **Key**: `u64` (document numeric ID; for chunked documents, a chunk-specific ID derived from the base doc ID)
 - **Value**: `&[u8]` (binary embedding data)
 
 The binary format for embeddings:
@@ -106,7 +95,7 @@ The embeddings database is kept separate from config.db because:
 
 | Field        | Type   | Options      | Purpose                                                     |
 | ------------ | ------ | ------------ | ----------------------------------------------------------- |
-| `doc_id`     | STRING | STORED       | Short hash ID (e.g. "abc123") for display and `docbert get` |
+| `doc_id`     | STRING | STORED       | Short hash ID with `#` prefix (e.g. "#abc123") for display and `docbert get` |
 | `doc_num_id` | u64    | STORED, FAST | Numeric ID matching redb keys                               |
 | `collection` | STRING | STORED, FAST | Collection name for filtering                               |
 | `path`       | STRING | STORED       | Relative file path within collection                        |
@@ -131,10 +120,13 @@ The embeddings database is kept separate from config.db because:
 
 Each document gets two IDs:
 
-1. **Numeric ID (u64)**: A hash of `(collection_name, relative_path)` using a stable hash function. Used as the key in redb tables. Collisions are handled by appending a counter suffix before re-hashing
-2. **Short ID (string)**: The first 6 hex characters of the numeric ID (e.g., "abc123"). Used for human-readable display. If a collision occurs at the short-ID level, additional characters are added until unique
+1. **Numeric ID (u64)**: A hash of `(collection_name, relative_path)` using Rust's `DefaultHasher`. Used as the key in redb tables.
+2. **Short ID (string)**: The first 6 hex characters of the numeric ID (e.g., "abc123"). Used for human-readable display and lookup, typically shown with a leading `#`.
 
-The numeric ID is deterministic given the same collection name and relative path, enabling idempotent re-indexing.
+The numeric ID is deterministic given the same collection name and relative path, enabling idempotent re-indexing. There is no explicit collision resolution in code; `docbert get #<id>` resolves the first matching document.
+
+Chunk IDs for embeddings are derived by XOR-ing the base numeric ID with
+`(chunk_index << 48)`. Chunk index 0 uses the base ID unchanged.
 
 ## Compaction and Maintenance
 

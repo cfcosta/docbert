@@ -11,6 +11,7 @@ candle-core = "0.9.1"
 clap = { version = "4.5.57", features = ["derive"] }
 clap_complete = "4.5"
 globset = "0.4"
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"] }
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
 pylate-rs = "1.0"

@@ -863,6 +863,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "globset",
+ "hf-hub",
  "kdam",
  "percent-encoding",
  "pylate-rs",

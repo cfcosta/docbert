@@ -28,15 +28,15 @@ The Tantivy schema uses the `en_stem` tokenizer for the body field to enable Eng
 For each new or modified document:
 
 1. Initialize the ColBERT model (lazy, first use only -- downloads from HuggingFace Hub)
-2. Split the document body into chunks if it exceeds the model's maximum document length (read from `config_sentence_transformers.json` when available; typically 300 tokens for the default model). Chunking strategy: character-based windowing with word-boundary adjustments, no overlap (to minimize chunk count)
+2. Split the document body into chunks if it exceeds the model's maximum document length (read from `config_sentence_transformers.json` locally, or fetched via hf-hub for remote model IDs; defaults to the built-in chunk size if unavailable). Chunking strategy: character-based windowing with word-boundary adjustments, no overlap (to minimize chunk count)
 3. Encode each chunk with `model.encode(&chunks, false)` (is_query=false)
-4. Optionally apply hierarchical pooling with a configurable pool factor (default: 1, no pooling) to reduce token count
-5. Serialize the resulting `[num_tokens, 128]` f32 matrix as bytes and store in `embeddings.db` keyed by the document's internal numeric ID
-6. For chunked documents, store the concatenated embeddings of all chunks with chunk boundary markers
+4. Serialize the resulting `[num_tokens, 128]` f32 matrix as bytes and store in `embeddings.db` keyed by the document's internal numeric ID
+5. For chunked documents, store each chunk separately using a chunk-specific numeric ID (derived from the base doc ID and chunk index)
+   - Note: reranking currently fetches embeddings by the base document ID only, so only the first chunk (index 0) is used during search; additional chunk embeddings are stored but not referenced.
 
 ### Incremental Re-indexing
 
-On subsequent runs of `docbert collection add` or a future `docbert sync` command:
+On subsequent runs of `docbert sync`:
 
 1. Walk the directory tree again
 2. Compare mtimes against stored values in config.db
@@ -64,27 +64,31 @@ On subsequent runs of `docbert collection add` or a future `docbert sync` comman
 
 1. Load the ColBERT model (cached after first use)
 2. Encode the query with `model.encode(&[query], true)` (is_query=true)
-3. This produces a `[32, 128]` matrix (query is padded to 32 tokens with `[MASK]` tokens)
+3. This produces a `[query_length, 128]` matrix (query is padded to `query_length` with the tokenizer mask token; `query_length` comes from `config_sentence_transformers.json` or defaults to 32)
 
 ### Step 4: Reranking (MaxSim)
 
 1. For each of the 1000 candidate documents, load the pre-computed embedding matrix from `embeddings.db`
-2. Compute `similarity_matrix = query_embeddings @ doc_embeddings.T` yielding shape `[32, num_doc_tokens]`
+2. Compute `similarity_matrix = query_embeddings @ doc_embeddings.T` yielding shape `[query_length, num_doc_tokens]`
 3. For each query token (row), take the maximum value across all document tokens (columns)
-4. Sum these 32 maximum values to get the final MaxSim score for this document
+4. Sum these maximum values to get the final MaxSim score for this document
 5. Sort all candidates by MaxSim score descending
 6. Apply `--min-score` threshold if specified
 
 ### Step 5: Result Formatting
 
-For human-readable output:
+For human-readable output (CLI):
 
-- Show rank, score, collection name, relative path, and a text snippet
+- Show rank, score, collection name, relative path, and document ID
 - Display the short document ID (e.g., `#abc123`) for use with `docbert get`
 
 For JSON output (`--json`):
 
-- Emit a JSON array of objects with fields: rank, score, doc_id, collection, path, title, snippet
+- Emit an object with fields: query, result_count, and results (rank, score, doc_id, collection, path, title)
+
+For MCP tool responses:
+
+- Optional snippets are included when requested (separate from the CLI output).
 
 For file-list output (`--files`):
 
@@ -107,7 +111,7 @@ For file-list output (`--files`):
 
 ### Storage
 
-Per document (assuming average 200 effective tokens after punctuation filtering):
+Per document (assuming average 200 effective tokens after truncation/chunking):
 
 | Component                         | Size per Document |
 | --------------------------------- | ----------------- |
@@ -119,4 +123,4 @@ Per document (assuming average 200 effective tokens after punctuation filtering)
 For a 10,000 document corpus: ~1 GB total storage.
 For a 100,000 document corpus: ~10 GB total storage.
 
-Future optimization: hierarchical pooling with pool_factor=2 halves the embedding storage with negligible quality loss.
+Future optimization: none currently implemented.

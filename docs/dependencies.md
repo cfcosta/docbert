@@ -30,13 +30,15 @@ Feature flags:
 - `metal`: Apple Metal GPU
 - `cuda`: NVIDIA CUDA GPU
 
-Model files (resolved automatically from HuggingFace Hub):
+Model files (resolved automatically from HuggingFace Hub or a local export):
 
 - `model.safetensors` -- main model weights
-- `dense.safetensors` -- linear projection layer (768 -> 128 dim)
 - `tokenizer.json` -- HuggingFace tokenizer
 - `config.json` -- model architecture config
-- `dense_config.json` -- projection layer config
+- `config_sentence_transformers.json` -- ColBERT config (query/document lengths, prefixes)
+- `special_tokens_map.json` -- mask token mapping
+- `1_Dense/model.safetensors` -- linear projection layer (e.g., 768 -> 128 dim)
+- `1_Dense/config.json` -- projection layer config
 
 ### Tantivy (v0.25.0)
 
@@ -101,6 +103,13 @@ Durability:
 - `Durability::Immediate` -- fsync on commit (default, safe)
 - `Durability::None` -- skip fsync (faster for batch operations, follow with an Immediate commit)
 
+### hf-hub (v0.4.3)
+
+Hugging Face Hub client.
+
+**Crate**: `hf-hub`
+**Purpose**: Fetch `config_sentence_transformers.json` for remote model IDs so chunking can match the model's `document_length`.
+
 ### clap (v4.5.57)
 
 Command-line argument parser.
@@ -118,20 +127,6 @@ XDG Base Directory specification.
 Key operation:
 
 - `xdg::BaseDirectories::with_prefix("docbert")` -- creates a handle that resolves paths like `~/.local/share/docbert/`
-
-## Additional Dependencies (to add)
-
-These are not yet in Cargo.toml but will be needed:
-
-| Crate                            | Version | Purpose                                    |
-| -------------------------------- | ------- | ------------------------------------------ |
-| `tantivy`                        | 0.25    | Full-text search (not yet in Cargo.toml)   |
-| `pylate-rs`                      | 1.0     | ColBERT embeddings (not yet in Cargo.toml) |
-| `serde`                          | 1.x     | Serialization framework                    |
-| `serde_json`                     | 1.x     | JSON output formatting                     |
-| `glob` or `globset`              | latest  | Pattern matching for `multi-get`           |
-| `anyhow` or `thiserror`          | latest  | Error handling                             |
-| `tracing` + `tracing-subscriber` | latest  | Structured logging                         |
 
 ## Feature Flag Strategy
 
