@@ -138,6 +138,30 @@ JSON output format:
 }
 ```
 
+### `docbert ssearch <query>`
+
+Semantic-only search across all collections (ColBERT only, no BM25 or fuzzy matching).
+This performs a full embedding scan, so it is slower on large corpora.
+
+#### Options
+
+| Option                | Description                                                 |
+| --------------------- | ----------------------------------------------------------- |
+| `-n <count>`          | Number of results to return (default: 10)                   |
+| `--json`              | Output results as JSON                                      |
+| `--all`               | Return all results above the score threshold (ignores `-n`) |
+| `--files`             | Output only file paths (one per line)                       |
+| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
+
+#### Behavior
+
+1. Encode the query with ColBERT
+2. Score every stored document embedding (chunk 0 only)
+3. Filter by `--min-score` and limit to `-n` (unless `--all`)
+4. Format and display results
+
+Human output format is the same as `docbert search`.
+
 ### `docbert get <reference>`
 
 Retrieve a document's full content.
@@ -233,7 +257,13 @@ Documents: 1070
 
 Start the MCP (Model Context Protocol) server for AI agents.
 
-The MCP server exposes tools for search and retrieval over stdio.
+The MCP server exposes tools for search and retrieval over stdio:
+
+- `docbert_search` (BM25 + ColBERT, supports collection filters)
+- `semantic_search` (ColBERT-only, scans all documents)
+- `docbert_get`
+- `docbert_multi_get`
+- `docbert_status`
 
 Example configuration (Claude Desktop / Claude Code):
 

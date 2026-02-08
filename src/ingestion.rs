@@ -14,7 +14,7 @@ use crate::{
 ///
 /// Looks for the first markdown heading (line starting with `# `).
 /// Falls back to the filename without extension.
-fn extract_title(content: &str, file_path: &Path) -> String {
+pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(heading) = trimmed.strip_prefix("# ") {

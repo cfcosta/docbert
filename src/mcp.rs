@@ -175,6 +175,85 @@ impl DocbertMcpServer {
         })
     }
 
+    /// Semantic-only search across all indexed documents.
+    #[tool(
+        name = "semantic_search",
+        description = "Semantic-only search across all documents using ColBERT (no BM25 or fuzzy matching)."
+    )]
+    pub async fn semantic_search(
+        &self,
+        params: Parameters<SemanticSearchParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let params = params.0;
+        let query = params.query.clone();
+
+        let args = crate::cli::SemanticSearchArgs {
+            query: params.query,
+            count: params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
+            json: false,
+            all: params.all.unwrap_or(false),
+            files: false,
+            min_score: params.min_score.unwrap_or(0.0),
+        };
+
+        let mut model = self.state.model.lock().map_err(|_| {
+            rmcp::ErrorData::internal_error("model lock poisoned", None)
+        })?;
+
+        let results = search::execute_semantic_search(
+            &args,
+            &self.state.config_db,
+            &self.state.embedding_db,
+            &mut model,
+        )
+        .map_err(|e| mcp_error("semantic search failed", e))?;
+
+        let include_snippet = params.include_snippet.unwrap_or(true);
+        let mut items = Vec::with_capacity(results.len());
+
+        for r in results {
+            let file = format!("{}/{}", r.collection, r.path);
+            let context =
+                context_for_doc(&self.state.config_db, &r.collection, &r.path);
+            let snippet = if include_snippet {
+                resolve_full_path(&self.state.config_db, &r.collection, &r.path)
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+                    .and_then(|content| extract_snippet(&content, &query))
+                    .map(|(snippet, start_line)| {
+                        add_line_numbers(&snippet, start_line)
+                    })
+            } else {
+                None
+            };
+
+            items.push(SearchResultItem {
+                doc_id: format!("#{}", r.doc_id),
+                collection: r.collection,
+                path: r.path,
+                file,
+                title: r.title,
+                score: r.score,
+                context,
+                snippet,
+            });
+        }
+
+        let summary = format_search_summary(&items, &query);
+        let structured = serde_json::to_value(SearchResponse {
+            query,
+            result_count: items.len(),
+            results: items,
+        })
+        .map_err(|e| mcp_error("failed to serialize search results", e))?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(summary)],
+            structured_content: Some(structured),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
     #[tool(
         name = "docbert_get",
@@ -447,6 +526,7 @@ docbert indexes local document collections and provides MCP tools for search and
 ## Tools
 
 - docbert_search: keyword + semantic search (use collection filters when possible)
+- semantic_search: ColBERT-only search across all documents
 - docbert_get: fetch a single document by path or #doc_id
 - docbert_multi_get: fetch multiple documents by glob pattern
 - docbert_status: index health and collection summary
@@ -478,7 +558,7 @@ impl ServerHandler for DocbertMcpServer {
                 website_url: Some("https://github.com/cfcosta/docbert".to_string()),
             },
             instructions: Some(
-                "Use docbert_search to find documents, then docbert_get or docbert_multi_get to retrieve content. Use docbert_status for index health."
+                "Use docbert_search or semantic_search to find documents, then docbert_get or docbert_multi_get to retrieve content. Use docbert_status for index health."
                     .to_string(),
             ),
             ..Default::default()
@@ -538,6 +618,21 @@ pub struct SearchParams {
     pub bm25_only: Option<bool>,
     /// Disable fuzzy matching in the first stage.
     pub no_fuzzy: Option<bool>,
+    /// Return all results above the score threshold.
+    pub all: Option<bool>,
+    /// Include a snippet preview (default: true).
+    pub include_snippet: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticSearchParams {
+    /// Search query string.
+    pub query: String,
+    /// Maximum number of results (default: 10).
+    pub limit: Option<usize>,
+    /// Minimum score threshold.
+    pub min_score: Option<f32>,
     /// Return all results above the score threshold.
     pub all: Option<bool>,
     /// Include a snippet preview (default: true).
@@ -1041,6 +1136,28 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap_or_default();
         assert!(summary.contains("Found 1 result"));
+    }
+
+    #[tokio::test]
+    async fn semantic_search_empty_index_returns_no_results() {
+        let (server, _tmp, _doc_ids) = build_server(&[]);
+
+        let params = SemanticSearchParams {
+            query: "anything".to_string(),
+            limit: Some(5),
+            min_score: Some(0.0),
+            all: Some(false),
+            include_snippet: Some(false),
+        };
+
+        let result = server.semantic_search(Parameters(params)).await.unwrap();
+        let structured = result.structured_content.expect("structured");
+        let results = structured
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

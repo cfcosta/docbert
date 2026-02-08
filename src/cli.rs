@@ -39,6 +39,9 @@ pub enum Command {
     },
     /// Search across collections
     Search(SearchArgs),
+    /// Semantic-only search across all collections
+    #[command(name = "ssearch")]
+    Ssearch(SemanticSearchArgs),
     /// Retrieve a document by reference
     Get(GetArgs),
     /// Retrieve multiple documents matching a glob pattern
@@ -169,6 +172,34 @@ pub struct SearchArgs {
     pub no_fuzzy: bool,
 }
 
+// -- Semantic-only Search --
+
+#[derive(Debug, Parser)]
+pub struct SemanticSearchArgs {
+    /// The search query
+    pub query: String,
+
+    /// Number of results to return
+    #[arg(short = 'n', long, default_value = "10")]
+    pub count: usize,
+
+    /// Output results as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Return all results above the score threshold
+    #[arg(long)]
+    pub all: bool,
+
+    /// Output only file paths (one per line)
+    #[arg(long)]
+    pub files: bool,
+
+    /// Minimum score threshold
+    #[arg(long, default_value = "0.0")]
+    pub min_score: f32,
+}
+
 // -- Get --
 
 #[derive(Debug, Parser)]
@@ -267,5 +298,28 @@ impl CompletionsArgs {
             "docbert",
             &mut std::io::stdout(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn parse_ssearch_defaults() {
+        let cli = Cli::parse_from(["docbert", "ssearch", "hello"]);
+        match cli.command {
+            Command::Ssearch(args) => {
+                assert_eq!(args.query, "hello");
+                assert_eq!(args.count, 10);
+                assert!(!args.json);
+                assert!(!args.all);
+                assert!(!args.files);
+                assert_eq!(args.min_score, 0.0);
+            }
+            _ => panic!("expected ssearch command"),
+        }
     }
 }

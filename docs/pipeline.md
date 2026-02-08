@@ -94,6 +94,19 @@ For file-list output (`--files`):
 
 - Emit only the file paths, one per line (useful for piping to other tools)
 
+### Semantic-only Search (ssearch / semantic_search)
+
+Semantic-only search skips Tantivy entirely and relies on ColBERT scoring:
+
+1. Load all document IDs from `config.db`
+2. Encode the query with ColBERT
+3. For each stored embedding (chunk 0 only), compute MaxSim against the query
+4. Sort by score descending, apply `--min-score`, and limit to `-n` (unless `--all`)
+5. Format results the same way as `docbert search`
+
+Because it scores every document embedding, semantic-only search is O(N) in the
+number of documents and can be significantly slower than the two-stage pipeline.
+
 ## Performance Expectations
 
 ### Indexing
@@ -108,6 +121,7 @@ For file-list output (`--files`):
 - ColBERT query encoding: ~5-20ms (single short query, CPU)
 - MaxSim over 1000 candidates: ~5-50ms depending on average document length and SIMD backend
 - Total search latency target: under 100ms for most queries on CPU
+- Semantic-only search: O(N) over stored embeddings; expect substantially higher latency for large corpora
 
 ### Storage
 

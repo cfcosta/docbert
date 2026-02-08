@@ -1,11 +1,19 @@
+use std::{cmp::Ordering, collections::HashMap, path::Path};
+
 use crate::{
-    cli::SearchArgs,
+    cli::{SearchArgs, SemanticSearchArgs},
+    config_db::ConfigDb,
+    embedding,
     embedding_db::EmbeddingDb,
     error::Result,
+    incremental::DocumentMetadata,
+    ingestion,
     model_manager::ModelManager,
     reranker::{self, RankedDocument},
     tantivy_index::{SearchIndex, SearchResult},
 };
+
+const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
 
 /// A final search result combining BM25 and optional ColBERT scores.
 #[derive(Debug, Clone)]
@@ -86,6 +94,90 @@ pub fn execute_search(
     Ok(limited)
 }
 
+/// Execute semantic-only search across all documents.
+pub fn execute_semantic_search(
+    args: &SemanticSearchArgs,
+    config_db: &ConfigDb,
+    embedding_db: &EmbeddingDb,
+    model: &mut ModelManager,
+) -> Result<Vec<FinalResult>> {
+    let metadata_entries = config_db.list_all_document_metadata()?;
+    if metadata_entries.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut metadata = HashMap::with_capacity(metadata_entries.len());
+    let mut doc_ids = Vec::with_capacity(metadata_entries.len());
+
+    for (doc_id, bytes) in metadata_entries {
+        if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
+            doc_ids.push(doc_id);
+            metadata.insert(doc_id, meta);
+        }
+    }
+
+    if doc_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let query_embedding = model.encode_query(&args.query)?;
+    let query_3d = query_embedding.unsqueeze(0)?;
+
+    let mut scored: Vec<(u64, f32)> = Vec::new();
+
+    for batch in doc_ids.chunks(SEMANTIC_SEARCH_BATCH_SIZE) {
+        let embeddings =
+            embedding::batch_load_embedding_tensors(embedding_db, batch)?;
+        for (doc_id, doc_embedding_opt) in embeddings {
+            let Some(doc_embedding) = doc_embedding_opt else {
+                continue;
+            };
+            let Ok(doc_3d) = doc_embedding.unsqueeze(0) else {
+                continue;
+            };
+            let Ok(similarities) = model.similarity(&query_3d, &doc_3d) else {
+                continue;
+            };
+            let score = match similarities.data.first().and_then(|r| r.first())
+            {
+                Some(score) => *score,
+                None => continue,
+            };
+            scored.push((doc_id, score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+    let mut results: Vec<FinalResult> = scored
+        .into_iter()
+        .filter_map(|(doc_id, score)| {
+            let meta = metadata.get(&doc_id)?;
+            Some(FinalResult {
+                rank: 0,
+                score,
+                doc_id: short_doc_id(doc_id),
+                doc_num_id: doc_id,
+                collection: meta.collection.clone(),
+                path: meta.relative_path.clone(),
+                title: String::new(),
+            })
+        })
+        .filter(|r| r.score >= args.min_score)
+        .collect();
+
+    let limit = if args.all { results.len() } else { args.count };
+    results.truncate(limit);
+
+    for (i, r) in results.iter_mut().enumerate() {
+        r.rank = i + 1;
+    }
+
+    populate_titles(&mut results, config_db);
+
+    Ok(results)
+}
+
 fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
     results
         .iter()
@@ -100,6 +192,32 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
             title: r.title.clone(),
         })
         .collect()
+}
+
+fn short_doc_id(numeric: u64) -> String {
+    let full = format!("{numeric:016x}");
+    format!("#{}", &full[..6])
+}
+
+fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
+    for r in results {
+        let fallback = ingestion::extract_title("", Path::new(&r.path));
+        let Some(collection_path) =
+            config_db.get_collection(&r.collection).ok().flatten()
+        else {
+            r.title = fallback;
+            continue;
+        };
+
+        let full_path = Path::new(&collection_path).join(&r.path);
+        let content = std::fs::read_to_string(&full_path).unwrap_or_default();
+        let title = if content.is_empty() {
+            fallback
+        } else {
+            ingestion::extract_title(&content, Path::new(&r.path))
+        };
+        r.title = title;
+    }
 }
 
 fn rerank_results(
@@ -226,7 +344,22 @@ fn print_json_string(s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc_id::DocumentId;
+    use crate::{
+        config_db::ConfigDb,
+        doc_id::DocumentId,
+        incremental::DocumentMetadata,
+    };
+
+    fn make_semantic_args(query: &str) -> SemanticSearchArgs {
+        SemanticSearchArgs {
+            query: query.to_string(),
+            count: 10,
+            json: false,
+            all: false,
+            files: false,
+            min_score: 0.0,
+        }
+    }
 
     fn make_search_args(query: &str) -> SearchArgs {
         SearchArgs {
@@ -575,6 +708,87 @@ mod tests {
         (idx, embedding_db, model, tmp)
     }
 
+    fn setup_semantic_e2e()
+    -> (ConfigDb, EmbeddingDb, ModelManager, tempfile::TempDir) {
+        use crate::embedding::embed_and_store;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut model = ModelManager::new();
+
+        let docs: Vec<(&str, &str, &str, &str)> = vec![
+            (
+                "notes",
+                "rust-guide.md",
+                "The Rust Programming Language",
+                "Rust is a systems programming language focused on safety, \
+                 concurrency, and performance. It achieves memory safety \
+                 without garbage collection through its ownership system \
+                 and borrow checker.",
+            ),
+            (
+                "notes",
+                "python-intro.md",
+                "Introduction to Python",
+                "Python is a high-level interpreted programming language \
+                 known for its readability and simplicity. It supports \
+                 multiple programming paradigms including object-oriented \
+                 and functional programming.",
+            ),
+            (
+                "docs",
+                "cooking-pasta.md",
+                "How to Cook Pasta",
+                "Boil water in a large pot. Add salt generously. Cook the \
+                 pasta according to package directions until al dente. \
+                 Drain and serve with your favorite sauce.",
+            ),
+        ];
+
+        let mut embed_docs: Vec<(u64, String)> = Vec::new();
+
+        for (collection, path, title, body) in &docs {
+            let doc_id = DocumentId::new(collection, path);
+            let meta = DocumentMetadata {
+                collection: (*collection).to_string(),
+                relative_path: (*path).to_string(),
+                mtime: 1,
+            };
+            config_db
+                .set_document_metadata(doc_id.numeric, &meta.serialize())
+                .unwrap();
+            embed_docs.push((doc_id.numeric, format!("{title}\n{body}")));
+        }
+
+        let count =
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
+        assert_eq!(count, docs.len(), "all docs should be embedded");
+
+        (config_db, embedding_db, model, tmp)
+    }
+
+    #[test]
+    fn semantic_search_empty_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut model = ModelManager::new();
+        let args = make_semantic_args("anything");
+
+        let results = execute_semantic_search(
+            &args,
+            &config_db,
+            &embedding_db,
+            &mut model,
+        )
+        .unwrap();
+
+        assert!(results.is_empty());
+    }
+
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_search_with_reranking_returns_results() {
@@ -590,6 +804,27 @@ mod tests {
         assert_eq!(
             results[0].path, "rust-guide.md",
             "Rust guide should rank first after ColBERT reranking"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ColBERT model download"]
+    fn e2e_semantic_only_search_returns_results() {
+        let (config_db, embedding_db, mut model, _tmp) = setup_semantic_e2e();
+        let args = make_semantic_args("rust programming language");
+
+        let results = execute_semantic_search(
+            &args,
+            &config_db,
+            &embedding_db,
+            &mut model,
+        )
+        .unwrap();
+
+        assert!(!results.is_empty(), "semantic search should return results");
+        assert_eq!(
+            results[0].path, "rust-guide.md",
+            "Rust guide should rank first for rust query"
         );
     }
 

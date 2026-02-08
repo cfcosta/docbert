@@ -5,6 +5,7 @@ A blazing-fast semantic search CLI for your documents. Combines BM25 full-text s
 ## Features
 
 - **Two-stage search pipeline**: Fast BM25 retrieval followed by ColBERT semantic reranking
+- **Semantic-only search**: ColBERT-only full scan when you want pure semantic ranking
 - **Collection-based organization**: Group documents into named collections
 - **Incremental indexing**: Only re-index changed files
 - **Multiple output formats**: Human-readable, JSON, or plain file paths
@@ -24,6 +25,9 @@ docbert search "how to configure nginx"
 # Search with semantic understanding (default)
 docbert search "memory management in systems programming"
 
+# Semantic-only full scan (ColBERT only)
+docbert ssearch "memory management in systems programming"
+
 # Fast BM25-only search (no neural reranking)
 docbert search "nginx config" --bm25-only
 
@@ -40,6 +44,7 @@ docbert exposes an MCP (Model Context Protocol) server for AI agent integrations
 
 **Tools exposed:**
 - `docbert_search` - Keyword + semantic search (supports collection filters)
+- `semantic_search` - Semantic-only search across all documents
 - `docbert_get` - Retrieve a document by path or `#doc_id`
 - `docbert_multi_get` - Retrieve multiple documents by glob pattern
 - `docbert_status` - Index health and collection summary
@@ -132,6 +137,9 @@ docbert search "query" --all --min-score 0.5
 
 # Disable fuzzy matching for exact searches
 docbert search "exact phrase" --no-fuzzy
+
+# Semantic-only full scan (no BM25 or fuzzy matching, slower for large corpora)
+docbert ssearch "meaning of life"
 ```
 
 ### Retrieving Documents
@@ -178,6 +186,8 @@ docbert uses a two-stage retrieval pipeline:
 2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using the [jina-colbert-v2](https://huggingface.co/jinaai/jina-colbert-v2) model
 
 This approach gives you the speed of traditional search with the semantic understanding of neural models.
+
+For cases where you want pure semantic ranking, `docbert ssearch` (and the MCP `semantic_search` tool) skip Tantivy entirely and score every stored embedding. This is slower but avoids any BM25 or fuzzy matching influence.
 
 ## Configuration
 

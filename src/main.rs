@@ -164,6 +164,26 @@ fn main() -> error::Result<()> {
                 search::format_human(&results);
             }
         }
+        Command::Ssearch(args) => {
+            let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
+            let mut model =
+                ModelManager::with_model_id(model_resolution.model_id.clone());
+
+            let results = search::execute_semantic_search(
+                &args,
+                &config_db,
+                &embedding_db,
+                &mut model,
+            )?;
+
+            if args.json {
+                search::format_json(&results, &args.query);
+            } else if args.files {
+                search::format_files(&results, &config_db);
+            } else {
+                search::format_human(&results);
+            }
+        }
         Command::Get(args) => {
             cmd_get(&config_db, &args)?;
         }
