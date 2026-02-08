@@ -119,8 +119,10 @@ about document_length scaling in ColBERT models.
 
 ## Docbert implications (no implementation)
 
-1) If we keep default 300-token chunking, we are aligned with the model's
-   ColBERT `doc_maxlen` defaults and avoid large compute/storage increases.
+1) Docbert now defaults to 4096-token chunking (a conservative choice below
+   the 8K context) when no model config is available. This favors fewer chunks
+   at higher storage/latency cost and does not match the 300-token ColBERT
+   metadata defaults.
 2) If we want true 8K context, we must:
    - export the model with an explicit `document_length` (e.g., 8192), and
    - increase docbert's chunk size to match. (pylate-rs does not implement
@@ -140,10 +142,11 @@ Assumptions:
 
 | doc_length (tokens) | approx chunk chars | relative cost vs 300 | Recommended when |
 | ------------------- | ------------------ | -------------------- | ---------------- |
-| 300                 | ~1200              | 1.0x                 | Default. Short docs or cost-sensitive usage. |
+| 300                 | ~1200              | 1.0x                 | ColBERT metadata default; short docs or cost-sensitive usage. |
 | 512                 | ~2048              | 1.7x                 | Slightly longer docs; modest recall gains. |
 | 1024                | ~4096              | 3.4x                 | Medium-long docs; want fewer chunks per doc. |
 | 2048                | ~8192              | 6.8x                 | Long-form content; compute budget is healthy. |
+| 4096                | ~16384             | 13.7x                | Docbert default (conservative vs 8K). |
 | 8192                | ~32768             | 27.3x                | Full 8K context; only if storage/latency cost is acceptable. |
 
 Notes:

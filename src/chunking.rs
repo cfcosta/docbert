@@ -1,9 +1,9 @@
 //! Chunking utilities for splitting long documents into overlapping segments.
 //!
 //! ColBERT models have a maximum document length defined in the model config.
-//! Pylate-rs reads `config_sentence_transformers.json`; the default model
-//! (jina-colbert-v2 export) uses a 300-token document length. Longer documents
-//! are truncated, losing semantic signal.
+//! Pylate-rs reads `config_sentence_transformers.json`; if unavailable, docbert
+//! falls back to a conservative 4096-token document length (below the model's
+//! 8K context). Longer documents are truncated, losing semantic signal.
 //! Chunking splits long documents into windows (optionally overlapping)
 //! that can each be embedded separately.
 
@@ -15,10 +15,10 @@ use serde::Deserialize;
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default document length in tokens (from the default model config).
-const DEFAULT_DOCUMENT_TOKENS: usize = 300;
+/// Default document length in tokens (conservative fallback when config is unavailable).
+const DEFAULT_DOCUMENT_TOKENS: usize = 4096;
 
-/// Default chunk size in characters (roughly ~300 tokens).
+/// Default chunk size in characters (roughly ~4096 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
