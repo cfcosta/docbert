@@ -616,11 +616,7 @@ fn cmd_model_set(config_db: &ConfigDb, model: &str) -> error::Result<()> {
     config_db.set_setting("model_name", model)?;
 
     let model_path = Path::new(model);
-    if model.contains("jina-colbert-v2") && !model_path.is_dir() {
-        eprintln!(
-            "Note: jina-colbert-v2 requires a PyLate-exported local model directory. See scripts/prepare_jina_colbert_v2.py"
-        );
-    } else if model_path.is_dir() {
+    if model_path.is_dir() {
         let st_config = model_path.join("config_sentence_transformers.json");
         if !st_config.exists() {
             eprintln!(

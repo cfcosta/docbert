@@ -183,7 +183,7 @@ docbert uses a two-stage retrieval pipeline:
 
 1. **BM25 Retrieval** (via [Tantivy](https://github.com/quickwit-oss/tantivy)): Fast full-text search with fuzzy matching retrieves the top 1000 candidates
 
-2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using the [jina-colbert-v2](https://huggingface.co/jinaai/jina-colbert-v2) model
+2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using [GTE-ModernColBERT-v1](https://huggingface.co/lightonai/GTE-ModernColBERT-v1)
 
 This approach gives you the speed of traditional search with the semantic understanding of neural models.
 
@@ -201,7 +201,7 @@ docbert --data-dir /custom/path search "query"
 
 ### Environment Variables
 
-- `DOCBERT_MODEL`: Override the ColBERT model (default: `jinaai/jina-colbert-v2`)
+- `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/GTE-ModernColBERT-v1`)
 - `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
 
 ### Model Selection
@@ -220,23 +220,16 @@ Override per command:
 docbert --model /path/to/model search "query"
 ```
 
-### Using Jina ColBERT v2 (default)
+### Alternative Models
 
-`jinaai/jina-colbert-v2` requires custom model code, so you must export it to a
-local PyLate-compatible directory first.
+The default model (`lightonai/GTE-ModernColBERT-v1`) works out of the box. To use
+a different pylate-rs-compatible model:
 
 ```bash
-pip install pylate
-python scripts/prepare_jina_colbert_v2.py --output ~/.local/share/docbert/models/jina-colbert-v2
-docbert model set ~/.local/share/docbert/models/jina-colbert-v2
-docbert rebuild
+docbert model set /path/to/model
+# or
+DOCBERT_MODEL=/path/to/model docbert search "query"
 ```
-
-Note: `jinaai/jina-colbert-v2` is released under CC-BY-NC-4.0 (non-commercial).
-
-If you prefer to use another model without a local export step, set
-`DOCBERT_MODEL` (or `docbert model set`) to a different pylate-rs-compatible
-model directory.
 
 ## Supported File Types
 

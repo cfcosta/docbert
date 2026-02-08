@@ -244,7 +244,7 @@ Output:
 
 ```
 Data directory: ~/.local/share/docbert/
-Model: jinaai/jina-colbert-v2
+Model: lightonai/GTE-ModernColBERT-v1
 Model source: default
 Collections: 3
   notes: /path/to/notes

@@ -3,7 +3,7 @@ use pylate_rs::{ColBERT, Similarities};
 
 use crate::error::Result;
 
-pub const DEFAULT_MODEL_ID: &str = "jinaai/jina-colbert-v2";
+pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Select the best available compute device.
@@ -43,7 +43,7 @@ impl Default for ModelManager {
 impl ModelManager {
     /// Creates a new `ModelManager`. The model ID is resolved from:
     /// 1. The `DOCBERT_MODEL` environment variable, if set
-    /// 2. Otherwise, the default model (`jinaai/jina-colbert-v2`)
+    /// 2. Otherwise, the default model (`lightonai/GTE-ModernColBERT-v1`)
     ///
     /// The model is not loaded until the first call to `encode_documents`,
     /// `encode_query`, or `similarity`.
