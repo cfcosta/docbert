@@ -6,6 +6,13 @@ use crate::error::Result;
 pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
+/// Default document length in tokens for encoding.
+///
+/// GTE-ModernColBERT was trained on 300 tokens but generalizes well to longer
+/// contexts (tested up to 32K). We use 4096 as a balance between chunk count
+/// and encoding speed.
+pub const DEFAULT_DOCUMENT_LENGTH: usize = 4096;
+
 /// Select the best available compute device.
 ///
 /// Uses CUDA when compiled with the `cuda` feature, Metal when compiled with
@@ -32,6 +39,7 @@ fn default_device() -> Device {
 pub struct ModelManager {
     model: Option<ColBERT>,
     model_id: String,
+    document_length: usize,
 }
 
 impl Default for ModelManager {
@@ -54,6 +62,7 @@ impl ModelManager {
         Self {
             model: None,
             model_id,
+            document_length: DEFAULT_DOCUMENT_LENGTH,
         }
     }
 
@@ -63,7 +72,17 @@ impl ModelManager {
         Self {
             model: None,
             model_id,
+            document_length: DEFAULT_DOCUMENT_LENGTH,
         }
+    }
+
+    /// Sets the document length for encoding.
+    ///
+    /// This overrides the model's default document length from its config file.
+    /// Must be called before the model is loaded (before first encode call).
+    pub fn with_document_length(mut self, length: usize) -> Self {
+        self.document_length = length;
+        self
     }
 
     /// Returns the model ID that will be (or has been) loaded.
@@ -82,6 +101,7 @@ impl ModelManager {
             let device = default_device();
             let colbert: ColBERT = ColBERT::from(&self.model_id)
                 .with_device(device)
+                .with_document_length(self.document_length)
                 .try_into()?;
             self.model = Some(colbert);
         }
