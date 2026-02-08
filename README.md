@@ -19,6 +19,9 @@ A blazing-fast semantic search CLI for your documents. Combines BM25 full-text s
 # Add a collection of markdown notes
 docbert collection add ~/notes --name notes
 
+# Synchronize indexes and embeddings
+docbert sync
+
 # Search across all collections
 docbert search "how to configure nginx"
 
