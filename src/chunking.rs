@@ -3,7 +3,7 @@
 //! Documents longer than the configured chunk size are split into windows
 //! (optionally overlapping) that can each be embedded separately.
 //!
-//! The default chunk size is 4096 tokens (~16K characters). This matches the
+//! The default chunk size is 1024 tokens (~4K characters). This matches the
 //! document_length we configure in pylate-rs for encoding. While models like
 //! GTE-ModernColBERT are trained on shorter sequences (300 tokens), they
 //! generalize well to longer contexts (tested up to 32K tokens).
@@ -16,9 +16,9 @@ use serde::Deserialize;
 const CHARS_PER_TOKEN: usize = 4;
 
 /// Default document length in tokens (conservative fallback when config is unavailable).
-const DEFAULT_DOCUMENT_TOKENS: usize = 4096;
+const DEFAULT_DOCUMENT_TOKENS: usize = 1024;
 
-/// Default chunk size in characters (roughly ~4096 tokens).
+/// Default chunk size in characters (roughly ~1024 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
@@ -52,7 +52,7 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 /// Resolve chunking settings from a model path (if local), falling back to defaults.
 ///
 /// For local model directories with `config_sentence_transformers.json`, uses the
-/// configured document_length. Otherwise uses the default 4096 tokens.
+/// configured document_length. Otherwise uses the default 1024 tokens.
 pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
     let model_path = Path::new(model_id);
     if model_path.is_dir()

@@ -9,9 +9,9 @@ pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 /// Default document length in tokens for encoding.
 ///
 /// GTE-ModernColBERT was trained on 300 tokens but generalizes well to longer
-/// contexts (tested up to 32K). We use 4096 as a balance between chunk count
+/// contexts (tested up to 32K). We use 1024 as a balance between chunk count
 /// and encoding speed.
-pub const DEFAULT_DOCUMENT_LENGTH: usize = 4096;
+pub const DEFAULT_DOCUMENT_LENGTH: usize = 1024;
 
 /// Select the best available compute device.
 ///
