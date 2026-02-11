@@ -14,6 +14,25 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Bug Fixing
+
+When I report a bug, don't start by trying to fix it. Instead, start by writing a test that reproduces the bug. Then, have subagents try to fix the bug and prove it with a passing test.
+
+## Tidy up the House
+
+**When the user says "let's tidy up the house", you MUST complete ALL steps below:
+
+1. Review the changes just made and identify simplification opportunities.
+2. Apply refactors to:
+    - Remove dead code and dead paths.
+    - Straighten logic flows.
+    - Remove excessive parameters.
+    - Remove premature optimization.
+3. Run build/tests to verify behavior.
+4. Identify optional abstractions or reusable patterns; only suggest them if they clearly improve clarity and keep suggestions brief.
+
+After finishing, you should **land the plane** (check the next section for more details).
+
 ## Landing the Plane
 
 **When the user says "let's land the plane"**, you MUST complete ALL steps below. The plane is NOT landed until `jj git push` succeeds. NEVER stop before pushing. NEVER say "ready to push when you are!" - that is a FAILURE.
