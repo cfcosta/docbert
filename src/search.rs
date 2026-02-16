@@ -248,11 +248,6 @@ pub fn resolve_by_path(
     None
 }
 
-/// Format a numeric document ID as a short hex string (e.g., "#a1b2c3").
-pub fn format_doc_id(numeric: u64) -> String {
-    short_doc_id(numeric)
-}
-
 fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
     results
         .iter()
@@ -269,7 +264,8 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
         .collect()
 }
 
-fn short_doc_id(numeric: u64) -> String {
+/// Format a numeric document ID as a short hex string (e.g., "#a1b2c3").
+pub fn short_doc_id(numeric: u64) -> String {
     let full = format!("{numeric:016x}");
     format!("#{}", &full[..6])
 }
@@ -357,24 +353,25 @@ pub fn format_human(results: &[FinalResult]) {
 
 /// Format results as JSON output.
 pub fn format_json(results: &[FinalResult], query: &str) {
-    // Manual JSON to avoid serde dependency
-    print!("{{\"query\":");
-    print_json_string(query);
-    print!(",\"result_count\":{},\"results\":[", results.len());
+    print!(
+        "{{\"query\":{},\"result_count\":{},\"results\":[",
+        json_escape(query),
+        results.len()
+    );
 
     for (i, r) in results.iter().enumerate() {
         if i > 0 {
             print!(",");
         }
-        print!("{{\"rank\":{},\"score\":{:.6},\"doc_id\":", r.rank, r.score);
-        print_json_string(&r.doc_id);
-        print!(",\"collection\":");
-        print_json_string(&r.collection);
-        print!(",\"path\":");
-        print_json_string(&r.path);
-        print!(",\"title\":");
-        print_json_string(&r.title);
-        print!("}}");
+        print!(
+            "{{\"rank\":{},\"score\":{:.6},\"doc_id\":{},\"collection\":{},\"path\":{},\"title\":{}}}",
+            r.rank,
+            r.score,
+            json_escape(&r.doc_id),
+            json_escape(&r.collection),
+            json_escape(&r.path),
+            json_escape(&r.title),
+        );
     }
 
     println!("]}}");
@@ -396,24 +393,27 @@ pub fn format_files(
     }
 }
 
-pub fn print_json_string_pub(s: &str) {
-    print_json_string(s);
-}
-
-fn print_json_string(s: &str) {
-    print!("\"");
+/// Escape a string as a JSON value including surrounding quotes.
+///
+/// Returns a JSON-encoded string like `"hello \"world\""`.
+pub fn json_escape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('"');
     for c in s.chars() {
         match c {
-            '"' => print!("\\\""),
-            '\\' => print!("\\\\"),
-            '\n' => print!("\\n"),
-            '\r' => print!("\\r"),
-            '\t' => print!("\\t"),
-            c if c < '\x20' => print!("\\u{:04x}", c as u32),
-            c => print!("{c}"),
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            c if c < '\x20' => {
+                result.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => result.push(c),
         }
     }
-    print!("\"");
+    result.push('"');
+    result
 }
 
 #[cfg(test)]
@@ -1215,27 +1215,6 @@ mod tests {
 
     #[test]
     fn json_escape_basic() {
-        // Verify print_json_string escapes special characters by capturing stdout
-        // Since print_json_string writes to stdout, we test the logic directly
-        fn json_escape(s: &str) -> String {
-            let mut result = String::from("\"");
-            for c in s.chars() {
-                match c {
-                    '"' => result.push_str("\\\""),
-                    '\\' => result.push_str("\\\\"),
-                    '\n' => result.push_str("\\n"),
-                    '\r' => result.push_str("\\r"),
-                    '\t' => result.push_str("\\t"),
-                    c if c < '\x20' => {
-                        result.push_str(&format!("\\u{:04x}", c as u32))
-                    }
-                    c => result.push(c),
-                }
-            }
-            result.push('"');
-            result
-        }
-
         assert_eq!(json_escape("hello"), "\"hello\"");
         assert_eq!(json_escape("he\"llo"), "\"he\\\"llo\"");
         assert_eq!(json_escape("he\\llo"), "\"he\\\\llo\"");

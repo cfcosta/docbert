@@ -373,8 +373,7 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
         );
         if !args.meta {
             let content = std::fs::read_to_string(&full_path)?;
-            print!(",\"content\":");
-            search::print_json_string_pub(&content);
+            print!(",\"content\":{}", search::json_escape(&content));
         }
         println!("}}");
     } else {
@@ -422,19 +421,21 @@ fn cmd_multi_get(
                 print!(",");
             }
             let collection_path = config_db.get_collection(collection)?;
-            print!("{{\"collection\":");
-            search::print_json_string_pub(collection);
-            print!(",\"path\":");
-            search::print_json_string_pub(path);
+            print!(
+                "{{\"collection\":{},\"path\":{}",
+                search::json_escape(collection),
+                search::json_escape(path),
+            );
             if let Some(ref cp) = collection_path {
                 let full_path = std::path::Path::new(cp).join(path);
-                print!(",\"file\":");
-                search::print_json_string_pub(&full_path.to_string_lossy());
+                print!(
+                    ",\"file\":{}",
+                    search::json_escape(&full_path.to_string_lossy()),
+                );
                 if args.full
                     && let Ok(content) = std::fs::read_to_string(&full_path)
                 {
-                    print!(",\"content\":");
-                    search::print_json_string_pub(&content);
+                    print!(",\"content\":{}", search::json_escape(&content));
                 }
             }
             print!("}}");
@@ -508,26 +509,23 @@ fn cmd_status(
     Ok(())
 }
 
-fn print_json_optional_string(value: Option<&str>) {
+fn json_optional(value: Option<&str>) -> String {
     match value {
-        Some(v) => search::print_json_string_pub(v),
-        None => print!("null"),
+        Some(v) => search::json_escape(v),
+        None => "null".to_string(),
     }
 }
 
 fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
     if json {
-        print!("{{\"resolved\":");
-        search::print_json_string_pub(&model_resolution.model_id);
-        print!(",\"source\":");
-        search::print_json_string_pub(model_resolution.source.as_str());
-        print!(",\"cli\":");
-        print_json_optional_string(model_resolution.cli_model.as_deref());
-        print!(",\"env\":");
-        print_json_optional_string(model_resolution.env_model.as_deref());
-        print!(",\"config\":");
-        print_json_optional_string(model_resolution.config_model.as_deref());
-        println!("}}");
+        println!(
+            "{{\"resolved\":{},\"source\":{},\"cli\":{},\"env\":{},\"config\":{}}}",
+            search::json_escape(&model_resolution.model_id),
+            search::json_escape(model_resolution.source.as_str()),
+            json_optional(model_resolution.cli_model.as_deref()),
+            json_optional(model_resolution.env_model.as_deref()),
+            json_optional(model_resolution.config_model.as_deref()),
+        );
     } else {
         println!("Resolved model: {}", model_resolution.model_id);
         println!("Source: {}", model_resolution.source.as_str());
@@ -833,7 +831,7 @@ fn cmd_sync(
         if !diff.deleted_ids.is_empty() {
             let mut writer = search_index.writer(15_000_000)?;
             for &doc_id in &diff.deleted_ids {
-                let display = search::format_doc_id(doc_id);
+                let display = search::short_doc_id(doc_id);
                 search_index.delete_document(&writer, &display);
             }
             writer.commit()?;
