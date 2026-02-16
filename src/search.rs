@@ -15,6 +15,22 @@ use crate::{
 const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
 
 /// Parameters for the hybrid BM25 + ColBERT search pipeline.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::search::SearchParams;
+///
+/// let params = SearchParams {
+///     query: "rust programming".to_string(),
+///     count: 10,
+///     collection: Some("docs".to_string()),
+///     min_score: 0.5,
+///     bm25_only: false,
+///     no_fuzzy: false,
+///     all: false,
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct SearchParams {
     /// The search query.
@@ -33,7 +49,20 @@ pub struct SearchParams {
     pub all: bool,
 }
 
-/// Parameters for semantic-only search.
+/// Parameters for semantic-only search (ColBERT similarity without BM25).
+///
+/// # Examples
+///
+/// ```
+/// use docbert::search::SemanticSearchParams;
+///
+/// let params = SemanticSearchParams {
+///     query: "machine learning concepts".to_string(),
+///     count: 5,
+///     min_score: 0.0,
+///     all: false,
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct SemanticSearchParams {
     /// The search query.
@@ -264,7 +293,18 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
         .collect()
 }
 
-/// Format a numeric document ID as a short hex string (e.g., "#a1b2c3").
+/// Format a numeric document ID as a short hex string (e.g., `"#a1b2c3"`).
+///
+/// # Examples
+///
+/// ```
+/// use docbert::search::short_doc_id;
+///
+/// let id = short_doc_id(0xabcdef1234567890);
+/// assert_eq!(id, "#abcdef");
+/// assert!(id.starts_with('#'));
+/// assert_eq!(id.len(), 7);
+/// ```
 pub fn short_doc_id(numeric: u64) -> String {
     let full = format!("{numeric:016x}");
     format!("#{}", &full[..6])
@@ -395,7 +435,16 @@ pub fn format_files(
 
 /// Escape a string as a JSON value including surrounding quotes.
 ///
-/// Returns a JSON-encoded string like `"hello \"world\""`.
+/// # Examples
+///
+/// ```
+/// use docbert::search::json_escape;
+///
+/// assert_eq!(json_escape("hello"), "\"hello\"");
+/// assert_eq!(json_escape("line\nnewline"), "\"line\\nnewline\"");
+/// assert_eq!(json_escape("tab\there"), "\"tab\\there\"");
+/// assert_eq!(json_escape(r#"say "hi""#), r#""say \"hi\"""#);
+/// ```
 pub fn json_escape(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + 2);
     result.push('"');

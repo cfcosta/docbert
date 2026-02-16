@@ -37,6 +37,24 @@ pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
 ///
 /// For each file: reads content, extracts title, generates document IDs,
 /// and adds to the index. Commits the batch at the end.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// # std::fs::write(tmp.path().join("hello.md"), "# Hello\n\nWorld").unwrap();
+/// use docbert::{SearchIndex, ingestion, walker};
+///
+/// let files = walker::discover_files(tmp.path()).unwrap();
+/// let index = SearchIndex::open_in_ram().unwrap();
+/// let mut writer = index.writer(15_000_000).unwrap();
+///
+/// let count = ingestion::ingest_files(&index, &mut writer, "test", &files).unwrap();
+/// assert_eq!(count, 1);
+///
+/// let results = index.search("hello", 10).unwrap();
+/// assert_eq!(results[0].title, "Hello");
+/// ```
 pub fn ingest_files(
     index: &SearchIndex,
     writer: &mut IndexWriter,

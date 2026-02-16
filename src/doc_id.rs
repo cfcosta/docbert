@@ -4,6 +4,25 @@ use std::{
 };
 
 /// A stable document identifier derived from (collection_name, relative_path).
+///
+/// The ID is a deterministic hash, so the same (collection, path) pair always
+/// produces the same ID. This is used as the primary key in the metadata and
+/// embedding databases.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::DocumentId;
+///
+/// let id = DocumentId::new("notes", "hello.md");
+/// assert_eq!(id.short.len(), 6);
+/// assert!(id.numeric > 0);
+/// assert!(id.to_string().starts_with('#'));
+///
+/// // Same inputs always produce the same ID
+/// let id2 = DocumentId::new("notes", "hello.md");
+/// assert_eq!(id, id2);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentId {
     /// The numeric ID used as the key in redb tables.

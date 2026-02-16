@@ -74,7 +74,7 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
 
 /// Load multiple document embeddings from the database and convert to Tensors.
 ///
-/// Returns a vector of (doc_id, Option<Tensor>) preserving input order.
+/// Returns a vector of `(doc_id, Option<Tensor>)` preserving input order.
 /// Uses a single database transaction for efficiency.
 pub fn batch_load_embedding_tensors(
     db: &EmbeddingDb,
@@ -115,7 +115,22 @@ fn matrix_to_tensor(
 
 /// Load a document's embedding from the database and convert to a Tensor.
 ///
-/// Returns None if the document has no stored embedding.
+/// Returns `None` if the document has no stored embedding.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::{EmbeddingDb, embedding};
+///
+/// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+/// db.store(42, 3, 4, &vec![0.0f32; 12]).unwrap();
+///
+/// let tensor = embedding::load_embedding_tensor(&db, 42).unwrap().unwrap();
+/// assert_eq!(tensor.dims2().unwrap(), (3, 4));
+///
+/// assert!(embedding::load_embedding_tensor(&db, 999).unwrap().is_none());
+/// ```
 pub fn load_embedding_tensor(
     db: &EmbeddingDb,
     doc_id: u64,

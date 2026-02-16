@@ -21,6 +21,17 @@ pub struct EmbeddingDb {
 }
 
 impl EmbeddingDb {
+    /// Open or create an embeddings database at the given path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("embeddings.db")).unwrap();
+    /// assert!(db.list_ids().unwrap().is_empty());
+    /// ```
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path)?;
 
@@ -159,7 +170,7 @@ impl EmbeddingDb {
 
     /// Load multiple embedding matrices in a single transaction.
     ///
-    /// Returns a vector of (doc_id, Option<EmbeddingMatrix>) preserving input order.
+    /// Returns a vector of `(doc_id, Option<EmbeddingMatrix>)` preserving input order.
     /// Missing embeddings return None.
     pub fn batch_load(
         &self,

@@ -86,10 +86,26 @@ pub struct Chunk {
 /// Split text into chunks (optionally overlapping).
 ///
 /// Uses character-based splitting as a rough approximation of token count.
-/// For English text, ~4 characters ≈ 1 token on average.
+/// For English text, ~4 characters per token on average.
 ///
 /// If the text is shorter than `chunk_size`, returns a single chunk.
 /// Properly handles UTF-8 multi-byte characters (emojis, etc.).
+///
+/// # Examples
+///
+/// ```
+/// use docbert::chunking::chunk_text;
+///
+/// // Short text returns a single chunk
+/// let chunks = chunk_text("Hello, world!", 1000, 0);
+/// assert_eq!(chunks.len(), 1);
+/// assert_eq!(chunks[0].text, "Hello, world!");
+///
+/// // Long text gets split
+/// let text = "word ".repeat(500);
+/// let chunks = chunk_text(&text, 1000, 200);
+/// assert!(chunks.len() >= 2);
+/// ```
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
     let char_count = text.chars().count();
 
@@ -183,8 +199,23 @@ fn find_word_boundary_char(
 
 /// Generate a chunk-specific document ID by combining the base ID with chunk index.
 ///
-/// Format: base_id XOR (chunk_index << 48)
-/// This preserves the base ID in the lower bits while encoding chunk info in upper bits.
+/// Format: `base_id XOR (chunk_index << 48)`.
+/// Chunk 0 returns the base ID unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::chunking::{chunk_doc_id, parse_chunk_doc_id};
+///
+/// let base = 12345678u64;
+/// assert_eq!(chunk_doc_id(base, 0), base);
+///
+/// let chunk1 = chunk_doc_id(base, 1);
+/// assert_ne!(chunk1, base);
+/// let (recovered, idx) = parse_chunk_doc_id(chunk1);
+/// assert_eq!(recovered, base);
+/// assert_eq!(idx, 1);
+/// ```
 pub fn chunk_doc_id(base_id: u64, chunk_index: usize) -> u64 {
     if chunk_index == 0 {
         base_id

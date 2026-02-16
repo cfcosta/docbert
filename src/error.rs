@@ -1,7 +1,33 @@
 use std::path::PathBuf;
 
+/// A type alias for `std::result::Result<T, docbert::Error>`.
+///
+/// # Examples
+///
+/// ```
+/// fn do_work() -> docbert::Result<()> {
+///     // ... operations that may fail ...
+///     Ok(())
+/// }
+/// ```
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors that can occur in docbert operations.
+///
+/// Wraps errors from the underlying storage (redb), search (Tantivy),
+/// and model (pylate-rs / candle) layers.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::Error;
+///
+/// let err = Error::Config("missing collection".to_string());
+/// assert!(err.to_string().contains("missing collection"));
+///
+/// let err = Error::NotFound { kind: "document", name: "#abc123".to_string() };
+/// assert!(err.to_string().contains("document not found"));
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("I/O error: {0}")]

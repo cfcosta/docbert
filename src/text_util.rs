@@ -7,6 +7,18 @@ pub const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 /// Prepend line numbers to each line of text.
 ///
 /// `start_line` is the number to assign to the first line (1-indexed).
+///
+/// # Examples
+///
+/// ```
+/// use docbert::text_util::add_line_numbers;
+///
+/// let numbered = add_line_numbers("foo\nbar\nbaz", 1);
+/// assert_eq!(numbered, "1: foo\n2: bar\n3: baz");
+///
+/// let numbered = add_line_numbers("first\nsecond", 10);
+/// assert_eq!(numbered, "10: first\n11: second");
+/// ```
 pub fn add_line_numbers(text: &str, start_line: usize) -> String {
     text.lines()
         .enumerate()
@@ -20,6 +32,19 @@ pub fn add_line_numbers(text: &str, start_line: usize) -> String {
 /// Returns `(snippet_text, start_line_number)` where start_line_number is
 /// 1-indexed. If `query` is not found, returns the first few lines.
 /// Returns `None` if the text is empty.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::text_util::extract_snippet;
+///
+/// let text = "line1\nline2\nline3\nfind me here\nline5";
+/// let (snippet, start) = extract_snippet(text, "find me").unwrap();
+/// assert!(snippet.contains("find me here"));
+/// assert!(start >= 1);
+///
+/// assert!(extract_snippet("", "query").is_none());
+/// ```
 pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
@@ -57,6 +82,22 @@ pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
 ///
 /// `start_line` is 1-indexed. If `max_lines` is `Some(n)`, at most `n` lines
 /// are returned with a truncation notice appended.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::text_util::apply_line_limits;
+///
+/// let text = "line1\nline2\nline3\nline4\nline5";
+///
+/// // Start from line 2, no limit
+/// assert_eq!(apply_line_limits(text, 2, None), "line2\nline3\nline4\nline5");
+///
+/// // Start from line 1, take 2 lines
+/// let result = apply_line_limits(text, 1, Some(2));
+/// assert!(result.starts_with("line1\nline2"));
+/// assert!(result.contains("truncated"));
+/// ```
 pub fn apply_line_limits(
     text: &str,
     start_line: usize,

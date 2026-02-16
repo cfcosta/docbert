@@ -2,6 +2,23 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
+/// The root directory where docbert stores its databases and index.
+///
+/// Contains:
+/// - `config.db` — collection and metadata database (redb)
+/// - `embeddings.db` — ColBERT embedding matrices (redb)
+/// - `tantivy/` — BM25 full-text search index
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::DataDir;
+///
+/// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+/// assert!(dir.root().exists());
+/// assert_eq!(dir.config_db(), tmp.path().join("config.db"));
+/// ```
 #[derive(Debug, Clone)]
 pub struct DataDir {
     root: PathBuf,
@@ -33,14 +50,17 @@ impl DataDir {
         Ok(Self { root })
     }
 
+    /// Returns the root path of the data directory.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Path to the config database file (`config.db`).
     pub fn config_db(&self) -> PathBuf {
         self.root.join("config.db")
     }
 
+    /// Path to the embeddings database file (`embeddings.db`).
     pub fn embeddings_db(&self) -> PathBuf {
         self.root.join("embeddings.db")
     }

@@ -7,7 +7,9 @@ use crate::{
     model_manager::ModelManager,
 };
 
-/// A reranked document with its MaxSim score.
+/// A reranked document with its ColBERT MaxSim score.
+///
+/// Produced by [`rerank`] after comparing query and document embeddings.
 #[derive(Debug, Clone)]
 pub struct RankedDocument {
     pub doc_num_id: u64,

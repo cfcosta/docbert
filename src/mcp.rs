@@ -71,6 +71,12 @@ struct DocbertState {
     model: Mutex<ModelManager>,
 }
 
+/// MCP (Model Context Protocol) server for docbert.
+///
+/// Exposes search, document retrieval, and status tools via the MCP protocol,
+/// allowing LLM clients (e.g., Claude) to query indexed documents.
+///
+/// Start the server with [`run_mcp`].
 #[derive(Clone)]
 pub struct DocbertMcpServer {
     state: Arc<DocbertState>,
@@ -875,6 +881,21 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
     )
 }
 
+/// Start the MCP server on stdin/stdout.
+///
+/// Blocks until the client disconnects. Intended to be invoked as
+/// `docbert mcp` from an MCP-compatible client.
+///
+/// # Examples
+///
+/// ```no_run
+/// use docbert::{ConfigDb, DataDir, ModelManager};
+/// use docbert::model_manager::DEFAULT_MODEL_ID;
+///
+/// let data_dir = DataDir::resolve(None).unwrap();
+/// let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
+/// docbert::mcp::run_mcp(data_dir, config_db, DEFAULT_MODEL_ID.to_string()).unwrap();
+/// ```
 pub fn run_mcp(
     data_dir: DataDir,
     config_db: ConfigDb,

@@ -32,6 +32,27 @@ pub mod fields {
 }
 
 /// Manages a Tantivy full-text search index for docbert documents.
+///
+/// Documents are indexed with BM25 scoring across `title` (2x boost) and `body`
+/// fields, with English stemming. Supports exact, collection-filtered, and fuzzy
+/// search modes.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::SearchIndex;
+///
+/// let index = SearchIndex::open_in_ram().unwrap();
+/// let mut writer = index.writer(15_000_000).unwrap();
+///
+/// index.add_document(&writer, "abc", 1, "notes", "hello.md",
+///     "Hello World", "Rust is a systems programming language.", 1000).unwrap();
+/// writer.commit().unwrap();
+///
+/// let results = index.search("rust programming", 10).unwrap();
+/// assert_eq!(results.len(), 1);
+/// assert_eq!(results[0].title, "Hello World");
+/// ```
 pub struct SearchIndex {
     index: Index,
     reader: IndexReader,
@@ -391,6 +412,7 @@ impl SearchIndex {
         Ok(results)
     }
 
+    /// Returns a reference to the Tantivy schema.
     pub fn schema(&self) -> &Schema {
         &self.schema
     }

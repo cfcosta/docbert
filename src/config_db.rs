@@ -11,11 +11,48 @@ const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
     TableDefinition::new("document_metadata");
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
+/// Persistent key-value store for docbert configuration.
+///
+/// Manages four tables:
+/// - **collections**: maps collection names to filesystem paths
+/// - **contexts**: maps URIs to human-readable descriptions
+/// - **document_metadata**: maps numeric document IDs to serialized metadata
+/// - **settings**: general key-value settings (e.g., `model_name`)
+///
+/// Backed by [redb](https://github.com/cberner/redb), an embedded ACID database.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::ConfigDb;
+///
+/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+///
+/// // Register a collection
+/// db.set_collection("notes", "/home/user/notes").unwrap();
+/// assert_eq!(db.get_collection("notes").unwrap(), Some("/home/user/notes".to_string()));
+///
+/// // Store a setting
+/// db.set_setting("model_name", "custom/model").unwrap();
+/// assert_eq!(db.get_setting("model_name").unwrap(), Some("custom/model".to_string()));
+/// ```
 pub struct ConfigDb {
     db: Database,
 }
 
 impl ConfigDb {
+    /// Open or create a config database at the given path.
+    ///
+    /// Creates all required tables on first open.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::ConfigDb;
+    /// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// ```
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path)?;
 
@@ -32,6 +69,15 @@ impl ConfigDb {
 
     // -- Collections --
 
+    /// Register a named collection pointing to a filesystem directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_collection("notes", "/home/user/notes").unwrap();
+    /// ```
     pub fn set_collection(&self, name: &str, path: &str) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
@@ -42,12 +88,26 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// Look up a collection's filesystem path by name.
+    ///
+    /// Returns `None` if the collection is not registered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// assert_eq!(db.get_collection("nonexistent").unwrap(), None);
+    /// db.set_collection("notes", "/path").unwrap();
+    /// assert_eq!(db.get_collection("notes").unwrap(), Some("/path".to_string()));
+    /// ```
     pub fn get_collection(&self, name: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(COLLECTIONS)?;
         Ok(table.get(name)?.map(|v| v.value().to_string()))
     }
 
+    /// Remove a collection by name. Returns `true` if it existed.
     pub fn remove_collection(&self, name: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -58,6 +118,18 @@ impl ConfigDb {
         Ok(removed)
     }
 
+    /// List all registered collections as `(name, path)` pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_collection("notes", "/notes").unwrap();
+    /// db.set_collection("docs", "/docs").unwrap();
+    /// let collections = db.list_collections().unwrap();
+    /// assert_eq!(collections.len(), 2);
+    /// ```
     pub fn list_collections(&self) -> Result<Vec<(String, String)>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(COLLECTIONS)?;
@@ -71,6 +143,18 @@ impl ConfigDb {
 
     // -- Contexts --
 
+    /// Attach a human-readable context description to a URI.
+    ///
+    /// Contexts are prepended as `<!-- Context: ... -->` comments when
+    /// documents are served via MCP.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_context("bert://notes", "Personal research notes").unwrap();
+    /// ```
     pub fn set_context(&self, uri: &str, description: &str) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
@@ -81,12 +165,14 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// Get the context description for a URI, if one exists.
     pub fn get_context(&self, uri: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONTEXTS)?;
         Ok(table.get(uri)?.map(|v| v.value().to_string()))
     }
 
+    /// Remove a context by URI. Returns `true` if it existed.
     pub fn remove_context(&self, uri: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -97,6 +183,7 @@ impl ConfigDb {
         Ok(removed)
     }
 
+    /// List all contexts as `(uri, description)` pairs.
     pub fn list_contexts(&self) -> Result<Vec<(String, String)>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONTEXTS)?;
@@ -110,6 +197,7 @@ impl ConfigDb {
 
     // -- Document Metadata --
 
+    /// Store serialized metadata for a document by its numeric ID.
     pub fn set_document_metadata(
         &self,
         doc_id: u64,
@@ -124,6 +212,7 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// Retrieve serialized metadata for a document. Returns `None` if not found.
     pub fn get_document_metadata(
         &self,
         doc_id: u64,
@@ -133,6 +222,7 @@ impl ConfigDb {
         Ok(table.get(doc_id)?.map(|v| v.value().to_vec()))
     }
 
+    /// Remove a document's metadata. Returns `true` if it existed.
     pub fn remove_document_metadata(&self, doc_id: u64) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -181,6 +271,7 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// List all stored document numeric IDs.
     pub fn list_document_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;
@@ -206,6 +297,15 @@ impl ConfigDb {
 
     // -- Settings --
 
+    /// Store a key-value setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_setting("model_name", "lightonai/GTE-ModernColBERT-v1").unwrap();
+    /// ```
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
@@ -216,12 +316,14 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// Get a setting value by key. Returns `None` if not set.
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(SETTINGS)?;
         Ok(table.get(key)?.map(|v| v.value().to_string()))
     }
 
+    /// Remove a setting by key. Returns `true` if it existed.
     pub fn remove_setting(&self, key: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {

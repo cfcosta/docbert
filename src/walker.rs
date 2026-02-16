@@ -22,7 +22,21 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
 /// Recursively walk a directory and discover eligible document files.
 ///
 /// Skips hidden files/directories (names starting with `.`) and only
-/// returns files with supported extensions (.md, .txt).
+/// returns files with supported extensions (.md, .txt). Results are sorted
+/// by relative path.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// # std::fs::write(tmp.path().join("note.md"), "# Hello").unwrap();
+/// # std::fs::write(tmp.path().join("readme.txt"), "Hello").unwrap();
+/// # std::fs::write(tmp.path().join("image.png"), "binary").unwrap();
+/// use docbert::walker::discover_files;
+///
+/// let files = discover_files(tmp.path()).unwrap();
+/// assert_eq!(files.len(), 2); // .md and .txt only
+/// ```
 pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     let canonical_root = root.canonicalize()?;
     let mut results = Vec::new();

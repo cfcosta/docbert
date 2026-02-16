@@ -9,7 +9,22 @@ use crate::{
 
 /// Metadata stored per document in config.db.
 ///
-/// Serialized as: "collection\0relative_path\0mtime"
+/// Serialized as: `"collection\0relative_path\0mtime"`.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::incremental::DocumentMetadata;
+///
+/// let meta = DocumentMetadata {
+///     collection: "notes".to_string(),
+///     relative_path: "hello.md".to_string(),
+///     mtime: 1700000000,
+/// };
+/// let bytes = meta.serialize();
+/// let restored = DocumentMetadata::deserialize(&bytes).unwrap();
+/// assert_eq!(meta, restored);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentMetadata {
     pub collection: String,
@@ -18,6 +33,7 @@ pub struct DocumentMetadata {
 }
 
 impl DocumentMetadata {
+    /// Serialize to a byte vector for storage in the config database.
     pub fn serialize(&self) -> Vec<u8> {
         format!(
             "{}\0{}\0{}",
@@ -26,6 +42,7 @@ impl DocumentMetadata {
         .into_bytes()
     }
 
+    /// Deserialize from bytes. Returns `None` if the format is invalid.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
         let s = std::str::from_utf8(bytes).ok()?;
         let mut parts = s.splitn(3, '\0');

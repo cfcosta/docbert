@@ -3,7 +3,10 @@ use pylate_rs::{ColBERT, Similarities};
 
 use crate::error::Result;
 
+/// The default ColBERT model loaded when no override is provided.
 pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
+
+/// Environment variable checked for a model ID override (`DOCBERT_MODEL`).
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Default document length in tokens for encoding.
@@ -36,6 +39,26 @@ fn default_device() -> Device {
 }
 
 /// Manages the ColBERT model lifecycle, supporting lazy loading on first use.
+///
+/// The model is downloaded from HuggingFace Hub on first use and cached locally.
+/// Subsequent uses load from the cache.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::ModelManager;
+///
+/// // Create with default model (lightonai/GTE-ModernColBERT-v1)
+/// let manager = ModelManager::new();
+/// assert!(!manager.is_loaded());
+///
+/// // Create with a specific model
+/// let manager = ModelManager::with_model_id("custom/model".to_string());
+/// assert_eq!(manager.model_id(), "custom/model");
+///
+/// // Override the document encoding length
+/// let manager = ModelManager::new().with_document_length(512);
+/// ```
 pub struct ModelManager {
     model: Option<ColBERT>,
     model_id: String,
@@ -153,6 +176,7 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
+    /// Returns the source as a short string label (`"cli"`, `"env"`, `"config"`, `"default"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             ModelSource::Cli => "cli",
@@ -175,6 +199,25 @@ pub struct ModelResolution {
 
 /// Resolve the model ID from (in priority order): CLI flag, environment
 /// variable, config.db setting, or the compiled-in default.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::ConfigDb;
+/// use docbert::model_manager::{resolve_model, ModelSource};
+///
+/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+///
+/// // With a CLI override
+/// let res = resolve_model(&db, Some("my/model")).unwrap();
+/// assert_eq!(res.model_id, "my/model");
+/// assert_eq!(res.source, ModelSource::Cli);
+///
+/// // Without CLI, falls back to env/config/default
+/// let res = resolve_model(&db, None).unwrap();
+/// assert!(res.cli_model.is_none());
+/// ```
 pub fn resolve_model(
     config_db: &crate::config_db::ConfigDb,
     cli_model: Option<&str>,
