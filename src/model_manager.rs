@@ -139,6 +139,69 @@ impl ModelManager {
     }
 }
 
+/// How the model ID was resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSource {
+    /// Set via `--model` CLI flag.
+    Cli,
+    /// Set via `DOCBERT_MODEL` environment variable.
+    Env,
+    /// Stored in config.db `model_name` setting.
+    Config,
+    /// Hardcoded default.
+    Default,
+}
+
+impl ModelSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelSource::Cli => "cli",
+            ModelSource::Env => "env",
+            ModelSource::Config => "config",
+            ModelSource::Default => "default",
+        }
+    }
+}
+
+/// The result of resolving which model to use.
+#[derive(Debug, Clone)]
+pub struct ModelResolution {
+    pub model_id: String,
+    pub source: ModelSource,
+    pub env_model: Option<String>,
+    pub config_model: Option<String>,
+    pub cli_model: Option<String>,
+}
+
+/// Resolve the model ID from (in priority order): CLI flag, environment
+/// variable, config.db setting, or the compiled-in default.
+pub fn resolve_model(
+    config_db: &crate::config_db::ConfigDb,
+    cli_model: Option<&str>,
+) -> crate::error::Result<ModelResolution> {
+    let env_model = std::env::var(MODEL_ENV_VAR).ok();
+    let config_model = config_db.get_setting("model_name")?;
+    let cli_model = cli_model.map(|s| s.to_string());
+
+    let (model_id, source) = if let Some(cli) = cli_model.clone() {
+        (cli, ModelSource::Cli)
+    } else if let Some(env) = env_model.clone() {
+        (env, ModelSource::Env)
+    } else if let Some(cfg) = config_model.clone() {
+        (cfg, ModelSource::Config)
+    } else {
+        (DEFAULT_MODEL_ID.to_string(), ModelSource::Default)
+    };
+
+    Ok(ModelResolution {
+        model_id,
+        source,
+        env_model,
+        config_model,
+        cli_model,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +218,83 @@ mod tests {
         let manager = ModelManager::with_model_id(DEFAULT_MODEL_ID.to_string());
         assert!(!manager.is_loaded());
         assert_eq!(manager.model_id(), DEFAULT_MODEL_ID);
+    }
+
+    #[test]
+    fn with_document_length_is_stored() {
+        let manager = ModelManager::new().with_document_length(512);
+        assert_eq!(manager.document_length, 512);
+    }
+
+    #[test]
+    fn default_impl_matches_new() {
+        let from_default = ModelManager::default();
+        let from_new = ModelManager::new();
+        assert_eq!(from_default.model_id(), from_new.model_id());
+        assert_eq!(from_default.is_loaded(), from_new.is_loaded());
+    }
+
+    #[test]
+    fn default_document_length() {
+        let manager = ModelManager::new();
+        assert_eq!(manager.document_length, DEFAULT_DOCUMENT_LENGTH);
+    }
+
+    #[test]
+    fn resolve_model_cli_overrides_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
+        config_db.set_setting("model_name", "config/model").unwrap();
+        let resolution = resolve_model(&config_db, Some("cli/model")).unwrap();
+        assert_eq!(resolution.model_id, "cli/model");
+        assert_eq!(resolution.source, ModelSource::Cli);
+        assert_eq!(resolution.cli_model.as_deref(), Some("cli/model"));
+        assert_eq!(resolution.config_model.as_deref(), Some("config/model"));
+    }
+
+    #[test]
+    fn resolve_model_config_used_when_no_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
+        config_db.set_setting("model_name", "config/model").unwrap();
+        let resolution = resolve_model(&config_db, None).unwrap();
+        // Config should be used (unless env var is also set, which we
+        // can't control in tests without unsafe). Just verify the config
+        // model is populated.
+        assert_eq!(resolution.config_model.as_deref(), Some("config/model"));
+        assert!(resolution.cli_model.is_none());
+        // If DOCBERT_MODEL env is not set, source should be Config
+        if resolution.env_model.is_none() {
+            assert_eq!(resolution.model_id, "config/model");
+            assert_eq!(resolution.source, ModelSource::Config);
+        }
+    }
+
+    #[test]
+    fn resolve_model_no_config_no_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
+        let resolution = resolve_model(&config_db, None).unwrap();
+        assert!(resolution.config_model.is_none());
+        assert!(resolution.cli_model.is_none());
+        // Without env var, should be default
+        if resolution.env_model.is_none() {
+            assert_eq!(resolution.model_id, DEFAULT_MODEL_ID);
+            assert_eq!(resolution.source, ModelSource::Default);
+        }
+    }
+
+    #[test]
+    fn model_source_as_str() {
+        assert_eq!(ModelSource::Cli.as_str(), "cli");
+        assert_eq!(ModelSource::Env.as_str(), "env");
+        assert_eq!(ModelSource::Config.as_str(), "config");
+        assert_eq!(ModelSource::Default.as_str(), "default");
     }
 }

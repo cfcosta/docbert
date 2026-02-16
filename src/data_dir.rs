@@ -76,4 +76,23 @@ mod tests {
         assert!(tantivy.exists());
         assert_eq!(tantivy, tmp.path().join("tantivy"));
     }
+
+    #[test]
+    fn resolve_creates_nonexistent_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("a").join("b").join("c");
+        let dir = DataDir::resolve(Some(&nested)).unwrap();
+        assert!(dir.root().exists());
+        assert_eq!(dir.root(), nested);
+    }
+
+    #[test]
+    fn tantivy_dir_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let first = dir.tantivy_dir().unwrap();
+        let second = dir.tantivy_dir().unwrap();
+        assert_eq!(first, second);
+        assert!(first.exists());
+    }
 }

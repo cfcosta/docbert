@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use redb::{Database, TableDefinition};
+use docbert::{ConfigDb, SearchIndex};
 use rmcp::{
     ServiceExt,
     model::{
@@ -11,115 +11,41 @@ use rmcp::{
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::json;
-use tantivy::{
-    Index,
-    IndexSettings,
-    doc,
-    schema::{
-        FAST,
-        IndexRecordOption,
-        STORED,
-        STRING,
-        Schema,
-        TextFieldIndexing,
-        TextOptions,
-    },
-    tokenizer::{
-        LowerCaser,
-        RemoveLongFilter,
-        SimpleTokenizer,
-        Stemmer,
-        TextAnalyzer,
-    },
-};
-
-const COLLECTIONS: TableDefinition<&str, &str> =
-    TableDefinition::new("collections");
-const CONTEXTS: TableDefinition<&str, &str> = TableDefinition::new("contexts");
-const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
-    TableDefinition::new("document_metadata");
-const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
 fn setup_config(
-    data_dir: &Path,
+    config_db: &ConfigDb,
     collection_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let db = Database::create(data_dir.join("config.db"))?;
-    let txn = db.begin_write()?;
-    {
-        let mut table = txn.open_table(COLLECTIONS)?;
-        table.insert("notes", collection_path.to_str().unwrap())?;
-    }
-    {
-        let mut table = txn.open_table(CONTEXTS)?;
-        table.insert("bert://notes", "Test notes")?;
-    }
-    txn.open_table(DOCUMENT_METADATA)?;
-    txn.open_table(SETTINGS)?;
-    txn.commit()?;
+    config_db.set_collection("notes", collection_path.to_str().unwrap())?;
+    config_db.set_context("bert://notes", "Test notes")?;
     Ok(())
 }
 
 fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let collection_dir = data_dir.join("notes");
     std::fs::create_dir_all(&collection_dir)?;
-    let file_path = collection_dir.join("hello.md");
-    std::fs::write(&file_path, "Hello world\nSecond line\n")?;
-    setup_config(data_dir, &collection_dir)?;
-    build_index(data_dir)?;
-    Ok(())
-}
+    std::fs::write(
+        collection_dir.join("hello.md"),
+        "Hello world\nSecond line\n",
+    )?;
 
-fn build_index(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config_db = ConfigDb::open(&data_dir.join("config.db"))?;
+    setup_config(&config_db, &collection_dir)?;
+
     let tantivy_dir = data_dir.join("tantivy");
     std::fs::create_dir_all(&tantivy_dir)?;
-
-    let mut builder = Schema::builder();
-    let doc_id = builder.add_text_field("doc_id", STRING | STORED);
-    let doc_num_id = builder.add_u64_field("doc_num_id", STORED | FAST);
-    let collection =
-        builder.add_text_field("collection", STRING | STORED | FAST);
-    let path = builder.add_text_field("path", STRING | STORED);
-
-    let title_opts = TextOptions::default()
-        .set_indexing_options(
-            TextFieldIndexing::default()
-                .set_tokenizer("en_stem")
-                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-        )
-        .set_stored();
-    let title = builder.add_text_field("title", title_opts);
-
-    let body_opts = TextOptions::default().set_indexing_options(
-        TextFieldIndexing::default()
-            .set_tokenizer("en_stem")
-            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-    );
-    let body = builder.add_text_field("body", body_opts);
-
-    let mtime = builder.add_u64_field("mtime", STORED | FAST);
-
-    let schema = builder.build();
-    let mmap_dir = tantivy::directory::MmapDirectory::open(&tantivy_dir)?;
-    let index = Index::create(mmap_dir, schema, IndexSettings::default())?;
-
-    let en_stem = TextAnalyzer::builder(SimpleTokenizer::default())
-        .filter(RemoveLongFilter::limit(40))
-        .filter(LowerCaser)
-        .filter(Stemmer::new(tantivy::tokenizer::Language::English))
-        .build();
-    index.tokenizers().register("en_stem", en_stem);
-
+    let index = SearchIndex::open(&tantivy_dir)?;
     let mut writer = index.writer(15_000_000)?;
-    writer.add_document(doc!(
-        doc_id => "testid",
-        doc_num_id => 1u64,
-        collection => "notes",
-        path => "hello.md",
-        title => "Hello",
-        body => "Hello world",
-        mtime => 1u64,
-    ))?;
+    index.add_document(
+        &writer,
+        "testid",
+        1,
+        "notes",
+        "hello.md",
+        "Hello",
+        "Hello world",
+        1,
+    )?;
     writer.commit()?;
 
     Ok(())

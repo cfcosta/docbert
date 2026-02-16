@@ -1,33 +1,30 @@
 use std::path::Path;
 
 use clap::Parser;
+use docbert::{
+    ConfigDb,
+    DataDir,
+    EmbeddingDb,
+    ModelManager,
+    SearchIndex,
+    chunking,
+    doc_id,
+    embedding,
+    error,
+    incremental,
+    ingestion,
+    mcp,
+    model_manager::{MODEL_ENV_VAR, ModelResolution, resolve_model},
+    search,
+    walker,
+};
 use kdam::{BarExt, Spinner, tqdm};
 use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
-pub mod chunking;
-pub mod cli;
-pub mod config_db;
-pub mod data_dir;
-pub mod doc_id;
-pub mod embedding;
-pub mod embedding_db;
-pub mod error;
-pub mod incremental;
-pub mod ingestion;
-pub mod mcp;
-pub mod model_manager;
-pub mod reranker;
-pub mod search;
-pub mod tantivy_index;
-pub mod walker;
+mod cli;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
-use config_db::ConfigDb;
-use data_dir::DataDir;
-use embedding_db::EmbeddingDb;
-use model_manager::{DEFAULT_MODEL_ID, MODEL_ENV_VAR, ModelManager};
-use tantivy_index::SearchIndex;
 
 fn init_tracing(verbose: u8) {
     let filter = if let Ok(env) = std::env::var("DOCBERT_LOG") {
@@ -45,61 +42,6 @@ fn init_tracing(verbose: u8) {
         .with_writer(std::io::stderr)
         .without_time()
         .init();
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ModelSource {
-    Cli,
-    Env,
-    Config,
-    Default,
-}
-
-impl ModelSource {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ModelSource::Cli => "cli",
-            ModelSource::Env => "env",
-            ModelSource::Config => "config",
-            ModelSource::Default => "default",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ModelResolution {
-    model_id: String,
-    source: ModelSource,
-    env_model: Option<String>,
-    config_model: Option<String>,
-    cli_model: Option<String>,
-}
-
-fn resolve_model(
-    config_db: &ConfigDb,
-    cli_model: Option<&str>,
-) -> error::Result<ModelResolution> {
-    let env_model = std::env::var(MODEL_ENV_VAR).ok();
-    let config_model = config_db.get_setting("model_name")?;
-    let cli_model = cli_model.map(|s| s.to_string());
-
-    let (model_id, source) = if let Some(cli) = cli_model.clone() {
-        (cli, ModelSource::Cli)
-    } else if let Some(env) = env_model.clone() {
-        (env, ModelSource::Env)
-    } else if let Some(cfg) = config_model.clone() {
-        (cfg, ModelSource::Config)
-    } else {
-        (DEFAULT_MODEL_ID.to_string(), ModelSource::Default)
-    };
-
-    Ok(ModelResolution {
-        model_id,
-        source,
-        env_model,
-        config_model,
-        cli_model,
-    })
 }
 
 fn main() -> error::Result<()> {
@@ -149,8 +91,18 @@ fn main() -> error::Result<()> {
             let mut model =
                 ModelManager::with_model_id(model_resolution.model_id.clone());
 
+            let params = search::SearchParams {
+                query: args.query.clone(),
+                count: args.count,
+                collection: args.collection.clone(),
+                min_score: args.min_score,
+                bm25_only: args.bm25_only,
+                no_fuzzy: args.no_fuzzy,
+                all: args.all,
+            };
+
             let results = search::execute_search(
-                &args,
+                &params,
                 &search_index,
                 &embedding_db,
                 &mut model,
@@ -169,8 +121,15 @@ fn main() -> error::Result<()> {
             let mut model =
                 ModelManager::with_model_id(model_resolution.model_id.clone());
 
+            let params = search::SemanticSearchParams {
+                query: args.query.clone(),
+                count: args.count,
+                min_score: args.min_score,
+                all: args.all,
+            };
+
             let results = search::execute_semantic_search(
-                &args,
+                &params,
                 &config_db,
                 &embedding_db,
                 &mut model,
@@ -375,12 +334,22 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
     let (collection, path) = if let Some(stripped) = reference.strip_prefix('#')
     {
         // Doc ID reference — look up in metadata
-        resolve_by_doc_id(config_db, stripped)?
+        search::resolve_by_doc_id(config_db, stripped).ok_or_else(|| {
+            error::Error::NotFound {
+                kind: "document",
+                name: format!("#{stripped}"),
+            }
+        })?
     } else if let Some((coll, path)) = reference.split_once(':') {
         (coll.to_string(), path.to_string())
     } else {
         // Plain path — search all collections
-        resolve_by_path(config_db, reference)?
+        search::resolve_by_path(config_db, reference).ok_or_else(|| {
+            error::Error::NotFound {
+                kind: "document",
+                name: reference.to_string(),
+            }
+        })?
     };
 
     let collection_path =
@@ -414,42 +383,6 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
     }
 
     Ok(())
-}
-
-fn resolve_by_doc_id(
-    config_db: &ConfigDb,
-    short_id: &str,
-) -> error::Result<(String, String)> {
-    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
-        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes) {
-            let did =
-                doc_id::DocumentId::new(&meta.collection, &meta.relative_path);
-            if did.to_string().contains(short_id) || did.short == short_id {
-                return Ok((meta.collection, meta.relative_path));
-            }
-        }
-    }
-    Err(error::Error::NotFound {
-        kind: "document",
-        name: format!("#{short_id}"),
-    })
-}
-
-fn resolve_by_path(
-    config_db: &ConfigDb,
-    path: &str,
-) -> error::Result<(String, String)> {
-    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
-        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes)
-            && meta.relative_path == path
-        {
-            return Ok((meta.collection, meta.relative_path));
-        }
-    }
-    Err(error::Error::NotFound {
-        kind: "document",
-        name: path.to_string(),
-    })
 }
 
 fn cmd_multi_get(
@@ -830,12 +763,6 @@ fn cmd_rebuild(
     Ok(())
 }
 
-/// Convert a numeric document ID to its display string (e.g., "#a1b2c3").
-fn numeric_to_doc_id_string(numeric: u64) -> String {
-    let full = format!("{numeric:016x}");
-    format!("#{}", &full[..6])
-}
-
 fn cmd_sync(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -906,7 +833,7 @@ fn cmd_sync(
         if !diff.deleted_ids.is_empty() {
             let mut writer = search_index.writer(15_000_000)?;
             for &doc_id in &diff.deleted_ids {
-                let display = numeric_to_doc_id_string(doc_id);
+                let display = search::format_doc_id(doc_id);
                 search_index.delete_document(&writer, &display);
             }
             writer.commit()?;

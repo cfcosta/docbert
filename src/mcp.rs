@@ -49,21 +49,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    cli::SearchArgs,
     config_db::ConfigDb,
     data_dir::DataDir,
-    doc_id::DocumentId,
     embedding_db::EmbeddingDb,
     error,
     incremental::DocumentMetadata,
     model_manager::{DEFAULT_MODEL_ID, ModelManager},
     search,
     tantivy_index::SearchIndex,
+    text_util,
 };
 
 const DEFAULT_SEARCH_LIMIT: usize = 10;
-const DEFAULT_SNIPPET_LINES: usize = 6;
-const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 const DEFAULT_MULTI_GET_MAX_BYTES: u64 = 10_240;
 
 struct DocbertState {
@@ -105,13 +102,11 @@ impl DocbertMcpServer {
         let params = params.0;
         let query = params.query.clone();
 
-        let args = SearchArgs {
+        let args = search::SearchParams {
             query: params.query,
             count: params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
             collection: params.collection.clone(),
-            json: false,
             all: params.all.unwrap_or(false),
-            files: false,
             min_score: params.min_score.unwrap_or(0.0),
             bm25_only: params.bm25_only.unwrap_or(false),
             no_fuzzy: params.no_fuzzy.unwrap_or(false),
@@ -139,9 +134,11 @@ impl DocbertMcpServer {
             let snippet = if include_snippet {
                 resolve_full_path(&self.state.config_db, &r.collection, &r.path)
                     .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|content| extract_snippet(&content, &query))
+                    .and_then(|content| {
+                        text_util::extract_snippet(&content, &query)
+                    })
                     .map(|(snippet, start_line)| {
-                        add_line_numbers(&snippet, start_line)
+                        text_util::add_line_numbers(&snippet, start_line)
                     })
             } else {
                 None
@@ -187,12 +184,10 @@ impl DocbertMcpServer {
         let params = params.0;
         let query = params.query.clone();
 
-        let args = crate::cli::SemanticSearchArgs {
+        let args = search::SemanticSearchParams {
             query: params.query,
             count: params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
-            json: false,
             all: params.all.unwrap_or(false),
-            files: false,
             min_score: params.min_score.unwrap_or(0.0),
         };
 
@@ -218,9 +213,11 @@ impl DocbertMcpServer {
             let snippet = if include_snippet {
                 resolve_full_path(&self.state.config_db, &r.collection, &r.path)
                     .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|content| extract_snippet(&content, &query))
+                    .and_then(|content| {
+                        text_util::extract_snippet(&content, &query)
+                    })
                     .map(|(snippet, start_line)| {
-                        add_line_numbers(&snippet, start_line)
+                        text_util::add_line_numbers(&snippet, start_line)
                     })
             } else {
                 None
@@ -309,11 +306,14 @@ impl DocbertMcpServer {
             .map_err(|e| mcp_error("failed to read document", e))?;
 
         let start_line = from_line.unwrap_or(1);
-        let mut body =
-            apply_line_limits(&content, start_line, params.max_lines);
+        let mut body = text_util::apply_line_limits(
+            &content,
+            start_line,
+            params.max_lines,
+        );
 
         if params.line_numbers.unwrap_or(false) {
-            body = add_line_numbers(&body, start_line);
+            body = text_util::add_line_numbers(&body, start_line);
         }
 
         if let Some(context) =
@@ -412,9 +412,9 @@ impl DocbertMcpServer {
                 continue;
             };
 
-            body = apply_line_limits(&body, 1, params.max_lines);
+            body = text_util::apply_line_limits(&body, 1, params.max_lines);
             if params.line_numbers.unwrap_or(false) {
-                body = add_line_numbers(&body, 1);
+                body = text_util::add_line_numbers(&body, 1);
             }
 
             if let Some(context) =
@@ -748,130 +748,31 @@ fn format_status_summary(
     lines.join("\n")
 }
 
-fn add_line_numbers(text: &str, start_line: usize) -> String {
-    text.lines()
-        .enumerate()
-        .map(|(i, line)| format!("{}: {}", start_line + i, line))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return None;
-    }
-
-    let query_lower = query.to_lowercase();
-    let mut match_idx = None;
-
-    for (idx, line) in lines.iter().enumerate() {
-        if line.to_lowercase().contains(&query_lower) {
-            match_idx = Some(idx);
-            break;
-        }
-    }
-
-    let (start, end) = if let Some(idx) = match_idx {
-        let start = idx.saturating_sub(2);
-        let end = (idx + 3).min(lines.len());
-        (start, end)
-    } else {
-        (0, DEFAULT_SNIPPET_LINES.min(lines.len()))
-    };
-
-    let mut snippet = lines[start..end].join("\n");
-    if snippet.len() > DEFAULT_SNIPPET_MAX_CHARS {
-        snippet.truncate(DEFAULT_SNIPPET_MAX_CHARS);
-        snippet.push_str("...");
-    }
-
-    Some((snippet, start + 1))
-}
-
-fn apply_line_limits(
-    text: &str,
-    start_line: usize,
-    max_lines: Option<usize>,
-) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-
-    let start_idx = start_line.saturating_sub(1).min(lines.len());
-    if start_idx >= lines.len() {
-        return String::new();
-    }
-
-    let end_idx = match max_lines {
-        Some(max) => (start_idx + max).min(lines.len()),
-        None => lines.len(),
-    };
-
-    let mut slice = lines[start_idx..end_idx].join("\n");
-    if max_lines.is_some() && end_idx < lines.len() {
-        slice.push_str(&format!(
-            "\n\n[... truncated {} more lines]",
-            lines.len() - end_idx
-        ));
-    }
-
-    slice
-}
-
 fn resolve_reference(
     config_db: &ConfigDb,
     reference: &str,
 ) -> Result<(String, String), rmcp::ErrorData> {
     if let Some(short_id) = reference.strip_prefix('#') {
-        return resolve_by_doc_id(config_db, short_id).ok_or_else(|| {
-            rmcp::ErrorData::resource_not_found(
-                format!("document not found: #{short_id}"),
-                None,
-            )
-        });
+        return search::resolve_by_doc_id(config_db, short_id).ok_or_else(
+            || {
+                rmcp::ErrorData::resource_not_found(
+                    format!("document not found: #{short_id}"),
+                    None,
+                )
+            },
+        );
     }
 
     if let Some((collection, path)) = reference.split_once(':') {
         return Ok((collection.to_string(), path.to_string()));
     }
 
-    resolve_by_path(config_db, reference).ok_or_else(|| {
+    search::resolve_by_path(config_db, reference).ok_or_else(|| {
         rmcp::ErrorData::resource_not_found(
             format!("document not found: {reference}"),
             None,
         )
     })
-}
-
-fn resolve_by_doc_id(
-    config_db: &ConfigDb,
-    short_id: &str,
-) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata().ok()?;
-    for (_doc_id, bytes) in entries {
-        let meta = DocumentMetadata::deserialize(&bytes)?;
-        let did = DocumentId::new(&meta.collection, &meta.relative_path);
-        if did.short == short_id || did.to_string().contains(short_id) {
-            return Some((meta.collection, meta.relative_path));
-        }
-    }
-    None
-}
-
-fn resolve_by_path(
-    config_db: &ConfigDb,
-    path: &str,
-) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata().ok()?;
-    for (_doc_id, bytes) in entries {
-        let meta = DocumentMetadata::deserialize(&bytes)?;
-        if meta.relative_path == path {
-            return Some((meta.collection, meta.relative_path));
-        }
-    }
-    None
 }
 
 fn encode_bert_path(path: &str) -> String {
@@ -930,7 +831,7 @@ fn read_resource_contents(
 
     let mut text = std::fs::read_to_string(&full_path)
         .map_err(|e| mcp_error("failed to read resource", e))?;
-    text = add_line_numbers(&text, 1);
+    text = text_util::add_line_numbers(&text, 1);
 
     if let Some(context) = context_for_doc(config_db, &collection, &path) {
         text = format!("<!-- Context: {context} -->\n\n{text}");
@@ -1016,6 +917,7 @@ pub fn run_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doc_id::DocumentId;
 
     fn build_server(
         files: &[(&str, &str)],
@@ -1264,5 +1166,69 @@ mod tests {
         let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust\n")]);
         let prompts = server.prompt_router.list_all();
         assert!(prompts.iter().any(|p| p.name == "docbert_query"));
+    }
+
+    // -- Unit tests for helper functions --
+
+    #[test]
+    fn parse_bert_uri_valid() {
+        let (collection, path) =
+            parse_bert_uri("bert://notes/hello.md").unwrap();
+        assert_eq!(collection, "notes");
+        assert_eq!(path, "hello.md");
+    }
+
+    #[test]
+    fn parse_bert_uri_nested_path() {
+        let (collection, path) =
+            parse_bert_uri("bert://notes/sub/dir/file.md").unwrap();
+        assert_eq!(collection, "notes");
+        assert_eq!(path, "sub/dir/file.md");
+    }
+
+    #[test]
+    fn parse_bert_uri_invalid_prefix() {
+        assert!(parse_bert_uri("http://foo").is_err());
+    }
+
+    #[test]
+    fn parse_bert_uri_empty_path() {
+        assert!(parse_bert_uri("bert://notes").is_err());
+    }
+
+    #[test]
+    fn parse_bert_uri_empty_collection() {
+        assert!(parse_bert_uri("bert:///file.md").is_err());
+    }
+
+    #[test]
+    fn encode_bert_path_simple() {
+        let encoded = encode_bert_path("hello.md");
+        // alphanumeric chars and dots should be encoded, but path should decode back
+        let decoded = decode_bert_path(&encoded);
+        assert_eq!(decoded, "hello.md");
+    }
+
+    #[test]
+    fn encode_bert_path_with_spaces() {
+        let encoded = encode_bert_path("hello world.md");
+        assert!(encoded.contains("%20"));
+        let decoded = decode_bert_path(&encoded);
+        assert_eq!(decoded, "hello world.md");
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let paths = vec![
+            "simple.md",
+            "path with spaces.md",
+            "sub/dir/file.md",
+            "special chars!@#$.md",
+        ];
+        for path in paths {
+            let encoded = encode_bert_path(path);
+            let decoded = decode_bert_path(&encoded);
+            assert_eq!(decoded, path, "roundtrip failed for: {path}");
+        }
     }
 }

@@ -1,0 +1,24 @@
+pub mod chunking;
+pub mod config_db;
+pub mod data_dir;
+pub mod doc_id;
+pub mod embedding;
+pub mod embedding_db;
+pub mod error;
+pub mod incremental;
+pub mod ingestion;
+pub mod mcp;
+pub mod model_manager;
+pub mod reranker;
+pub mod search;
+pub mod tantivy_index;
+pub mod text_util;
+pub mod walker;
+
+pub use config_db::ConfigDb;
+pub use data_dir::DataDir;
+pub use doc_id::DocumentId;
+pub use embedding_db::EmbeddingDb;
+pub use error::{Error, Result};
+pub use model_manager::ModelManager;
+pub use tantivy_index::SearchIndex;

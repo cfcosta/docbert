@@ -61,3 +61,48 @@ pub fn rerank(
 
     Ok(ranked)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rerank_empty_candidates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+
+        // Create a dummy 2D query tensor [2, 128]
+        let query = Tensor::zeros(
+            &[2, 128],
+            candle_core::DType::F32,
+            &candle_core::Device::Cpu,
+        )
+        .unwrap();
+
+        let results = rerank(&query, &[], &embedding_db, &model).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn rerank_missing_embeddings_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+
+        // Create a dummy query tensor
+        let query = Tensor::zeros(
+            &[2, 128],
+            candle_core::DType::F32,
+            &candle_core::Device::Cpu,
+        )
+        .unwrap();
+
+        // These IDs have no stored embeddings
+        let ids = vec![999, 1000, 1001];
+        let results = rerank(&query, &ids, &embedding_db, &model).unwrap();
+        assert!(results.is_empty(), "missing embeddings should be skipped");
+    }
+}

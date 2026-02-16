@@ -98,6 +98,41 @@ mod tests {
     }
 
     #[test]
+    fn extract_title_empty_content() {
+        assert_eq!(extract_title("", Path::new("file.md")), "file");
+    }
+
+    #[test]
+    fn extract_title_multiple_headings_takes_first() {
+        let content = "# First\n\n# Second\n";
+        assert_eq!(extract_title(content, Path::new("f.md")), "First");
+    }
+
+    #[test]
+    fn extract_title_h2_not_matched() {
+        let content = "## Sub Heading Only\n\nSome text.";
+        assert_eq!(extract_title(content, Path::new("doc.md")), "doc");
+    }
+
+    #[test]
+    fn extract_title_heading_with_leading_whitespace() {
+        let content = "  # Indented Title\n";
+        assert_eq!(extract_title(content, Path::new("f.md")), "Indented Title");
+    }
+
+    #[test]
+    fn extract_title_no_extension() {
+        let content = "no heading";
+        assert_eq!(extract_title(content, Path::new("README")), "README");
+    }
+
+    #[test]
+    fn extract_title_nested_path() {
+        let content = "no heading";
+        assert_eq!(extract_title(content, Path::new("a/b/c/file.md")), "file");
+    }
+
+    #[test]
     fn ingest_and_search() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(

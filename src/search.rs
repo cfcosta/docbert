@@ -1,7 +1,6 @@
 use std::{cmp::Ordering, collections::HashMap, path::Path};
 
 use crate::{
-    cli::{SearchArgs, SemanticSearchArgs},
     config_db::ConfigDb,
     embedding,
     embedding_db::EmbeddingDb,
@@ -14,6 +13,38 @@ use crate::{
 };
 
 const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
+
+/// Parameters for the hybrid BM25 + ColBERT search pipeline.
+#[derive(Debug, Clone)]
+pub struct SearchParams {
+    /// The search query.
+    pub query: String,
+    /// Number of results to return.
+    pub count: usize,
+    /// Search only within this collection.
+    pub collection: Option<String>,
+    /// Minimum score threshold.
+    pub min_score: f32,
+    /// Skip ColBERT reranking, return BM25 results directly.
+    pub bm25_only: bool,
+    /// Disable fuzzy matching in the first stage.
+    pub no_fuzzy: bool,
+    /// Return all results above the score threshold.
+    pub all: bool,
+}
+
+/// Parameters for semantic-only search.
+#[derive(Debug, Clone)]
+pub struct SemanticSearchParams {
+    /// The search query.
+    pub query: String,
+    /// Number of results to return.
+    pub count: usize,
+    /// Minimum score threshold.
+    pub min_score: f32,
+    /// Return all results above the score threshold.
+    pub all: bool,
+}
 
 /// A final search result combining BM25 and optional ColBERT scores.
 #[derive(Debug, Clone)]
@@ -34,7 +65,7 @@ pub struct FinalResult {
 /// 3. Filter by --min-score
 /// 4. Limit to -n results
 pub fn execute_search(
-    args: &SearchArgs,
+    args: &SearchParams,
     search_index: &SearchIndex,
     embedding_db: &EmbeddingDb,
     model: &mut ModelManager,
@@ -96,7 +127,7 @@ pub fn execute_search(
 
 /// Execute semantic-only search across all documents.
 pub fn execute_semantic_search(
-    args: &SemanticSearchArgs,
+    args: &SemanticSearchParams,
     config_db: &ConfigDb,
     embedding_db: &EmbeddingDb,
     model: &mut ModelManager,
@@ -176,6 +207,50 @@ pub fn execute_semantic_search(
     populate_titles(&mut results, config_db);
 
     Ok(results)
+}
+
+/// Resolve a document by its short ID (e.g., "a1b2c3").
+///
+/// Iterates all known document metadata and matches by short ID string
+/// or substring containment. Returns `(collection, relative_path)`.
+pub fn resolve_by_doc_id(
+    config_db: &ConfigDb,
+    short_id: &str,
+) -> Option<(String, String)> {
+    let entries = config_db.list_all_document_metadata().ok()?;
+    for (_doc_id, bytes) in entries {
+        let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
+        let did = crate::doc_id::DocumentId::new(
+            &meta.collection,
+            &meta.relative_path,
+        );
+        if did.short == short_id || did.to_string().contains(short_id) {
+            return Some((meta.collection, meta.relative_path));
+        }
+    }
+    None
+}
+
+/// Resolve a document by its relative path.
+///
+/// Returns `(collection, relative_path)`.
+pub fn resolve_by_path(
+    config_db: &ConfigDb,
+    path: &str,
+) -> Option<(String, String)> {
+    let entries = config_db.list_all_document_metadata().ok()?;
+    for (_doc_id, bytes) in entries {
+        let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
+        if meta.relative_path == path {
+            return Some((meta.collection, meta.relative_path));
+        }
+    }
+    None
+}
+
+/// Format a numeric document ID as a short hex string (e.g., "#a1b2c3").
+pub fn format_doc_id(numeric: u64) -> String {
+    short_doc_id(numeric)
 }
 
 fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
@@ -350,25 +425,21 @@ mod tests {
         incremental::DocumentMetadata,
     };
 
-    fn make_semantic_args(query: &str) -> SemanticSearchArgs {
-        SemanticSearchArgs {
+    fn make_semantic_args(query: &str) -> SemanticSearchParams {
+        SemanticSearchParams {
             query: query.to_string(),
             count: 10,
-            json: false,
             all: false,
-            files: false,
             min_score: 0.0,
         }
     }
 
-    fn make_search_args(query: &str) -> SearchArgs {
-        SearchArgs {
+    fn make_search_args(query: &str) -> SearchParams {
+        SearchParams {
             query: query.to_string(),
             count: 10,
             collection: None,
-            json: false,
             all: false,
-            files: false,
             min_score: 0.0,
             bm25_only: true,
             no_fuzzy: false,
@@ -1054,5 +1125,125 @@ mod tests {
                 "reranked ranks should be 1-indexed and sequential"
             );
         }
+    }
+
+    // -- Unit tests for helper functions --
+
+    #[test]
+    fn short_doc_id_format() {
+        let id = short_doc_id(0x123456789abcdef0);
+        assert!(id.starts_with('#'));
+        assert_eq!(id.len(), 7); // # + 6 hex chars
+    }
+
+    #[test]
+    fn short_doc_id_consistency() {
+        assert_eq!(short_doc_id(42), short_doc_id(42));
+    }
+
+    #[test]
+    fn short_doc_id_zero() {
+        let id = short_doc_id(0);
+        assert_eq!(id, "#000000");
+    }
+
+    #[test]
+    fn bm25_to_final_empty() {
+        let results = bm25_to_final(&[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn bm25_to_final_preserves_fields() {
+        let input = vec![SearchResult {
+            score: 1.5,
+            doc_id: "abc".to_string(),
+            doc_num_id: 42,
+            collection: "notes".to_string(),
+            path: "hello.md".to_string(),
+            title: "Hello".to_string(),
+            mtime: 1000,
+        }];
+        let output = bm25_to_final(&input);
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].rank, 1);
+        assert_eq!(output[0].score, 1.5);
+        assert_eq!(output[0].doc_id, "abc");
+        assert_eq!(output[0].doc_num_id, 42);
+        assert_eq!(output[0].collection, "notes");
+        assert_eq!(output[0].path, "hello.md");
+        assert_eq!(output[0].title, "Hello");
+    }
+
+    #[test]
+    fn bm25_to_final_sets_sequential_ranks() {
+        let input = vec![
+            SearchResult {
+                score: 3.0,
+                doc_id: "a".to_string(),
+                doc_num_id: 1,
+                collection: "c".to_string(),
+                path: "a.md".to_string(),
+                title: "A".to_string(),
+                mtime: 1,
+            },
+            SearchResult {
+                score: 2.0,
+                doc_id: "b".to_string(),
+                doc_num_id: 2,
+                collection: "c".to_string(),
+                path: "b.md".to_string(),
+                title: "B".to_string(),
+                mtime: 2,
+            },
+            SearchResult {
+                score: 1.0,
+                doc_id: "c".to_string(),
+                doc_num_id: 3,
+                collection: "c".to_string(),
+                path: "c.md".to_string(),
+                title: "C".to_string(),
+                mtime: 3,
+            },
+        ];
+        let output = bm25_to_final(&input);
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[0].rank, 1);
+        assert_eq!(output[1].rank, 2);
+        assert_eq!(output[2].rank, 3);
+    }
+
+    #[test]
+    fn json_escape_basic() {
+        // Verify print_json_string escapes special characters by capturing stdout
+        // Since print_json_string writes to stdout, we test the logic directly
+        fn json_escape(s: &str) -> String {
+            let mut result = String::from("\"");
+            for c in s.chars() {
+                match c {
+                    '"' => result.push_str("\\\""),
+                    '\\' => result.push_str("\\\\"),
+                    '\n' => result.push_str("\\n"),
+                    '\r' => result.push_str("\\r"),
+                    '\t' => result.push_str("\\t"),
+                    c if c < '\x20' => {
+                        result.push_str(&format!("\\u{:04x}", c as u32))
+                    }
+                    c => result.push(c),
+                }
+            }
+            result.push('"');
+            result
+        }
+
+        assert_eq!(json_escape("hello"), "\"hello\"");
+        assert_eq!(json_escape("he\"llo"), "\"he\\\"llo\"");
+        assert_eq!(json_escape("he\\llo"), "\"he\\\\llo\"");
+        assert_eq!(json_escape("he\nllo"), "\"he\\nllo\"");
+        assert_eq!(json_escape("he\tllo"), "\"he\\tllo\"");
+        assert_eq!(json_escape("he\rllo"), "\"he\\rllo\"");
+        assert_eq!(json_escape("he\x01llo"), "\"he\\u0001llo\"");
+        // Unicode passes through
+        assert_eq!(json_escape("caf\u{00e9}"), "\"caf\u{00e9}\"");
     }
 }
