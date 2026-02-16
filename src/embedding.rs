@@ -8,10 +8,12 @@ use crate::{
 
 /// Encode a batch of documents and store their embeddings in the database.
 ///
-/// Takes (doc_numeric_id, document_text) pairs, encodes them via the
-/// ColBERT model, and stores the resulting per-token embeddings.
+/// Takes `(doc_numeric_id, document_text)` pairs, encodes them via the
+/// ColBERT model, and stores the resulting per-token embeddings in
+/// `EmbeddingDb` using a single batch transaction.
 ///
-/// Consumes the input to avoid cloning document content.
+/// Consumes the input vector to avoid cloning document content.
+/// Downloads the model on first call if not already cached.
 ///
 /// Returns the number of documents successfully embedded.
 pub fn embed_and_store(
@@ -75,7 +77,10 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
 /// Load multiple document embeddings from the database and convert to Tensors.
 ///
 /// Returns a vector of `(doc_id, Option<Tensor>)` preserving input order.
-/// Uses a single database transaction for efficiency.
+/// Missing embeddings return `None`. Uses a single database transaction
+/// for efficiency.
+///
+/// Each returned tensor has shape `[num_tokens, dimension]`.
 pub fn batch_load_embedding_tensors(
     db: &EmbeddingDb,
     doc_ids: &[u64],

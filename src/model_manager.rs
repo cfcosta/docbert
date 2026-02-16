@@ -133,6 +133,9 @@ impl ModelManager {
     }
 
     /// Encodes document texts into ColBERT token-level embeddings.
+    ///
+    /// Returns a 3D tensor of shape `[batch_size, num_tokens, dimension]`.
+    /// Downloads the model on first call if not already cached.
     pub fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
         let model = self.ensure_loaded()?;
         Ok(model.encode(texts, false)?)
@@ -150,6 +153,12 @@ impl ModelManager {
     }
 
     /// Computes MaxSim similarity scores between query and document embeddings.
+    ///
+    /// Both tensors must be 3D: `[batch, tokens, dimension]`. Returns a
+    /// `Similarities` struct containing a `data: Vec<Vec<f32>>` matrix of scores.
+    ///
+    /// The model must already be loaded (via a prior `encode_*` call),
+    /// otherwise returns a `Config` error.
     pub fn similarity(
         &self,
         query_embeddings: &Tensor,
@@ -162,16 +171,27 @@ impl ModelManager {
     }
 }
 
-/// How the model ID was resolved.
+/// How the model ID was resolved, in priority order.
+///
+/// [`resolve_model`] tries each source in order: CLI > Env > Config > Default.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::model_manager::ModelSource;
+///
+/// assert_eq!(ModelSource::Cli.as_str(), "cli");
+/// assert_eq!(ModelSource::Default.as_str(), "default");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSource {
-    /// Set via `--model` CLI flag.
+    /// Set via `--model` CLI flag (highest priority).
     Cli,
     /// Set via `DOCBERT_MODEL` environment variable.
     Env,
-    /// Stored in config.db `model_name` setting.
+    /// Stored in `config.db` as the `model_name` setting.
     Config,
-    /// Hardcoded default.
+    /// Hardcoded default (`lightonai/GTE-ModernColBERT-v1`).
     Default,
 }
 
@@ -188,12 +208,20 @@ impl ModelSource {
 }
 
 /// The result of resolving which model to use.
+///
+/// Contains the final model ID, which source it came from, and the
+/// raw values from each source for diagnostic display.
 #[derive(Debug, Clone)]
 pub struct ModelResolution {
+    /// The resolved model ID that will be used.
     pub model_id: String,
+    /// Which source provided the model ID.
     pub source: ModelSource,
+    /// Value from the `DOCBERT_MODEL` environment variable, if set.
     pub env_model: Option<String>,
+    /// Value from the `model_name` setting in `config.db`, if set.
     pub config_model: Option<String>,
+    /// Value from the `--model` CLI flag, if provided.
     pub cli_model: Option<String>,
 }
 

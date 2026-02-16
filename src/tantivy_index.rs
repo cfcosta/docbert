@@ -20,14 +20,24 @@ use tantivy::{
 
 use crate::error::Result;
 
-/// Field names used in the schema.
+/// Field names used in the Tantivy schema.
+///
+/// These constants match the field names in the index schema and are used
+/// for querying and extracting values from search results.
 pub mod fields {
+    /// Short hex document identifier (STRING, STORED).
     pub const DOC_ID: &str = "doc_id";
+    /// Numeric document identifier (u64, STORED, FAST).
     pub const DOC_NUM_ID: &str = "doc_num_id";
+    /// Collection name the document belongs to (STRING, STORED, FAST).
     pub const COLLECTION: &str = "collection";
+    /// Relative file path within the collection (STRING, STORED).
     pub const PATH: &str = "path";
+    /// Document title, indexed with English stemming and 2x boost (TEXT, STORED).
     pub const TITLE: &str = "title";
+    /// Document body, indexed with English stemming (TEXT, not stored).
     pub const BODY: &str = "body";
+    /// Last modification time as seconds since Unix epoch (u64, STORED, FAST).
     pub const MTIME: &str = "mtime";
 }
 
@@ -59,27 +69,47 @@ pub struct SearchIndex {
     schema: Schema,
 }
 
-/// Resolved field handles for the schema.
+/// Resolved field handles for the Tantivy schema.
+///
+/// Obtained via [`SearchIndex::fields`]. These handles are used when
+/// constructing queries or extracting values from Tantivy documents.
 #[derive(Clone, Copy)]
 pub struct SchemaFields {
+    /// Short hex document identifier.
     pub doc_id: Field,
+    /// Numeric document identifier.
     pub doc_num_id: Field,
+    /// Collection name.
     pub collection: Field,
+    /// Relative file path.
     pub path: Field,
+    /// Document title (2x boost in search).
     pub title: Field,
+    /// Document body text.
     pub body: Field,
+    /// Last modification time (Unix timestamp).
     pub mtime: Field,
 }
 
-/// A search result from the index.
+/// A search result from the Tantivy index.
+///
+/// Returned by [`SearchIndex::search`], [`SearchIndex::search_in_collection`],
+/// and [`SearchIndex::search_fuzzy`].
 #[derive(Debug, Clone)]
 pub struct SearchResult {
+    /// BM25 relevance score.
     pub score: f32,
+    /// Short hex document identifier.
     pub doc_id: String,
+    /// Numeric document identifier (used as key in embedding/metadata databases).
     pub doc_num_id: u64,
+    /// Collection this document belongs to.
     pub collection: String,
+    /// Relative file path within the collection.
     pub path: String,
+    /// Document title.
     pub title: String,
+    /// Last modification time as seconds since the Unix epoch.
     pub mtime: u64,
 }
 
@@ -135,6 +165,18 @@ fn register_tokenizers(index: &Index) {
 
 impl SearchIndex {
     /// Open or create a search index at the given directory.
+    ///
+    /// Creates the directory if it does not exist. If the index already
+    /// exists on disk, it is opened; otherwise a new one is created.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::SearchIndex;
+    ///
+    /// let index = SearchIndex::open(&tmp.path().join("tantivy")).unwrap();
+    /// ```
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let (schema, _) = build_schema();
@@ -163,7 +205,19 @@ impl SearchIndex {
         })
     }
 
-    /// Create an in-memory search index (for testing).
+    /// Create an in-memory search index.
+    ///
+    /// Useful for testing. Data is lost when the `SearchIndex` is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use docbert::SearchIndex;
+    ///
+    /// let index = SearchIndex::open_in_ram().unwrap();
+    /// let results = index.search("anything", 10).unwrap();
+    /// assert!(results.is_empty());
+    /// ```
     pub fn open_in_ram() -> Result<Self> {
         let (schema, _) = build_schema();
         let index = Index::create_in_ram(schema.clone());
@@ -177,7 +231,7 @@ impl SearchIndex {
         })
     }
 
-    /// Get the resolved field handles.
+    /// Get the resolved field handles for building custom queries.
     pub fn fields(&self) -> SchemaFields {
         let f = |name: &str| self.schema.get_field(name).unwrap();
         SchemaFields {
@@ -192,11 +246,17 @@ impl SearchIndex {
     }
 
     /// Create a writer with the given memory budget (in bytes).
+    ///
+    /// A typical budget is 15 MB (`15_000_000`). The writer must be
+    /// committed for changes to become visible to searchers.
     pub fn writer(&self, memory_budget: usize) -> Result<IndexWriter> {
         Ok(self.index.writer(memory_budget)?)
     }
 
     /// Add a document to the index via the given writer.
+    ///
+    /// If a document with the same `doc_id` already exists, it is replaced
+    /// (delete + insert). The writer must be committed afterwards.
     #[allow(clippy::too_many_arguments)]
     pub fn add_document(
         &self,
@@ -229,6 +289,8 @@ impl SearchIndex {
     }
 
     /// Delete all documents belonging to a collection.
+    ///
+    /// The deletions are staged; call `writer.commit()` to apply them.
     pub fn delete_collection(&self, writer: &IndexWriter, collection: &str) {
         let f = self.fields();
         let term = tantivy::Term::from_field_text(f.collection, collection);
@@ -236,6 +298,8 @@ impl SearchIndex {
     }
 
     /// Delete a single document by its short doc_id.
+    ///
+    /// The deletion is staged; call `writer.commit()` to apply it.
     pub fn delete_document(&self, writer: &IndexWriter, doc_id: &str) {
         let f = self.fields();
         let term = tantivy::Term::from_field_text(f.doc_id, doc_id);
@@ -279,6 +343,9 @@ impl SearchIndex {
     }
 
     /// Search within a specific collection only.
+    ///
+    /// Combines the BM25 query with a collection filter so only documents
+    /// from the specified collection are returned.
     pub fn search_in_collection(
         &self,
         query_str: &str,

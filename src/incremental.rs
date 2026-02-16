@@ -34,6 +34,9 @@ pub struct DocumentMetadata {
 
 impl DocumentMetadata {
     /// Serialize to a byte vector for storage in the config database.
+    ///
+    /// The format is `"collection\0relative_path\0mtime"` encoded as UTF-8.
+    /// Use [`deserialize`](Self::deserialize) to recover the struct.
     pub fn serialize(&self) -> Vec<u8> {
         format!(
             "{}\0{}\0{}",
@@ -58,6 +61,35 @@ impl DocumentMetadata {
 }
 
 /// Result of comparing discovered files against stored metadata.
+///
+/// Returned by [`diff_collection`]. Categorizes each file as new,
+/// changed, or deleted relative to what was previously indexed.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::ConfigDb;
+/// use docbert::incremental::{diff_collection, store_metadata};
+/// use docbert::walker::DiscoveredFile;
+/// use std::path::PathBuf;
+///
+/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+///
+/// let file = DiscoveredFile {
+///     relative_path: PathBuf::from("hello.md"),
+///     absolute_path: PathBuf::from("/abs/hello.md"),
+///     mtime: 100,
+/// };
+/// store_metadata(&db, "notes", &file).unwrap();
+///
+/// // Same file with updated mtime -> changed
+/// let updated = DiscoveredFile { mtime: 200, ..file };
+/// let diff = diff_collection(&db, "notes", &[updated]).unwrap();
+/// assert_eq!(diff.changed_files.len(), 1);
+/// assert!(diff.new_files.is_empty());
+/// assert!(diff.deleted_ids.is_empty());
+/// ```
 #[derive(Debug, Default)]
 pub struct DiffResult {
     /// Files that are new (not in metadata).
@@ -70,7 +102,9 @@ pub struct DiffResult {
 
 /// Compare discovered files against stored document metadata.
 ///
-/// Returns which files are new, changed, or deleted.
+/// Walks the stored metadata for the given collection and compares
+/// modification times against the discovered files. Returns a
+/// [`DiffResult`] categorizing each file.
 pub fn diff_collection(
     config_db: &ConfigDb,
     collection: &str,
@@ -120,6 +154,9 @@ pub fn diff_collection(
 }
 
 /// Store metadata for a document after successful indexing.
+///
+/// Computes the [`DocumentId`] from the collection
+/// name and relative path, then serializes and stores the metadata.
 pub fn store_metadata(
     config_db: &ConfigDb,
     collection: &str,
@@ -137,6 +174,9 @@ pub fn store_metadata(
 }
 
 /// Store metadata for multiple documents in a single transaction.
+///
+/// More efficient than calling [`store_metadata`] in a loop because
+/// all writes share one database transaction.
 pub fn batch_store_metadata(
     config_db: &ConfigDb,
     collection: &str,

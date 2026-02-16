@@ -26,9 +26,21 @@ pub struct DataDir {
 
 impl DataDir {
     /// Resolve the data directory from, in order of priority:
-    /// 1. An explicit path (from --data-dir)
-    /// 2. The DOCBERT_DATA_DIR environment variable
-    /// 3. The XDG data directory (~/.local/share/docbert/)
+    /// 1. An explicit path (from `--data-dir`)
+    /// 2. The `DOCBERT_DATA_DIR` environment variable
+    /// 3. The XDG data directory (`~/.local/share/docbert/`)
+    ///
+    /// Creates the directory (and any parents) if it does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::DataDir;
+    ///
+    /// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+    /// assert!(dir.root().exists());
+    /// ```
     pub fn resolve(explicit: Option<&Path>) -> Result<Self> {
         let root = if let Some(path) = explicit {
             path.to_path_buf()
@@ -65,6 +77,21 @@ impl DataDir {
         self.root.join("embeddings.db")
     }
 
+    /// Path to the Tantivy search index directory (`tantivy/`).
+    ///
+    /// Creates the directory if it does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::DataDir;
+    ///
+    /// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+    /// let tantivy = dir.tantivy_dir().unwrap();
+    /// assert!(tantivy.exists());
+    /// assert_eq!(tantivy, tmp.path().join("tantivy"));
+    /// ```
     pub fn tantivy_dir(&self) -> Result<PathBuf> {
         let path = self.root.join("tantivy");
         std::fs::create_dir_all(&path)

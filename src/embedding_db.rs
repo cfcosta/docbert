@@ -44,7 +44,24 @@ impl EmbeddingDb {
 
     /// Store an embedding matrix for a document.
     ///
-    /// Uses `insert_reserve` for zero-copy writes.
+    /// Uses `insert_reserve` for zero-copy writes. Overwrites any
+    /// existing embedding for this `doc_id`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != num_tokens * dimension`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// // Store 2 tokens x 3 dimensions = 6 floats
+    /// db.store(42, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+    /// assert!(db.load(42).unwrap().is_some());
+    /// ```
     pub fn store(
         &self,
         doc_id: u64,
@@ -76,7 +93,24 @@ impl EmbeddingDb {
 
     /// Retrieve an embedding matrix for a document.
     ///
-    /// Returns (num_tokens, dimension, data) or None if not found.
+    /// Returns `None` if the document has no stored embedding or if
+    /// the stored data is malformed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// assert!(db.load(999).unwrap().is_none()); // not found
+    ///
+    /// db.store(42, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+    /// let matrix = db.load(42).unwrap().unwrap();
+    /// assert_eq!(matrix.num_tokens, 2);
+    /// assert_eq!(matrix.dimension, 3);
+    /// assert_eq!(matrix.data.len(), 6);
+    /// ```
     pub fn load(&self, doc_id: u64) -> Result<Option<EmbeddingMatrix>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(EMBEDDINGS)?;
@@ -109,7 +143,19 @@ impl EmbeddingDb {
         }))
     }
 
-    /// Remove an embedding entry.
+    /// Remove an embedding entry. Returns `true` if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// db.store(42, 1, 2, &[1.0, 2.0]).unwrap();
+    /// assert!(db.remove(42).unwrap());
+    /// assert!(!db.remove(42).unwrap()); // already gone
+    /// ```
     pub fn remove(&self, doc_id: u64) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -121,6 +167,22 @@ impl EmbeddingDb {
     }
 
     /// Remove multiple embedding entries in a single transaction.
+    ///
+    /// More efficient than calling [`remove`](Self::remove) in a loop.
+    /// Silently skips IDs that do not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// db.store(1, 1, 2, &[1.0, 2.0]).unwrap();
+    /// db.store(2, 1, 2, &[3.0, 4.0]).unwrap();
+    /// db.batch_remove(&[1, 2, 999]).unwrap(); // 999 is silently ignored
+    /// assert!(db.list_ids().unwrap().is_empty());
+    /// ```
     pub fn batch_remove(&self, doc_ids: &[u64]) -> Result<()> {
         if doc_ids.is_empty() {
             return Ok(());
@@ -137,6 +199,27 @@ impl EmbeddingDb {
     }
 
     /// Store multiple embedding matrices in a single transaction.
+    ///
+    /// Each entry is `(doc_id, num_tokens, dimension, data)`.
+    /// More efficient than calling [`store`](Self::store) in a loop.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any entry's `data.len() != num_tokens * dimension`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// db.batch_store(&[
+    ///     (1, 1, 2, vec![1.0, 2.0]),
+    ///     (2, 1, 2, vec![3.0, 4.0]),
+    /// ]).unwrap();
+    /// assert_eq!(db.list_ids().unwrap().len(), 2);
+    /// ```
     pub fn batch_store(
         &self,
         entries: &[(u64, u32, u32, Vec<f32>)],
@@ -170,8 +253,24 @@ impl EmbeddingDb {
 
     /// Load multiple embedding matrices in a single transaction.
     ///
-    /// Returns a vector of `(doc_id, Option<EmbeddingMatrix>)` preserving input order.
-    /// Missing embeddings return None.
+    /// Returns a vector of `(doc_id, Option<EmbeddingMatrix>)` preserving input
+    /// order. Missing embeddings return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// db.store(10, 1, 2, &[1.0, 2.0]).unwrap();
+    /// db.store(20, 1, 2, &[3.0, 4.0]).unwrap();
+    ///
+    /// let results = db.batch_load(&[20, 999, 10]).unwrap();
+    /// assert!(results[0].1.is_some());  // doc 20
+    /// assert!(results[1].1.is_none());  // doc 999 missing
+    /// assert!(results[2].1.is_some());  // doc 10
+    /// ```
     pub fn batch_load(
         &self,
         doc_ids: &[u64],
@@ -220,6 +319,20 @@ impl EmbeddingDb {
     }
 
     /// List all stored document IDs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// use docbert::EmbeddingDb;
+    ///
+    /// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+    /// db.store(10, 1, 2, &[1.0, 2.0]).unwrap();
+    /// db.store(20, 1, 2, &[3.0, 4.0]).unwrap();
+    /// let mut ids = db.list_ids().unwrap();
+    /// ids.sort();
+    /// assert_eq!(ids, vec![10, 20]);
+    /// ```
     pub fn list_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(EMBEDDINGS)?;
@@ -239,9 +352,30 @@ impl std::fmt::Debug for EmbeddingDb {
 }
 
 /// A retrieved ColBERT embedding matrix.
+///
+/// Stores per-token embedding vectors in a flat `Vec<f32>` in row-major order.
+/// Use [`token_embedding`](Self::token_embedding) to access individual token vectors.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::EmbeddingDb;
+///
+/// let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+/// db.store(1, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+///
+/// let matrix = db.load(1).unwrap().unwrap();
+/// assert_eq!(matrix.num_tokens, 2);
+/// assert_eq!(matrix.dimension, 3);
+/// assert_eq!(matrix.token_embedding(0), &[1.0, 2.0, 3.0]);
+/// assert_eq!(matrix.token_embedding(1), &[4.0, 5.0, 6.0]);
+/// ```
 #[derive(Debug, Clone)]
 pub struct EmbeddingMatrix {
+    /// Number of tokens (rows) in the matrix.
     pub num_tokens: u32,
+    /// Embedding dimension (columns) per token.
     pub dimension: u32,
     /// Flat array of f32 values in row-major order: `data[token_idx * dimension + dim_idx]`.
     pub data: Vec<f32>,
@@ -249,6 +383,12 @@ pub struct EmbeddingMatrix {
 
 impl EmbeddingMatrix {
     /// Get the embedding vector for a specific token.
+    ///
+    /// Returns a slice of length [`dimension`](Self::dimension).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `token_idx >= num_tokens`.
     pub fn token_embedding(&self, token_idx: u32) -> &[f32] {
         let start = (token_idx * self.dimension) as usize;
         let end = start + self.dimension as usize;

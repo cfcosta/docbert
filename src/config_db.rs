@@ -108,6 +108,16 @@ impl ConfigDb {
     }
 
     /// Remove a collection by name. Returns `true` if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_collection("notes", "/notes").unwrap();
+    /// assert!(db.remove_collection("notes").unwrap());
+    /// assert!(!db.remove_collection("notes").unwrap()); // already gone
+    /// ```
     pub fn remove_collection(&self, name: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -166,6 +176,19 @@ impl ConfigDb {
     }
 
     /// Get the context description for a URI, if one exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// assert_eq!(db.get_context("bert://notes").unwrap(), None);
+    /// db.set_context("bert://notes", "Personal notes").unwrap();
+    /// assert_eq!(
+    ///     db.get_context("bert://notes").unwrap(),
+    ///     Some("Personal notes".to_string()),
+    /// );
+    /// ```
     pub fn get_context(&self, uri: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONTEXTS)?;
@@ -173,6 +196,16 @@ impl ConfigDb {
     }
 
     /// Remove a context by URI. Returns `true` if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_context("bert://notes", "Notes").unwrap();
+    /// assert!(db.remove_context("bert://notes").unwrap());
+    /// assert!(!db.remove_context("bert://notes").unwrap()); // already gone
+    /// ```
     pub fn remove_context(&self, uri: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -184,6 +217,17 @@ impl ConfigDb {
     }
 
     /// List all contexts as `(uri, description)` pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_context("bert://a", "A description").unwrap();
+    /// db.set_context("bert://b", "B description").unwrap();
+    /// let contexts = db.list_contexts().unwrap();
+    /// assert_eq!(contexts.len(), 2);
+    /// ```
     pub fn list_contexts(&self) -> Result<Vec<(String, String)>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONTEXTS)?;
@@ -198,6 +242,19 @@ impl ConfigDb {
     // -- Document Metadata --
 
     /// Store serialized metadata for a document by its numeric ID.
+    ///
+    /// The bytes are opaque to `ConfigDb`; callers typically use
+    /// [`DocumentMetadata::serialize`](crate::incremental::DocumentMetadata::serialize).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_document_metadata(42, b"collection\0path\01000").unwrap();
+    /// let bytes = db.get_document_metadata(42).unwrap().unwrap();
+    /// assert_eq!(bytes, b"collection\0path\01000");
+    /// ```
     pub fn set_document_metadata(
         &self,
         doc_id: u64,
@@ -213,6 +270,16 @@ impl ConfigDb {
     }
 
     /// Retrieve serialized metadata for a document. Returns `None` if not found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// assert!(db.get_document_metadata(999).unwrap().is_none());
+    /// db.set_document_metadata(42, b"data").unwrap();
+    /// assert_eq!(db.get_document_metadata(42).unwrap().unwrap(), b"data");
+    /// ```
     pub fn get_document_metadata(
         &self,
         doc_id: u64,
@@ -223,6 +290,16 @@ impl ConfigDb {
     }
 
     /// Remove a document's metadata. Returns `true` if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_document_metadata(42, b"data").unwrap();
+    /// assert!(db.remove_document_metadata(42).unwrap());
+    /// assert!(!db.remove_document_metadata(42).unwrap());
+    /// ```
     pub fn remove_document_metadata(&self, doc_id: u64) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -234,6 +311,21 @@ impl ConfigDb {
     }
 
     /// Remove multiple document metadata entries in a single transaction.
+    ///
+    /// More efficient than calling [`remove_document_metadata`](Self::remove_document_metadata)
+    /// in a loop because all removals share one write transaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_document_metadata(1, b"a").unwrap();
+    /// db.set_document_metadata(2, b"b").unwrap();
+    /// db.batch_remove_document_metadata(&[1, 2]).unwrap();
+    /// assert!(db.get_document_metadata(1).unwrap().is_none());
+    /// assert!(db.get_document_metadata(2).unwrap().is_none());
+    /// ```
     pub fn batch_remove_document_metadata(
         &self,
         doc_ids: &[u64],
@@ -253,6 +345,22 @@ impl ConfigDb {
     }
 
     /// Set multiple document metadata entries in a single transaction.
+    ///
+    /// More efficient than calling [`set_document_metadata`](Self::set_document_metadata)
+    /// in a loop because all writes share one transaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.batch_set_document_metadata(&[
+    ///     (1, b"meta_a".to_vec()),
+    ///     (2, b"meta_b".to_vec()),
+    /// ]).unwrap();
+    /// assert_eq!(db.get_document_metadata(1).unwrap().unwrap(), b"meta_a");
+    /// assert_eq!(db.get_document_metadata(2).unwrap().unwrap(), b"meta_b");
+    /// ```
     pub fn batch_set_document_metadata(
         &self,
         entries: &[(u64, Vec<u8>)],
@@ -272,6 +380,18 @@ impl ConfigDb {
     }
 
     /// List all stored document numeric IDs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_document_metadata(10, b"a").unwrap();
+    /// db.set_document_metadata(20, b"b").unwrap();
+    /// let mut ids = db.list_document_ids().unwrap();
+    /// ids.sort();
+    /// assert_eq!(ids, vec![10, 20]);
+    /// ```
     pub fn list_document_ids(&self) -> Result<Vec<u64>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;
@@ -283,7 +403,18 @@ impl ConfigDb {
         Ok(result)
     }
 
-    /// Return all (doc_id, metadata_bytes) pairs in a single read transaction.
+    /// Return all `(doc_id, metadata_bytes)` pairs in a single read transaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_document_metadata(1, b"a").unwrap();
+    /// db.set_document_metadata(2, b"b").unwrap();
+    /// let all = db.list_all_document_metadata().unwrap();
+    /// assert_eq!(all.len(), 2);
+    /// ```
     pub fn list_all_document_metadata(&self) -> Result<Vec<(u64, Vec<u8>)>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;
@@ -317,6 +448,16 @@ impl ConfigDb {
     }
 
     /// Get a setting value by key. Returns `None` if not set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// assert!(db.get_setting("model_name").unwrap().is_none());
+    /// db.set_setting("model_name", "custom/model").unwrap();
+    /// assert_eq!(db.get_setting("model_name").unwrap().unwrap(), "custom/model");
+    /// ```
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(SETTINGS)?;
@@ -324,6 +465,16 @@ impl ConfigDb {
     }
 
     /// Remove a setting by key. Returns `true` if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// db.set_setting("key", "value").unwrap();
+    /// assert!(db.remove_setting("key").unwrap());
+    /// assert!(!db.remove_setting("key").unwrap());
+    /// ```
     pub fn remove_setting(&self, key: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
@@ -335,6 +486,16 @@ impl ConfigDb {
     }
 
     /// Get a setting, returning the default if not set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let tmp = tempfile::tempdir().unwrap();
+    /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+    /// assert_eq!(db.get_setting_or("model_name", "default/model").unwrap(), "default/model");
+    /// db.set_setting("model_name", "custom/model").unwrap();
+    /// assert_eq!(db.get_setting_or("model_name", "default/model").unwrap(), "custom/model");
+    /// ```
     pub fn get_setting_or(&self, key: &str, default: &str) -> Result<String> {
         Ok(self
             .get_setting(key)?

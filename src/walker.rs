@@ -5,12 +5,15 @@ use std::{
 
 use crate::error::Result;
 
-/// A discovered document file.
+/// A discovered document file on disk.
+///
+/// Produced by [`discover_files`]. Carries both relative and absolute
+/// paths, plus the modification time used for incremental indexing.
 #[derive(Debug, Clone)]
 pub struct DiscoveredFile {
-    /// Path relative to the collection root directory.
+    /// Path relative to the collection root directory (e.g., `"subdir/note.md"`).
     pub relative_path: PathBuf,
-    /// Fully resolved absolute path.
+    /// Fully resolved absolute path on disk.
     pub absolute_path: PathBuf,
     /// Last modification time as seconds since the Unix epoch.
     pub mtime: u64,

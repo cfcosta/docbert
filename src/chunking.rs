@@ -25,10 +25,27 @@ pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 
 /// Chunking configuration derived from model settings.
+///
+/// Resolved via [`resolve_chunking_config`] which reads the model's
+/// `config_sentence_transformers.json` for the `document_length` setting.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
+///
+/// // Remote model IDs use defaults
+/// let config = resolve_chunking_config("lightonai/GTE-ModernColBERT-v1");
+/// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
+/// assert_eq!(config.document_length, None);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkingConfig {
+    /// Maximum chunk size in characters.
     pub chunk_size: usize,
+    /// Overlap between adjacent chunks in characters.
     pub overlap: usize,
+    /// Token-based document length from the model config, if available.
     pub document_length: Option<usize>,
 }
 
@@ -51,8 +68,20 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 
 /// Resolve chunking settings from a model path (if local), falling back to defaults.
 ///
-/// For local model directories with `config_sentence_transformers.json`, uses the
-/// configured document_length. Otherwise uses the default 1024 tokens.
+/// For local model directories containing `config_sentence_transformers.json`,
+/// reads the `document_length` field and computes the chunk size as
+/// `document_length * 4` (approximating 4 characters per token).
+/// For remote model IDs (e.g., `"lightonai/GTE-ModernColBERT-v1"`), uses
+/// the default of 1024 tokens.
+///
+/// # Examples
+///
+/// ```
+/// use docbert::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
+///
+/// let config = resolve_chunking_config("lightonai/GTE-ModernColBERT-v1");
+/// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
+/// ```
 pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
     let model_path = Path::new(model_id);
     if model_path.is_dir()
@@ -73,13 +102,16 @@ pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
 }
 
 /// A chunk of text from a larger document.
+///
+/// Produced by [`chunk_text`]. Each chunk represents a window of the
+/// original text, with an index and byte offset for mapping back.
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    /// The chunk text.
+    /// The chunk text content.
     pub text: String,
     /// Zero-based chunk index within the document.
     pub index: usize,
-    /// Character offset where this chunk starts in the original document.
+    /// Byte offset where this chunk starts in the original document.
     pub start_offset: usize,
 }
 

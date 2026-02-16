@@ -76,23 +76,63 @@ pub struct SemanticSearchParams {
 }
 
 /// A final search result combining BM25 and optional ColBERT scores.
+///
+/// Produced by [`execute_search`] and [`execute_semantic_search`].
+/// Results are sorted by score descending and assigned sequential ranks.
 #[derive(Debug, Clone)]
 pub struct FinalResult {
+    /// 1-indexed position in the result list.
     pub rank: usize,
+    /// Relevance score (BM25 or ColBERT MaxSim, depending on search mode).
     pub score: f32,
+    /// Short hex document identifier (e.g., `"a1b2c3"`).
     pub doc_id: String,
+    /// Numeric document identifier (key in embedding/metadata databases).
     pub doc_num_id: u64,
+    /// Collection this document belongs to.
     pub collection: String,
+    /// Relative file path within the collection.
     pub path: String,
+    /// Document title extracted from content or filename.
     pub title: String,
 }
 
 /// Execute the full search pipeline.
 ///
-/// 1. BM25 first-stage retrieval via Tantivy (top 1000)
-/// 2. ColBERT reranking (unless --bm25-only)
-/// 3. Filter by --min-score
-/// 4. Limit to -n results
+/// The pipeline has four stages:
+/// 1. **BM25 retrieval** — Tantivy keyword search (top 1000 candidates),
+///    optionally with fuzzy matching.
+/// 2. **ColBERT reranking** — neural reranking of candidates using MaxSim
+///    scoring (skipped when `bm25_only` is set).
+/// 3. **Score filtering** — drop results below `min_score`.
+/// 4. **Limit** — return at most `count` results (or all if `all` is set).
+///
+/// # Examples
+///
+/// ```no_run
+/// use docbert::{SearchIndex, EmbeddingDb, ModelManager};
+/// use docbert::search::{execute_search, SearchParams};
+///
+/// # let tmp = tempfile::tempdir().unwrap();
+/// let index = SearchIndex::open_in_ram().unwrap();
+/// let emb_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+/// let mut model = ModelManager::new();
+///
+/// let params = SearchParams {
+///     query: "rust programming".to_string(),
+///     count: 10,
+///     collection: None,
+///     min_score: 0.0,
+///     bm25_only: true,
+///     no_fuzzy: false,
+///     all: false,
+/// };
+///
+/// let results = execute_search(&params, &index, &emb_db, &mut model).unwrap();
+/// for r in &results {
+///     println!("{}: {} (score {:.3})", r.rank, r.title, r.score);
+/// }
+/// ```
 pub fn execute_search(
     args: &SearchParams,
     search_index: &SearchIndex,
@@ -155,6 +195,13 @@ pub fn execute_search(
 }
 
 /// Execute semantic-only search across all documents.
+///
+/// Unlike [`execute_search`], this skips BM25 entirely and computes
+/// ColBERT MaxSim scores against every document with stored embeddings.
+/// This finds semantically related documents even when they share no
+/// keywords with the query.
+///
+/// Requires a loaded ColBERT model (will be downloaded on first call).
 pub fn execute_semantic_search(
     args: &SemanticSearchParams,
     config_db: &ConfigDb,
@@ -238,10 +285,32 @@ pub fn execute_semantic_search(
     Ok(results)
 }
 
-/// Resolve a document by its short ID (e.g., "a1b2c3").
+/// Resolve a document by its short ID (e.g., `"a1b2c3"` or `"#a1b2c3"`).
 ///
 /// Iterates all known document metadata and matches by short ID string
 /// or substring containment. Returns `(collection, relative_path)`.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::{ConfigDb, DocumentId};
+/// use docbert::incremental::DocumentMetadata;
+/// use docbert::search::resolve_by_doc_id;
+///
+/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+/// let id = DocumentId::new("notes", "hello.md");
+/// let meta = DocumentMetadata {
+///     collection: "notes".to_string(),
+///     relative_path: "hello.md".to_string(),
+///     mtime: 1000,
+/// };
+/// db.set_document_metadata(id.numeric, &meta.serialize()).unwrap();
+///
+/// let (coll, path) = resolve_by_doc_id(&db, &id.short).unwrap();
+/// assert_eq!(coll, "notes");
+/// assert_eq!(path, "hello.md");
+/// ```
 pub fn resolve_by_doc_id(
     config_db: &ConfigDb,
     short_id: &str,
@@ -260,9 +329,32 @@ pub fn resolve_by_doc_id(
     None
 }
 
-/// Resolve a document by its relative path.
+/// Resolve a document by its relative path within any collection.
 ///
-/// Returns `(collection, relative_path)`.
+/// Returns `(collection, relative_path)` or `None` if no document
+/// matches the given path.
+///
+/// # Examples
+///
+/// ```
+/// # let tmp = tempfile::tempdir().unwrap();
+/// use docbert::{ConfigDb, DocumentId};
+/// use docbert::incremental::DocumentMetadata;
+/// use docbert::search::resolve_by_path;
+///
+/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+/// let id = DocumentId::new("notes", "hello.md");
+/// let meta = DocumentMetadata {
+///     collection: "notes".to_string(),
+///     relative_path: "hello.md".to_string(),
+///     mtime: 1000,
+/// };
+/// db.set_document_metadata(id.numeric, &meta.serialize()).unwrap();
+///
+/// let (coll, path) = resolve_by_path(&db, "hello.md").unwrap();
+/// assert_eq!(coll, "notes");
+/// assert!(resolve_by_path(&db, "nonexistent.md").is_none());
+/// ```
 pub fn resolve_by_path(
     config_db: &ConfigDb,
     path: &str,
@@ -369,6 +461,9 @@ fn rerank_results(
 }
 
 /// Format results for human-readable terminal output.
+///
+/// Prints each result as `rank. [score] collection:path #doc_id` followed
+/// by the title on the next line. Prints a total count at the end.
 pub fn format_human(results: &[FinalResult]) {
     if results.is_empty() {
         println!("No results found.");
@@ -392,6 +487,9 @@ pub fn format_human(results: &[FinalResult]) {
 }
 
 /// Format results as JSON output.
+///
+/// Prints a JSON object with `query`, `result_count`, and a `results` array
+/// containing `rank`, `score`, `doc_id`, `collection`, `path`, and `title`.
 pub fn format_json(results: &[FinalResult], query: &str) {
     print!(
         "{{\"query\":{},\"result_count\":{},\"results\":[",
@@ -418,6 +516,9 @@ pub fn format_json(results: &[FinalResult], query: &str) {
 }
 
 /// Format results as plain file paths (one per line).
+///
+/// Resolves relative paths against the collection's root directory
+/// and prints full absolute paths, suitable for piping to other tools.
 pub fn format_files(
     results: &[FinalResult],
     config_db: &crate::config_db::ConfigDb,

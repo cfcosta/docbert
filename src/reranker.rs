@@ -10,9 +10,12 @@ use crate::{
 /// A reranked document with its ColBERT MaxSim score.
 ///
 /// Produced by [`rerank`] after comparing query and document embeddings.
+/// Results are sorted by score descending.
 #[derive(Debug, Clone)]
 pub struct RankedDocument {
+    /// Numeric document identifier.
     pub doc_num_id: u64,
+    /// ColBERT MaxSim similarity score (higher = more relevant).
     pub score: f32,
 }
 
@@ -20,8 +23,9 @@ pub struct RankedDocument {
 ///
 /// For each candidate document:
 /// 1. Load its embedding matrix from the database (batch load for efficiency)
-/// 2. Use pylate's similarity function to compute MaxSim score
+/// 2. Compute MaxSim score against the query embedding
 ///
+/// Documents without stored embeddings are silently skipped.
 /// Returns candidates sorted by score descending.
 pub fn rerank(
     query_embedding: &Tensor,

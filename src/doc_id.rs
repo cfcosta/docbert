@@ -33,6 +33,25 @@ pub struct DocumentId {
 
 impl DocumentId {
     /// Generate a stable document ID from collection name and relative path.
+    ///
+    /// The same inputs always produce the same ID, making it safe to
+    /// regenerate IDs at any time without database lookups.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use docbert::DocumentId;
+    ///
+    /// let id = DocumentId::new("notes", "hello.md");
+    /// assert_eq!(id.short.len(), 6);
+    /// assert!(id.numeric > 0);
+    ///
+    /// // Deterministic: same inputs -> same ID
+    /// assert_eq!(id, DocumentId::new("notes", "hello.md"));
+    ///
+    /// // Different inputs -> different ID
+    /// assert_ne!(id, DocumentId::new("notes", "other.md"));
+    /// ```
     pub fn new(collection: &str, relative_path: &str) -> Self {
         let numeric = Self::hash_pair(collection, relative_path);
         let short = Self::short_hex(numeric, 6);
@@ -52,7 +71,21 @@ impl DocumentId {
     }
 
     /// Extend the short ID to avoid collisions.
-    /// Returns a new DocumentId with a longer short hex string.
+    ///
+    /// Returns a new `DocumentId` with a longer short hex string.
+    /// The length is clamped to `[6, 16]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use docbert::DocumentId;
+    ///
+    /// let id = DocumentId::new("notes", "hello.md");
+    /// let extended = id.extend_short(10);
+    /// assert_eq!(extended.short.len(), 10);
+    /// assert!(extended.short.starts_with(&id.short));
+    /// assert_eq!(extended.numeric, id.numeric);
+    /// ```
     pub fn extend_short(&self, len: usize) -> Self {
         let len = len.clamp(6, 16);
         Self {
