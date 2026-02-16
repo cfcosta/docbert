@@ -68,7 +68,7 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum CollectionAction {
-    /// Register a directory as a named collection and index its contents
+    /// Register a directory as a named collection (run `sync` to index)
     Add {
         /// Path to the directory
         path: PathBuf,

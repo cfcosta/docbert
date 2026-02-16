@@ -112,10 +112,10 @@ Search across all collections (or a specific one).
 Human output format:
 
 ```
-  1. [0.847] notes:project-ideas.md ##a1b2c3
+  1. [0.847] notes:project-ideas.md #a1b2c3
      Project Timeline and Milestones
 
-  2. [0.812] docs:roadmap.md ##d4e5f6
+  2. [0.812] docs:roadmap.md #d4e5f6
      Q1 2025 Roadmap
 ```
 

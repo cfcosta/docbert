@@ -472,12 +472,8 @@ pub fn format_human(results: &[FinalResult]) {
 
     for r in results {
         println!(
-            "{:>3}. [{:.3}] {}:{} #{}",
-            r.rank,
-            r.score,
-            r.collection,
-            r.path,
-            &r.doc_id[..r.doc_id.len().min(7)]
+            "{:>3}. [{:.3}] {}:{} {}",
+            r.rank, r.score, r.collection, r.path, r.doc_id
         );
         if !r.title.is_empty() {
             println!("     {}", r.title);
