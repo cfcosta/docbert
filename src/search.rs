@@ -403,16 +403,24 @@ pub fn short_doc_id(numeric: u64) -> String {
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
+    let mut collection_paths: std::collections::HashMap<
+        String,
+        Option<String>,
+    > = std::collections::HashMap::new();
+
     for r in results {
         let fallback = ingestion::extract_title("", Path::new(&r.path));
-        let Some(collection_path) =
-            config_db.get_collection(&r.collection).ok().flatten()
-        else {
+        let collection_path = collection_paths
+            .entry(r.collection.clone())
+            .or_insert_with(|| {
+                config_db.get_collection(&r.collection).ok().flatten()
+            });
+        let Some(collection_path) = collection_path.as_deref() else {
             r.title = fallback;
             continue;
         };
 
-        let full_path = Path::new(&collection_path).join(&r.path);
+        let full_path = Path::new(collection_path).join(&r.path);
         let content = std::fs::read_to_string(&full_path).unwrap_or_default();
         let title = if content.is_empty() {
             fallback
@@ -519,10 +527,19 @@ pub fn format_files(
     results: &[FinalResult],
     config_db: &crate::config_db::ConfigDb,
 ) {
+    let mut collection_paths: std::collections::HashMap<
+        String,
+        Option<String>,
+    > = std::collections::HashMap::new();
+
     for r in results {
-        if let Ok(Some(collection_path)) =
-            config_db.get_collection(&r.collection)
-        {
+        let collection_path = collection_paths
+            .entry(r.collection.clone())
+            .or_insert_with(|| {
+                config_db.get_collection(&r.collection).ok().flatten()
+            });
+
+        if let Some(collection_path) = collection_path {
             let full_path =
                 std::path::Path::new(&collection_path).join(&r.path);
             println!("{}", full_path.display());

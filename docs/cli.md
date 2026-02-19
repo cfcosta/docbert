@@ -26,6 +26,7 @@ Register a directory as a named collection.
 
 - `<path>`: Path to the directory (resolved to absolute)
 - `--name <name>`: Human-readable collection name (required)
+- This command only registers metadata. It does **not** index files.
 
 Behavior:
 

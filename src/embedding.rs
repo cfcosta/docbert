@@ -91,7 +91,7 @@ pub fn batch_load_embedding_tensors(
         .into_iter()
         .map(|(doc_id, matrix_opt)| {
             let tensor_opt = match matrix_opt {
-                Some(matrix) => Some(matrix_to_tensor(&matrix)?),
+                Some(matrix) => Some(matrix_to_tensor(matrix)?),
                 None => None,
             };
             Ok((doc_id, tensor_opt))
@@ -101,13 +101,13 @@ pub fn batch_load_embedding_tensors(
 
 /// Convert an EmbeddingMatrix to a Tensor.
 fn matrix_to_tensor(
-    matrix: &crate::embedding_db::EmbeddingMatrix,
+    matrix: crate::embedding_db::EmbeddingMatrix,
 ) -> Result<Tensor> {
     let num_tokens = matrix.num_tokens as usize;
     let dimension = matrix.dimension as usize;
 
     Tensor::from_vec(
-        matrix.data.clone(),
+        matrix.data,
         (num_tokens, dimension),
         &candle_core::Device::Cpu,
     )
@@ -147,15 +147,8 @@ pub fn load_embedding_tensor(
 
     let num_tokens = matrix.num_tokens as usize;
     let dimension = matrix.dimension as usize;
-
-    // Collect all token embeddings into a flat vector.
-    let mut data = Vec::with_capacity(num_tokens * dimension);
-    for i in 0..num_tokens {
-        data.extend_from_slice(matrix.token_embedding(i as u32));
-    }
-
     let tensor = Tensor::from_vec(
-        data,
+        matrix.data,
         (num_tokens, dimension),
         &candle_core::Device::Cpu,
     )

@@ -10,6 +10,26 @@ use crate::{
     walker::DiscoveredFile,
 };
 
+/// A fully loaded document ready for indexing and embedding.
+///
+/// Produced by [`load_documents`]. Holds all data derived from a discovered
+/// file so downstream stages can reuse it without re-reading from disk.
+#[derive(Debug, Clone)]
+pub struct LoadedDocument {
+    /// Short display document ID (e.g. `#a1b2c3`).
+    pub doc_id: String,
+    /// Numeric document ID used as database key.
+    pub doc_num_id: u64,
+    /// Relative path within the collection.
+    pub relative_path: String,
+    /// Extracted title (first `# ` heading or filename fallback).
+    pub title: String,
+    /// Full file content.
+    pub content: String,
+    /// Last modification time (seconds since Unix epoch).
+    pub mtime: u64,
+}
+
 /// Extract a title from file content.
 ///
 /// Looks for the first markdown heading (line starting with `# `).
@@ -31,6 +51,61 @@ pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("untitled")
         .to_string()
+}
+
+/// Load discovered files into memory and derive indexable metadata.
+///
+/// Reads files in parallel, extracts titles, and computes stable document IDs.
+/// Files that cannot be read are skipped.
+pub fn load_documents(
+    collection: &str,
+    files: &[DiscoveredFile],
+) -> Vec<LoadedDocument> {
+    files
+        .par_iter()
+        .filter_map(|file| {
+            let content = std::fs::read_to_string(&file.absolute_path).ok()?;
+            let title = extract_title(&content, &file.relative_path);
+            let relative_path =
+                file.relative_path.to_string_lossy().to_string();
+            let did = DocumentId::new(collection, &relative_path);
+            Some(LoadedDocument {
+                doc_id: did.to_string(),
+                doc_num_id: did.numeric,
+                relative_path,
+                title,
+                content,
+                mtime: file.mtime,
+            })
+        })
+        .collect()
+}
+
+/// Ingest preloaded documents into the Tantivy search index.
+///
+/// This is useful when the caller needs to reuse loaded content for additional
+/// processing (e.g. embedding) without reading files twice.
+pub fn ingest_loaded_documents(
+    index: &SearchIndex,
+    writer: &mut IndexWriter,
+    collection: &str,
+    documents: &[LoadedDocument],
+) -> Result<usize> {
+    for doc in documents {
+        index.add_document(
+            writer,
+            &doc.doc_id,
+            doc.doc_num_id,
+            collection,
+            &doc.relative_path,
+            &doc.title,
+            &doc.content,
+            doc.mtime,
+        )?;
+    }
+
+    writer.commit()?;
+    Ok(documents.len())
 }
 
 /// Ingest a batch of discovered files into the Tantivy search index.
@@ -61,33 +136,8 @@ pub fn ingest_files(
     collection: &str,
     files: &[DiscoveredFile],
 ) -> Result<usize> {
-    // Read files in parallel, then index sequentially (IndexWriter is not Send).
-    let loaded: Vec<_> = files
-        .par_iter()
-        .filter_map(|file| {
-            let content = std::fs::read_to_string(&file.absolute_path).ok()?;
-            let title = extract_title(&content, &file.relative_path);
-            let rel_path_str = file.relative_path.to_string_lossy().to_string();
-            let doc_id = DocumentId::new(collection, &rel_path_str);
-            Some((doc_id, rel_path_str, title, content, file.mtime))
-        })
-        .collect();
-
-    for (doc_id, rel_path_str, title, content, mtime) in &loaded {
-        index.add_document(
-            writer,
-            &doc_id.to_string(),
-            doc_id.numeric,
-            collection,
-            rel_path_str,
-            title,
-            content,
-            *mtime,
-        )?;
-    }
-
-    writer.commit()?;
-    Ok(loaded.len())
+    let loaded = load_documents(collection, files);
+    ingest_loaded_documents(index, writer, collection, &loaded)
 }
 
 #[cfg(test)]
@@ -175,6 +225,78 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "Hello World");
         assert_eq!(results[0].collection, "test");
+    }
+
+    #[test]
+    fn load_documents_builds_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("note.md"),
+            "# Title\n\nBody content for loading.",
+        )
+        .unwrap();
+
+        let files = crate::walker::discover_files(tmp.path()).unwrap();
+        let loaded = load_documents("notes", &files);
+
+        assert_eq!(loaded.len(), 1);
+        let doc = &loaded[0];
+        assert_eq!(doc.relative_path, "note.md");
+        assert_eq!(doc.title, "Title");
+        assert!(doc.doc_id.starts_with('#'));
+        assert!(doc.doc_num_id > 0);
+        assert!(doc.content.contains("Body content"));
+    }
+
+    #[test]
+    fn load_documents_skips_unreadable_files() {
+        use std::path::PathBuf;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let valid_path = tmp.path().join("ok.md");
+        std::fs::write(&valid_path, "# Ok\n\nReadable").unwrap();
+
+        let files = vec![
+            DiscoveredFile {
+                relative_path: PathBuf::from("ok.md"),
+                absolute_path: valid_path,
+                mtime: 1,
+            },
+            DiscoveredFile {
+                relative_path: PathBuf::from("missing.md"),
+                absolute_path: tmp.path().join("missing.md"),
+                mtime: 1,
+            },
+        ];
+
+        let loaded = load_documents("notes", &files);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].relative_path, "ok.md");
+    }
+
+    #[test]
+    fn ingest_loaded_documents_indexes_content() {
+        let index = SearchIndex::open_in_ram().unwrap();
+        let mut writer = index.writer(15_000_000).unwrap();
+
+        let docs = vec![LoadedDocument {
+            doc_id: "#abc123".to_string(),
+            doc_num_id: 123,
+            relative_path: "x.md".to_string(),
+            title: "Rust Guide".to_string(),
+            content: "Rust ownership and borrowing.".to_string(),
+            mtime: 1000,
+        }];
+
+        let count =
+            ingest_loaded_documents(&index, &mut writer, "notes", &docs)
+                .unwrap();
+        assert_eq!(count, 1);
+
+        let results = index.search("ownership", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].collection, "notes");
+        assert_eq!(results[0].path, "x.md");
     }
 
     #[test]

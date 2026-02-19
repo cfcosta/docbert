@@ -202,9 +202,15 @@ Override with `--data-dir`:
 docbert --data-dir /custom/path search "query"
 ```
 
+Data directory resolution order:
+
+1. `--data-dir` CLI flag
+2. `DOCBERT_DATA_DIR` environment variable
+3. XDG default (`$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`)
+
 ### Environment Variables
 
-- `DOCBERT_DATA_DIR`: Override the data directory (default: `~/.local/share/docbert/`). Takes precedence over `$XDG_DATA_HOME` but is overridden by `--data-dir`.
+- `DOCBERT_DATA_DIR`: Override the data directory (lower priority than `--data-dir`)
 - `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/GTE-ModernColBERT-v1`)
 - `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
 

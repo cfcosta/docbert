@@ -8,7 +8,6 @@ use docbert::{
     ModelManager,
     SearchIndex,
     chunking,
-    doc_id,
     embedding,
     error,
     incremental,
@@ -19,7 +18,6 @@ use docbert::{
     walker,
 };
 use kdam::{BarExt, Spinner, tqdm};
-use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
@@ -684,44 +682,39 @@ fn cmd_rebuild(
         let files = walker::discover_files(root)?;
         eprintln!("  Found {} files", files.len());
 
+        let loaded_docs = if args.embeddings_only && args.index_only {
+            Vec::new()
+        } else {
+            eprintln!("  Loading {} files...", files.len());
+            ingestion::load_documents(name, &files)
+        };
+
         // Re-index into Tantivy
         if !args.embeddings_only {
             let mut writer = search_index.writer(15_000_000)?;
-            let count = ingestion::ingest_files(
+            let count = ingestion::ingest_loaded_documents(
                 &search_index,
                 &mut writer,
                 name,
-                &files,
+                &loaded_docs,
             )?;
             eprintln!("  Indexed {count} documents");
         }
 
         // Re-compute embeddings with chunking for long documents
         if !args.index_only {
-            // Read files in parallel (progress shown after completion)
-            eprintln!("  Reading {} files...", files.len());
-            let file_contents: Vec<(u64, String)> = files
-                .par_iter()
-                .filter_map(|file| {
-                    let content =
-                        std::fs::read_to_string(&file.absolute_path).ok()?;
-                    let rel_path = file.relative_path.to_string_lossy();
-                    let doc_id = doc_id::DocumentId::new(name, &rel_path);
-                    Some((doc_id.numeric, content))
-                })
-                .collect();
-
             // Chunk documents with progress
-            let mut pb = create_progress_bar(file_contents.len(), "Chunking");
+            let mut pb = create_progress_bar(loaded_docs.len(), "Chunking");
             let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
-            for (doc_id, content) in file_contents {
+            for doc in loaded_docs {
                 let chunks = chunking::chunk_text(
-                    &content,
+                    &doc.content,
                     chunking_config.chunk_size,
                     chunking_config.overlap,
                 );
                 for chunk in chunks {
-                    let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
+                    let chunk_id =
+                        chunking::chunk_doc_id(doc.doc_num_id, chunk.index);
                     docs_to_embed.push((chunk_id, chunk.text));
                 }
                 let _ = pb.update(1);
@@ -734,11 +727,10 @@ fn cmd_rebuild(
                 let mut pb = create_progress_bar(total_chunks, "Embedding");
                 let mut embedded_count = 0;
 
-                for batch in docs_to_embed.chunks(EMBEDDING_BATCH_SIZE) {
-                    let batch_vec: Vec<(u64, String)> = batch
-                        .iter()
-                        .map(|(id, text)| (*id, text.clone()))
-                        .collect();
+                while !docs_to_embed.is_empty() {
+                    let take = docs_to_embed.len().min(EMBEDDING_BATCH_SIZE);
+                    let batch_vec: Vec<(u64, String)> =
+                        docs_to_embed.drain(..take).collect();
                     let count = embedding::embed_and_store(
                         &mut model,
                         &embedding_db,
@@ -849,40 +841,32 @@ fn cmd_sync(
             .collect();
 
         if !files_to_process.is_empty() {
+            eprintln!("  Loading {} files...", files_to_process.len());
+            let loaded_docs =
+                ingestion::load_documents(name, &files_to_process);
+
             // Index into Tantivy (add_document handles delete-before-add)
             let mut writer = search_index.writer(15_000_000)?;
-            let count = ingestion::ingest_files(
+            let count = ingestion::ingest_loaded_documents(
                 &search_index,
                 &mut writer,
                 name,
-                &files_to_process,
+                &loaded_docs,
             )?;
             eprintln!("  Indexed {count} documents");
 
-            // Read files in parallel (progress shown after completion)
-            eprintln!("  Reading {} files...", files_to_process.len());
-            let file_contents: Vec<(u64, String)> = files_to_process
-                .par_iter()
-                .filter_map(|file| {
-                    let content =
-                        std::fs::read_to_string(&file.absolute_path).ok()?;
-                    let rel_path = file.relative_path.to_string_lossy();
-                    let doc_id = doc_id::DocumentId::new(name, &rel_path);
-                    Some((doc_id.numeric, content))
-                })
-                .collect();
-
             // Chunk documents with progress
-            let mut pb = create_progress_bar(file_contents.len(), "Chunking");
+            let mut pb = create_progress_bar(loaded_docs.len(), "Chunking");
             let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
-            for (doc_id, content) in file_contents.into_iter() {
+            for doc in loaded_docs.into_iter() {
                 let chunks = chunking::chunk_text(
-                    &content,
+                    &doc.content,
                     chunking_config.chunk_size,
                     chunking_config.overlap,
                 );
                 for chunk in chunks {
-                    let chunk_id = chunking::chunk_doc_id(doc_id, chunk.index);
+                    let chunk_id =
+                        chunking::chunk_doc_id(doc.doc_num_id, chunk.index);
                     docs_to_embed.push((chunk_id, chunk.text));
                 }
                 let _ = pb.update(1);
@@ -895,11 +879,10 @@ fn cmd_sync(
                 let mut pb = create_progress_bar(total_chunks, "Embedding");
                 let mut embedded_count = 0;
 
-                for batch in docs_to_embed.chunks(EMBEDDING_BATCH_SIZE) {
-                    let batch_vec: Vec<(u64, String)> = batch
-                        .iter()
-                        .map(|(id, text)| (*id, text.clone()))
-                        .collect();
+                while !docs_to_embed.is_empty() {
+                    let take = docs_to_embed.len().min(EMBEDDING_BATCH_SIZE);
+                    let batch_vec: Vec<(u64, String)> =
+                        docs_to_embed.drain(..take).collect();
                     let count = embedding::embed_and_store(
                         &mut model,
                         &embedding_db,

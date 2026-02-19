@@ -4,13 +4,16 @@
 
 ### Phase 1: Document Discovery
 
-When a user adds a collection (`docbert collection add ~/notes --name notes`), the system:
+`docbert collection add ~/notes --name notes` only records the collection
+definition (name and directory path) in `config.db`.
 
-1. Records the collection definition (name, directory path) in `config.db`
-2. Walks the directory tree recursively, collecting all eligible files
-3. For each file, computes a stable document ID by hashing the collection name + relative path
-4. Compares file modification times against stored values to identify new or changed documents
-5. Queues changed documents for processing
+Discovery and change detection happen during `docbert sync` and
+`docbert rebuild`:
+
+1. Walk the directory tree recursively, collecting all eligible files
+2. For each file, compute a stable document ID by hashing collection + relative path
+3. Compare file modification times against stored values to identify new/changed docs
+4. Queue changed documents for processing
 
 ### Phase 2: Tantivy Indexing
 
