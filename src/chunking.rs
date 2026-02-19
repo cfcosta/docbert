@@ -3,7 +3,7 @@
 //! Documents longer than the configured chunk size are split into windows
 //! (optionally overlapping) that can each be embedded separately.
 //!
-//! The default chunk size is 1024 tokens (~4K characters). ColBERT-Zero was
+//! The default chunk size is 2048 tokens (~8K characters). ColBERT-Zero was
 //! trained on 519-token sequences but the ModernBERT backbone generalizes
 //! well to longer contexts (up to 8192 tokens).
 
@@ -15,9 +15,9 @@ use serde::Deserialize;
 const CHARS_PER_TOKEN: usize = 4;
 
 /// Default document length in tokens
-const DEFAULT_DOCUMENT_TOKENS: usize = 1024;
+const DEFAULT_DOCUMENT_TOKENS: usize = 2048;
 
-/// Default chunk size in characters (roughly ~1024 tokens).
+/// Default chunk size in characters (roughly ~2048 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
@@ -71,7 +71,7 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 /// reads the `document_length` field and computes the chunk size as
 /// `document_length * 4` (approximating 4 characters per token).
 /// For remote model IDs (e.g., `"lightonai/ColBERT-Zero"`), uses the
-/// default of 1024 tokens.
+/// default of 2048 tokens.
 ///
 /// # Examples
 ///

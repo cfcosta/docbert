@@ -31,7 +31,7 @@ The Tantivy schema uses the `en_stem` tokenizer for the body field to enable Eng
 For each new or modified document:
 
 1. Initialize the ColBERT model (lazy, first use only -- downloads from HuggingFace Hub)
-2. Split the document body into chunks if it exceeds the model's maximum document length (read from `config_sentence_transformers.json` locally, or fetched via hf-hub for remote model IDs; defaults to the built-in chunk size of ~1024 tokens if unavailable). Chunking strategy: character-based windowing with word-boundary adjustments, no overlap (to minimize chunk count)
+2. Split the document body into chunks if it exceeds the model's maximum document length (read from `config_sentence_transformers.json` locally, or fetched via hf-hub for remote model IDs; defaults to the built-in chunk size of ~2048 tokens if unavailable). Chunking strategy: character-based windowing with word-boundary adjustments, no overlap (to minimize chunk count)
 3. Encode each chunk with `model.encode(&chunks, false)` (is_query=false)
 4. Serialize the resulting `[num_tokens, 128]` f32 matrix as bytes and store in `embeddings.db` keyed by the document's internal numeric ID
 5. For chunked documents, store each chunk separately using a chunk-specific numeric ID (derived from the base doc ID and chunk index)
