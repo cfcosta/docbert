@@ -11,10 +11,10 @@ pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Default document length in tokens for encoding.
 ///
-/// Matches ColBERT-Zero's training distribution (519 tokens). The underlying
-/// ModernBERT backbone supports up to 8192 tokens, but staying within the
-/// training length gives the best retrieval accuracy.
-pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
+/// ColBERT-Zero was trained on 519-token documents, but the underlying
+/// ModernBERT backbone generalizes well to longer contexts (up to 8192
+/// tokens). We use 1024 as a balance between chunk count and encoding speed.
+pub const DEFAULT_DOCUMENT_LENGTH: usize = 1024;
 
 /// Select the best available compute device.
 ///

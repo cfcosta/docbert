@@ -3,10 +3,9 @@
 //! Documents longer than the configured chunk size are split into windows
 //! (optionally overlapping) that can each be embedded separately.
 //!
-//! The default chunk size is 519 tokens (~2K characters), matching
-//! ColBERT-Zero's training distribution. The underlying ModernBERT backbone
-//! supports up to 8192 tokens, but staying within training length gives
-//! the best retrieval accuracy.
+//! The default chunk size is 1024 tokens (~4K characters). ColBERT-Zero was
+//! trained on 519-token sequences but the ModernBERT backbone generalizes
+//! well to longer contexts (up to 8192 tokens).
 
 use std::path::Path;
 
@@ -15,10 +14,10 @@ use serde::Deserialize;
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default document length in tokens (matches ColBERT-Zero training distribution).
-const DEFAULT_DOCUMENT_TOKENS: usize = 519;
+/// Default document length in tokens
+const DEFAULT_DOCUMENT_TOKENS: usize = 1024;
 
-/// Default chunk size in characters (roughly ~519 tokens).
+/// Default chunk size in characters (roughly ~1024 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
