@@ -486,10 +486,15 @@ fn cmd_status(
     let collections = config_db.list_collections()?;
     let doc_count = config_db.list_document_ids()?.len();
     let model_name = &model_resolution.model_id;
+    let embedding_model = config_db.get_setting(EMBEDDING_MODEL_KEY)?;
 
     if json {
+        let emb_model_json = match &embedding_model {
+            Some(m) => search::json_escape(m),
+            None => "null".to_string(),
+        };
         println!(
-            "{{\"data_dir\":\"{}\",\"model\":\"{model_name}\",\"model_source\":\"{}\",\"collections\":{},\"documents\":{doc_count}}}",
+            "{{\"data_dir\":\"{}\",\"model\":\"{model_name}\",\"model_source\":\"{}\",\"embedding_model\":{emb_model_json},\"collections\":{},\"documents\":{doc_count}}}",
             data_dir.root().display(),
             model_resolution.source.as_str(),
             collections.len()
@@ -498,6 +503,17 @@ fn cmd_status(
         println!("Data directory: {}", data_dir.root().display());
         println!("Model: {model_name}");
         println!("Model source: {}", model_resolution.source.as_str());
+        if let Some(ref emb) = embedding_model {
+            if emb != model_name {
+                println!(
+                    "Embedding model: {emb} (MISMATCH -- run `docbert rebuild`)"
+                );
+            } else {
+                println!("Embedding model: {emb}");
+            }
+        } else {
+            println!("Embedding model: (not set)");
+        }
         println!("Collections: {}", collections.len());
         for (name, path) in &collections {
             println!("  {name}: {path}");
@@ -567,6 +583,9 @@ fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
     }
     Ok(())
 }
+
+/// Settings key for tracking which model produced the stored embeddings.
+const EMBEDDING_MODEL_KEY: &str = "embedding_model";
 
 /// Batch size for embedding operations (balances progress granularity vs overhead)
 const EMBEDDING_BATCH_SIZE: usize = 32;
@@ -749,6 +768,9 @@ fn cmd_rebuild(
         eprintln!("  Done.");
     }
 
+    // Record which model produced these embeddings
+    config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
+
     eprintln!("Rebuild complete.");
     Ok(())
 }
@@ -775,6 +797,24 @@ fn cmd_sync(
     if collections.is_empty() {
         eprintln!("No collections to sync.");
         return Ok(());
+    }
+
+    // Check if the model changed since last embed
+    if let Some(prev_model) = config_db.get_setting(EMBEDDING_MODEL_KEY)?
+        && prev_model != model_id
+    {
+        eprintln!(
+            "Warning: embeddings were computed with '{prev_model}', but current model is '{model_id}'."
+        );
+        eprintln!(
+            "Mixing embeddings from different models produces invalid results."
+        );
+        eprintln!(
+            "Run `docbert rebuild` to re-embed all documents with the new model."
+        );
+        return Err(error::Error::Config(format!(
+            "model mismatch: embeddings use '{prev_model}', current is '{model_id}'"
+        )));
     }
 
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
@@ -904,6 +944,9 @@ fn cmd_sync(
 
         eprintln!("  Done.");
     }
+
+    // Record which model produced these embeddings
+    config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
     eprintln!("Sync complete.");
     Ok(())

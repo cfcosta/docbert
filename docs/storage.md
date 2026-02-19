@@ -57,7 +57,7 @@ Stores global configuration values.
 
 Settings include:
 
-- `model_name`: the HuggingFace model ID or local PyLate model path (default: `lightonai/GTE-ModernColBERT-v1`)
+- `model_name`: the HuggingFace model ID or local PyLate model path (default: `lightonai/ColBERT-Zero`)
   (this is the only setting currently used by the codebase)
 
 ## embeddings.db Schema

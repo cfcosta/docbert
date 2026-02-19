@@ -435,7 +435,7 @@ impl ConfigDb {
     /// ```
     /// # let tmp = tempfile::tempdir().unwrap();
     /// # let db = docbert::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_setting("model_name", "lightonai/GTE-ModernColBERT-v1").unwrap();
+    /// db.set_setting("model_name", "lightonai/ColBERT-Zero").unwrap();
     /// ```
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let txn = self.db.begin_write()?;

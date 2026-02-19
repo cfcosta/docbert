@@ -245,7 +245,7 @@ Output:
 
 ```
 Data directory: ~/.local/share/docbert/
-Model: lightonai/GTE-ModernColBERT-v1
+Model: lightonai/ColBERT-Zero
 Model source: default
 Collections: 3
   notes: /path/to/notes

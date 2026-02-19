@@ -3,7 +3,7 @@
 //! docbert indexes collections of markdown and text files, providing fast keyword
 //! search via [Tantivy](https://github.com/quickwit-oss/tantivy) with optional
 //! neural reranking via [ColBERT](https://github.com/stanford-futuredata/ColBERT)
-//! (specifically the GTE-ModernColBERT model via pylate-rs).
+//! (specifically the ColBERT-Zero model via pylate-rs).
 //!
 //! # Architecture
 //!

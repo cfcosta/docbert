@@ -3,10 +3,10 @@
 //! Documents longer than the configured chunk size are split into windows
 //! (optionally overlapping) that can each be embedded separately.
 //!
-//! The default chunk size is 1024 tokens (~4K characters). This matches the
-//! document_length we configure in pylate-rs for encoding. While models like
-//! GTE-ModernColBERT are trained on shorter sequences (300 tokens), they
-//! generalize well to longer contexts (tested up to 32K tokens).
+//! The default chunk size is 519 tokens (~2K characters), matching
+//! ColBERT-Zero's training distribution. The underlying ModernBERT backbone
+//! supports up to 8192 tokens, but staying within training length gives
+//! the best retrieval accuracy.
 
 use std::path::Path;
 
@@ -15,10 +15,10 @@ use serde::Deserialize;
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default document length in tokens (conservative fallback when config is unavailable).
-const DEFAULT_DOCUMENT_TOKENS: usize = 1024;
+/// Default document length in tokens (matches ColBERT-Zero training distribution).
+const DEFAULT_DOCUMENT_TOKENS: usize = 519;
 
-/// Default chunk size in characters (roughly ~1024 tokens).
+/// Default chunk size in characters (roughly ~519 tokens).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
@@ -35,7 +35,7 @@ pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 /// use docbert::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
 ///
 /// // Remote model IDs use defaults
-/// let config = resolve_chunking_config("lightonai/GTE-ModernColBERT-v1");
+/// let config = resolve_chunking_config("lightonai/ColBERT-Zero");
 /// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
 /// assert_eq!(config.document_length, None);
 /// ```
@@ -71,15 +71,15 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 /// For local model directories containing `config_sentence_transformers.json`,
 /// reads the `document_length` field and computes the chunk size as
 /// `document_length * 4` (approximating 4 characters per token).
-/// For remote model IDs (e.g., `"lightonai/GTE-ModernColBERT-v1"`), uses
-/// the default of 1024 tokens.
+/// For remote model IDs (e.g., `"lightonai/ColBERT-Zero"`), uses the
+/// default of 1024 tokens.
 ///
 /// # Examples
 ///
 /// ```
 /// use docbert::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
 ///
-/// let config = resolve_chunking_config("lightonai/GTE-ModernColBERT-v1");
+/// let config = resolve_chunking_config("lightonai/ColBERT-Zero");
 /// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
 /// ```
 pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn resolve_chunking_config_remote_model_uses_defaults() {
         // Remote model IDs (not local directories) use defaults
-        let config = resolve_chunking_config("lightonai/GTE-ModernColBERT-v1");
+        let config = resolve_chunking_config("lightonai/ColBERT-Zero");
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);

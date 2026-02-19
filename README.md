@@ -186,7 +186,7 @@ docbert uses a two-stage retrieval pipeline:
 
 1. **BM25 Retrieval** (via [Tantivy](https://github.com/quickwit-oss/tantivy)): Fast full-text search with fuzzy matching retrieves the top 1000 candidates
 
-2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using [GTE-ModernColBERT-v1](https://huggingface.co/lightonai/GTE-ModernColBERT-v1)
+2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using [ColBERT-Zero](https://huggingface.co/lightonai/ColBERT-Zero)
 
 This approach gives you the speed of traditional search with the semantic understanding of neural models.
 
@@ -211,7 +211,7 @@ Data directory resolution order:
 ### Environment Variables
 
 - `DOCBERT_DATA_DIR`: Override the data directory (lower priority than `--data-dir`)
-- `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/GTE-ModernColBERT-v1`)
+- `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/ColBERT-Zero`)
 - `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
 
 ### Model Selection
@@ -232,8 +232,8 @@ docbert --model /path/to/model search "query"
 
 ### Alternative Models
 
-The default model (`lightonai/GTE-ModernColBERT-v1`) works out of the box. To use
-a different pylate-rs-compatible model:
+The default model (`lightonai/ColBERT-Zero`) works out of the box. To use a
+different pylate-rs-compatible model:
 
 ```bash
 docbert model set /path/to/model

@@ -4,17 +4,17 @@ use pylate_rs::{ColBERT, Similarities};
 use crate::error::Result;
 
 /// The default ColBERT model loaded when no override is provided.
-pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
+pub const DEFAULT_MODEL_ID: &str = "lightonai/ColBERT-Zero";
 
 /// Environment variable checked for a model ID override (`DOCBERT_MODEL`).
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Default document length in tokens for encoding.
 ///
-/// GTE-ModernColBERT was trained on 300 tokens but generalizes well to longer
-/// contexts (tested up to 32K). We use 1024 as a balance between chunk count
-/// and encoding speed.
-pub const DEFAULT_DOCUMENT_LENGTH: usize = 1024;
+/// Matches ColBERT-Zero's training distribution (519 tokens). The underlying
+/// ModernBERT backbone supports up to 8192 tokens, but staying within the
+/// training length gives the best retrieval accuracy.
+pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
 
 /// Select the best available compute device.
 ///
@@ -48,7 +48,7 @@ fn default_device() -> Device {
 /// ```
 /// use docbert::ModelManager;
 ///
-/// // Create with default model (lightonai/GTE-ModernColBERT-v1)
+/// // Create with default model (lightonai/ColBERT-Zero)
 /// let manager = ModelManager::new();
 /// assert!(!manager.is_loaded());
 ///
@@ -74,7 +74,7 @@ impl Default for ModelManager {
 impl ModelManager {
     /// Creates a new `ModelManager`. The model ID is resolved from:
     /// 1. The `DOCBERT_MODEL` environment variable, if set
-    /// 2. Otherwise, the default model (`lightonai/GTE-ModernColBERT-v1`)
+    /// 2. Otherwise, the default model (`lightonai/ColBERT-Zero`)
     ///
     /// The model is not loaded until the first call to `encode_documents`,
     /// `encode_query`, or `similarity`.
@@ -191,7 +191,7 @@ pub enum ModelSource {
     Env,
     /// Stored in `config.db` as the `model_name` setting.
     Config,
-    /// Hardcoded default (`lightonai/GTE-ModernColBERT-v1`).
+    /// Hardcoded default (`lightonai/ColBERT-Zero`).
     Default,
 }
 

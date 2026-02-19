@@ -90,7 +90,7 @@ fn main() -> docbert::Result<()> {
     config_db.set_context("bert://notes", "Personal notes and memos")?;
 
     // Store/retrieve settings
-    config_db.set_setting("model_name", "lightonai/GTE-ModernColBERT-v1")?;
+    config_db.set_setting("model_name", "lightonai/ColBERT-Zero")?;
     let model = config_db.get_setting("model_name")?; // Option<String>
 
     Ok(())
@@ -193,7 +193,7 @@ fn main() -> docbert::Result<()> {
     let mut model = ModelManager::new();
 
     // Use a specific model
-    let mut model = ModelManager::with_model_id("lightonai/GTE-ModernColBERT-v1".into());
+    let mut model = ModelManager::with_model_id("lightonai/ColBERT-Zero".into());
 
     // Override the document encoding length
     let mut model = ModelManager::new().with_document_length(512);
@@ -436,7 +436,7 @@ The ColBERT model ID is resolved from multiple sources, in priority order:
 1. `--model` CLI flag (highest priority)
 2. `DOCBERT_MODEL` environment variable
 3. `model_name` setting in `config.db`
-4. Compiled-in default (`lightonai/GTE-ModernColBERT-v1`)
+4. Compiled-in default (`lightonai/ColBERT-Zero`)
 
 ```rust,no_run
 use docbert::ConfigDb;
