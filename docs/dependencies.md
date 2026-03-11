@@ -108,7 +108,7 @@ Durability:
 Hugging Face Hub client.
 
 **Crate**: `hf-hub`
-**Purpose**: Fetch `config_sentence_transformers.json` for remote model IDs so chunking can match the model's `document_length`.
+**Purpose**: Fetch `config_sentence_transformers.json` for remote model IDs so docbert can resolve model prompts from Sentence Transformers metadata.
 
 ### clap (v4.5.57)
 

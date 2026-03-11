@@ -3,22 +3,20 @@
 //! Documents longer than the configured chunk size are split into windows
 //! (optionally overlapping) that can each be embedded separately.
 //!
-//! The default chunk size is 2048 tokens (~8K characters). ColBERT-Zero was
-//! trained on 519-token sequences but the ModernBERT backbone generalizes
-//! well to longer contexts (up to 8192 tokens).
+//! The default chunk size matches docbert's default ColBERT document length:
+//! 519 tokens, or roughly ~2K characters.
 
 use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::model_manager::DEFAULT_DOCUMENT_LENGTH;
+
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default document length in tokens
-const DEFAULT_DOCUMENT_TOKENS: usize = 2048;
-
-/// Default chunk size in characters (roughly ~2048 tokens).
-pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_TOKENS * CHARS_PER_TOKEN;
+/// Default chunk size in characters (roughly ~519 tokens / ~2K chars).
+pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
@@ -70,8 +68,8 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 /// For local model directories containing `config_sentence_transformers.json`,
 /// reads the `document_length` field and computes the chunk size as
 /// `document_length * 4` (approximating 4 characters per token).
-/// For remote model IDs (e.g., `"lightonai/ColBERT-Zero"`), uses the
-/// default of 2048 tokens.
+/// For remote model IDs (e.g., `"lightonai/ColBERT-Zero"`), uses docbert's
+/// built-in default of 519 tokens.
 ///
 /// # Examples
 ///
@@ -391,6 +389,7 @@ mod tests {
     fn resolve_chunking_config_remote_model_uses_defaults() {
         // Remote model IDs (not local directories) use defaults
         let config = resolve_chunking_config("lightonai/ColBERT-Zero");
+        assert_eq!(DEFAULT_CHUNK_SIZE, 519 * CHARS_PER_TOKEN);
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);

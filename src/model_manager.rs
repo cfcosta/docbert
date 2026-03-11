@@ -13,10 +13,9 @@ pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
 /// Default document length in tokens for encoding.
 ///
-/// ColBERT-Zero was trained on 519-token documents, but the underlying
-/// ModernBERT backbone generalizes well to longer contexts (up to 8192
-/// tokens). We use 2048 as a balance between chunk count and encoding speed.
-pub const DEFAULT_DOCUMENT_LENGTH: usize = 2048;
+/// ColBERT-Zero was trained on 519-token documents, so docbert matches that
+/// default unless the caller explicitly overrides it.
+pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
 
 /// Environment variable checked for a pylate-rs internal batch size override.
 pub const EMBEDDING_BATCH_SIZE_ENV_VAR: &str = "DOCBERT_EMBEDDING_BATCH_SIZE";
@@ -318,6 +317,9 @@ impl ModelManager {
     ///
     /// The model is not loaded until the first call to `encode_documents`,
     /// `encode_query`, or `similarity`.
+    ///
+    /// Documents default to a 519-token encoding length unless overridden with
+    /// [`with_document_length`](Self::with_document_length).
     pub fn new() -> Self {
         let model_id = std::env::var(MODEL_ENV_VAR)
             .unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
@@ -672,6 +674,7 @@ mod tests {
     #[test]
     fn default_document_length() {
         let manager = ModelManager::new();
+        assert_eq!(DEFAULT_DOCUMENT_LENGTH, 519);
         assert_eq!(manager.document_length, DEFAULT_DOCUMENT_LENGTH);
     }
 

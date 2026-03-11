@@ -183,7 +183,8 @@ fn main() -> docbert::Result<()> {
 ### `ModelManager`
 
 Manages the ColBERT model lifecycle with lazy loading. The model is downloaded
-from HuggingFace Hub on first use and cached locally.
+from HuggingFace Hub on first use and cached locally. By default, documents are
+encoded at 519 tokens; call `with_document_length(...)` to override that.
 
 ```rust,no_run
 use docbert::ModelManager;
