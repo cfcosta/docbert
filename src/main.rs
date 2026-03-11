@@ -88,6 +88,9 @@ fn main() -> error::Result<()> {
             let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
             let mut model =
                 ModelManager::with_model_id(model_resolution.model_id.clone());
+            if !args.bm25_only {
+                log_model_runtime(&mut model)?;
+            }
 
             let params = search::SearchParams {
                 query: args.query.clone(),
@@ -118,6 +121,7 @@ fn main() -> error::Result<()> {
             let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
             let mut model =
                 ModelManager::with_model_id(model_resolution.model_id.clone());
+            log_model_runtime(&mut model)?;
 
             let params = search::SemanticSearchParams {
                 query: args.query.clone(),
@@ -587,6 +591,18 @@ fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
 /// Settings key for tracking which model produced the stored embeddings.
 const EMBEDDING_MODEL_KEY: &str = "embedding_model";
 
+fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
+    let runtime = model.runtime_config()?;
+    eprintln!(
+        "Embedding runtime: device={}, document_length={}, pylate_batch_size={}",
+        runtime.device, runtime.document_length, runtime.embedding_batch_size
+    );
+    if let Some(note) = runtime.fallback_note {
+        eprintln!("Warning: {note}");
+    }
+    Ok(())
+}
+
 /// Create a progress bar with consistent styling.
 fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
     tqdm!(
@@ -654,6 +670,7 @@ fn cmd_rebuild(
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
+    log_model_runtime(&mut model)?;
     let chunking_config = chunking::resolve_chunking_config(model_id);
     if let Some(doc_len) = chunking_config.document_length {
         eprintln!(
@@ -812,6 +829,7 @@ fn cmd_sync(
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
+    log_model_runtime(&mut model)?;
     let chunking_config = chunking::resolve_chunking_config(model_id);
     if let Some(doc_len) = chunking_config.document_length {
         eprintln!(

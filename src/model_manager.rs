@@ -35,26 +35,88 @@ enum ComputeDeviceKind {
     Metal,
 }
 
+impl ComputeDeviceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ComputeDeviceKind::Cpu => "cpu",
+            ComputeDeviceKind::Cuda => "cuda",
+            ComputeDeviceKind::Metal => "metal",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SelectedDevice {
+    device: Device,
+    kind: ComputeDeviceKind,
+    fallback_note: Option<String>,
+}
+
+/// Runtime information for the loaded embedding model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRuntimeConfig {
+    pub device: String,
+    pub embedding_batch_size: usize,
+    pub document_length: usize,
+    pub fallback_note: Option<String>,
+}
+
+fn cpu_fallback_note(failed_backends: &[String]) -> Option<String> {
+    if failed_backends.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "falling back to cpu after backend probe failures: {}",
+            failed_backends.join("; ")
+        ))
+    }
+}
+
 /// Select the best available compute device.
 ///
 /// Uses CUDA when compiled with the `cuda` feature, Metal when compiled with
 /// the `metal` feature, and falls back to CPU otherwise.
-fn default_device() -> (Device, ComputeDeviceKind) {
+fn default_device() -> SelectedDevice {
+    #[allow(unused_mut)]
+    let mut failed_backends = Vec::new();
+
     #[cfg(feature = "cuda")]
     {
-        if let Ok(device) = Device::new_cuda(0) {
-            return (device, ComputeDeviceKind::Cuda);
+        match Device::new_cuda(0) {
+            Ok(device) => {
+                return SelectedDevice {
+                    device,
+                    kind: ComputeDeviceKind::Cuda,
+                    fallback_note: None,
+                };
+            }
+            Err(err) => {
+                failed_backends.push(format!("cuda unavailable: {err}"))
+            }
         }
     }
 
     #[cfg(feature = "metal")]
     {
-        if let Ok(device) = Device::new_metal(0) {
-            return (device, ComputeDeviceKind::Metal);
+        match Device::new_metal(0) {
+            Ok(device) => {
+                return SelectedDevice {
+                    device,
+                    kind: ComputeDeviceKind::Metal,
+                    fallback_note: None,
+                };
+            }
+            Err(err) => {
+                failed_backends.push(format!("metal unavailable: {err}"))
+            }
         }
     }
 
-    (Device::Cpu, ComputeDeviceKind::Cpu)
+    SelectedDevice {
+        device: Device::Cpu,
+        kind: ComputeDeviceKind::Cpu,
+        fallback_note: cpu_fallback_note(&failed_backends),
+    }
 }
 
 fn default_embedding_batch_size(device_kind: ComputeDeviceKind) -> usize {
@@ -123,6 +185,7 @@ pub struct ModelManager {
     model_id: String,
     document_length: usize,
     embedding_batch_size: Option<usize>,
+    runtime_config: Option<ModelRuntimeConfig>,
     query_prompt: String,
     document_prompt: String,
 }
@@ -149,6 +212,7 @@ impl ModelManager {
             model_id,
             document_length: DEFAULT_DOCUMENT_LENGTH,
             embedding_batch_size: None,
+            runtime_config: None,
             query_prompt: String::new(),
             document_prompt: String::new(),
         }
@@ -162,6 +226,7 @@ impl ModelManager {
             model_id,
             document_length: DEFAULT_DOCUMENT_LENGTH,
             embedding_batch_size: None,
+            runtime_config: None,
             query_prompt: String::new(),
             document_prompt: String::new(),
         }
@@ -195,6 +260,15 @@ impl ModelManager {
         self.model.is_some()
     }
 
+    /// Load the model if needed and return runtime details for diagnostics.
+    pub fn runtime_config(&mut self) -> Result<ModelRuntimeConfig> {
+        self.ensure_loaded()?;
+        Ok(self
+            .runtime_config
+            .clone()
+            .expect("runtime config set on load"))
+    }
+
     /// Ensures the model is loaded, downloading from HuggingFace Hub if needed.
     ///
     /// Also resolves the `prompts` field from `config_sentence_transformers.json`
@@ -208,20 +282,26 @@ impl ModelManager {
             self.query_prompt = query_prompt;
             self.document_prompt = document_prompt;
 
-            let (device, device_kind) = default_device();
+            let selected_device = default_device();
             let env_batch_size =
                 std::env::var(EMBEDDING_BATCH_SIZE_ENV_VAR).ok();
             let embedding_batch_size = resolve_embedding_batch_size(
                 self.embedding_batch_size,
                 env_batch_size.as_deref(),
-                device_kind,
+                selected_device.kind,
             )?;
             let colbert: ColBERT = ColBERT::from(&self.model_id)
-                .with_device(device)
+                .with_device(selected_device.device)
                 .with_document_length(self.document_length)
                 .with_batch_size(embedding_batch_size)
                 .try_into()?;
             self.embedding_batch_size = Some(embedding_batch_size);
+            self.runtime_config = Some(ModelRuntimeConfig {
+                device: selected_device.kind.as_str().to_string(),
+                embedding_batch_size,
+                document_length: self.document_length,
+                fallback_note: selected_device.fallback_note,
+            });
             self.model = Some(colbert);
         }
 
@@ -478,6 +558,28 @@ mod tests {
     fn default_document_length() {
         let manager = ModelManager::new();
         assert_eq!(manager.document_length, DEFAULT_DOCUMENT_LENGTH);
+    }
+
+    #[test]
+    fn compute_device_kind_labels_are_stable() {
+        assert_eq!(ComputeDeviceKind::Cpu.as_str(), "cpu");
+        assert_eq!(ComputeDeviceKind::Cuda.as_str(), "cuda");
+        assert_eq!(ComputeDeviceKind::Metal.as_str(), "metal");
+    }
+
+    #[test]
+    fn cpu_fallback_note_reports_failed_backends() {
+        assert_eq!(cpu_fallback_note(&[]), None);
+        assert_eq!(
+            cpu_fallback_note(&[
+                "cuda unavailable: boom".to_string(),
+                "metal unavailable: nope".to_string(),
+            ]),
+            Some(
+                "falling back to cpu after backend probe failures: cuda unavailable: boom; metal unavailable: nope"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
