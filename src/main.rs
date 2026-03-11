@@ -587,9 +587,6 @@ fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
 /// Settings key for tracking which model produced the stored embeddings.
 const EMBEDDING_MODEL_KEY: &str = "embedding_model";
 
-/// Batch size for embedding operations (balances progress granularity vs overhead)
-const EMBEDDING_BATCH_SIZE: usize = 32;
-
 /// Create a progress bar with consistent styling.
 fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
     tqdm!(
@@ -740,24 +737,19 @@ fn cmd_rebuild(
             }
             finish_progress_bar(&mut pb);
 
-            // Embed documents in batches with progress
+            // Embed documents in submission batches with progress.
             if !docs_to_embed.is_empty() {
                 let total_chunks = docs_to_embed.len();
                 let mut pb = create_progress_bar(total_chunks, "Embedding");
-                let mut embedded_count = 0;
-
-                while !docs_to_embed.is_empty() {
-                    let take = docs_to_embed.len().min(EMBEDDING_BATCH_SIZE);
-                    let batch_vec: Vec<(u64, String)> =
-                        docs_to_embed.drain(..take).collect();
-                    let count = embedding::embed_and_store(
-                        &mut model,
-                        &embedding_db,
-                        batch_vec,
-                    )?;
-                    embedded_count += count;
-                    let _ = pb.update_to(embedded_count);
-                }
+                embedding::embed_and_store_in_batches(
+                    &mut model,
+                    &embedding_db,
+                    docs_to_embed,
+                    embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
+                    |embedded_count| {
+                        let _ = pb.update_to(embedded_count);
+                    },
+                )?;
                 finish_progress_bar(&mut pb);
             }
         }
@@ -913,24 +905,19 @@ fn cmd_sync(
             }
             finish_progress_bar(&mut pb);
 
-            // Embed documents in batches with progress
+            // Embed documents in submission batches with progress.
             if !docs_to_embed.is_empty() {
                 let total_chunks = docs_to_embed.len();
                 let mut pb = create_progress_bar(total_chunks, "Embedding");
-                let mut embedded_count = 0;
-
-                while !docs_to_embed.is_empty() {
-                    let take = docs_to_embed.len().min(EMBEDDING_BATCH_SIZE);
-                    let batch_vec: Vec<(u64, String)> =
-                        docs_to_embed.drain(..take).collect();
-                    let count = embedding::embed_and_store(
-                        &mut model,
-                        &embedding_db,
-                        batch_vec,
-                    )?;
-                    embedded_count += count;
-                    let _ = pb.update_to(embedded_count);
-                }
+                embedding::embed_and_store_in_batches(
+                    &mut model,
+                    &embedding_db,
+                    docs_to_embed,
+                    embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
+                    |embedded_count| {
+                        let _ = pb.update_to(embedded_count);
+                    },
+                )?;
                 finish_progress_bar(&mut pb);
             }
 

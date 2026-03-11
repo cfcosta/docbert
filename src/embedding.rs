@@ -2,9 +2,27 @@ use candle_core::Tensor;
 
 use crate::{
     embedding_db::EmbeddingDb,
-    error::Result,
+    error::{Error, Result},
     model_manager::ModelManager,
 };
+
+/// Number of documents to submit per `encode_documents` call.
+///
+/// Keep this larger than pylate-rs' internal 32-document batch size so CPU
+/// encoding can fan out across multiple internal batches via Rayon, while still
+/// bounding the size of the returned embedding tensor before it is serialized
+/// into `EmbeddingDb`.
+pub const EMBEDDING_SUBMISSION_BATCH_SIZE: usize = 128;
+
+trait DocumentEncoder {
+    fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor>;
+}
+
+impl DocumentEncoder for ModelManager {
+    fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
+        ModelManager::encode_documents(self, texts)
+    }
+}
 
 /// Encode a batch of documents and store their embeddings in the database.
 ///
@@ -21,6 +39,39 @@ pub fn embed_and_store(
     db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
 ) -> Result<usize> {
+    embed_and_store_with(model, db, documents)
+}
+
+/// Encode and store many documents using coarser submission batches.
+///
+/// docbert submits larger groups of documents to `pylate-rs` than its internal
+/// 32-document batch size so CPU execution can parallelize across multiple
+/// internal batches. `on_progress` receives the cumulative number of embedded
+/// documents after each submission batch is stored.
+pub fn embed_and_store_in_batches<F>(
+    model: &mut ModelManager,
+    db: &EmbeddingDb,
+    documents: Vec<(u64, String)>,
+    submission_batch_size: usize,
+    on_progress: F,
+) -> Result<usize>
+where
+    F: FnMut(usize),
+{
+    embed_and_store_in_batches_with(
+        model,
+        db,
+        documents,
+        submission_batch_size,
+        on_progress,
+    )
+}
+
+fn embed_and_store_with<E: DocumentEncoder>(
+    model: &mut E,
+    db: &EmbeddingDb,
+    documents: Vec<(u64, String)>,
+) -> Result<usize> {
     if documents.is_empty() {
         return Ok(0);
     }
@@ -32,16 +83,14 @@ pub fn embed_and_store(
 
     // embeddings shape: [batch_size, num_tokens, dimension]
     let dims = embeddings.dims3().map_err(|e| {
-        crate::error::Error::Config(format!(
-            "unexpected embedding tensor shape: {e}"
-        ))
+        Error::Config(format!("unexpected embedding tensor shape: {e}"))
     })?;
     let (batch_size, _num_tokens, dimension) = dims;
 
     let mut entries = Vec::with_capacity(batch_size);
     for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
         let doc_embedding = embeddings.get(i).map_err(|e| {
-            crate::error::Error::Config(format!(
+            Error::Config(format!(
                 "failed to extract embedding for doc index {i}: {e}"
             ))
         })?;
@@ -56,20 +105,49 @@ pub fn embed_and_store(
     Ok(batch_size)
 }
 
+fn embed_and_store_in_batches_with<E, F>(
+    model: &mut E,
+    db: &EmbeddingDb,
+    documents: Vec<(u64, String)>,
+    submission_batch_size: usize,
+    mut on_progress: F,
+) -> Result<usize>
+where
+    E: DocumentEncoder,
+    F: FnMut(usize),
+{
+    if submission_batch_size == 0 {
+        return Err(Error::Config(
+            "embedding submission batch size must be greater than zero"
+                .to_string(),
+        ));
+    }
+
+    let mut embedded_total = 0;
+    let mut documents = documents.into_iter();
+
+    loop {
+        let batch: Vec<(u64, String)> =
+            documents.by_ref().take(submission_batch_size).collect();
+        if batch.is_empty() {
+            break;
+        }
+
+        embedded_total += embed_and_store_with(model, db, batch)?;
+        on_progress(embedded_total);
+    }
+
+    Ok(embedded_total)
+}
+
 /// Convert a 2D Tensor [tokens, dimension] into a flat Vec<f32>.
 fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
     let flat = tensor
         .flatten_all()
-        .map_err(|e| {
-            crate::error::Error::Config(format!(
-                "failed to flatten tensor: {e}"
-            ))
-        })?
+        .map_err(|e| Error::Config(format!("failed to flatten tensor: {e}")))?
         .to_vec1::<f32>()
         .map_err(|e| {
-            crate::error::Error::Config(format!(
-                "failed to convert tensor to f32: {e}"
-            ))
+            Error::Config(format!("failed to convert tensor to f32: {e}"))
         })?;
     Ok(flat)
 }
@@ -112,7 +190,7 @@ fn matrix_to_tensor(
         &candle_core::Device::Cpu,
     )
     .map_err(|e| {
-        crate::error::Error::Config(format!(
+        Error::Config(format!(
             "failed to create tensor from embedding data: {e}"
         ))
     })
@@ -153,7 +231,7 @@ pub fn load_embedding_tensor(
         &candle_core::Device::Cpu,
     )
     .map_err(|e| {
-        crate::error::Error::Config(format!(
+        Error::Config(format!(
             "failed to create tensor from embedding data: {e}"
         ))
     })?;
@@ -164,6 +242,30 @@ pub fn load_embedding_tensor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingEncoder {
+        call_sizes: Vec<usize>,
+    }
+
+    impl RecordingEncoder {
+        fn new() -> Self {
+            Self {
+                call_sizes: Vec::new(),
+            }
+        }
+    }
+
+    impl DocumentEncoder for RecordingEncoder {
+        fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
+            self.call_sizes.push(texts.len());
+            let data = vec![0.0f32; texts.len() * 2];
+            Ok(Tensor::from_vec(
+                data,
+                (texts.len(), 1, 2),
+                &candle_core::Device::Cpu,
+            )?)
+        }
+    }
 
     #[test]
     fn load_nonexistent_returns_none() {
@@ -188,5 +290,84 @@ mod tests {
 
         let flat: Vec<f32> = tensor.flatten_all().unwrap().to_vec1().unwrap();
         assert_eq!(flat, data);
+    }
+
+    #[test]
+    fn submission_batches_span_multiple_pylate_internal_batches() {
+        const PYLATE_INTERNAL_BATCH_SIZE: usize = 32;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut encoder = RecordingEncoder::new();
+        let doc_count = PYLATE_INTERNAL_BATCH_SIZE * 3;
+        let docs: Vec<(u64, String)> = (0..doc_count)
+            .map(|i| (i as u64, format!("doc {i}")))
+            .collect();
+
+        let embedded = embed_and_store_in_batches_with(
+            &mut encoder,
+            &db,
+            docs,
+            EMBEDDING_SUBMISSION_BATCH_SIZE,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(embedded, doc_count);
+        assert_eq!(db.list_ids().unwrap().len(), doc_count);
+        assert!(
+            encoder.call_sizes.len()
+                < doc_count.div_ceil(PYLATE_INTERNAL_BATCH_SIZE),
+            "expected outer submission batching to coalesce work, got {:?}",
+            encoder.call_sizes
+        );
+        assert!(
+            encoder
+                .call_sizes
+                .iter()
+                .any(|&size| size > PYLATE_INTERNAL_BATCH_SIZE),
+            "expected at least one encode call to span multiple internal pylate batches, got {:?}",
+            encoder.call_sizes
+        );
+    }
+
+    #[test]
+    fn submission_batches_report_cumulative_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut encoder = RecordingEncoder::new();
+        let docs: Vec<(u64, String)> =
+            (0..85).map(|i| (i as u64, format!("doc {i}"))).collect();
+        let mut progress_updates = Vec::new();
+
+        let embedded =
+            embed_and_store_in_batches_with(&mut encoder, &db, docs, 40, |n| {
+                progress_updates.push(n)
+            })
+            .unwrap();
+
+        assert_eq!(embedded, 85);
+        assert_eq!(encoder.call_sizes, vec![40, 40, 5]);
+        assert_eq!(progress_updates, vec![40, 80, 85]);
+    }
+
+    #[test]
+    fn zero_submission_batch_size_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut encoder = RecordingEncoder::new();
+
+        let err = embed_and_store_in_batches_with(
+            &mut encoder,
+            &db,
+            vec![(1, "doc".to_string())],
+            0,
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains(
+            "embedding submission batch size must be greater than zero"
+        ));
     }
 }
