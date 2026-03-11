@@ -94,6 +94,16 @@ impl DocbertMcpServer {
     }
 }
 
+/// Build the structured MCP response shape used by the search and status tools.
+fn structured_tool_result(
+    summary: String,
+    structured: serde_json::Value,
+) -> CallToolResult {
+    let mut result = CallToolResult::success(vec![Content::text(summary)]);
+    result.structured_content = Some(structured);
+    result
+}
+
 #[tool_router(router = tool_router)]
 impl DocbertMcpServer {
     /// Search indexed documents with BM25 + optional ColBERT reranking.
@@ -170,12 +180,7 @@ impl DocbertMcpServer {
         })
         .map_err(|e| mcp_error("failed to serialize search results", e))?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(structured_tool_result(summary, structured))
     }
 
     /// Semantic-only search across all indexed documents.
@@ -249,12 +254,7 @@ impl DocbertMcpServer {
         })
         .map_err(|e| mcp_error("failed to serialize search results", e))?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(structured_tool_result(summary, structured))
     }
 
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
@@ -505,12 +505,7 @@ impl DocbertMcpServer {
         })
         .map_err(|e| mcp_error("failed to serialize status", e))?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(structured_tool_result(summary, structured))
     }
 }
 
@@ -551,24 +546,24 @@ docbert indexes local document collections and provides MCP tools for search and
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for DocbertMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-            server_info: Implementation {
-                name: "docbert".to_string(),
-                title: Some("docbert MCP".to_string()),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                icons: None,
-                website_url: Some("https://github.com/cfcosta/docbert".to_string()),
-            },
-            instructions: Some(
-                "Use docbert_search or semantic_search to find documents, then docbert_get or docbert_multi_get to retrieve content. Use docbert_status for index health."
-                    .to_string(),
-            ),
-            ..Default::default()
-        }
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
+
+        let server_info =
+            Implementation::new("docbert", env!("CARGO_PKG_VERSION"))
+                .with_title("docbert MCP")
+                .with_description(
+                    "Search and read indexed documents through the Model Context Protocol.",
+                )
+                .with_website_url("https://github.com/cfcosta/docbert");
+
+        ServerInfo::new(capabilities)
+            .with_server_info(server_info)
+            .with_instructions(
+                "Start with docbert_search or semantic_search. Once you find the right document, use docbert_get or docbert_multi_get to read it. docbert_status shows overall index health.",
+            )
     }
 
     async fn list_resource_templates(
@@ -603,9 +598,7 @@ impl ServerHandler for DocbertMcpServer {
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let contents =
             read_resource_contents(&self.state.config_db, &request.uri)?;
-        Ok(ReadResourceResult {
-            contents: vec![contents],
-        })
+        Ok(ReadResourceResult::new(vec![contents]))
     }
 }
 

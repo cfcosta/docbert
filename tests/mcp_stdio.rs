@@ -76,12 +76,10 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 
     let result = client
         .peer()
-        .call_tool(CallToolRequestParams {
-            meta: None,
-            name: "docbert_search".into(),
-            arguments: Some(args.as_object().unwrap().clone()),
-            task: None,
-        })
+        .call_tool(
+            CallToolRequestParams::new("docbert_search")
+                .with_arguments(args.as_object().unwrap().clone()),
+        )
         .await?;
 
     let structured = result.structured_content.expect("structured content");
@@ -103,12 +101,10 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
     });
     let get_result = client
         .peer()
-        .call_tool(CallToolRequestParams {
-            meta: None,
-            name: "docbert_get".into(),
-            arguments: Some(get_args.as_object().unwrap().clone()),
-            task: None,
-        })
+        .call_tool(
+            CallToolRequestParams::new("docbert_get")
+                .with_arguments(get_args.as_object().unwrap().clone()),
+        )
         .await?;
     let get_resource = get_result
         .content
@@ -125,10 +121,7 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 
     let resource_result = client
         .peer()
-        .read_resource(ReadResourceRequestParams {
-            meta: None,
-            uri: "bert://notes/hello.md".to_string(),
-        })
+        .read_resource(ReadResourceRequestParams::new("bert://notes/hello.md"))
         .await?;
     let resource = resource_result.contents.first().expect("resource content");
     match resource {
