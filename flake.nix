@@ -99,7 +99,12 @@
                 buildFeatures
                 ;
               src = ./.;
-              cargoLock.lockFile = ./Cargo.lock;
+              cargoLock = {
+                lockFile = ./Cargo.lock;
+                outputHashes = {
+                  "pylate-rs-1.0.4" = "sha256-l2bmTgAbxHa5ivdFqMrLts5O+MZSSWXKRK/rsVjeCzs=";
+                };
+              };
               RUSTFLAGS = "-C target-cpu=native";
 
               postInstall = ''
