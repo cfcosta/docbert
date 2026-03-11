@@ -49,9 +49,13 @@ fn main() -> error::Result<()> {
         init_tracing(cli.verbose);
     }
 
-    // Handle completions early (doesn't need data_dir or config_db)
+    // Handle commands that don't need data_dir or config_db early.
     if let Command::Completions(args) = &cli.command {
         args.generate();
+        return Ok(());
+    }
+    if let Command::Doctor(args) = &cli.command {
+        cmd_doctor(args.json)?;
         return Ok(());
     }
 
@@ -61,6 +65,7 @@ fn main() -> error::Result<()> {
 
     match cli.command {
         Command::Completions(_) => unreachable!(), // Handled above
+        Command::Doctor(_) => unreachable!(),      // Handled above
         Command::Collection { action } => match action {
             CollectionAction::Add { path, name } => {
                 collection_add(&config_db, &path, &name)?;
@@ -476,6 +481,63 @@ fn cmd_multi_get(
             println!("{collection}:{path}");
         }
         println!("\n{} match(es)", matches.len());
+    }
+
+    Ok(())
+}
+
+fn cmd_doctor(json: bool) -> error::Result<()> {
+    let report = docbert::model_manager::doctor_report();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|e| {
+                error::Error::Config(format!(
+                    "failed to serialize doctor report: {e}"
+                ))
+            })?
+        );
+        return Ok(());
+    }
+
+    println!("Selected device: {}", report.selected_device);
+    println!(
+        "CUDA support: {}",
+        if report.cuda.compiled {
+            "compiled in"
+        } else {
+            "not compiled in"
+        }
+    );
+    if report.cuda.compiled {
+        println!(
+            "CUDA usable: {}",
+            if report.cuda.usable { "yes" } else { "no" }
+        );
+        if let Some(err) = report.cuda.error {
+            println!("CUDA error: {err}");
+        }
+    }
+    println!(
+        "Metal support: {}",
+        if report.metal.compiled {
+            "compiled in"
+        } else {
+            "not compiled in"
+        }
+    );
+    if report.metal.compiled {
+        println!(
+            "Metal usable: {}",
+            if report.metal.usable { "yes" } else { "no" }
+        );
+        if let Some(err) = report.metal.error {
+            println!("Metal error: {err}");
+        }
+    }
+    if let Some(note) = report.fallback_note {
+        println!("Note: {note}");
     }
 
     Ok(())

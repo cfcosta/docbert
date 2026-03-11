@@ -52,6 +52,23 @@ struct SelectedDevice {
     fallback_note: Option<String>,
 }
 
+/// Availability information for a single accelerator backend.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BackendDoctorReport {
+    pub compiled: bool,
+    pub usable: bool,
+    pub error: Option<String>,
+}
+
+/// Runtime accelerator diagnostics for the current build and host.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DoctorReport {
+    pub selected_device: String,
+    pub fallback_note: Option<String>,
+    pub cuda: BackendDoctorReport,
+    pub metal: BackendDoctorReport,
+}
+
 /// Runtime information for the loaded embedding model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRuntimeConfig {
@@ -70,6 +87,104 @@ fn cpu_fallback_note(failed_backends: &[String]) -> Option<String> {
             failed_backends.join("; ")
         ))
     }
+}
+
+fn probe_cuda_backend() -> BackendDoctorReport {
+    #[cfg(feature = "cuda")]
+    {
+        match Device::new_cuda(0) {
+            Ok(_) => BackendDoctorReport {
+                compiled: true,
+                usable: true,
+                error: None,
+            },
+            Err(err) => BackendDoctorReport {
+                compiled: true,
+                usable: false,
+                error: Some(format!("cuda unavailable: {err}")),
+            },
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        BackendDoctorReport {
+            compiled: false,
+            usable: false,
+            error: None,
+        }
+    }
+}
+
+fn probe_metal_backend() -> BackendDoctorReport {
+    #[cfg(feature = "metal")]
+    {
+        match Device::new_metal(0) {
+            Ok(_) => BackendDoctorReport {
+                compiled: true,
+                usable: true,
+                error: None,
+            },
+            Err(err) => BackendDoctorReport {
+                compiled: true,
+                usable: false,
+                error: Some(format!("metal unavailable: {err}")),
+            },
+        }
+    }
+
+    #[cfg(not(feature = "metal"))]
+    {
+        BackendDoctorReport {
+            compiled: false,
+            usable: false,
+            error: None,
+        }
+    }
+}
+
+fn summarize_doctor_report(
+    cuda: BackendDoctorReport,
+    metal: BackendDoctorReport,
+) -> DoctorReport {
+    let selected_device = if cuda.usable {
+        ComputeDeviceKind::Cuda
+    } else if metal.usable {
+        ComputeDeviceKind::Metal
+    } else {
+        ComputeDeviceKind::Cpu
+    };
+
+    let mut failed_backends = Vec::new();
+    if cuda.compiled
+        && !cuda.usable
+        && let Some(err) = cuda.error.clone()
+    {
+        failed_backends.push(err);
+    }
+    if metal.compiled
+        && !metal.usable
+        && let Some(err) = metal.error.clone()
+    {
+        failed_backends.push(err);
+    }
+
+    let fallback_note = if selected_device == ComputeDeviceKind::Cpu {
+        cpu_fallback_note(&failed_backends)
+    } else {
+        None
+    };
+
+    DoctorReport {
+        selected_device: selected_device.as_str().to_string(),
+        fallback_note,
+        cuda,
+        metal,
+    }
+}
+
+pub fn doctor_report() -> DoctorReport {
+    summarize_doctor_report(probe_cuda_backend(), probe_metal_backend())
 }
 
 /// Select the best available compute device.
@@ -580,6 +695,65 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn summarize_doctor_report_prefers_usable_accelerators() {
+        let report = summarize_doctor_report(
+            BackendDoctorReport {
+                compiled: true,
+                usable: true,
+                error: None,
+            },
+            BackendDoctorReport {
+                compiled: true,
+                usable: false,
+                error: Some("metal unavailable: nope".to_string()),
+            },
+        );
+
+        assert_eq!(report.selected_device, "cuda");
+        assert!(report.fallback_note.is_none());
+    }
+
+    #[test]
+    fn summarize_doctor_report_collects_cpu_fallback_errors() {
+        let report = summarize_doctor_report(
+            BackendDoctorReport {
+                compiled: true,
+                usable: false,
+                error: Some("cuda unavailable: boom".to_string()),
+            },
+            BackendDoctorReport {
+                compiled: true,
+                usable: false,
+                error: Some("metal unavailable: nope".to_string()),
+            },
+        );
+
+        assert_eq!(report.selected_device, "cpu");
+        assert_eq!(
+            report.fallback_note,
+            Some(
+                "falling back to cpu after backend probe failures: cuda unavailable: boom; metal unavailable: nope"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn doctor_report_reflects_compiled_features() {
+        let report = doctor_report();
+
+        #[cfg(feature = "cuda")]
+        assert!(report.cuda.compiled);
+        #[cfg(not(feature = "cuda"))]
+        assert!(!report.cuda.compiled);
+
+        #[cfg(feature = "metal")]
+        assert!(report.metal.compiled);
+        #[cfg(not(feature = "metal"))]
+        assert!(!report.metal.compiled);
     }
 
     #[test]

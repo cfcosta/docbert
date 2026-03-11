@@ -52,6 +52,8 @@ pub enum Command {
     Sync(SyncArgs),
     /// Show system status and statistics
     Status(StatusArgs),
+    /// Diagnose runtime environment and accelerator availability
+    Doctor(DoctorArgs),
     /// Start MCP server for AI agent integration
     Mcp,
     /// Manage the ColBERT model configuration
@@ -274,6 +276,15 @@ pub struct SyncArgs {
 
 #[derive(Debug, Parser)]
 pub struct StatusArgs {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// -- Doctor --
+
+#[derive(Debug, Parser)]
+pub struct DoctorArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -639,6 +650,28 @@ mod tests {
                 assert!(args.json);
             }
             _ => panic!("expected status command"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_defaults() {
+        let cli = Cli::parse_from(["docbert", "doctor"]);
+        match cli.command {
+            Command::Doctor(args) => {
+                assert!(!args.json);
+            }
+            _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_json() {
+        let cli = Cli::parse_from(["docbert", "doctor", "--json"]);
+        match cli.command {
+            Command::Doctor(args) => {
+                assert!(args.json);
+            }
+            _ => panic!("expected doctor command"),
         }
     }
 
