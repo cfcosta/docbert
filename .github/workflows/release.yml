@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - name: Bump crate version
+        id: version
+        shell: bash
+        run: |
+          python <<'PY'
+          import os
+          import pathlib
+          import re
+
+          release_type = "${{ github.event.inputs.release_type }}"
+          cargo_toml_path = pathlib.Path("Cargo.toml")
+          cargo_lock_path = pathlib.Path("Cargo.lock")
+
+          cargo_toml = cargo_toml_path.read_text()
+          match = re.search(r'(?m)^version = "(\d+)\.(\d+)\.(\d+)"$', cargo_toml)
+          if not match:
+              raise SystemExit("Could not find package version in Cargo.toml")
+
+          major, minor, patch = map(int, match.groups())
+          if release_type == "major":
+              major += 1
+              minor = 0
+              patch = 0
+          elif release_type == "minor":
+              minor += 1
+              patch = 0
+          elif release_type == "patch":
+              patch += 1
+          else:
+              raise SystemExit(f"Unsupported release type: {release_type}")
+
+          old_version = match.group(1) + "." + match.group(2) + "." + match.group(3)
+          new_version = f"{major}.{minor}.{patch}"
+
+          cargo_toml = re.sub(
+              r'(?m)^version = "' + re.escape(old_version) + r'"$',
+              f'version = "{new_version}"',
+              cargo_toml,
+              count=1,
+          )
+          cargo_toml_path.write_text(cargo_toml)
+
+          cargo_lock = cargo_lock_path.read_text()
+          cargo_lock, replacements = re.subn(
+              r'(\[\[package\]\]\nname = "nm-wifi"\nversion = ")' + re.escape(old_version) + r'(")',
+              r'\g<1>' + new_version + r'\g<2>',
+              cargo_lock,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit("Could not update root package version in Cargo.lock")
+          cargo_lock_path.write_text(cargo_lock)
+
+          github_output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as fh:
+              fh.write(f"old_version={old_version}\n")
+              fh.write(f"new_version={new_version}\n")
+              fh.write(f"tag=v{new_version}\n")
+          PY
+
+      - name: Regenerate screenshots
+        run: cargo run --features demo --bin generate-demo-screenshots
+
+      - name: Verify build
+        run: cargo check --all-targets --all-features
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create release commit and tag
+        run: |
+          git add Cargo.toml Cargo.lock docs/screenshots src/ui.rs
+          git commit -m "release: v${{ steps.version.outputs.new_version }}"
+          git tag "${{ steps.version.outputs.tag }}"
+
+      - name: Publish crate
+        run: cargo publish --locked
+
+      - name: Push release commit and tag
+        run: |
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "${{ steps.version.outputs.tag }}"
