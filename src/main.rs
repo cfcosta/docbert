@@ -949,7 +949,7 @@ fn cmd_sync(
         let files_to_process: Vec<_> = diff
             .new_files
             .into_iter()
-            .chain(diff.changed_files.into_iter())
+            .chain(diff.changed_files)
             .collect();
 
         if !files_to_process.is_empty() {
