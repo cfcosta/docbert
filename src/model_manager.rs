@@ -3,7 +3,7 @@ use std::path::Path;
 use candle_core::{Device, Tensor};
 use pylate_rs::{ColBERT, Similarities};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// The default ColBERT model loaded when no override is provided.
 pub const DEFAULT_MODEL_ID: &str = "lightonai/ColBERT-Zero";
@@ -18,26 +18,83 @@ pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 /// tokens). We use 2048 as a balance between chunk count and encoding speed.
 pub const DEFAULT_DOCUMENT_LENGTH: usize = 2048;
 
+/// Environment variable checked for a pylate-rs internal batch size override.
+pub const EMBEDDING_BATCH_SIZE_ENV_VAR: &str = "DOCBERT_EMBEDDING_BATCH_SIZE";
+
+/// Default pylate-rs internal batch size for CPU execution.
+pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
+
+/// Default pylate-rs internal batch size for accelerated execution.
+pub const DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE: usize = 64;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComputeDeviceKind {
+    Cpu,
+    Cuda,
+    Metal,
+}
+
 /// Select the best available compute device.
 ///
 /// Uses CUDA when compiled with the `cuda` feature, Metal when compiled with
 /// the `metal` feature, and falls back to CPU otherwise.
-fn default_device() -> Device {
+fn default_device() -> (Device, ComputeDeviceKind) {
     #[cfg(feature = "cuda")]
     {
         if let Ok(device) = Device::new_cuda(0) {
-            return device;
+            return (device, ComputeDeviceKind::Cuda);
         }
     }
 
     #[cfg(feature = "metal")]
     {
         if let Ok(device) = Device::new_metal(0) {
-            return device;
+            return (device, ComputeDeviceKind::Metal);
         }
     }
 
-    Device::Cpu
+    (Device::Cpu, ComputeDeviceKind::Cpu)
+}
+
+fn default_embedding_batch_size(device_kind: ComputeDeviceKind) -> usize {
+    match device_kind {
+        ComputeDeviceKind::Cpu => DEFAULT_CPU_EMBEDDING_BATCH_SIZE,
+        ComputeDeviceKind::Cuda | ComputeDeviceKind::Metal => {
+            DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE
+        }
+    }
+}
+
+fn resolve_embedding_batch_size(
+    configured_batch_size: Option<usize>,
+    env_batch_size: Option<&str>,
+    device_kind: ComputeDeviceKind,
+) -> Result<usize> {
+    if let Some(batch_size) = configured_batch_size {
+        if batch_size == 0 {
+            return Err(Error::Config(
+                "embedding batch size must be greater than zero".to_string(),
+            ));
+        }
+        return Ok(batch_size);
+    }
+
+    if let Some(raw_batch_size) = env_batch_size {
+        let batch_size = raw_batch_size.parse::<usize>().map_err(|_| {
+            Error::Config(format!(
+                "{EMBEDDING_BATCH_SIZE_ENV_VAR} must be a positive integer"
+            ))
+        })?;
+        if batch_size == 0 {
+            return Err(Error::Config(format!(
+                "{EMBEDDING_BATCH_SIZE_ENV_VAR} must be greater than zero"
+            )));
+        }
+        return Ok(batch_size);
+    }
+
+    Ok(default_embedding_batch_size(device_kind))
 }
 
 /// Manages the ColBERT model lifecycle, supporting lazy loading on first use.
@@ -65,6 +122,7 @@ pub struct ModelManager {
     model: Option<ColBERT>,
     model_id: String,
     document_length: usize,
+    embedding_batch_size: Option<usize>,
     query_prompt: String,
     document_prompt: String,
 }
@@ -90,6 +148,7 @@ impl ModelManager {
             model: None,
             model_id,
             document_length: DEFAULT_DOCUMENT_LENGTH,
+            embedding_batch_size: None,
             query_prompt: String::new(),
             document_prompt: String::new(),
         }
@@ -102,6 +161,7 @@ impl ModelManager {
             model: None,
             model_id,
             document_length: DEFAULT_DOCUMENT_LENGTH,
+            embedding_batch_size: None,
             query_prompt: String::new(),
             document_prompt: String::new(),
         }
@@ -113,6 +173,15 @@ impl ModelManager {
     /// Must be called before the model is loaded (before first encode call).
     pub fn with_document_length(mut self, length: usize) -> Self {
         self.document_length = length;
+        self
+    }
+
+    /// Sets pylate-rs' internal batch size for encoding.
+    ///
+    /// Useful for increasing GPU utilization when the default batch size is
+    /// too conservative for the available memory.
+    pub fn with_embedding_batch_size(mut self, batch_size: usize) -> Self {
+        self.embedding_batch_size = Some(batch_size);
         self
     }
 
@@ -139,11 +208,20 @@ impl ModelManager {
             self.query_prompt = query_prompt;
             self.document_prompt = document_prompt;
 
-            let device = default_device();
+            let (device, device_kind) = default_device();
+            let env_batch_size =
+                std::env::var(EMBEDDING_BATCH_SIZE_ENV_VAR).ok();
+            let embedding_batch_size = resolve_embedding_batch_size(
+                self.embedding_batch_size,
+                env_batch_size.as_deref(),
+                device_kind,
+            )?;
             let colbert: ColBERT = ColBERT::from(&self.model_id)
                 .with_device(device)
                 .with_document_length(self.document_length)
+                .with_batch_size(embedding_batch_size)
                 .try_into()?;
+            self.embedding_batch_size = Some(embedding_batch_size);
             self.model = Some(colbert);
         }
 
@@ -383,6 +461,12 @@ mod tests {
     }
 
     #[test]
+    fn with_embedding_batch_size_is_stored() {
+        let manager = ModelManager::new().with_embedding_batch_size(96);
+        assert_eq!(manager.embedding_batch_size, Some(96));
+    }
+
+    #[test]
     fn default_impl_matches_new() {
         let from_default = ModelManager::default();
         let from_new = ModelManager::new();
@@ -394,6 +478,76 @@ mod tests {
     fn default_document_length() {
         let manager = ModelManager::new();
         assert_eq!(manager.document_length, DEFAULT_DOCUMENT_LENGTH);
+    }
+
+    #[test]
+    fn default_embedding_batch_size_uses_device_defaults() {
+        assert_eq!(
+            default_embedding_batch_size(ComputeDeviceKind::Cpu),
+            DEFAULT_CPU_EMBEDDING_BATCH_SIZE
+        );
+        assert_eq!(
+            default_embedding_batch_size(ComputeDeviceKind::Cuda),
+            DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE
+        );
+        assert_eq!(
+            default_embedding_batch_size(ComputeDeviceKind::Metal),
+            DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE
+        );
+    }
+
+    #[test]
+    fn resolve_embedding_batch_size_prefers_explicit_value() {
+        let resolved = resolve_embedding_batch_size(
+            Some(96),
+            Some("128"),
+            ComputeDeviceKind::Cuda,
+        )
+        .unwrap();
+        assert_eq!(resolved, 96);
+    }
+
+    #[test]
+    fn resolve_embedding_batch_size_uses_env_override() {
+        let resolved = resolve_embedding_batch_size(
+            None,
+            Some("128"),
+            ComputeDeviceKind::Cpu,
+        )
+        .unwrap();
+        assert_eq!(resolved, 128);
+    }
+
+    #[test]
+    fn resolve_embedding_batch_size_rejects_invalid_env() {
+        let err = resolve_embedding_batch_size(
+            None,
+            Some("nope"),
+            ComputeDeviceKind::Cpu,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(
+            "DOCBERT_EMBEDDING_BATCH_SIZE must be a positive integer"
+        ));
+    }
+
+    #[test]
+    fn resolve_embedding_batch_size_rejects_zero() {
+        let err =
+            resolve_embedding_batch_size(Some(0), None, ComputeDeviceKind::Cpu)
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("embedding batch size must be greater than zero")
+        );
+    }
+
+    #[test]
+    fn resolve_embedding_batch_size_falls_back_to_device_default() {
+        let resolved =
+            resolve_embedding_batch_size(None, None, ComputeDeviceKind::Cuda)
+                .unwrap();
+        assert_eq!(resolved, DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE);
     }
 
     #[test]
