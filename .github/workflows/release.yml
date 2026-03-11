@@ -31,11 +31,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.ref }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config
-
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -49,15 +44,23 @@ jobs:
           import os
           import pathlib
           import re
+          import tomllib
 
           release_type = "${{ github.event.inputs.release_type }}"
           cargo_toml_path = pathlib.Path("Cargo.toml")
           cargo_lock_path = pathlib.Path("Cargo.lock")
 
-          cargo_toml = cargo_toml_path.read_text()
-          match = re.search(r'(?m)^version = "(\d+)\.(\d+)\.(\d+)"$', cargo_toml)
+          cargo_toml = cargo_toml_path.read_text(encoding="utf-8")
+          cargo_manifest = tomllib.loads(cargo_toml)
+          package = cargo_manifest.get("package", {})
+          package_name = package.get("name")
+          old_version = package.get("version")
+          if not package_name or not old_version:
+              raise SystemExit("Could not find package name/version in Cargo.toml")
+
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", old_version)
           if not match:
-              raise SystemExit("Could not find package version in Cargo.toml")
+              raise SystemExit(f"Unsupported package version format: {old_version}")
 
           major, minor, patch = map(int, match.groups())
           if release_type == "major":
@@ -72,27 +75,32 @@ jobs:
           else:
               raise SystemExit(f"Unsupported release type: {release_type}")
 
-          old_version = match.group(1) + "." + match.group(2) + "." + match.group(3)
           new_version = f"{major}.{minor}.{patch}"
 
-          cargo_toml = re.sub(
+          cargo_toml, replacements = re.subn(
               r'(?m)^version = "' + re.escape(old_version) + r'"$',
               f'version = "{new_version}"',
               cargo_toml,
               count=1,
           )
-          cargo_toml_path.write_text(cargo_toml)
+          if replacements != 1:
+              raise SystemExit("Could not update package version in Cargo.toml")
+          cargo_toml_path.write_text(cargo_toml, encoding="utf-8")
 
-          cargo_lock = cargo_lock_path.read_text()
+          cargo_lock = cargo_lock_path.read_text(encoding="utf-8")
           cargo_lock, replacements = re.subn(
-              r'(\[\[package\]\]\nname = "nm-wifi"\nversion = ")' + re.escape(old_version) + r'(")',
+              r'(\[\[package\]\]\nname = "'
+              + re.escape(package_name)
+              + r'"\nversion = ")'
+              + re.escape(old_version)
+              + r'(")',
               r'\g<1>' + new_version + r'\g<2>',
               cargo_lock,
               count=1,
           )
           if replacements != 1:
               raise SystemExit("Could not update root package version in Cargo.lock")
-          cargo_lock_path.write_text(cargo_lock)
+          cargo_lock_path.write_text(cargo_lock, encoding="utf-8")
 
           github_output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as fh:
@@ -101,11 +109,12 @@ jobs:
               fh.write(f"tag=v{new_version}\n")
           PY
 
-      - name: Regenerate screenshots
-        run: cargo run --features demo --bin generate-demo-screenshots
-
-      - name: Verify build
-        run: cargo check --all-targets --all-features
+      - name: Verify release
+        run: |
+          cargo fmt --check
+          cargo clippy --all --all-targets -- -D warnings
+          cargo test
+          cargo publish --dry-run --locked --allow-dirty
 
       - name: Configure git
         run: |
@@ -114,7 +123,7 @@ jobs:
 
       - name: Create release commit and tag
         run: |
-          git add Cargo.toml Cargo.lock docs/screenshots src/ui.rs
+          git add Cargo.toml Cargo.lock
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
           git tag "${{ steps.version.outputs.tag }}"
 

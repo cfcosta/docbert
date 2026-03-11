@@ -14,7 +14,7 @@ globset = "0.4"
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
-pylate-rs = { git = "https://github.com/cfcosta/pylate-rs" }
+pylate-rs = { version = "1.0.4", git = "https://github.com/cfcosta/pylate-rs", rev = "4a014da31ab13faef5155aefb92851100cca5035" }
 rayon = "1.11.0"
 redb = "3.1.0"
 rmcp = { version = "1.2.0", features = ["transport-io"] }
