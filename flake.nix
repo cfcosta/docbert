@@ -124,7 +124,10 @@
             name = "docbert-cuda";
             buildFeatures = [ "cuda" ];
 
-            nativeBuildInputs = with pkgs.cudaPackages; [ cuda_nvcc ];
+            nativeBuildInputs = with pkgs; [
+              cudaPackages.cuda_nvcc
+              autoAddDriverRunpath
+            ];
 
             buildInputs = with pkgs.cudaPackages; [
               cuda_nvcc
@@ -133,13 +136,7 @@
             ];
 
             extraEnv = {
-              # Required so bindgen_cuda doesn't try to run nvidia-smi
-              # (unavailable in the nix build sandbox).
-              # Targets Ampere (sm_80) for broad forward compatibility.
               CUDA_COMPUTE_CAP = "80";
-
-              # Point bindgen_cuda to the CUDA toolkit in the nix store
-              # instead of searching /usr/local/cuda and other standard paths.
               CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
             };
           };
