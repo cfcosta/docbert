@@ -85,20 +85,30 @@ fn embed_and_store_with<E: DocumentEncoder>(
     let dims = embeddings.dims3().map_err(|e| {
         Error::Config(format!("unexpected embedding tensor shape: {e}"))
     })?;
-    let (batch_size, _num_tokens, dimension) = dims;
+    let (batch_size, padded_tokens, dimension) = dims;
+
+    let flat_embeddings = tensor_to_flat_f32(&embeddings)?;
+    let doc_stride = padded_tokens * dimension;
 
     let mut entries = Vec::with_capacity(batch_size);
     for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
-        let doc_embedding = embeddings.get(i).map_err(|e| {
-            Error::Config(format!(
-                "failed to extract embedding for doc index {i}: {e}"
-            ))
-        })?;
+        let start = i * doc_stride;
+        let end = start + doc_stride;
+        let doc_embedding =
+            flat_embeddings.get(start..end).ok_or_else(|| {
+                Error::Config(format!(
+                    "failed to slice embedding batch for doc index {i}"
+                ))
+            })?;
+        let trimmed = trim_trailing_padding_rows(doc_embedding, dimension);
+        let num_tokens = trimmed.len() / dimension;
 
-        let flat = tensor_to_flat_f32(&doc_embedding)?;
-        let num_tokens = flat.len() / dimension;
-
-        entries.push((doc_id, num_tokens as u32, dimension as u32, flat));
+        entries.push((
+            doc_id,
+            num_tokens as u32,
+            dimension as u32,
+            trimmed.to_vec(),
+        ));
     }
     db.batch_store(&entries)?;
 
@@ -150,6 +160,25 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
             Error::Config(format!("failed to convert tensor to f32: {e}"))
         })?;
     Ok(flat)
+}
+
+/// Trim trailing all-zero token rows introduced by pylate-rs batch padding.
+fn trim_trailing_padding_rows(data: &[f32], dimension: usize) -> &[f32] {
+    if dimension == 0 || data.len() <= dimension {
+        return data;
+    }
+
+    let mut end = data.len();
+    while end > dimension {
+        let row = &data[end - dimension..end];
+        if row.iter().all(|&value| value == 0.0) {
+            end -= dimension;
+        } else {
+            break;
+        }
+    }
+
+    &data[..end]
 }
 
 /// Load multiple document embeddings from the database and convert to Tensors.
@@ -265,6 +294,49 @@ mod tests {
                 &candle_core::Device::Cpu,
             )?)
         }
+    }
+
+    struct PaddedEncoder;
+
+    impl DocumentEncoder for PaddedEncoder {
+        fn encode_documents(&mut self, _texts: &[String]) -> Result<Tensor> {
+            // Two documents, padded to 3 token rows. The first document only
+            // has 2 real token embeddings; the last row is padding.
+            let data = vec![
+                1.0f32, 2.0, 3.0, 4.0, 0.0,
+                0.0, // doc 1: 2 real rows + padding
+                5.0, 6.0, 7.0, 8.0, 9.0, 10.0, // doc 2: 3 real rows
+            ];
+            Ok(Tensor::from_vec(
+                data,
+                (2, 3, 2),
+                &candle_core::Device::Cpu,
+            )?)
+        }
+    }
+
+    #[test]
+    fn trims_trailing_zero_padding_before_storing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let mut encoder = PaddedEncoder;
+
+        embed_and_store_with(
+            &mut encoder,
+            &db,
+            vec![(1, "short".to_string()), (2, "long".to_string())],
+        )
+        .unwrap();
+
+        let first = db.load(1).unwrap().unwrap();
+        assert_eq!(first.num_tokens, 2);
+        assert_eq!(first.dimension, 2);
+        assert_eq!(first.data, vec![1.0, 2.0, 3.0, 4.0]);
+
+        let second = db.load(2).unwrap().unwrap();
+        assert_eq!(second.num_tokens, 3);
+        assert_eq!(second.dimension, 2);
+        assert_eq!(second.data, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
     }
 
     #[test]
