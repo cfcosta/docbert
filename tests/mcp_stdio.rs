@@ -66,6 +66,26 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 
     let client = ().serve(transport).await?;
 
+    let tools = client.peer().list_all_tools().await?;
+    assert!(
+        !tools.is_empty(),
+        "expected docbert MCP server to advertise tools"
+    );
+    for tool in &tools {
+        assert!(
+            !tool.input_schema.contains_key("$schema"),
+            "tool {} should omit $schema for MCP client compatibility",
+            tool.name
+        );
+        if let Some(output_schema) = &tool.output_schema {
+            assert!(
+                !output_schema.contains_key("$schema"),
+                "tool {} output schema should omit $schema for MCP client compatibility",
+                tool.name
+            );
+        }
+    }
+
     let args = json!({
         "query": "Hello",
         "limit": 5,

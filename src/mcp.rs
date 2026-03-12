@@ -88,10 +88,35 @@ impl DocbertMcpServer {
     fn new(state: DocbertState) -> Self {
         Self {
             state: Arc::new(state),
-            tool_router: Self::tool_router(),
+            tool_router: sanitize_tool_router(Self::tool_router()),
             prompt_router: Self::prompt_router(),
         }
     }
+}
+
+fn sanitize_tool_router(
+    mut tool_router: ToolRouter<DocbertMcpServer>,
+) -> ToolRouter<DocbertMcpServer> {
+    for route in tool_router.map.values_mut() {
+        route.attr.input_schema =
+            strip_schema_keyword(&route.attr.input_schema);
+        route.attr.output_schema =
+            route.attr.output_schema.as_ref().map(strip_schema_keyword);
+    }
+
+    tool_router
+}
+
+fn strip_schema_keyword(
+    schema: &Arc<serde_json::Map<String, serde_json::Value>>,
+) -> Arc<serde_json::Map<String, serde_json::Value>> {
+    if !schema.contains_key("$schema") {
+        return schema.clone();
+    }
+
+    let mut sanitized = schema.as_ref().clone();
+    sanitized.remove("$schema");
+    Arc::new(sanitized)
 }
 
 /// Build the structured MCP response shape used by the search and status tools.
