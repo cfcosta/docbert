@@ -79,18 +79,12 @@ fn walk_dir(
             if resolved.starts_with(root) && resolved.is_dir() {
                 continue;
             }
-            if resolved.is_file()
-                && is_supported(&resolved)
-                && let Some(df) =
-                    make_discovered(root, &entry.path(), &resolved)?
-            {
-                results.push(df);
+            if resolved.is_file() && is_supported(&resolved) {
+                results.push(make_discovered(root, &entry.path(), &resolved)?);
             }
         } else if file_type.is_file() && is_supported(&entry.path()) {
             let abs = entry.path().canonicalize()?;
-            if let Some(df) = make_discovered(root, &entry.path(), &abs)? {
-                results.push(df);
-            }
+            results.push(make_discovered(root, &entry.path(), &abs)?);
         }
     }
 
@@ -107,7 +101,7 @@ fn make_discovered(
     root: &Path,
     original_path: &Path,
     absolute_path: &Path,
-) -> Result<Option<DiscoveredFile>> {
+) -> Result<DiscoveredFile> {
     let relative_path = original_path
         .strip_prefix(root)
         .unwrap_or(original_path)
@@ -120,11 +114,11 @@ fn make_discovered(
         .unwrap_or_default()
         .as_secs();
 
-    Ok(Some(DiscoveredFile {
+    Ok(DiscoveredFile {
         relative_path,
         absolute_path: absolute_path.to_path_buf(),
         mtime,
-    }))
+    })
 }
 
 #[cfg(test)]
