@@ -10,6 +10,26 @@ const EMBEDDINGS: TableDefinition<u64, &[u8]> =
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
 
+fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
+    if bytes.len() < HEADER_SIZE {
+        return None;
+    }
+
+    let num_tokens = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    let dimension = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let expected_len =
+        HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
+    if bytes.len() != expected_len {
+        return None;
+    }
+
+    Some(EmbeddingMatrix {
+        num_tokens,
+        dimension,
+        data: bytemuck::cast_slice(&bytes[HEADER_SIZE..]).to_vec(),
+    })
+}
+
 /// Stores ColBERT token embedding matrices keyed by numeric document ID.
 ///
 /// Each entry is packed like this:
@@ -119,28 +139,7 @@ impl EmbeddingDb {
             return Ok(None);
         };
 
-        let bytes = guard.value();
-        if bytes.len() < HEADER_SIZE {
-            return Ok(None);
-        }
-
-        let num_tokens = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let dimension = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-
-        let expected_len =
-            HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
-        if bytes.len() != expected_len {
-            return Ok(None);
-        }
-
-        let data: Vec<f32> =
-            bytemuck::cast_slice(&bytes[HEADER_SIZE..]).to_vec();
-
-        Ok(Some(EmbeddingMatrix {
-            num_tokens,
-            dimension,
-            data,
-        }))
+        Ok(parse_embedding_matrix(guard.value()))
     }
 
     /// Remove an embedding entry. Returns `true` if it existed.
@@ -284,34 +283,9 @@ impl EmbeddingDb {
 
         let mut results = Vec::with_capacity(doc_ids.len());
         for &doc_id in doc_ids {
-            let matrix = if let Some(guard) = table.get(doc_id)? {
-                let bytes = guard.value();
-                if bytes.len() >= HEADER_SIZE {
-                    let num_tokens =
-                        u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                    let dimension =
-                        u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-                    let expected_len = HEADER_SIZE
-                        + (num_tokens as usize) * (dimension as usize) * 4;
-
-                    if bytes.len() == expected_len {
-                        let data: Vec<f32> =
-                            bytemuck::cast_slice(&bytes[HEADER_SIZE..])
-                                .to_vec();
-                        Some(EmbeddingMatrix {
-                            num_tokens,
-                            dimension,
-                            data,
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let matrix = table
+                .get(doc_id)?
+                .and_then(|guard| parse_embedding_matrix(guard.value()));
             results.push((doc_id, matrix));
         }
 
@@ -436,6 +410,40 @@ mod tests {
     fn load_missing_returns_none() {
         let (_tmp, db) = test_db();
         assert!(db.load(999).unwrap().is_none());
+    }
+
+    fn insert_raw_entry(db: &EmbeddingDb, doc_id: u64, bytes: &[u8]) {
+        let txn = db.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(EMBEDDINGS).unwrap();
+            table.insert(doc_id, bytes).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    #[test]
+    fn load_returns_none_for_short_header() {
+        let (_tmp, db) = test_db();
+        insert_raw_entry(&db, 7, &[1, 2, 3, 4]);
+
+        assert!(db.load(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_and_batch_load_match_on_length_mismatch() {
+        let (_tmp, db) = test_db();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0]));
+        insert_raw_entry(&db, 8, &bytes);
+
+        assert!(db.load(8).unwrap().is_none());
+
+        let loaded = db.batch_load(&[8]).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, 8);
+        assert!(loaded[0].1.is_none());
     }
 
     #[test]
