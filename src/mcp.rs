@@ -129,6 +129,61 @@ fn structured_tool_result(
     result
 }
 
+fn build_search_result_item(
+    config_db: &ConfigDb,
+    result: search::FinalResult,
+    query: &str,
+    include_snippet: bool,
+) -> SearchResultItem {
+    let file = format!("{}/{}", result.collection, result.path);
+    let context = context_for_doc(config_db, &result.collection, &result.path);
+    let snippet = if include_snippet {
+        resolve_full_path(config_db, &result.collection, &result.path)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|content| text_util::extract_snippet(&content, query))
+            .map(|(snippet, start_line)| {
+                text_util::add_line_numbers(&snippet, start_line)
+            })
+    } else {
+        None
+    };
+
+    SearchResultItem {
+        doc_id: format!("#{}", result.doc_id),
+        collection: result.collection,
+        path: result.path,
+        file,
+        title: result.title,
+        score: result.score,
+        context,
+        snippet,
+    }
+}
+
+fn build_search_tool_result(
+    config_db: &ConfigDb,
+    results: Vec<search::FinalResult>,
+    query: String,
+    include_snippet: bool,
+) -> Result<CallToolResult, rmcp::ErrorData> {
+    let items: Vec<_> = results
+        .into_iter()
+        .map(|result| {
+            build_search_result_item(config_db, result, &query, include_snippet)
+        })
+        .collect();
+
+    let summary = format_search_summary(&items, &query);
+    let structured = serde_json::to_value(SearchResponse {
+        query,
+        result_count: items.len(),
+        results: items,
+    })
+    .map_err(|e| mcp_error("failed to serialize search results", e))?;
+
+    Ok(structured_tool_result(summary, structured))
+}
+
 #[tool_router(router = tool_router)]
 impl DocbertMcpServer {
     /// Search indexed documents with BM25 + optional ColBERT reranking.
@@ -166,46 +221,12 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        let mut items = Vec::with_capacity(results.len());
-
-        for r in results {
-            let file = format!("{}/{}", r.collection, r.path);
-            let context =
-                context_for_doc(&self.state.config_db, &r.collection, &r.path);
-            let snippet = if include_snippet {
-                resolve_full_path(&self.state.config_db, &r.collection, &r.path)
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|content| {
-                        text_util::extract_snippet(&content, &query)
-                    })
-                    .map(|(snippet, start_line)| {
-                        text_util::add_line_numbers(&snippet, start_line)
-                    })
-            } else {
-                None
-            };
-
-            items.push(SearchResultItem {
-                doc_id: format!("#{}", r.doc_id),
-                collection: r.collection,
-                path: r.path,
-                file,
-                title: r.title,
-                score: r.score,
-                context,
-                snippet,
-            });
-        }
-
-        let summary = format_search_summary(&items, &query);
-        let structured = serde_json::to_value(SearchResponse {
+        build_search_tool_result(
+            &self.state.config_db,
+            results,
             query,
-            result_count: items.len(),
-            results: items,
-        })
-        .map_err(|e| mcp_error("failed to serialize search results", e))?;
-
-        Ok(structured_tool_result(summary, structured))
+            include_snippet,
+        )
     }
 
     /// Semantic-only search across all indexed documents.
@@ -240,46 +261,12 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("semantic search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        let mut items = Vec::with_capacity(results.len());
-
-        for r in results {
-            let file = format!("{}/{}", r.collection, r.path);
-            let context =
-                context_for_doc(&self.state.config_db, &r.collection, &r.path);
-            let snippet = if include_snippet {
-                resolve_full_path(&self.state.config_db, &r.collection, &r.path)
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|content| {
-                        text_util::extract_snippet(&content, &query)
-                    })
-                    .map(|(snippet, start_line)| {
-                        text_util::add_line_numbers(&snippet, start_line)
-                    })
-            } else {
-                None
-            };
-
-            items.push(SearchResultItem {
-                doc_id: format!("#{}", r.doc_id),
-                collection: r.collection,
-                path: r.path,
-                file,
-                title: r.title,
-                score: r.score,
-                context,
-                snippet,
-            });
-        }
-
-        let summary = format_search_summary(&items, &query);
-        let structured = serde_json::to_value(SearchResponse {
+        build_search_tool_result(
+            &self.state.config_db,
+            results,
             query,
-            result_count: items.len(),
-            results: items,
-        })
-        .map_err(|e| mcp_error("failed to serialize search results", e))?;
-
-        Ok(structured_tool_result(summary, structured))
+            include_snippet,
+        )
     }
 
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
@@ -1101,6 +1088,64 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    #[test]
+    fn semantic_search_tool_payload_snapshot() {
+        let (server, _tmp, doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let result = build_search_tool_result(
+            &server.state.config_db,
+            vec![search::FinalResult {
+                rank: 1,
+                score: 1.25,
+                doc_id: doc_id.short.clone(),
+                doc_num_id: doc_id.numeric,
+                collection: "notes".to_string(),
+                path: "rust.md".to_string(),
+                title: "rust.md".to_string(),
+            }],
+            "Rust".to_string(),
+            true,
+        )
+        .unwrap();
+
+        let summary = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .map(|text| text.text.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            summary,
+            format!(
+                "Found 1 result for \"Rust\":\n#{} 1.250 notes/rust.md",
+                doc_id.short
+            )
+        );
+
+        let structured = result.structured_content.expect("structured");
+        assert_eq!(
+            structured,
+            json!({
+                "query": "Rust",
+                "resultCount": 1,
+                "results": [{
+                    "docId": format!("#{}", doc_id.short),
+                    "collection": "notes",
+                    "path": "rust.md",
+                    "file": "notes/rust.md",
+                    "title": "rust.md",
+                    "score": 1.25,
+                    "context": "Personal notes",
+                    "snippet": "1: Rust is fast.\n2: Ownership keeps memory safe."
+                }]
+            })
+        );
+    }
+
     #[tokio::test]
     async fn get_tool_returns_resource_with_line_numbers() {
         let (server, _tmp, doc_ids) =
@@ -1165,6 +1210,41 @@ mod tests {
 
         assert!(saw_resource);
         assert!(saw_skip);
+    }
+
+    #[tokio::test]
+    async fn multi_get_tool_payload_snapshot() {
+        let (server, _tmp, _doc_ids) =
+            build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
+
+        let params = MultiGetParams {
+            pattern: "*.md".to_string(),
+            collection: Some("notes".to_string()),
+            max_lines: Some(1),
+            max_bytes: Some(1024),
+            line_numbers: Some(true),
+        };
+
+        let result =
+            server.docbert_multi_get(Parameters(params)).await.unwrap();
+
+        assert_eq!(result.content.len(), 1);
+        let resource = result
+            .content
+            .first()
+            .and_then(|content| content.as_resource())
+            .expect("resource content");
+
+        match &resource.resource {
+            ResourceContents::TextResourceContents { uri, text, .. } => {
+                assert_eq!(uri, "bert://notes/rust%2Emd");
+                assert_eq!(
+                    text,
+                    "<!-- Context: Personal notes -->\n\n1: Rust is fast.\n2: \n3: [... truncated 1 more lines]"
+                );
+            }
+            _ => panic!("expected text resource"),
+        }
     }
 
     #[test]
