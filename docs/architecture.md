@@ -2,79 +2,81 @@
 
 ## Overview
 
-docbert is a hybrid document search system that combines lexical retrieval (BM25 + fuzzy matching via Tantivy) with semantic reranking (ColBERT late interaction via pylate-rs). It operates as a CLI tool that indexes directories of documents into named collections and provides fast, high-quality search.
+docbert is a hybrid document search tool. It keeps a Tantivy index for lexical retrieval and a redb store for ColBERT embeddings, then ties them together behind a CLI.
 
-## Components
+The main unit of organization is a collection: a named directory tree on disk. You register collections first, then run `docbert sync` or `docbert rebuild` when you want the index updated.
 
-### 1. Collection Manager
+## Main components
 
-Responsible for managing the mapping between named collections and filesystem directories. A collection is a named reference to a directory tree on disk.
+### 1. Collection manager
 
-- Stores collection definitions (name -> directory path) in the redb database
-- Re-indexing is triggered explicitly via `docbert sync` or `docbert rebuild`
-- Supports user-defined context strings per collection (for display purposes and future LLM integration)
+The collection manager keeps track of collection names and filesystem paths.
 
-### 2. Document Ingester
+- Stores collection definitions (`name -> directory path`) in the redb config database
+- Re-indexing only happens when the user runs `docbert sync` or `docbert rebuild`
+- Can store user-defined context strings per collection for display and future LLM integration
 
-Reads files from collection directories and prepares them for indexing.
+### 2. Document ingester
 
-- Walks the directory tree recursively
-- Reads file contents (initially plain text and markdown)
-- Assigns each document a stable internal ID (a short hash suitable for display, e.g. `#abc123`)
-- Tracks file modification times to support incremental re-indexing
+The ingester walks each collection and turns files into indexable documents.
 
-### 3. Tantivy Index
+- Recursively scans the directory tree
+- Reads file contents from plain text and Markdown files
+- Assigns each document a stable internal ID, shown as a short hash like `#abc123`
+- Tracks file modification times for incremental re-indexing
 
-Provides the first-stage retrieval using Tantivy's inverted index.
+### 3. Tantivy index
 
-- Schema fields: document ID (STRING, STORED), collection name (STRING, STORED, FAST), relative file path (STRING, STORED), title (TEXT, STORED), body (TEXT), file modification time (u64, STORED, FAST)
-- BM25 scoring is Tantivy's default and requires no configuration
-- Fuzzy matching is available via FuzzyTermQuery (Levenshtein distance 1)
-- Returns the top-1000 candidates for reranking
+Tantivy handles the first pass of search.
 
-### 4. Embedding Store (redb)
+- Schema fields: document ID (STRING, STORED), collection name (STRING, STORED, FAST), relative file path (STRING, STORED), title (TEXT, STORED), body (TEXT), file modification time (`u64`, STORED, FAST)
+- BM25 scoring uses Tantivy's defaults
+- Fuzzy matching is available through `FuzzyTermQuery` with Levenshtein distance 1
+- Returns the top 1000 candidates for reranking
 
-Stores pre-computed ColBERT token-level embeddings for all indexed documents.
+### 4. Embedding store (redb)
 
-- Key: document ID (u64); chunked documents use chunk-specific IDs for embeddings
-- Value: serialized token embedding matrix (`[num_tokens, 128]` as a flat `&[u8]` array of little-endian f32 values, prefixed with a u32 token count)
+The embedding store keeps precomputed ColBERT token embeddings for indexed documents.
+
+- Key: document ID (`u64`); chunked documents use chunk-specific IDs for embeddings
+- Value: serialized token embedding matrix (`[num_tokens, 128]` as a flat `&[u8]` array of little-endian `f32` values, prefixed with a `u32` token count)
 - Uses `insert_reserve` for zero-copy writes during bulk indexing
-- Single database file stored in the XDG data directory
+- Lives in a single database file under the XDG data directory
 
-### 5. ColBERT Encoder (pylate-rs)
+### 5. ColBERT encoder (pylate-rs)
 
-Computes ColBERT embeddings using the pylate-rs crate, which wraps the Candle ML framework.
+pylate-rs computes ColBERT embeddings using Candle under the hood.
 
-- Model: `lightonai/ColBERT-Zero` (or user-configurable)
-- Downloads model weights from HuggingFace Hub on first use, caches locally
-- Encodes queries with `[Q]` prefix and `[MASK]` padding (query_length from `config_sentence_transformers.json`, default 32)
-- Encodes documents with `[D]` prefix; documents are padded to the longest sequence in the batch and truncated to `document_length` (default 519)
-- Output: per-token embeddings of dimension 128, L2-normalized
+- Model: `lightonai/ColBERT-Zero` by default, or a user-specified alternative
+- Downloads model weights from HuggingFace Hub on first use and caches them locally
+- Encodes queries with a `[Q]` prefix and `[MASK]` padding (`query_length` comes from `config_sentence_transformers.json`, default 32)
+- Encodes documents with a `[D]` prefix; documents are padded to the longest sequence in the batch and truncated to `document_length` (default 519)
+- Produces L2-normalized per-token embeddings with dimension 128
 
-### 6. MaxSim Reranker
+### 6. MaxSim reranker
 
-Performs ColBERT late interaction scoring on the candidate set from Tantivy.
+The reranker scores each candidate returned by Tantivy.
 
-- Loads pre-computed document embeddings from redb for each candidate
-- Computes the MaxSim score: for each query token, find the maximum cosine similarity with any document token, then sum across all query tokens
-- SIMD acceleration via the MKL or Accelerate backends (compile-time feature flags on pylate-rs/candle)
+- Loads precomputed document embeddings from redb
+- Computes the MaxSim score by taking the best token match for each query token, then summing those values
+- Can use MKL or Accelerate backends through pylate-rs and Candle feature flags
 - Returns results sorted by MaxSim score
 
-### 7. CLI Interface (clap)
+### 7. CLI interface (clap)
 
-Provides the user-facing command-line interface.
+The CLI is the public face of the system.
 
 - Subcommands: `collection`, `context`, `search`, `get`, `multi-get`
-- Output formats: human-readable (default), JSON (`--json`)
-- Collection filtering: `-c <name>` to scope search to a single collection
-- Score thresholding: `--min-score` to filter low-quality results
-- Pagination: `-n` for result count
+- Output formats: human-readable by default, or JSON with `--json`
+- Collection filtering: `-c <name>` to search a single collection
+- Score thresholding: `--min-score` to drop low-scoring results
+- Pagination: `-n` to control result count
 
-## Data Flow
+## Data flow
 
-### Indexing Pipeline
+### Indexing pipeline
 
-```
+```text
 Directory -> Document Ingester -> [document text, metadata]
                                        |
                     +------------------+------------------+
@@ -86,9 +88,9 @@ Directory -> Document Ingester -> [document text, metadata]
            (XDG data dir)                      (XDG data dir)
 ```
 
-### Search Pipeline
+### Search pipeline
 
-```
+```text
 Query string
      |
      +---> Tantivy BM25 + Fuzzy -> top-1000 candidate doc IDs
@@ -108,22 +110,22 @@ Query string
      Format output (human / JSON)
 ```
 
-## Storage Layout
+## Storage layout
 
-All persistent data is stored under the XDG data directory (`$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`):
+All persistent data lives under the XDG data directory (`$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`):
 
-```
+```text
 docbert/
   config.db          # Collection definitions, context strings, settings
   embeddings.db      # ColBERT token embeddings for all documents
-  tantivy/             # Tantivy index directory (managed by Tantivy)
+  tantivy/           # Tantivy index directory (managed by Tantivy)
     meta.json
     <segment files>
 ```
 
-## Concurrency Model
+## Concurrency model
 
-- Tantivy supports concurrent readers with a single writer (lock-file enforced)
-- redb supports concurrent readers with a single writer (MVCC)
-- Indexing is single-threaded for writes but can parallelize document encoding across CPU cores via rayon (built into pylate-rs)
+- Tantivy allows concurrent readers and a single writer, enforced by its lock file
+- redb allows concurrent readers and a single writer through MVCC
+- Indexing writes run in a single thread, but document encoding can fan out across CPU cores through rayon inside pylate-rs
 - Search is read-only and can serve concurrent queries

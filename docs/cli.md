@@ -1,18 +1,18 @@
-# CLI Design
+# CLI design
 
-## Command Structure
+## Command structure
 
-```
+```text
 docbert <subcommand> [options]
 ```
 
-### Global Options
+## Global options
 
-| Option              | Description                              |
-| ------------------- | ---------------------------------------- |
-| `--data-dir <path>` | Override the XDG data directory          |
-| `--model <id>`      | Override the ColBERT model ID or local path |
-| `--verbose` / `-v`  | Increase log verbosity (can be repeated) |
+| Option              | Description                            |
+| ------------------- | -------------------------------------- |
+| `--data-dir <path>` | Override the XDG data directory        |
+| `--model <id>`      | Override the ColBERT model ID or path  |
+| `--verbose` / `-v`  | Increase log verbosity; can be repeated |
 
 ## Subcommands
 
@@ -24,46 +24,46 @@ Manage document collections.
 
 Register a directory as a named collection.
 
-- `<path>`: Path to the directory (resolved to absolute)
-- `--name <name>`: Human-readable collection name (required)
-- This command only registers metadata. It does **not** index files.
+- `<path>`: directory path, resolved to an absolute path
+- `--name <name>`: collection name
+
+This command only records metadata. It does not index files.
 
 Behavior:
 
-1. Validate the directory exists and is readable
-2. Store the collection definition in config.db
+1. Check that the directory exists and can be read
+2. Store the collection definition in `config.db`
 3. Print a confirmation message
 
-If the collection already exists, this returns an error. Use `docbert sync` or
-`docbert rebuild` to (re)index collections.
+If the collection already exists, the command fails. Use `docbert sync` or `docbert rebuild` to index or re-index it.
 
 #### `docbert collection remove <name>`
 
-Remove a collection and all its indexed data.
+Remove a collection and its indexed data.
 
-- Removes the collection definition from config.db
-- Deletes all Tantivy entries for documents in this collection
-- Deletes all embeddings for documents in this collection
-Note: context strings are not removed automatically.
+- Deletes the collection definition from `config.db`
+- Deletes Tantivy entries for documents in that collection
+- Deletes embeddings for documents in that collection
+- Leaves context strings alone for now
 
 #### `docbert collection list`
 
-List all registered collections with their paths.
+List registered collections and their paths.
 
-Output format (human):
+Human output:
 
-```
+```text
 notes       ~/notes
 meetings    ~/Documents/meetings
 docs        ~/work/docs
 ```
 
-Output format (JSON, with `--json`):
+JSON output (`--json`):
 
 ```json
 [
   {"name": "notes", "path": "/home/user/notes"},
-  ...
+  {"name": "docs", "path": "/home/user/docs"}
 ]
 ```
 
@@ -75,10 +75,10 @@ Manage context descriptions for collections.
 
 Add or update a context string for a collection.
 
-- `<uri>`: Collection URI in the form `bert://<name>` (e.g., `bert://notes`)
-- `<description>`: Free-text description
+- `<uri>`: collection URI in the form `bert://<name>`
+- `<description>`: free-text description
 
-Context strings are stored in config.db and displayed in search results to help users (and AI agents) understand what a collection contains.
+Context strings live in `config.db` and show up in search results so users and AI agents can tell what a collection contains.
 
 #### `docbert context remove <uri>`
 
@@ -86,33 +86,33 @@ Remove the context string for a collection.
 
 #### `docbert context list`
 
-List all context strings.
+List all stored context strings.
 
 ### `docbert search <query>`
 
-Search across all collections (or a specific one).
+Search all collections, or one collection if `-c` is set.
 
 #### Options
 
 | Option                | Description                                                 |
 | --------------------- | ----------------------------------------------------------- |
 | `-n <count>`          | Number of results to return (default: 10)                   |
-| `-c <collection>`     | Search only within this collection                          |
+| `-c <collection>`     | Search only this collection                                 |
 | `--json`              | Output results as JSON                                      |
-| `--all`               | Return all results above the score threshold (ignores `-n`) |
-| `--files`             | Output only file paths (one per line)                       |
+| `--all`               | Return all results above the score threshold; ignores `-n`  |
+| `--files`             | Output only file paths, one per line                        |
 | `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
-| `--bm25-only`         | Skip ColBERT reranking, return BM25 results directly        |
+| `--bm25-only`         | Skip ColBERT reranking and return BM25 results              |
 | `--no-fuzzy`          | Disable fuzzy matching in the first stage                   |
 
 #### Behavior
 
-1. Run the search pipeline (see pipeline.md)
-2. Format and display results
+1. Run the search pipeline described in `pipeline.md`
+2. Format and print the results
 
-Human output format:
+Human output:
 
-```
+```text
   1. [0.847] notes:project-ideas.md #a1b2c3
      Project Timeline and Milestones
 
@@ -120,7 +120,7 @@ Human output format:
      Q1 2025 Roadmap
 ```
 
-JSON output format:
+JSON output:
 
 ```json
 {
@@ -141,8 +141,9 @@ JSON output format:
 
 ### `docbert ssearch <query>`
 
-Semantic-only search across all collections (ColBERT only, no BM25 or fuzzy matching).
-This performs a full embedding scan, so it is slower on large corpora.
+Run semantic-only search across all collections. This skips BM25 and fuzzy matching, then scans stored embeddings directly.
+
+That makes it useful when wording differs a lot from the query, but it is slower on large corpora.
 
 #### Options
 
@@ -150,18 +151,16 @@ This performs a full embedding scan, so it is slower on large corpora.
 | --------------------- | ----------------------------------------------------------- |
 | `-n <count>`          | Number of results to return (default: 10)                   |
 | `--json`              | Output results as JSON                                      |
-| `--all`               | Return all results above the score threshold (ignores `-n`) |
-| `--files`             | Output only file paths (one per line)                       |
+| `--all`               | Return all results above the score threshold; ignores `-n`  |
+| `--files`             | Output only file paths, one per line                        |
 | `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
 
 #### Behavior
 
 1. Encode the query with ColBERT
-2. Score every stored document embedding (chunk 0 only)
-3. Filter by `--min-score` and limit to `-n` (unless `--all`)
-4. Format and display results
-
-Human output format is the same as `docbert search`.
+2. Score every stored document embedding, using chunk 0 only
+3. Apply `--min-score` and `-n`, unless `--all` is set
+4. Format the output the same way as `docbert search`
 
 ### `docbert get <reference>`
 
@@ -169,49 +168,51 @@ Retrieve a document's full content.
 
 #### Reference formats
 
-- **Path**: `meetings/2024-01-15.md` -- looks up by relative path across all collections
-- **Doc ID**: `#abc123` -- looks up by short document ID
-- **Qualified path**: `notes:project-ideas.md` -- collection-qualified path
+- Path: `meetings/2024-01-15.md` looks up a relative path across all collections
+- Doc ID: `#abc123` looks up a short document ID
+- Qualified path: `notes:project-ideas.md` scopes the lookup to one collection
 
 #### Options
 
-| Option   | Description                                                |
-| -------- | ---------------------------------------------------------- |
-| `--full` | Print full document content (default behavior; flag is currently redundant) |
-| `--json` | Output as JSON with metadata                               |
-| `--meta` | Print only metadata (collection, path, full file path) |
+| Option   | Description                                                            |
+| -------- | ---------------------------------------------------------------------- |
+| `--full` | Print full document content; this is currently the default anyway      |
+| `--json` | Output JSON with metadata                                              |
+| `--meta` | Print only metadata: collection, path, and full file path             |
 
 ### `docbert multi-get <pattern>`
 
-Retrieve multiple documents matching a glob pattern.
+Retrieve multiple documents that match a glob pattern.
 
-- `<pattern>`: Glob pattern applied to relative paths (e.g., `journals/2025-05*.md`)
-- Searches across all collections
+- `<pattern>` applies to relative paths, for example `journals/2025-05*.md`
+- Search spans all collections unless `-c` is set
 
 #### Options
 
-| Option            | Description                                  |
-| ----------------- | -------------------------------------------- |
-| `-c <collection>` | Restrict to a specific collection            |
-| `--json`          | Output as JSON array                         |
-| `--files`         | Output only file paths                       |
-| `--full`          | Include full document content (can be large) |
+| Option            | Description                       |
+| ----------------- | --------------------------------- |
+| `-c <collection>` | Restrict to one collection        |
+| `--json`          | Output as a JSON array            |
+| `--files`         | Output only file paths            |
+| `--full`          | Include full document content     |
 
 ### `docbert sync`
 
-Incrementally sync collections with source files. Only processes new, changed, or deleted files based on modification time.
+Incrementally sync collections with source files. Only new, changed, or deleted files are processed.
 
 #### Options
 
-| Option            | Description                 |
-| ----------------- | --------------------------- |
-| `-c <collection>` | Sync only this collection   |
+| Option            | Description             |
+| ----------------- | ----------------------- |
+| `-c <collection>` | Sync only this collection |
 
-This is the recommended command for regular updates. It's much faster than `rebuild` because it only processes files that have changed since the last sync.
+Use this for normal updates. It is much faster than `rebuild` because it only touches files that changed since the last sync.
 
 ### `docbert rebuild`
 
-Full rebuild of indexes from source files. Deletes all existing data and re-indexes everything from scratch.
+Rebuild indexes from source files.
+
+This deletes existing data for the affected scope and indexes everything again.
 
 #### Options
 
@@ -221,7 +222,7 @@ Full rebuild of indexes from source files. Deletes all existing data and re-inde
 | `--embeddings-only` | Only recompute ColBERT embeddings |
 | `--index-only`      | Only rebuild the Tantivy index    |
 
-Use this when you need to force a complete re-index (e.g., after index corruption or model changes).
+Use this when you need a clean pass, for example after index corruption or a model change.
 
 ### `docbert model`
 
@@ -229,21 +230,21 @@ Manage the default ColBERT model stored in `config.db`.
 
 #### Subcommands
 
-| Command | Description |
-| ------- | ----------- |
-| `docbert model show` | Show the resolved model (and source) |
+| Command                     | Description                                 |
+| --------------------------- | ------------------------------------------- |
+| `docbert model show`        | Show the resolved model and where it came from |
 | `docbert model set <model>` | Persist a HuggingFace model ID or local path |
-| `docbert model clear` | Clear the stored model setting |
+| `docbert model clear`       | Clear the stored model setting              |
 
-You can also override the model per command with `--model`.
+You can still override the model per command with `--model`.
 
 ### `docbert status`
 
-Show system status and statistics.
+Show system status and a few basic counts.
 
-Output:
+Example output:
 
-```
+```text
 Data directory: ~/.local/share/docbert/
 Model: lightonai/ColBERT-Zero
 Model source: default
@@ -258,15 +259,15 @@ Documents: 1070
 
 Start the MCP (Model Context Protocol) server for AI agents.
 
-The MCP server exposes tools for search and retrieval over stdio:
+The server exposes these tools over stdio:
 
-- `docbert_search` (BM25 + ColBERT, supports collection filters)
-- `semantic_search` (ColBERT-only, scans all documents)
+- `docbert_search` for BM25 + ColBERT search, with optional collection filters
+- `semantic_search` for ColBERT-only search across all documents
 - `docbert_get`
 - `docbert_multi_get`
 - `docbert_status`
 
-Example configuration (Claude Desktop / Claude Code):
+Example configuration for Claude Desktop or Claude Code:
 
 ```json
 {
@@ -279,19 +280,19 @@ Example configuration (Claude Desktop / Claude Code):
 }
 ```
 
-## Exit Codes
+## Exit codes
 
-| Code | Meaning                                      |
-| ---- | -------------------------------------------- |
-| 0    | Success                                      |
-| 1    | General error (default on any failure)       |
+| Code | Meaning                                |
+| ---- | -------------------------------------- |
+| 0    | Success                                |
+| 1    | General error; used for any failure    |
 
-## Environment Variables
+## Environment variables
 
-| Variable           | Description                                         |
-| ------------------ | --------------------------------------------------- |
-| `DOCBERT_DATA_DIR` | Override XDG data directory                         |
-| `DOCBERT_MODEL`    | Override default model name (lower priority than `--model`) |
-| `DOCBERT_LOG`      | Log level (trace, debug, info, warn, error)         |
-| `HF_HOME`          | HuggingFace Hub cache directory (used by pylate-rs) |
-| `NO_COLOR`         | Disable colored output (standard)                   |
+| Variable           | Description                                                  |
+| ------------------ | ------------------------------------------------------------ |
+| `DOCBERT_DATA_DIR` | Override the XDG data directory                              |
+| `DOCBERT_MODEL`    | Override the default model name; lower priority than `--model` |
+| `DOCBERT_LOG`      | Log level: `trace`, `debug`, `info`, `warn`, or `error`     |
+| `HF_HOME`          | HuggingFace Hub cache directory used by pylate-rs            |
+| `NO_COLOR`         | Disable colored output                                       |

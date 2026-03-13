@@ -1,6 +1,6 @@
-# Using docbert as a Library
+# Using docbert as a library
 
-docbert can be used as a Rust library for embedding document indexing and semantic search into your own applications. The library exposes all core components while keeping the CLI and MCP server as thin wrappers.
+If you want to embed docbert in another Rust application, the CLI is not doing anything magical. It uses the same library types exposed by the crate.
 
 ## Installation
 
@@ -11,14 +11,14 @@ Add docbert to your `Cargo.toml`:
 docbert = { path = "../docbert" }
 ```
 
-## Quick Start
+## Quick start
 
 ```rust,no_run
 use docbert::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
 use docbert::search::{SearchParams, execute_search};
 
 fn main() -> docbert::Result<()> {
-    // Resolve data directory (uses $DOCBERT_DATA_DIR or XDG default)
+    // Resolve the data directory from $DOCBERT_DATA_DIR or XDG defaults.
     let data_dir = DataDir::resolve(None)?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
@@ -44,27 +44,27 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-## Core Types
+## Core types
 
 ### `DataDir`
 
-Resolves and manages the docbert data directory, which contains the config database, embeddings database, and Tantivy index.
+`DataDir` resolves the docbert data directory and gives you paths for the config database, embeddings database, and Tantivy index.
 
 ```rust,no_run
 use std::path::Path;
 use docbert::DataDir;
 
 fn main() -> docbert::Result<()> {
-    // Use default XDG location (~/.local/share/docbert)
+    // Use the default XDG location (~/.local/share/docbert)
     let data_dir = DataDir::resolve(None)?;
 
-    // Use explicit path
+    // Or use an explicit path
     let data_dir = DataDir::resolve(Some(Path::new("/tmp/myindex")))?;
 
-    // Access subdirectories
-    let config_path = data_dir.config_db();       // config.db path
-    let embeddings_path = data_dir.embeddings_db(); // embeddings.db path
-    let tantivy_path = data_dir.tantivy_dir()?;    // tantivy/ directory (created if needed)
+    // Access subpaths
+    let config_path = data_dir.config_db();          // config.db
+    let embeddings_path = data_dir.embeddings_db();  // embeddings.db
+    let tantivy_path = data_dir.tantivy_dir()?;      // tantivy/ (created if needed)
 
     Ok(())
 }
@@ -72,7 +72,7 @@ fn main() -> docbert::Result<()> {
 
 ### `ConfigDb`
 
-Manages collections, context strings, document metadata, and settings in a redb database.
+`ConfigDb` manages collections, context strings, document metadata, and settings in a redb database.
 
 ```rust,no_run
 use docbert::ConfigDb;
@@ -86,10 +86,10 @@ fn main() -> docbert::Result<()> {
     // List collections as (name, path) pairs
     let collections = config_db.list_collections()?;
 
-    // Attach context to a collection (for MCP display)
+    // Attach context to a collection for MCP display
     config_db.set_context("bert://notes", "Personal notes and memos")?;
 
-    // Store/retrieve settings
+    // Store and read settings
     config_db.set_setting("model_name", "lightonai/ColBERT-Zero")?;
     let model = config_db.get_setting("model_name")?; // Option<String>
 
@@ -99,20 +99,20 @@ fn main() -> docbert::Result<()> {
 
 ### `SearchIndex`
 
-Wraps Tantivy for BM25 full-text search with English stemming.
+`SearchIndex` wraps Tantivy for BM25 full-text search with English stemming.
 
 ```rust,no_run
 use std::path::Path;
 use docbert::SearchIndex;
 
 fn main() -> docbert::Result<()> {
-    // Open on disk (creates directory if needed)
+    // Open on disk (creates the directory if needed)
     let index = SearchIndex::open(Path::new("/path/to/tantivy"))?;
 
-    // In-memory (for testing)
+    // Or open an in-memory index for testing
     let index = SearchIndex::open_in_ram()?;
 
-    // Index a document (requires a writer)
+    // Index a document
     let mut writer = index.writer(15_000_000)?; // 15 MB memory budget
     index.add_document(
         &mut writer,
@@ -129,7 +129,7 @@ fn main() -> docbert::Result<()> {
     // Search with BM25
     let results = index.search("hello", 10)?;
 
-    // Search within a collection
+    // Search within one collection
     let results = index.search_in_collection("hello", "notes", 10)?;
 
     // Fuzzy search (BM25 + Levenshtein distance 1)
@@ -141,10 +141,9 @@ fn main() -> docbert::Result<()> {
 
 ### `EmbeddingDb`
 
-Stores and retrieves ColBERT token-level embedding matrices in a redb database.
+`EmbeddingDb` stores ColBERT token-level embedding matrices in redb.
 
-Each entry stores a matrix of shape `[num_tokens, dimension]` as a flat `f32` array
-with a header containing the dimensions.
+Each entry is a flat `f32` array with a small header that records the dimensions.
 
 ```rust,no_run
 use std::path::Path;
@@ -165,7 +164,7 @@ fn main() -> docbert::Result<()> {
     // Remove an embedding (returns true if it existed)
     db.remove(42)?;
 
-    // Batch operations (single transaction, more efficient)
+    // Batch operations are cheaper because they share a transaction
     db.batch_store(&[
         (1, 1, 2, vec![1.0, 2.0]),
         (2, 1, 2, vec![3.0, 4.0]),
@@ -182,15 +181,15 @@ fn main() -> docbert::Result<()> {
 
 ### `ModelManager`
 
-Manages the ColBERT model lifecycle with lazy loading. The model is downloaded
-from HuggingFace Hub on first use and cached locally. By default, documents are
-encoded at 519 tokens; call `with_document_length(...)` to override that.
+`ModelManager` lazily loads the ColBERT model. The first encode call downloads the model from HuggingFace Hub if it is not already cached.
+
+By default, documents are encoded at 519 tokens. Call `with_document_length(...)` if you need a different value.
 
 ```rust,no_run
 use docbert::ModelManager;
 
 fn main() -> docbert::Result<()> {
-    // Use default model (or DOCBERT_MODEL env var)
+    // Use the default model, or DOCBERT_MODEL if it is set
     let mut model = ModelManager::new();
 
     // Use a specific model
@@ -199,12 +198,12 @@ fn main() -> docbert::Result<()> {
     // Override the document encoding length
     let mut model = ModelManager::new().with_document_length(512);
 
-    // Model downloads on first encode call
+    // The model is loaded on first encode
     let doc_embeddings = model.encode_documents(&["document text".into()])?;
-    // Returns Tensor of shape [batch_size, num_tokens, dimension]
+    // Returns a Tensor of shape [batch_size, num_tokens, dimension]
 
     let query_embedding = model.encode_query("search query")?;
-    // Returns Tensor of shape [num_tokens, dimension]
+    // Returns a Tensor of shape [num_tokens, dimension]
 
     Ok(())
 }
@@ -212,31 +211,29 @@ fn main() -> docbert::Result<()> {
 
 ### `DocumentId`
 
-Generates stable, deterministic document IDs from collection name and relative path.
-The same inputs always produce the same ID.
+`DocumentId` generates a stable ID from the collection name and relative path. The same inputs always produce the same ID.
 
 ```rust,ignore
 use docbert::DocumentId;
 
 let id = DocumentId::new("notes", "hello.md");
-println!("Short ID: {}", id);           // e.g., #a1b2c3
+println!("Short ID: {}", id);           // e.g. #a1b2c3
 println!("Numeric ID: {}", id.numeric); // u64 for database keys
-println!("Short hex: {}", id.short);    // e.g., a1b2c3 (without #)
+println!("Short hex: {}", id.short);    // e.g. a1b2c3 without #
 
-// Same inputs always produce the same ID
 assert_eq!(DocumentId::new("notes", "hello.md"), id);
 ```
 
-## Search Pipeline
+## Search pipeline
 
-### Hybrid Search (BM25 + ColBERT)
+### Hybrid search (BM25 + ColBERT)
 
-The default search pipeline combines BM25 retrieval with ColBERT reranking:
+The default search path looks like this:
 
-1. **BM25 retrieval** -- Tantivy keyword search (top 1000 candidates)
-2. **ColBERT reranking** -- neural MaxSim scoring of candidates
-3. **Score filtering** -- drop results below `min_score`
-4. **Limit** -- return at most `count` results
+1. BM25 retrieval through Tantivy, usually top 1000 candidates
+2. ColBERT reranking over those candidates
+3. Score filtering with `min_score`
+4. Result limiting with `count`
 
 ```rust,no_run
 use docbert::{SearchIndex, EmbeddingDb, ModelManager};
@@ -250,11 +247,11 @@ fn main() -> docbert::Result<()> {
     let params = SearchParams {
         query: "rust memory safety".to_string(),
         count: 10,
-        collection: Some("docs".to_string()), // None for all collections
+        collection: Some("docs".to_string()),
         min_score: 0.0,
-        bm25_only: false,  // set true to skip ColBERT
-        no_fuzzy: false,   // set true to disable fuzzy matching
-        all: false,        // set true to return all results (ignore count)
+        bm25_only: false,
+        no_fuzzy: false,
+        all: false,
     };
 
     let results = execute_search(&params, &search_index, &embedding_db, &mut model)?;
@@ -266,11 +263,9 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-### Semantic-Only Search
+### Semantic-only search
 
-Bypasses BM25 and searches purely with ColBERT embeddings. Scores every
-document with stored embeddings, finding semantically related documents
-even when they share no keywords with the query.
+Semantic-only search skips BM25 and scores every stored embedding. That can surface related documents even when the query shares few or no keywords with them.
 
 ```rust,no_run
 use docbert::{ConfigDb, EmbeddingDb, ModelManager};
@@ -293,9 +288,9 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-### BM25-Only Search
+### BM25-only search
 
-Fast keyword search without model loading:
+If you only want fast keyword search, set `bm25_only` and skip model loading entirely.
 
 ```rust,no_run
 use docbert::{SearchIndex, EmbeddingDb, ModelManager};
@@ -311,7 +306,7 @@ fn main() -> docbert::Result<()> {
         count: 10,
         collection: None,
         min_score: 0.0,
-        bm25_only: true, // skips ColBERT entirely -- model is never loaded
+        bm25_only: true,
         no_fuzzy: false,
         all: false,
     };
@@ -321,19 +316,19 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-## Indexing Pipeline
+## Indexing pipeline
 
-### Discovering and Ingesting Files
+### Discovering and ingesting files
 
 ```rust,no_run
 use std::path::Path;
 use docbert::{SearchIndex, walker, ingestion};
 
 fn main() -> docbert::Result<()> {
-    // Discover .md and .txt files (skips hidden files/directories)
+    // Discover .md and .txt files; hidden files and directories are skipped
     let files = walker::discover_files(Path::new("/home/user/notes"))?;
 
-    // Index into Tantivy (requires a writer)
+    // Index into Tantivy
     let search_index = SearchIndex::open_in_ram()?;
     let mut writer = search_index.writer(15_000_000)?;
     let count = ingestion::ingest_files(&search_index, &mut writer, "notes", &files)?;
@@ -343,14 +338,14 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-### Chunking Documents
+### Chunking documents
 
-For long documents, split into overlapping chunks before embedding:
+Long documents can be split into overlapping chunks before embedding.
 
 ```rust,ignore
 use docbert::chunking::{chunk_text, chunk_doc_id, ChunkingConfig, DEFAULT_CHUNK_SIZE};
 
-// Split text into chunks of ~1000 characters with 200 char overlap
+// Split text into chunks of about 1000 characters with 200 chars of overlap
 let chunks = chunk_text("long document text...", 1000, 200);
 for chunk in &chunks {
     println!("Chunk {}: {} chars at offset {}", chunk.index, chunk.text.len(), chunk.start_offset);
@@ -362,9 +357,9 @@ let chunk0_id = chunk_doc_id(base_id, 0); // same as base_id
 let chunk1_id = chunk_doc_id(base_id, 1); // unique ID for chunk 1
 ```
 
-### Incremental Sync
+### Incremental sync
 
-Detect changes since last sync using modification time tracking:
+Incremental sync uses modification times to find what changed since the last run.
 
 ```rust,no_run
 use std::path::Path;
@@ -376,13 +371,14 @@ fn main() -> docbert::Result<()> {
     let files = walker::discover_files(Path::new("/home/user/notes"))?;
 
     let diff: DiffResult = diff_collection(&config_db, "notes", &files)?;
-    println!("New: {}, Changed: {}, Deleted: {}",
+    println!(
+        "New: {}, Changed: {}, Deleted: {}",
         diff.new_files.len(),
         diff.changed_files.len(),
         diff.deleted_ids.len(),
     );
 
-    // After indexing, store metadata so future diffs detect changes
+    // After indexing, store metadata so future runs can diff correctly
     for file in &diff.new_files {
         store_metadata(&config_db, "notes", file)?;
     }
@@ -391,9 +387,9 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-## MCP Server
+## MCP server
 
-To run docbert as an MCP server programmatically:
+To run docbert as an MCP server from Rust:
 
 ```rust,no_run
 use docbert::{ConfigDb, DataDir};
@@ -409,35 +405,35 @@ fn main() -> docbert::Result<()> {
 }
 ```
 
-## Error Handling
+## Error handling
 
-All fallible operations return `docbert::Result<T>`, which uses `docbert::Error`:
+Most fallible operations return `docbert::Result<T>`, which wraps `docbert::Error`.
 
 ```rust,ignore
 use docbert::{Error, Result};
 
 fn my_function() -> Result<()> {
-    // Error variants:
-    // - Error::Io(std::io::Error)        -- file I/O
-    // - Error::Config(String)            -- configuration / validation
-    // - Error::NotFound { kind, name }   -- missing document / collection
-    // - Error::DataDir(PathBuf)          -- data directory issues
-    // - Error::Tantivy(tantivy::TantivyError) -- search index
-    // - Error::Redb(redb::Error)         -- config/embedding database
-    // - Error::Colbert(pylate_rs::ColbertError) -- model errors
-    // - Error::Candle(candle_core::Error) -- tensor operations
+    // Common variants:
+    // - Error::Io(std::io::Error)                 // file I/O
+    // - Error::Config(String)                     // configuration or validation
+    // - Error::NotFound { kind, name }            // missing document or collection
+    // - Error::DataDir(PathBuf)                   // data directory issues
+    // - Error::Tantivy(tantivy::TantivyError)     // search index errors
+    // - Error::Redb(redb::Error)                  // config or embedding database errors
+    // - Error::Colbert(pylate_rs::ColbertError)   // model errors
+    // - Error::Candle(candle_core::Error)         // tensor operation errors
     Ok(())
 }
 ```
 
-## Model Resolution
+## Model resolution
 
-The ColBERT model ID is resolved from multiple sources, in priority order:
+The ColBERT model ID is resolved in this order:
 
-1. `--model` CLI flag (highest priority)
+1. `--model` CLI flag
 2. `DOCBERT_MODEL` environment variable
-3. `model_name` setting in `config.db`
-4. Compiled-in default (`lightonai/ColBERT-Zero`)
+3. `model_name` stored in `config.db`
+4. compiled-in default: `lightonai/ColBERT-Zero`
 
 ```rust,no_run
 use docbert::ConfigDb;
@@ -448,7 +444,7 @@ fn main() -> docbert::Result<()> {
 
     let resolution = resolve_model(&config_db, Some("my/model"))?;
     println!("Model: {} (source: {})", resolution.model_id, resolution.source.as_str());
-    // "Model: my/model (source: cli)"
+    // Model: my/model (source: cli)
 
     Ok(())
 }

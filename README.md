@@ -1,17 +1,19 @@
 # docbert
 
-docbert is a CLI for searching local documents. It uses BM25 to pull likely matches quickly, then ColBERT to rerank them semantically.
+docbert is a CLI for searching local documents. It uses BM25 to find likely matches quickly, then reranks them with ColBERT.
+
+Point it at one or more folders, sync the index, and search across Markdown or plain text files.
 
 ## What it does
 
-- BM25 + ColBERT two-stage search
+- two-stage search with BM25 and ColBERT
 - semantic-only full scans with `docbert ssearch`
 - named collections for grouping directories
-- incremental indexing that only processes changed files
+- incremental indexing that only reprocesses changed files
 - human-readable, JSON, or file-only output
 - CUDA and Metal support for faster embedding work
 - fuzzy matching for typo-tolerant queries
-- works on Markdown and plain text files
+- Markdown and plain text support
 
 ## Quick start
 
@@ -43,7 +45,7 @@ docbert search "todo" --files | xargs -I {} code {}
 
 ## MCP server
 
-docbert can also run as an MCP (Model Context Protocol) server for AI tools and editors.
+docbert can also run as an MCP (Model Context Protocol) server for editors and AI tools.
 
 Available tools:
 - `docbert_search`: keyword + semantic search, with optional collection filters
@@ -184,16 +186,16 @@ docbert rebuild
 docbert rebuild -c notes
 ```
 
-## How it works
+## How search works
 
-Search runs in two steps:
+Search happens in two steps:
 
-1. Tantivy handles BM25 retrieval, with optional fuzzy matching, and returns a candidate set.
-2. pylate-rs reranks those candidates with ColBERT using the `lightonai/ColBERT-Zero` model by default.
+1. Tantivy runs BM25 retrieval, optionally with fuzzy matching, and returns a candidate set.
+2. pylate-rs reranks those candidates with ColBERT using `lightonai/ColBERT-Zero` by default.
 
-That gives you fast keyword search without giving up semantic ranking.
+That gives you fast keyword search without losing semantic ranking.
 
-If you want pure semantic ranking, `docbert ssearch` skips BM25 entirely and scores every stored embedding. That is slower on large collections, but it avoids BM25 and fuzzy matching bias.
+If you want pure semantic ranking, `docbert ssearch` skips BM25 and scores every stored embedding. That is slower on large collections, but it avoids BM25 and fuzzy-matching bias.
 
 ## Configuration
 
@@ -248,12 +250,12 @@ DOCBERT_MODEL=/path/to/model docbert search "query"
 - Markdown (`.md`)
 - Plain text (`.txt`)
 
-## Performance tips
+## Performance notes
 
-- Use `--bm25-only` when keyword search is enough
-- The ColBERT model loads on the first semantic search
-- GPU support speeds up embedding generation
-- Incremental indexing only reprocesses changed files
+- Use `--bm25-only` when keyword search is enough.
+- The ColBERT model loads on the first semantic search.
+- GPU support speeds up embedding generation.
+- Incremental indexing only reprocesses changed files.
 
 ## License
 
