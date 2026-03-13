@@ -22,6 +22,7 @@ use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
+mod indexing_workflow;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
 
@@ -826,18 +827,10 @@ fn cmd_rebuild(
     args: &cli::RebuildArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections: Vec<(String, String)> =
-        if let Some(ref name) = args.collection {
-            let path = config_db.get_collection(name)?.ok_or_else(|| {
-                error::Error::NotFound {
-                    kind: "collection",
-                    name: name.clone(),
-                }
-            })?;
-            vec![(name.clone(), path)]
-        } else {
-            config_db.list_collections()?
-        };
+    let collections = indexing_workflow::resolve_target_collections(
+        config_db,
+        args.collection.as_deref(),
+    )?;
 
     if collections.is_empty() {
         eprintln!("No collections to rebuild.");
@@ -892,15 +885,12 @@ fn cmd_rebuild(
         let files = walker::discover_files(root)?;
         eprintln!("  Found {} files", files.len());
 
-        let (loaded_docs, metadata_files) =
-            if args.embeddings_only && args.index_only {
-                (Vec::new(), files.clone())
-            } else {
-                eprintln!("  Loading {} files...", files.len());
-                let load_result = ingestion::load_documents(name, &files);
-                log_load_failures(&load_result.failures);
-                (load_result.documents, load_result.loaded_files)
-            };
+        if !args.embeddings_only || !args.index_only {
+            eprintln!("  Loading {} files...", files.len());
+        }
+        let document_batch =
+            indexing_workflow::load_rebuild_batch(name, &files, args);
+        log_load_failures(&document_batch.failures);
 
         // Re-index into Tantivy
         if !args.embeddings_only {
@@ -909,29 +899,23 @@ fn cmd_rebuild(
                 &search_index,
                 &mut writer,
                 name,
-                &loaded_docs,
+                &document_batch.documents,
             )?;
             eprintln!("  Indexed {count} documents");
         }
 
         // Re-compute embeddings with chunking for long documents
         if !args.index_only {
-            // Chunk documents with progress
-            let mut pb = create_progress_bar(loaded_docs.len(), "Chunking");
-            let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
-            for doc in loaded_docs {
-                let chunks = chunking::chunk_text(
-                    &doc.content,
-                    chunking_config.chunk_size,
-                    chunking_config.overlap,
+            let mut pb =
+                create_progress_bar(document_batch.documents.len(), "Chunking");
+            let docs_to_embed =
+                indexing_workflow::chunk_documents_for_embedding(
+                    &document_batch.documents,
+                    chunking_config,
+                    |processed_count| {
+                        let _ = pb.update_to(processed_count);
+                    },
                 );
-                for chunk in chunks {
-                    let chunk_id =
-                        chunking::chunk_doc_id(doc.doc_num_id, chunk.index);
-                    docs_to_embed.push((chunk_id, chunk.text));
-                }
-                let _ = pb.update(1);
-            }
             finish_progress_bar(&mut pb);
 
             // Embed documents in submission batches with progress.
@@ -952,7 +936,11 @@ fn cmd_rebuild(
         }
 
         // Store metadata for files that were read successfully.
-        incremental::batch_store_metadata(config_db, name, &metadata_files)?;
+        incremental::batch_store_metadata(
+            config_db,
+            name,
+            &document_batch.metadata_files,
+        )?;
 
         eprintln!("  Done.");
     }
@@ -970,18 +958,10 @@ fn cmd_sync(
     args: &cli::SyncArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections: Vec<(String, String)> =
-        if let Some(ref name) = args.collection {
-            let path = config_db.get_collection(name)?.ok_or_else(|| {
-                error::Error::NotFound {
-                    kind: "collection",
-                    name: name.clone(),
-                }
-            })?;
-            vec![(name.clone(), path)]
-        } else {
-            config_db.list_collections()?
-        };
+    let collections = indexing_workflow::resolve_target_collections(
+        config_db,
+        args.collection.as_deref(),
+    )?;
 
     if collections.is_empty() {
         eprintln!("No collections to sync.");
@@ -1072,11 +1052,9 @@ fn cmd_sync(
 
         if !files_to_process.is_empty() {
             eprintln!("  Loading {} files...", files_to_process.len());
-            let load_result =
-                ingestion::load_documents(name, &files_to_process);
-            log_load_failures(&load_result.failures);
-            let loaded_docs = load_result.documents;
-            let loaded_files = load_result.loaded_files;
+            let document_batch =
+                indexing_workflow::load_sync_batch(name, &files_to_process);
+            log_load_failures(&document_batch.failures);
 
             // Index into Tantivy (add_document handles delete-before-add)
             let mut writer = search_index.writer(15_000_000)?;
@@ -1084,26 +1062,20 @@ fn cmd_sync(
                 &search_index,
                 &mut writer,
                 name,
-                &loaded_docs,
+                &document_batch.documents,
             )?;
             eprintln!("  Indexed {count} documents");
 
-            // Chunk documents with progress
-            let mut pb = create_progress_bar(loaded_docs.len(), "Chunking");
-            let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
-            for doc in loaded_docs.into_iter() {
-                let chunks = chunking::chunk_text(
-                    &doc.content,
-                    chunking_config.chunk_size,
-                    chunking_config.overlap,
+            let mut pb =
+                create_progress_bar(document_batch.documents.len(), "Chunking");
+            let docs_to_embed =
+                indexing_workflow::chunk_documents_for_embedding(
+                    &document_batch.documents,
+                    chunking_config,
+                    |processed_count| {
+                        let _ = pb.update_to(processed_count);
+                    },
                 );
-                for chunk in chunks {
-                    let chunk_id =
-                        chunking::chunk_doc_id(doc.doc_num_id, chunk.index);
-                    docs_to_embed.push((chunk_id, chunk.text));
-                }
-                let _ = pb.update(1);
-            }
             finish_progress_bar(&mut pb);
 
             // Embed documents in submission batches with progress.
@@ -1123,7 +1095,11 @@ fn cmd_sync(
             }
 
             // Store metadata for files that were read successfully.
-            incremental::batch_store_metadata(config_db, name, &loaded_files)?;
+            incremental::batch_store_metadata(
+                config_db,
+                name,
+                &document_batch.metadata_files,
+            )?;
         }
 
         eprintln!("  Done.");
