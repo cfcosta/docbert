@@ -310,6 +310,18 @@ impl Default for ModelManager {
 }
 
 impl ModelManager {
+    fn unloaded(model_id: String) -> Self {
+        Self {
+            model: None,
+            model_id,
+            document_length: DEFAULT_DOCUMENT_LENGTH,
+            embedding_batch_size: None,
+            runtime_config: None,
+            query_prompt: String::new(),
+            document_prompt: String::new(),
+        }
+    }
+
     /// Create a new `ModelManager`.
     ///
     /// The model ID comes from `DOCBERT_MODEL` if that variable is set.
@@ -323,30 +335,13 @@ impl ModelManager {
     pub fn new() -> Self {
         let model_id = std::env::var(MODEL_ENV_VAR)
             .unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
-
-        Self {
-            model: None,
-            model_id,
-            document_length: DEFAULT_DOCUMENT_LENGTH,
-            embedding_batch_size: None,
-            runtime_config: None,
-            query_prompt: String::new(),
-            document_prompt: String::new(),
-        }
+        Self::unloaded(model_id)
     }
 
     /// Creates a `ModelManager` with an explicit model ID, bypassing
     /// environment variable resolution.
     pub fn with_model_id(model_id: String) -> Self {
-        Self {
-            model: None,
-            model_id,
-            document_length: DEFAULT_DOCUMENT_LENGTH,
-            embedding_batch_size: None,
-            runtime_config: None,
-            query_prompt: String::new(),
-            document_prompt: String::new(),
-        }
+        Self::unloaded(model_id)
     }
 
     /// Sets the document length for encoding.
