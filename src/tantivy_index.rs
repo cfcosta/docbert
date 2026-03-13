@@ -162,6 +162,34 @@ fn register_tokenizers(index: &Index) {
     index.tokenizers().register("en_stem", en_stem);
 }
 
+fn create_query_parser(index: &Index, fields: SchemaFields) -> QueryParser {
+    let mut parser =
+        QueryParser::for_index(index, vec![fields.title, fields.body]);
+    parser.set_field_boost(fields.title, 2.0);
+    parser
+}
+
+fn collect_search_results(
+    searcher: &tantivy::Searcher,
+    top_docs: Vec<(f32, tantivy::DocAddress)>,
+    fields: SchemaFields,
+) -> Result<Vec<SearchResult>> {
+    let mut results = Vec::with_capacity(top_docs.len());
+    for (score, doc_address) in top_docs {
+        let doc: TantivyDocument = searcher.doc(doc_address)?;
+        results.push(SearchResult {
+            score,
+            doc_id: extract_text(&doc, fields.doc_id),
+            doc_num_id: extract_u64(&doc, fields.doc_num_id),
+            collection: extract_text(&doc, fields.collection),
+            path: extract_text(&doc, fields.path),
+            title: extract_text(&doc, fields.title),
+            mtime: extract_u64(&doc, fields.mtime),
+        });
+    }
+    Ok(results)
+}
+
 impl SearchIndex {
     /// Open or create a search index at the given directory.
     ///
@@ -305,6 +333,18 @@ impl SearchIndex {
         writer.delete_term(term);
     }
 
+    fn execute_query(
+        &self,
+        query: &dyn tantivy::query::Query,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let fields = self.fields();
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        let top_docs = searcher.search(query, &TopDocs::with_limit(limit))?;
+        collect_search_results(&searcher, top_docs, fields)
+    }
+
     /// Search the index with BM25 scoring.
     ///
     /// Returns the top `limit` results. The `title` field is boosted 2x.
@@ -313,32 +353,10 @@ impl SearchIndex {
         query_str: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let f = self.fields();
-        self.reader.reload()?;
-        let searcher = self.reader.searcher();
-
-        let mut parser =
-            QueryParser::for_index(&self.index, vec![f.title, f.body]);
-        parser.set_field_boost(f.title, 2.0);
-
+        let fields = self.fields();
+        let parser = create_query_parser(&self.index, fields);
         let (query, _errors) = parser.parse_query_lenient(query_str);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
-
-        let mut results = Vec::with_capacity(top_docs.len());
-        for (score, doc_address) in top_docs {
-            let doc: TantivyDocument = searcher.doc(doc_address)?;
-            results.push(SearchResult {
-                score,
-                doc_id: extract_text(&doc, f.doc_id),
-                doc_num_id: extract_u64(&doc, f.doc_num_id),
-                collection: extract_text(&doc, f.collection),
-                path: extract_text(&doc, f.path),
-                title: extract_text(&doc, f.title),
-                mtime: extract_u64(&doc, f.mtime),
-            });
-        }
-
-        Ok(results)
+        self.execute_query(&*query, limit)
     }
 
     /// Search within a specific collection only.
@@ -351,19 +369,13 @@ impl SearchIndex {
         collection: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let f = self.fields();
-        self.reader.reload()?;
-        let searcher = self.reader.searcher();
-
-        let mut parser =
-            QueryParser::for_index(&self.index, vec![f.title, f.body]);
-        parser.set_field_boost(f.title, 2.0);
-
+        let fields = self.fields();
+        let parser = create_query_parser(&self.index, fields);
         let (user_query, _errors) = parser.parse_query_lenient(query_str);
 
         // Combine with collection filter.
         let collection_term =
-            tantivy::Term::from_field_text(f.collection, collection);
+            tantivy::Term::from_field_text(fields.collection, collection);
         let collection_query = tantivy::query::TermQuery::new(
             collection_term,
             IndexRecordOption::Basic,
@@ -373,24 +385,7 @@ impl SearchIndex {
             (tantivy::query::Occur::Must, Box::new(collection_query)),
         ]);
 
-        let top_docs =
-            searcher.search(&combined, &TopDocs::with_limit(limit))?;
-
-        let mut results = Vec::with_capacity(top_docs.len());
-        for (score, doc_address) in top_docs {
-            let doc: TantivyDocument = searcher.doc(doc_address)?;
-            results.push(SearchResult {
-                score,
-                doc_id: extract_text(&doc, f.doc_id),
-                doc_num_id: extract_u64(&doc, f.doc_num_id),
-                collection: extract_text(&doc, f.collection),
-                path: extract_text(&doc, f.path),
-                title: extract_text(&doc, f.title),
-                mtime: extract_u64(&doc, f.mtime),
-            });
-        }
-
-        Ok(results)
+        self.execute_query(&combined, limit)
     }
 
     /// Search with BM25 + fuzzy matching combined.
@@ -404,14 +399,10 @@ impl SearchIndex {
         collection: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let f = self.fields();
-        self.reader.reload()?;
-        let searcher = self.reader.searcher();
+        let fields = self.fields();
 
         // BM25 query
-        let mut parser =
-            QueryParser::for_index(&self.index, vec![f.title, f.body]);
-        parser.set_field_boost(f.title, 2.0);
+        let parser = create_query_parser(&self.index, fields);
         let (bm25_query, _errors) = parser.parse_query_lenient(query_str);
 
         // Build fuzzy queries for each significant term
@@ -424,7 +415,7 @@ impl SearchIndex {
         for term_str in &terms {
             if term_str.len() >= 3 {
                 let term = tantivy::Term::from_field_text(
-                    f.body,
+                    fields.body,
                     &term_str.to_lowercase(),
                 );
                 let fuzzy = tantivy::query::FuzzyTermQuery::new(term, 1, true);
@@ -437,45 +428,30 @@ impl SearchIndex {
             Box::new(tantivy::query::BooleanQuery::new(should_clauses));
 
         // Optionally filter by collection
-        let final_query: Box<dyn tantivy::query::Query> = if let Some(coll) =
-            collection
-        {
-            let coll_term = tantivy::Term::from_field_text(f.collection, coll);
-            let coll_query = tantivy::query::TermQuery::new(
-                coll_term,
-                IndexRecordOption::Basic,
-            );
-            Box::new(tantivy::query::BooleanQuery::new(vec![
-                (tantivy::query::Occur::Must, combined_query),
-                (tantivy::query::Occur::Must, Box::new(coll_query)),
-            ]))
-        } else {
-            combined_query
-        };
+        let final_query: Box<dyn tantivy::query::Query> =
+            if let Some(coll) = collection {
+                let coll_term =
+                    tantivy::Term::from_field_text(fields.collection, coll);
+                let coll_query = tantivy::query::TermQuery::new(
+                    coll_term,
+                    IndexRecordOption::Basic,
+                );
+                Box::new(tantivy::query::BooleanQuery::new(vec![
+                    (tantivy::query::Occur::Must, combined_query),
+                    (tantivy::query::Occur::Must, Box::new(coll_query)),
+                ]))
+            } else {
+                combined_query
+            };
 
-        let top_docs =
-            searcher.search(&*final_query, &TopDocs::with_limit(limit))?;
+        let results = self.execute_query(&*final_query, limit)?;
 
         // Deduplicate by doc_id (keep highest score)
         let mut seen = std::collections::HashSet::new();
-        let mut results = Vec::with_capacity(top_docs.len());
-        for (score, doc_address) in top_docs {
-            let doc: TantivyDocument = searcher.doc(doc_address)?;
-            let doc_id = extract_text(&doc, f.doc_id);
-            if seen.insert(doc_id.clone()) {
-                results.push(SearchResult {
-                    score,
-                    doc_id,
-                    doc_num_id: extract_u64(&doc, f.doc_num_id),
-                    collection: extract_text(&doc, f.collection),
-                    path: extract_text(&doc, f.path),
-                    title: extract_text(&doc, f.title),
-                    mtime: extract_u64(&doc, f.mtime),
-                });
-            }
-        }
-
-        Ok(results)
+        Ok(results
+            .into_iter()
+            .filter(|result| seen.insert(result.doc_id.clone()))
+            .collect())
     }
 
     /// Returns a reference to the Tantivy schema.
