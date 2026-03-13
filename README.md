@@ -1,58 +1,60 @@
 # docbert
 
-A blazing-fast semantic search CLI for your documents. Combines BM25 full-text search with ColBERT neural reranking to find exactly what you're looking for.
+docbert is a CLI for searching local documents. It uses BM25 to pull likely matches quickly, then ColBERT to rerank them semantically.
 
-## Features
+## What it does
 
-- **Two-stage search pipeline**: Fast BM25 retrieval followed by ColBERT semantic reranking
-- **Semantic-only search**: ColBERT-only full scan when you want pure semantic ranking
-- **Collection-based organization**: Group documents into named collections
-- **Incremental indexing**: Only re-index changed files
-- **Multiple output formats**: Human-readable, JSON, or plain file paths
-- **GPU acceleration**: CUDA and Metal support for faster embeddings
-- **Fuzzy matching**: Tolerates typos in search queries
-- **Zero configuration**: Just point it at a directory and search
+- BM25 + ColBERT two-stage search
+- semantic-only full scans with `docbert ssearch`
+- named collections for grouping directories
+- incremental indexing that only processes changed files
+- human-readable, JSON, or file-only output
+- CUDA and Metal support for faster embedding work
+- fuzzy matching for typo-tolerant queries
+- works on Markdown and plain text files
 
-## Quick Start
+## Quick start
 
 ```bash
 # Add a collection of markdown notes
 docbert collection add ~/notes --name notes
 
-# Synchronize indexes and embeddings
+# Build or update the index
 docbert sync
 
 # Search across all collections
 docbert search "how to configure nginx"
 
-# Search with semantic understanding (default)
+# Search with semantic reranking (default)
 docbert search "memory management in systems programming"
 
-# Semantic-only full scan (ColBERT only)
+# Run a semantic-only full scan (ColBERT only)
 docbert ssearch "memory management in systems programming"
 
-# Fast BM25-only search (no neural reranking)
+# Skip neural reranking and use BM25 only
 docbert search "nginx config" --bm25-only
 
-# Output as JSON for scripting
+# Output JSON for scripts
 docbert search "rust ownership" --json
 
-# Get file paths for piping to other tools
+# Print matching file paths
 docbert search "todo" --files | xargs -I {} code {}
 ```
 
-## MCP Server
+## MCP server
 
-docbert exposes an MCP (Model Context Protocol) server for AI agent integrations.
+docbert can also run as an MCP (Model Context Protocol) server for AI tools and editors.
 
-**Tools exposed:**
-- `docbert_search` - Keyword + semantic search (supports collection filters)
-- `semantic_search` - Semantic-only search across all documents
-- `docbert_get` - Retrieve a document by path or `#doc_id`
-- `docbert_multi_get` - Retrieve multiple documents by glob pattern
-- `docbert_status` - Index health and collection summary
+Available tools:
+- `docbert_search`: keyword + semantic search, with optional collection filters
+- `semantic_search`: semantic-only search across all documents
+- `docbert_get`: fetch a document by path or `#doc_id`
+- `docbert_multi_get`: fetch multiple documents with a glob pattern
+- `docbert_status`: show index health and collection summaries
 
-**Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+### Claude Desktop config
+
+File: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
@@ -65,7 +67,9 @@ docbert exposes an MCP (Model Context Protocol) server for AI agent integrations
 }
 ```
 
-**Claude Code** (`~/.claude/settings.json`):
+### Claude Code config
+
+File: `~/.claude/settings.json`
 
 ```json
 {
@@ -80,7 +84,7 @@ docbert exposes an MCP (Model Context Protocol) server for AI agent integrations
 
 ## Installation
 
-### With Nix (recommended)
+### With Nix
 
 ```bash
 # CPU version
@@ -90,7 +94,7 @@ nix build github:cfcosta/docbert
 nix build github:cfcosta/docbert#docbert-cuda
 ```
 
-Shell completions for bash, zsh, and fish are automatically installed with the Nix package.
+Shell completions for bash, zsh, and fish are installed with the Nix package.
 
 ### From source
 
@@ -110,7 +114,7 @@ cargo build --release --features metal
 
 ## Usage
 
-### Managing Collections
+### Manage collections
 
 ```bash
 # Add a directory as a collection
@@ -123,32 +127,32 @@ docbert collection list
 docbert collection remove docs
 ```
 
-### Searching
+### Search
 
 ```bash
-# Basic search (returns top 10 results)
+# Basic search (top 10 results)
 docbert search "your query here"
 
 # More results
 docbert search "query" -n 20
 
-# Search specific collection
+# Search one collection
 docbert search "query" -c notes
 
-# All results above a score threshold
+# Return all results above a score threshold
 docbert search "query" --all --min-score 0.5
 
-# Disable fuzzy matching for exact searches
+# Disable fuzzy matching
 docbert search "exact phrase" --no-fuzzy
 
-# Semantic-only full scan (no BM25 or fuzzy matching, slower for large corpora)
+# Semantic-only full scan (slower on large corpora)
 docbert ssearch "meaning of life"
 ```
 
-### Retrieving Documents
+### Retrieve documents
 
 ```bash
-# Get document by collection:path
+# Get a document by collection:path
 docbert get notes:todo.md
 
 # Get by document ID
@@ -167,36 +171,35 @@ docbert multi-get "*.md" -c notes
 # Show system status
 docbert status
 
-# Sync changes incrementally (fast, only processes changed files)
+# Sync changes incrementally
 docbert sync
 
-# Sync specific collection
+# Sync one collection
 docbert sync -c notes
 
-# Full rebuild (deletes everything and re-indexes from scratch)
+# Full rebuild
 docbert rebuild
 
-# Rebuild specific collection
+# Rebuild one collection
 docbert rebuild -c notes
 ```
 
-## How It Works
+## How it works
 
-docbert uses a two-stage retrieval pipeline:
+Search runs in two steps:
 
-1. **BM25 Retrieval** (via [Tantivy](https://github.com/quickwit-oss/tantivy)): Fast full-text search with fuzzy matching retrieves the top 1000 candidates
+1. Tantivy handles BM25 retrieval, with optional fuzzy matching, and returns a candidate set.
+2. pylate-rs reranks those candidates with ColBERT using the `lightonai/ColBERT-Zero` model by default.
 
-2. **ColBERT Reranking** (via [pylate-rs](https://github.com/lightonai/pylate-rs)): Neural semantic scoring reranks candidates using [ColBERT-Zero](https://huggingface.co/lightonai/ColBERT-Zero)
+That gives you fast keyword search without giving up semantic ranking.
 
-This approach gives you the speed of traditional search with the semantic understanding of neural models.
-
-For cases where you want pure semantic ranking, `docbert ssearch` (and the MCP `semantic_search` tool) skip Tantivy entirely and score every stored embedding. This is slower but avoids any BM25 or fuzzy matching influence.
+If you want pure semantic ranking, `docbert ssearch` skips BM25 entirely and scores every stored embedding. That is slower on large collections, but it avoids BM25 and fuzzy matching bias.
 
 ## Configuration
 
-docbert stores its data in `~/.local/share/docbert/` (or `$XDG_DATA_HOME/docbert/`).
+docbert stores its data in `~/.local/share/docbert/` or `$XDG_DATA_HOME/docbert/`.
 
-Override with `--data-dir`:
+Use `--data-dir` to override that:
 
 ```bash
 docbert --data-dir /custom/path search "query"
@@ -206,17 +209,17 @@ Data directory resolution order:
 
 1. `--data-dir` CLI flag
 2. `DOCBERT_DATA_DIR` environment variable
-3. XDG default (`$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`)
+3. XDG default: `$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`
 
-### Environment Variables
+### Environment variables
 
-- `DOCBERT_DATA_DIR`: Override the data directory (lower priority than `--data-dir`)
-- `DOCBERT_MODEL`: Override the ColBERT model (default: `lightonai/ColBERT-Zero`)
-- `DOCBERT_LOG`: Set log level (e.g., `debug`, `info`, `warn`)
+- `DOCBERT_DATA_DIR`: override the data directory
+- `DOCBERT_MODEL`: override the ColBERT model
+- `DOCBERT_LOG`: set the log level, for example `debug`, `info`, or `warn`
 
-### Model Selection
+### Model selection
 
-Persist a default model in `config.db`:
+Set a default model in `config.db`:
 
 ```bash
 docbert model set /path/to/model
@@ -224,16 +227,15 @@ docbert model show
 docbert model clear
 ```
 
-Override per command:
+Override it for a single command:
 
 ```bash
 docbert --model /path/to/model search "query"
 ```
 
-### Alternative Models
+### Alternative models
 
-The default model (`lightonai/ColBERT-Zero`) works out of the box. To use a
-different pylate-rs-compatible model:
+The default model, `lightonai/ColBERT-Zero`, works out of the box. If you want to use another pylate-rs-compatible model:
 
 ```bash
 docbert model set /path/to/model
@@ -241,17 +243,17 @@ docbert model set /path/to/model
 DOCBERT_MODEL=/path/to/model docbert search "query"
 ```
 
-## Supported File Types
+## Supported file types
 
 - Markdown (`.md`)
 - Plain text (`.txt`)
 
-## Performance Tips
+## Performance tips
 
-- Use `--bm25-only` for fast searches when semantic understanding isn't needed
-- The ColBERT model is lazy-loaded on first semantic search
-- GPU acceleration significantly speeds up embedding computation
-- Incremental indexing means only changed files are re-processed
+- Use `--bm25-only` when keyword search is enough
+- The ColBERT model loads on the first semantic search
+- GPU support speeds up embedding generation
+- Incremental indexing only reprocesses changed files
 
 ## License
 
