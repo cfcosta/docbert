@@ -11,10 +11,10 @@ pub const DEFAULT_MODEL_ID: &str = "lightonai/ColBERT-Zero";
 /// Environment variable checked for a model ID override (`DOCBERT_MODEL`).
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
-/// Default document length in tokens for encoding.
+/// Default document length, in tokens, when encoding documents.
 ///
-/// ColBERT-Zero was trained on 519-token documents, so docbert matches that
-/// default unless the caller explicitly overrides it.
+/// ColBERT-Zero was trained at 519 tokens, so docbert uses that unless you
+/// override it explicitly.
 pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
 
 /// Environment variable checked for a pylate-rs internal batch size override.
@@ -186,10 +186,9 @@ pub fn doctor_report() -> DoctorReport {
     summarize_doctor_report(probe_cuda_backend(), probe_metal_backend())
 }
 
-/// Select the best available compute device.
+/// Choose the best compute device available at runtime.
 ///
-/// Uses CUDA when compiled with the `cuda` feature, Metal when compiled with
-/// the `metal` feature, and falls back to CPU otherwise.
+/// CUDA wins if it is compiled in and usable, then Metal, then CPU.
 fn default_device() -> SelectedDevice {
     #[allow(unused_mut)]
     let mut failed_backends = Vec::new();
@@ -273,10 +272,10 @@ fn resolve_embedding_batch_size(
     Ok(default_embedding_batch_size(device_kind))
 }
 
-/// Manages the ColBERT model lifecycle, supporting lazy loading on first use.
+/// Lazy loader and cache for the ColBERT model.
 ///
-/// The model is downloaded from HuggingFace Hub on first use and cached locally.
-/// Subsequent uses load from the cache.
+/// The model is downloaded from HuggingFace Hub on first use, then loaded from
+/// the local cache after that.
 ///
 /// # Examples
 ///
@@ -311,14 +310,15 @@ impl Default for ModelManager {
 }
 
 impl ModelManager {
-    /// Creates a new `ModelManager`. The model ID is resolved from:
-    /// 1. The `DOCBERT_MODEL` environment variable, if set
-    /// 2. Otherwise, the default model (`lightonai/ColBERT-Zero`)
+    /// Create a new `ModelManager`.
     ///
-    /// The model is not loaded until the first call to `encode_documents`,
+    /// The model ID comes from `DOCBERT_MODEL` if that variable is set.
+    /// Otherwise docbert uses `lightonai/ColBERT-Zero`.
+    ///
+    /// The model itself is not loaded until you call `encode_documents`,
     /// `encode_query`, or `similarity`.
     ///
-    /// Documents default to a 519-token encoding length unless overridden with
+    /// Document encoding defaults to 519 tokens unless you override it with
     /// [`with_document_length`](Self::with_document_length).
     pub fn new() -> Self {
         let model_id = std::env::var(MODEL_ENV_VAR)
@@ -483,11 +483,10 @@ impl ModelManager {
     }
 }
 
-/// Resolve the `prompts` field from a model's `config_sentence_transformers.json`.
+/// Read the `prompts` section from a model's `config_sentence_transformers.json`.
 ///
-/// Returns `(query_prompt, document_prompt)`. Falls back to empty strings if the
-/// config is missing or doesn't contain a `prompts` field (backwards compatible
-/// with models like GTE-ModernColBERT that don't use prompts).
+/// Returns `(query_prompt, document_prompt)`. If the config is missing, or the
+/// model does not use prompts, both strings are empty.
 fn resolve_prompts(model_id: &str) -> (String, String) {
     let st_config_path = if Path::new(model_id).is_dir() {
         // Local model directory
@@ -531,9 +530,9 @@ fn resolve_prompts(model_id: &str) -> (String, String) {
     (query_prompt, document_prompt)
 }
 
-/// How the model ID was resolved, in priority order.
+/// Where the chosen model ID came from.
 ///
-/// [`resolve_model`] tries each source in order: CLI > Env > Config > Default.
+/// [`resolve_model`] checks sources in this order: CLI, env, config, then default.
 ///
 /// # Examples
 ///
@@ -567,10 +566,10 @@ impl ModelSource {
     }
 }
 
-/// The result of resolving which model to use.
+/// Final result of model resolution.
 ///
-/// Contains the final model ID, which source it came from, and the
-/// raw values from each source for diagnostic display.
+/// This keeps the chosen model ID, the source that won, and the raw values from
+/// each source for debugging and status output.
 #[derive(Debug, Clone)]
 pub struct ModelResolution {
     /// The resolved model ID that will be used.
@@ -585,8 +584,8 @@ pub struct ModelResolution {
     pub cli_model: Option<String>,
 }
 
-/// Resolve the model ID from (in priority order): CLI flag, environment
-/// variable, config.db setting, or the compiled-in default.
+/// Choose the model ID using this priority order: CLI flag, environment
+/// variable, `config.db`, then the built-in default.
 ///
 /// # Examples
 ///

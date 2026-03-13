@@ -1,10 +1,10 @@
-//! Chunking utilities for splitting long documents into overlapping segments.
+//! Helpers for splitting long documents into chunks before embedding.
 //!
-//! Documents longer than the configured chunk size are split into windows
-//! (optionally overlapping) that can each be embedded separately.
+//! When a document is longer than the configured chunk size, docbert breaks it
+//! into windows that can be embedded one at a time.
 //!
-//! The default chunk size matches docbert's default ColBERT document length:
-//! 519 tokens, or roughly ~2K characters.
+//! By default, the chunk size matches docbert's standard ColBERT document
+//! length: 519 tokens, or about 2K characters.
 
 use std::path::Path;
 
@@ -21,10 +21,10 @@ pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
 /// Default overlap between chunks in characters (0 to minimize chunk count).
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 
-/// Chunking configuration derived from model settings.
+/// Chunking settings resolved from the model configuration.
 ///
-/// Resolved via [`resolve_chunking_config`] which reads the model's
-/// `config_sentence_transformers.json` for the `document_length` setting.
+/// [`resolve_chunking_config`] reads `config_sentence_transformers.json` and,
+/// when it can, uses the model's `document_length` value.
 ///
 /// # Examples
 ///
@@ -63,13 +63,14 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
     config.document_length
 }
 
-/// Resolve chunking settings from a model path (if local), falling back to defaults.
+/// Pick chunking settings from a model path when possible, otherwise use defaults.
 ///
-/// For local model directories containing `config_sentence_transformers.json`,
-/// reads the `document_length` field and computes the chunk size as
-/// `document_length * 4` (approximating 4 characters per token).
-/// For remote model IDs (e.g., `"lightonai/ColBERT-Zero"`), uses docbert's
-/// built-in default of 519 tokens.
+/// If `model_id` points to a local model directory with a
+/// `config_sentence_transformers.json`, docbert reads `document_length` and turns
+/// it into a rough character budget with `document_length * 4`.
+///
+/// If `model_id` is a remote model name such as `"lightonai/ColBERT-Zero"`,
+/// docbert falls back to its built-in 519-token default.
 ///
 /// # Examples
 ///
@@ -98,10 +99,10 @@ pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
     }
 }
 
-/// A chunk of text from a larger document.
+/// One chunk cut from a larger document.
 ///
-/// Produced by [`chunk_text`]. Each chunk represents a window of the
-/// original text, with an index and byte offset for mapping back.
+/// Returned by [`chunk_text`]. Each chunk keeps its index and starting byte
+/// offset so you can map it back to the original text.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The chunk text content.
@@ -112,13 +113,13 @@ pub struct Chunk {
     pub start_offset: usize,
 }
 
-/// Split text into chunks (optionally overlapping).
+/// Split text into chunks, with optional overlap.
 ///
-/// Uses character-based splitting as a rough approximation of token count.
-/// For English text, ~4 characters per token on average.
+/// This works in characters, not tokens. The `4 chars ~= 1 token` rule is only
+/// a rough estimate, but it is good enough for chunk sizing.
 ///
-/// If the text is shorter than `chunk_size`, returns a single chunk.
-/// Properly handles UTF-8 multi-byte characters (emojis, etc.).
+/// If the text already fits in `chunk_size`, you get one chunk back. UTF-8 text
+/// is handled correctly, so multi-byte characters such as emoji do not break the math.
 ///
 /// # Examples
 ///
@@ -195,8 +196,7 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
     chunks
 }
 
-/// Find a word boundary near the given char position, preferring to break
-/// at whitespace or punctuation.
+/// Find a nearby word boundary so we can avoid splitting in the middle of a word.
 fn find_word_boundary_char(
     text: &str,
     char_to_byte: &[usize],
@@ -226,10 +226,10 @@ fn find_word_boundary_char(
     pos_char
 }
 
-/// Generate a chunk-specific document ID by combining the base ID with chunk index.
+/// Build a chunk-specific document ID from a base ID and chunk index.
 ///
-/// Format: `base_id XOR (chunk_index << 48)`.
-/// Chunk 0 returns the base ID unchanged.
+/// The format is `base_id XOR (chunk_index << 48)`. Chunk 0 keeps the base ID
+/// unchanged.
 ///
 /// # Examples
 ///
@@ -253,11 +253,10 @@ pub fn chunk_doc_id(base_id: u64, chunk_index: usize) -> u64 {
     }
 }
 
-/// Extract the base document ID and chunk index from a chunk doc ID.
+/// Split a chunk document ID back into a base ID and chunk index.
 ///
-/// Note: This only works reliably for chunk_index 0 (returns the base ID unchanged).
-/// For other chunks, the base ID is XOR'd, so this is a one-way operation
-/// unless you know the chunk_index.
+/// This is exact for chunk 0, which reuses the base ID unchanged. For later
+/// chunks the base ID was XORed, so you need the chunk index to recover it.
 pub fn parse_chunk_doc_id(chunk_id: u64) -> (u64, usize) {
     let chunk_index = (chunk_id >> 48) as usize;
     if chunk_index == 0 {

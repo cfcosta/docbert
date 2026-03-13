@@ -11,15 +11,15 @@ const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
     TableDefinition::new("document_metadata");
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
-/// Persistent key-value store for docbert configuration.
+/// redb-backed store for collections, settings, and document metadata.
 ///
-/// Manages four tables:
-/// - **collections**: maps collection names to filesystem paths
-/// - **contexts**: maps URIs to human-readable descriptions
-/// - **document_metadata**: maps numeric document IDs to serialized metadata
-/// - **settings**: general key-value settings (e.g., `model_name`)
+/// It keeps four tables:
+/// - **collections**: collection names to filesystem paths
+/// - **contexts**: URIs to human-readable descriptions
+/// - **document_metadata**: numeric document IDs to serialized metadata
+/// - **settings**: general key-value settings such as `model_name`
 ///
-/// Backed by [redb](https://github.com/cberner/redb), an embedded ACID database.
+/// The database itself is [redb](https://github.com/cberner/redb), so everything stays local.
 ///
 /// # Examples
 ///

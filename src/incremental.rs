@@ -7,9 +7,9 @@ use crate::{
     walker::DiscoveredFile,
 };
 
-/// Metadata stored per document in config.db.
+/// Metadata docbert stores for each indexed document in `config.db`.
 ///
-/// Serialized as: `"collection\0relative_path\0mtime"`.
+/// The serialized form is `"collection\0relative_path\0mtime"`.
 ///
 /// # Examples
 ///
@@ -60,10 +60,10 @@ impl DocumentMetadata {
     }
 }
 
-/// Result of comparing discovered files against stored metadata.
+/// What changed in a collection since the last indexing pass.
 ///
-/// Returned by [`diff_collection`]. Categorizes each file as new,
-/// changed, or deleted relative to what was previously indexed.
+/// Returned by [`diff_collection`]. Files are grouped as new, changed, or
+/// deleted relative to the last stored metadata.
 ///
 /// # Examples
 ///
@@ -100,11 +100,10 @@ pub struct DiffResult {
     pub deleted_ids: Vec<u64>,
 }
 
-/// Compare discovered files against stored document metadata.
+/// Compare the files you just discovered with the metadata already on disk.
 ///
-/// Walks the stored metadata for the given collection and compares
-/// modification times against the discovered files. Returns a
-/// [`DiffResult`] categorizing each file.
+/// For the given collection, this walks stored metadata, compares mtimes, and
+/// returns a [`DiffResult`] describing what is new, changed, or gone.
 pub fn diff_collection(
     config_db: &ConfigDb,
     collection: &str,
@@ -138,7 +137,7 @@ pub fn diff_collection(
                 if file.mtime != *stored_mtime {
                     result.changed_files.push(file.clone());
                 }
-                // If mtime matches, it's unchanged — skip.
+                // If the mtime matches, the file is unchanged, so skip it.
             }
         }
     }
@@ -153,10 +152,10 @@ pub fn diff_collection(
     Ok(result)
 }
 
-/// Store metadata for a document after successful indexing.
+/// Write metadata for one document after it has been indexed.
 ///
-/// Computes the [`DocumentId`] from the collection
-/// name and relative path, then serializes and stores the metadata.
+/// This recomputes the [`DocumentId`] from the collection name and relative
+/// path, then serializes and stores the metadata.
 pub fn store_metadata(
     config_db: &ConfigDb,
     collection: &str,
@@ -173,10 +172,10 @@ pub fn store_metadata(
     Ok(())
 }
 
-/// Store metadata for multiple documents in a single transaction.
+/// Write metadata for several documents in one transaction.
 ///
-/// More efficient than calling [`store_metadata`] in a loop because
-/// all writes share one database transaction.
+/// This is cheaper than calling [`store_metadata`] in a loop because every
+/// write shares the same database transaction.
 pub fn batch_store_metadata(
     config_db: &ConfigDb,
     collection: &str,

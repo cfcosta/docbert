@@ -10,10 +10,10 @@ use crate::{
     walker::DiscoveredFile,
 };
 
-/// A fully loaded document ready for indexing and embedding.
+/// Document that has already been read from disk and is ready for indexing.
 ///
-/// Produced by [`load_documents`]. Holds all data derived from a discovered
-/// file so downstream stages can reuse it without re-reading from disk.
+/// Returned by [`load_documents`]. It keeps the derived metadata and file
+/// contents around so later stages do not need to read the file again.
 #[derive(Debug, Clone)]
 pub struct LoadedDocument {
     /// Short display document ID (e.g. `#a1b2c3`).
@@ -30,10 +30,10 @@ pub struct LoadedDocument {
     pub mtime: u64,
 }
 
-/// Extract a title from file content.
+/// Pick a title from file content.
 ///
-/// Looks for the first markdown heading (line starting with `# `).
-/// Falls back to the filename without extension.
+/// If the file has a Markdown heading that starts with `# `, the first one wins.
+/// Otherwise the filename stem becomes the title.
 pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
@@ -53,9 +53,9 @@ pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
         .to_string()
 }
 
-/// Load discovered files into memory and derive indexable metadata.
+/// Read discovered files into memory and derive the metadata needed for indexing.
 ///
-/// Reads files in parallel, extracts titles, and computes stable document IDs.
+/// This runs in parallel, extracts titles, and computes stable document IDs.
 /// Files that cannot be read are skipped.
 pub fn load_documents(
     collection: &str,
@@ -81,10 +81,10 @@ pub fn load_documents(
         .collect()
 }
 
-/// Ingest preloaded documents into the Tantivy search index.
+/// Write preloaded documents into the Tantivy index.
 ///
-/// This is useful when the caller needs to reuse loaded content for additional
-/// processing (e.g. embedding) without reading files twice.
+/// Use this when you want to reuse the loaded content for another step, such as
+/// embedding, instead of reading every file twice.
 pub fn ingest_loaded_documents(
     index: &SearchIndex,
     writer: &mut IndexWriter,
@@ -108,10 +108,10 @@ pub fn ingest_loaded_documents(
     Ok(documents.len())
 }
 
-/// Ingest a batch of discovered files into the Tantivy search index.
+/// Read a batch of discovered files and add them to the Tantivy index.
 ///
-/// For each file: reads content, extracts title, generates document IDs,
-/// and adds to the index. Commits the batch at the end.
+/// For each file, this reads the content, extracts a title, generates document
+/// IDs, and writes the result to the index. The batch is committed at the end.
 ///
 /// # Examples
 ///

@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// The root directory where docbert stores its databases and index.
+/// Root directory for docbert's on-disk state.
 ///
-/// Contains:
-/// - `config.db` — collection and metadata database (redb)
-/// - `embeddings.db` — ColBERT embedding matrices (redb)
-/// - `tantivy/` — BM25 full-text search index
+/// It contains:
+/// - `config.db`: collections and metadata
+/// - `embeddings.db`: ColBERT embedding matrices
+/// - `tantivy/`: the Tantivy search index
 ///
 /// # Examples
 ///
@@ -25,12 +25,12 @@ pub struct DataDir {
 }
 
 impl DataDir {
-    /// Resolve the data directory from, in order of priority:
-    /// 1. An explicit path (from `--data-dir`)
-    /// 2. The `DOCBERT_DATA_DIR` environment variable
-    /// 3. The XDG data directory (`~/.local/share/docbert/`)
+    /// Pick the data directory using this priority order:
+    /// 1. an explicit path, such as `--data-dir`
+    /// 2. the `DOCBERT_DATA_DIR` environment variable
+    /// 3. the XDG data directory (`~/.local/share/docbert/`)
     ///
-    /// Creates the directory (and any parents) if it does not exist.
+    /// Creates the directory, along with any missing parents, if needed.
     ///
     /// # Examples
     ///
@@ -77,9 +77,9 @@ impl DataDir {
         self.root.join("embeddings.db")
     }
 
-    /// Path to the Tantivy search index directory (`tantivy/`).
+    /// Return the path to the Tantivy index directory (`tantivy/`).
     ///
-    /// Creates the directory if it does not exist.
+    /// Creates the directory first if it does not exist yet.
     ///
     /// # Examples
     ///

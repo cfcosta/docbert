@@ -20,10 +20,10 @@ use tantivy::{
 
 use crate::error::Result;
 
-/// Field names used in the Tantivy schema.
+/// Field names used in docbert's Tantivy schema.
 ///
-/// These constants match the field names in the index schema and are used
-/// for querying and extracting values from search results.
+/// These constants match the schema exactly and are reused when building
+/// queries or reading search results back out.
 pub mod fields {
     /// Short hex document identifier (STRING, STORED).
     pub const DOC_ID: &str = "doc_id";
@@ -41,11 +41,10 @@ pub mod fields {
     pub const MTIME: &str = "mtime";
 }
 
-/// Manages a Tantivy full-text search index for docbert documents.
+/// Wrapper around docbert's Tantivy full-text index.
 ///
-/// Documents are indexed with BM25 scoring across `title` (2x boost) and `body`
-/// fields, with English stemming. Supports exact, collection-filtered, and fuzzy
-/// search modes.
+/// The index stores `title` and `body`, gives the title a 2x boost, uses
+/// English stemming, and supports plain, collection-scoped, and fuzzy search.
 ///
 /// # Examples
 ///
@@ -71,8 +70,8 @@ pub struct SearchIndex {
 
 /// Resolved field handles for the Tantivy schema.
 ///
-/// Obtained via [`SearchIndex::fields`]. These handles are used when
-/// constructing queries or extracting values from Tantivy documents.
+/// Get these from [`SearchIndex::fields`] when you need to build queries or
+/// pull values out of Tantivy documents.
 #[derive(Clone, Copy)]
 pub struct SchemaFields {
     /// Short hex document identifier.
@@ -91,9 +90,9 @@ pub struct SchemaFields {
     pub mtime: Field,
 }
 
-/// A search result from the Tantivy index.
+/// Result returned straight from the Tantivy index.
 ///
-/// Returned by [`SearchIndex::search`], [`SearchIndex::search_in_collection`],
+/// Produced by [`SearchIndex::search`], [`SearchIndex::search_in_collection`],
 /// and [`SearchIndex::search_fuzzy`].
 #[derive(Debug, Clone)]
 pub struct SearchResult {

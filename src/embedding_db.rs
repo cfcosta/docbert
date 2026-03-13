@@ -10,12 +10,12 @@ const EMBEDDINGS: TableDefinition<u64, &[u8]> =
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
 
-/// Stores ColBERT per-token embedding matrices keyed by document numeric ID.
+/// Stores ColBERT token embedding matrices keyed by numeric document ID.
 ///
-/// Binary format per entry:
-/// - 4 bytes: token count T (u32 LE)
-/// - 4 bytes: embedding dimension D (u32 LE)
-/// - T * D * 4 bytes: f32 LE values in row-major order
+/// Each entry is packed like this:
+/// - 4 bytes: token count `T` (`u32`, little-endian)
+/// - 4 bytes: embedding dimension `D` (`u32`, little-endian)
+/// - `T * D * 4` bytes: `f32` values in row-major order
 pub struct EmbeddingDb {
     db: Database,
 }
@@ -351,10 +351,10 @@ impl std::fmt::Debug for EmbeddingDb {
     }
 }
 
-/// A retrieved ColBERT embedding matrix.
+/// ColBERT embedding matrix loaded from the database.
 ///
-/// Stores per-token embedding vectors in a flat `Vec<f32>` in row-major order.
-/// Use [`token_embedding`](Self::token_embedding) to access individual token vectors.
+/// The data lives in a flat `Vec<f32>` in row-major order. Use
+/// [`token_embedding`](Self::token_embedding) when you want one token vector.
 ///
 /// # Examples
 ///

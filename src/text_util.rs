@@ -4,9 +4,9 @@ pub const DEFAULT_SNIPPET_LINES: usize = 6;
 /// Maximum number of characters in a snippet before truncation.
 pub const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 
-/// Prepend line numbers to each line of text.
+/// Add line numbers to each line of text.
 ///
-/// `start_line` is the number to assign to the first line (1-indexed).
+/// `start_line` is the number assigned to the first line. It is 1-indexed.
 ///
 /// # Examples
 ///
@@ -29,9 +29,9 @@ pub fn add_line_numbers(text: &str, start_line: usize) -> String {
 
 /// Extract a snippet around the first occurrence of `query` in `text`.
 ///
-/// Returns `(snippet_text, start_line_number)` where start_line_number is
-/// 1-indexed. If `query` is not found, returns the first few lines.
-/// Returns `None` if the text is empty.
+/// Returns `(snippet_text, start_line_number)`, where `start_line_number` is
+/// 1-indexed. If the query is not found, the first few lines are returned instead.
+/// Empty input returns `None`.
 ///
 /// # Examples
 ///
@@ -78,10 +78,10 @@ pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
     Some((snippet, start + 1))
 }
 
-/// Apply line offset and optional line limit to a block of text.
+/// Apply a line offset and optional line limit to a block of text.
 ///
 /// `start_line` is 1-indexed. If `max_lines` is `Some(n)`, at most `n` lines
-/// are returned with a truncation notice appended.
+/// are returned and a truncation notice is appended.
 ///
 /// # Examples
 ///

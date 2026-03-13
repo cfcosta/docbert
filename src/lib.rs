@@ -1,29 +1,27 @@
-//! docbert -- a local document search engine combining BM25 and ColBERT reranking.
+//! docbert is a local document search engine that combines BM25 with ColBERT reranking.
 //!
-//! docbert indexes collections of markdown and text files, providing fast keyword
-//! search via [Tantivy](https://github.com/quickwit-oss/tantivy) with optional
-//! neural reranking via [ColBERT](https://github.com/stanford-futuredata/ColBERT)
-//! (specifically the ColBERT-Zero model via pylate-rs).
+//! Point it at one or more folders, index them, and search them locally. Tantivy
+//! handles the fast keyword pass. ColBERT can rerank the candidate set when you
+//! want semantic matching too.
 //!
-//! # Architecture
+//! # How it works
 //!
-//! The search pipeline has two stages:
+//! Search has two stages:
 //!
-//! 1. **BM25 retrieval** -- Tantivy indexes documents with English stemming and
-//!    retrieves the top 1000 candidates for a query. Optionally includes fuzzy
-//!    matching (Levenshtein distance 1).
+//! 1. **BM25 retrieval** - Tantivy indexes documents with English stemming and
+//!    returns the top 1000 candidates for a query. Fuzzy matching is optional.
 //!
-//! 2. **ColBERT reranking** -- each candidate's per-token embedding matrix is
-//!    compared against the query embedding using MaxSim scoring, producing a
-//!    semantic relevance score that captures meaning beyond keyword overlap.
+//! 2. **ColBERT reranking** - docbert compares the query embedding with each
+//!    candidate's token embeddings using MaxSim. That helps when the wording is
+//!    different but the meaning is close.
 //!
 //! # Storage
 //!
-//! All data is stored locally in three databases managed by [`DataDir`]:
+//! docbert keeps its local state in three places managed by [`DataDir`]:
 //!
-//! - **`config.db`** ([`ConfigDb`]) -- collections, contexts, document metadata, settings
-//! - **`embeddings.db`** ([`EmbeddingDb`]) -- ColBERT per-token embedding matrices
-//! - **`tantivy/`** ([`SearchIndex`]) -- BM25 full-text search index
+//! - **`config.db`** ([`ConfigDb`]) - collections, contexts, document metadata, and settings
+//! - **`embeddings.db`** ([`EmbeddingDb`]) - ColBERT token embedding matrices
+//! - **`tantivy/`** ([`SearchIndex`]) - BM25 full-text index
 //!
 //! # Quick start
 //!
@@ -31,14 +29,14 @@
 //! use docbert::{ConfigDb, DataDir, SearchIndex, EmbeddingDb, ModelManager};
 //! use docbert::search::{self, SearchParams};
 //!
-//! // Open databases
+//! // Open the local databases.
 //! let data_dir = DataDir::resolve(None).unwrap();
 //! let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
 //! let search_index = SearchIndex::open(&data_dir.tantivy_dir().unwrap()).unwrap();
 //! let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
 //! let mut model = ModelManager::new();
 //!
-//! // Search with BM25 only (no model download required)
+//! // BM25-only search does not need to download a model.
 //! let params = SearchParams {
 //!     query: "rust programming".to_string(),
 //!     count: 10,
@@ -63,15 +61,15 @@
 //! use docbert::{walker, ingestion, embedding};
 //!
 //! # let tmp = tempfile::tempdir().unwrap();
-//! // Discover files in a directory
+//! // Find files in a directory.
 //! let files = walker::discover_files(tmp.path()).unwrap();
 //!
-//! // Index into Tantivy
+//! // Add them to Tantivy.
 //! let index = SearchIndex::open_in_ram().unwrap();
 //! let mut writer = index.writer(15_000_000).unwrap();
 //! let count = ingestion::ingest_files(&index, &mut writer, "notes", &files).unwrap();
 //!
-//! // Optionally compute ColBERT embeddings (downloads model on first use)
+//! // You can also compute ColBERT embeddings. The first call downloads the model.
 //! let emb_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 //! let mut model = ModelManager::new();
 //! // embedding::embed_and_store(&mut model, &emb_db, docs).unwrap();

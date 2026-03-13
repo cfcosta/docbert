@@ -6,12 +6,11 @@ use crate::{
     model_manager::ModelManager,
 };
 
-/// Number of documents to submit per `encode_documents` call.
+/// How many documents to hand to `encode_documents` in one outer batch.
 ///
-/// Keep this larger than pylate-rs' internal 32-document batch size so CPU
-/// encoding can fan out across multiple internal batches via Rayon, while still
-/// bounding the size of the returned embedding tensor before it is serialized
-/// into `EmbeddingDb`.
+/// This stays above pylate-rs' internal 32-document batch so CPU work can fan
+/// out across several inner batches, but not so large that the returned tensor
+/// becomes awkward to serialize into `EmbeddingDb`.
 pub const EMBEDDING_SUBMISSION_BATCH_SIZE: usize = 128;
 
 trait DocumentEncoder {
@@ -24,16 +23,15 @@ impl DocumentEncoder for ModelManager {
     }
 }
 
-/// Encode a batch of documents and store their embeddings in the database.
+/// Encode a batch of documents and write the embeddings to the database.
 ///
-/// Takes `(doc_numeric_id, document_text)` pairs, encodes them via the
-/// ColBERT model, and stores the resulting per-token embeddings in
-/// `EmbeddingDb` using a single batch transaction.
+/// Accepts `(doc_numeric_id, document_text)` pairs, runs them through ColBERT,
+/// and stores the per-token embeddings in one batch transaction.
 ///
-/// Consumes the input vector to avoid cloning document content.
-/// Downloads the model on first call if not already cached.
+/// The input vector is consumed so callers do not need to clone document text.
+/// The model is downloaded on first use if it is not cached yet.
 ///
-/// Returns the number of documents successfully embedded.
+/// Returns the number of documents written.
 pub fn embed_and_store(
     model: &mut ModelManager,
     db: &EmbeddingDb,
@@ -42,12 +40,11 @@ pub fn embed_and_store(
     embed_and_store_with(model, db, documents)
 }
 
-/// Encode and store many documents using coarser submission batches.
+/// Encode and store many documents using larger submission batches.
 ///
-/// docbert submits larger groups of documents to `pylate-rs` than its internal
-/// 32-document batch size so CPU execution can parallelize across multiple
-/// internal batches. `on_progress` receives the cumulative number of embedded
-/// documents after each submission batch is stored.
+/// docbert hands `pylate-rs` groups that are bigger than its internal
+/// 32-document batch size so CPU work can spread across multiple inner batches.
+/// `on_progress` receives the cumulative document count after each batch is stored.
 pub fn embed_and_store_in_batches<F>(
     model: &mut ModelManager,
     db: &EmbeddingDb,
@@ -181,13 +178,13 @@ fn trim_trailing_padding_rows(data: &[f32], dimension: usize) -> &[f32] {
     &data[..end]
 }
 
-/// Load multiple document embeddings from the database and convert to Tensors.
+/// Load several document embeddings and convert them to tensors.
 ///
-/// Returns a vector of `(doc_id, Option<Tensor>)` preserving input order.
-/// Missing embeddings return `None`. Uses a single database transaction
-/// for efficiency.
+/// The returned `Vec<(doc_id, Option<Tensor>)>` keeps the same order as the
+/// input IDs. Missing embeddings come back as `None`.
 ///
-/// Each returned tensor has shape `[num_tokens, dimension]`.
+/// Everything is loaded inside one database transaction. Each tensor has shape
+/// `[num_tokens, dimension]`.
 pub fn batch_load_embedding_tensors(
     db: &EmbeddingDb,
     doc_ids: &[u64],
@@ -225,9 +222,9 @@ fn matrix_to_tensor(
     })
 }
 
-/// Load a document's embedding from the database and convert to a Tensor.
+/// Load one document embedding from the database and convert it to a tensor.
 ///
-/// Returns `None` if the document has no stored embedding.
+/// Returns `None` when the document has no stored embedding.
 ///
 /// # Examples
 ///

@@ -340,7 +340,7 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
     // Try to resolve the reference
     let (collection, path) = if let Some(stripped) = reference.strip_prefix('#')
     {
-        // Doc ID reference — look up in metadata
+        // Doc ID reference: look up in metadata
         search::resolve_by_doc_id(config_db, stripped).ok_or_else(|| {
             error::Error::NotFound {
                 kind: "document",
@@ -350,7 +350,7 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
     } else if let Some((coll, path)) = reference.split_once(':') {
         (coll.to_string(), path.to_string())
     } else {
-        // Plain path — search all collections
+        // Plain path: search all collections
         search::resolve_by_path(config_db, reference).ok_or_else(|| {
             error::Error::NotFound {
                 kind: "document",
@@ -650,7 +650,7 @@ fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
     Ok(())
 }
 
-/// Settings key for tracking which model produced the stored embeddings.
+/// Settings key used to record which model produced the stored embeddings.
 const EMBEDDING_MODEL_KEY: &str = "embedding_model";
 
 fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
@@ -665,7 +665,7 @@ fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
     Ok(())
 }
 
-/// Create a progress bar with consistent styling.
+/// Create a progress bar with docbert's standard styling.
 fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
     tqdm!(
         total = total,
@@ -695,7 +695,7 @@ fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
     )
 }
 
-/// Finalize a progress bar (clear spinner, show final state).
+/// Finish a progress bar and leave the terminal in a clean state.
 fn finish_progress_bar(pb: &mut kdam::Bar) {
     let _ = pb.set_bar_format(
         "{desc suffix=' '}|{animation}| {count}/{total} [{percentage:.0}%] in {elapsed human=true} ({rate:.1}/s)",

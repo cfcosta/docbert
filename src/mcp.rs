@@ -73,10 +73,10 @@ struct DocbertState {
 
 /// MCP (Model Context Protocol) server for docbert.
 ///
-/// Exposes search, document retrieval, and status tools via the MCP protocol,
-/// allowing LLM clients (e.g., Claude) to query indexed documents.
+/// It exposes search, fetch, and status tools so editors and LLM clients can
+/// query the local index.
 ///
-/// Start the server with [`run_mcp`].
+/// Start it with [`run_mcp`].
 #[derive(Clone)]
 pub struct DocbertMcpServer {
     state: Arc<DocbertState>,
@@ -899,10 +899,10 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
     )
 }
 
-/// Start the MCP server on stdin/stdout.
+/// Run the MCP server on stdin/stdout.
 ///
-/// Blocks until the client disconnects. Intended to be invoked as
-/// `docbert mcp` from an MCP-compatible client.
+/// This blocks until the client disconnects. In practice, it is what
+/// `docbert mcp` calls.
 ///
 /// # Examples
 ///

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// A type alias for `std::result::Result<T, docbert::Error>`.
+/// Convenience alias for `std::result::Result<T, docbert::Error>`.
 ///
 /// # Examples
 ///
@@ -12,10 +12,10 @@ use std::path::PathBuf;
 /// ```
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Errors that can occur in docbert operations.
+/// Top-level error type for docbert.
 ///
-/// Wraps errors from the underlying storage (redb), search (Tantivy),
-/// and model (pylate-rs / candle) layers.
+/// Most variants wrap errors from lower layers such as redb, Tantivy, or
+/// the model stack.
 ///
 /// # Examples
 ///

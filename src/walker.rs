@@ -5,10 +5,10 @@ use std::{
 
 use crate::error::Result;
 
-/// A discovered document file on disk.
+/// Document file found on disk.
 ///
-/// Produced by [`discover_files`]. Carries both relative and absolute
-/// paths, plus the modification time used for incremental indexing.
+/// Returned by [`discover_files`]. It keeps the relative path, absolute path,
+/// and modification time needed for incremental indexing.
 #[derive(Debug, Clone)]
 pub struct DiscoveredFile {
     /// Path relative to the collection root directory (e.g., `"subdir/note.md"`).
@@ -22,11 +22,10 @@ pub struct DiscoveredFile {
 /// Supported file extensions for document discovery.
 const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
 
-/// Recursively walk a directory and discover eligible document files.
+/// Walk a directory tree and return the document files docbert can index.
 ///
-/// Skips hidden files/directories (names starting with `.`) and only
-/// returns files with supported extensions (.md, .txt). Results are sorted
-/// by relative path.
+/// Hidden files and directories are skipped. Only supported extensions (`.md`
+/// and `.txt`) are returned. Results come back sorted by relative path.
 ///
 /// # Examples
 ///

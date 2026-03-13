@@ -7,10 +7,9 @@ use crate::{
     model_manager::ModelManager,
 };
 
-/// A reranked document with its ColBERT MaxSim score.
+/// Candidate document after ColBERT reranking.
 ///
-/// Produced by [`rerank`] after comparing query and document embeddings.
-/// Results are sorted by score descending.
+/// Returned by [`rerank`]. Results are sorted by score, highest first.
 #[derive(Debug, Clone)]
 pub struct RankedDocument {
     /// Numeric document identifier.
@@ -19,14 +18,13 @@ pub struct RankedDocument {
     pub score: f32,
 }
 
-/// Rerank candidate documents using ColBERT MaxSim scoring via pylate-rs.
+/// Rerank candidate documents with ColBERT MaxSim scoring.
 ///
-/// For each candidate document:
-/// 1. Load its embedding matrix from the database (batch load for efficiency)
-/// 2. Compute MaxSim score against the query embedding
+/// For each candidate, this loads the stored embedding, scores it against the
+/// query embedding, and keeps the result.
 ///
-/// Documents without stored embeddings are silently skipped.
-/// Returns candidates sorted by score descending.
+/// Documents without stored embeddings are skipped. The returned list is sorted
+/// by score, highest first.
 pub fn rerank(
     query_embedding: &Tensor,
     candidate_ids: &[u64],

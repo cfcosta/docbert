@@ -14,7 +14,7 @@ use crate::{
 
 const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
 
-/// Parameters for the hybrid BM25 + ColBERT search pipeline.
+/// Options for hybrid search: BM25 first, ColBERT reranking second.
 ///
 /// # Examples
 ///
@@ -49,7 +49,7 @@ pub struct SearchParams {
     pub all: bool,
 }
 
-/// Parameters for semantic-only search (ColBERT similarity without BM25).
+/// Options for semantic-only search.
 ///
 /// # Examples
 ///
@@ -75,10 +75,10 @@ pub struct SemanticSearchParams {
     pub all: bool,
 }
 
-/// A final search result combining BM25 and optional ColBERT scores.
+/// Search result returned by [`execute_search`] or [`execute_semantic_search`].
 ///
-/// Produced by [`execute_search`] and [`execute_semantic_search`].
-/// Results are sorted by score descending and assigned sequential ranks.
+/// Results are sorted by score, highest first, and ranks are assigned after
+/// filtering and limiting.
 #[derive(Debug, Clone)]
 pub struct FinalResult {
     /// 1-indexed position in the result list.
@@ -97,15 +97,13 @@ pub struct FinalResult {
     pub title: String,
 }
 
-/// Execute the full search pipeline.
+/// Run the normal search pipeline.
 ///
-/// The pipeline has four stages:
-/// 1. **BM25 retrieval** — Tantivy keyword search (top 1000 candidates),
-///    optionally with fuzzy matching.
-/// 2. **ColBERT reranking** — neural reranking of candidates using MaxSim
-///    scoring (skipped when `bm25_only` is set).
-/// 3. **Score filtering** — drop results below `min_score`.
-/// 4. **Limit** — return at most `count` results (or all if `all` is set).
+/// The steps are:
+/// 1. **BM25 retrieval** - Tantivy finds the top 1000 candidates, with optional fuzzy matching.
+/// 2. **ColBERT reranking** - candidates are rescored with MaxSim unless `bm25_only` is set.
+/// 3. **Score filtering** - results below `min_score` are dropped.
+/// 4. **Limit** - at most `count` results are returned, unless `all` is set.
 ///
 /// # Examples
 ///
@@ -194,14 +192,13 @@ pub fn execute_search(
     Ok(limited)
 }
 
-/// Execute semantic-only search across all documents.
+/// Run semantic-only search across all indexed documents.
 ///
-/// Unlike [`execute_search`], this skips BM25 entirely and computes
-/// ColBERT MaxSim scores against every document with stored embeddings.
-/// This finds semantically related documents even when they share no
-/// keywords with the query.
+/// Unlike [`execute_search`], this skips BM25 and scores every stored embedding
+/// with ColBERT MaxSim. That can surface related documents even when they share
+/// little wording with the query.
 ///
-/// Requires a loaded ColBERT model (will be downloaded on first call).
+/// The ColBERT model is loaded on first use.
 pub fn execute_semantic_search(
     args: &SemanticSearchParams,
     config_db: &ConfigDb,
@@ -285,10 +282,10 @@ pub fn execute_semantic_search(
     Ok(results)
 }
 
-/// Resolve a document by its short ID (e.g., `"a1b2c3"` or `"#a1b2c3"`).
+/// Look up a document by its short ID, such as `"a1b2c3"` or `"#a1b2c3"`.
 ///
-/// Iterates all known document metadata and matches by short ID string
-/// or substring containment. Returns `(collection, relative_path)`.
+/// This walks the known metadata and matches on the short ID or a containing
+/// display form. On success it returns `(collection, relative_path)`.
 ///
 /// # Examples
 ///
@@ -329,10 +326,9 @@ pub fn resolve_by_doc_id(
     None
 }
 
-/// Resolve a document by its relative path within any collection.
+/// Look up a document by its relative path across all collections.
 ///
-/// Returns `(collection, relative_path)` or `None` if no document
-/// matches the given path.
+/// Returns `(collection, relative_path)` or `None` when nothing matches.
 ///
 /// # Examples
 ///
@@ -385,7 +381,7 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
         .collect()
 }
 
-/// Format a numeric document ID as a short hex string (e.g., `"#a1b2c3"`).
+/// Turn a numeric document ID into the short display form, like `"#a1b2c3"`.
 ///
 /// # Examples
 ///
@@ -468,10 +464,10 @@ fn rerank_results(
         .collect())
 }
 
-/// Format results for human-readable terminal output.
+/// Print results in the default terminal format.
 ///
-/// Prints each result as `rank. [score] collection:path #doc_id` followed
-/// by the title on the next line. Prints a total count at the end.
+/// Each result is shown as `rank. [score] collection:path #doc_id`, with the
+/// title on the next line when one is available. A total count is printed last.
 pub fn format_human(results: &[FinalResult]) {
     if results.is_empty() {
         println!("No results found.");
@@ -490,10 +486,10 @@ pub fn format_human(results: &[FinalResult]) {
     println!("\n{} result(s)", results.len());
 }
 
-/// Format results as JSON output.
+/// Print results as JSON.
 ///
-/// Prints a JSON object with `query`, `result_count`, and a `results` array
-/// containing `rank`, `score`, `doc_id`, `collection`, `path`, and `title`.
+/// The output object contains `query`, `result_count`, and a `results` array
+/// with `rank`, `score`, `doc_id`, `collection`, `path`, and `title`.
 pub fn format_json(results: &[FinalResult], query: &str) {
     print!(
         "{{\"query\":{},\"result_count\":{},\"results\":[",
@@ -519,10 +515,10 @@ pub fn format_json(results: &[FinalResult], query: &str) {
     println!("]}}");
 }
 
-/// Format results as plain file paths (one per line).
+/// Print matching files as absolute paths, one per line.
 ///
-/// Resolves relative paths against the collection's root directory
-/// and prints full absolute paths, suitable for piping to other tools.
+/// Relative paths are resolved against each collection root, which makes the
+/// output easy to pipe into other tools.
 pub fn format_files(
     results: &[FinalResult],
     config_db: &crate::config_db::ConfigDb,
@@ -547,7 +543,7 @@ pub fn format_files(
     }
 }
 
-/// Escape a string as a JSON value including surrounding quotes.
+/// Escape a string as a JSON string literal, including the surrounding quotes.
 ///
 /// # Examples
 ///

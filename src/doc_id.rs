@@ -3,11 +3,11 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-/// A stable document identifier derived from (collection_name, relative_path).
+/// Stable document ID built from a collection name and relative path.
 ///
-/// The ID is a deterministic hash, so the same (collection, path) pair always
-/// produces the same ID. This is used as the primary key in the metadata and
-/// embedding databases.
+/// The hash is deterministic, so the same `(collection, path)` pair always gets
+/// the same ID. docbert uses it as the primary key in the metadata and embedding
+/// databases.
 ///
 /// # Examples
 ///
@@ -32,10 +32,10 @@ pub struct DocumentId {
 }
 
 impl DocumentId {
-    /// Generate a stable document ID from collection name and relative path.
+    /// Build a stable document ID from a collection name and relative path.
     ///
-    /// The same inputs always produce the same ID, making it safe to
-    /// regenerate IDs at any time without database lookups.
+    /// You can regenerate the ID at any time. If the inputs are the same, the
+    /// result is the same too.
     ///
     /// # Examples
     ///
