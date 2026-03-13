@@ -18,6 +18,7 @@ use docbert::{
     walker,
 };
 use kdam::{BarExt, Spinner, tqdm};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
@@ -40,6 +41,140 @@ fn init_tracing(verbose: u8) {
         .with_writer(std::io::stderr)
         .without_time()
         .init();
+}
+
+fn serialize_json<T: Serialize + ?Sized>(
+    value: &T,
+    error_context: &str,
+) -> error::Result<String> {
+    serde_json::to_string(value)
+        .map_err(|e| error::Error::Config(format!("{error_context}: {e}")))
+}
+
+#[derive(Serialize)]
+struct CollectionListItem<'a> {
+    name: &'a str,
+    path: &'a str,
+}
+
+fn collection_list_json_string(
+    collections: &[(String, String)],
+) -> error::Result<String> {
+    let items: Vec<_> = collections
+        .iter()
+        .map(|(name, path)| CollectionListItem { name, path })
+        .collect();
+    serialize_json(&items, "failed to serialize collection list")
+}
+
+#[derive(Serialize)]
+struct ContextListItem<'a> {
+    uri: &'a str,
+    description: &'a str,
+}
+
+fn context_list_json_string(
+    contexts: &[(String, String)],
+) -> error::Result<String> {
+    let items: Vec<_> = contexts
+        .iter()
+        .map(|(uri, description)| ContextListItem { uri, description })
+        .collect();
+    serialize_json(&items, "failed to serialize context list")
+}
+
+#[derive(Serialize)]
+struct GetJsonOutput<'a> {
+    collection: &'a str,
+    path: &'a str,
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+}
+
+fn get_json_string(
+    collection: &str,
+    path: &str,
+    full_path: &Path,
+    content: Option<&str>,
+) -> error::Result<String> {
+    serialize_json(
+        &GetJsonOutput {
+            collection,
+            path,
+            file: full_path.display().to_string(),
+            content,
+        },
+        "failed to serialize get response",
+    )
+}
+
+#[derive(Serialize)]
+struct MultiGetJsonItem {
+    collection: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+fn multi_get_json_string(items: &[MultiGetJsonItem]) -> error::Result<String> {
+    serialize_json(items, "failed to serialize multi-get response")
+}
+
+#[derive(Serialize)]
+struct StatusJsonOutput<'a> {
+    data_dir: String,
+    model: &'a str,
+    model_source: &'a str,
+    embedding_model: Option<&'a str>,
+    collections: usize,
+    documents: usize,
+}
+
+fn status_json_string(
+    data_dir: &DataDir,
+    model_resolution: &ModelResolution,
+    embedding_model: Option<&str>,
+    collection_count: usize,
+    doc_count: usize,
+) -> error::Result<String> {
+    serialize_json(
+        &StatusJsonOutput {
+            data_dir: data_dir.root().display().to_string(),
+            model: &model_resolution.model_id,
+            model_source: model_resolution.source.as_str(),
+            embedding_model,
+            collections: collection_count,
+            documents: doc_count,
+        },
+        "failed to serialize status response",
+    )
+}
+
+#[derive(Serialize)]
+struct ModelShowJsonOutput<'a> {
+    resolved: &'a str,
+    source: &'a str,
+    cli: Option<&'a str>,
+    env: Option<&'a str>,
+    config: Option<&'a str>,
+}
+
+fn model_show_json_string(
+    model_resolution: &ModelResolution,
+) -> error::Result<String> {
+    serialize_json(
+        &ModelShowJsonOutput {
+            resolved: &model_resolution.model_id,
+            source: model_resolution.source.as_str(),
+            cli: model_resolution.cli_model.as_deref(),
+            env: model_resolution.env_model.as_deref(),
+            config: model_resolution.config_model.as_deref(),
+        },
+        "failed to serialize model resolution",
+    )
 }
 
 fn main() -> error::Result<()> {
@@ -273,14 +408,7 @@ fn collection_list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let collections = config_db.list_collections()?;
 
     if json {
-        print!("[");
-        for (i, (name, path)) in collections.iter().enumerate() {
-            if i > 0 {
-                print!(",");
-            }
-            print!("{{\"name\":\"{name}\",\"path\":\"{path}\"}}");
-        }
-        println!("]");
+        println!("{}", collection_list_json_string(&collections)?);
     } else if collections.is_empty() {
         println!("No collections registered.");
     } else {
@@ -316,14 +444,7 @@ fn context_list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let contexts = config_db.list_contexts()?;
 
     if json {
-        print!("[");
-        for (i, (uri, desc)) in contexts.iter().enumerate() {
-            if i > 0 {
-                print!(",");
-            }
-            print!("{{\"uri\":\"{uri}\",\"description\":\"{desc}\"}}");
-        }
-        println!("]");
+        println!("{}", context_list_json_string(&contexts)?);
     } else if contexts.is_empty() {
         println!("No contexts defined.");
     } else {
@@ -374,15 +495,11 @@ fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
         println!("path: {path}");
         println!("file: {}", full_path.display());
     } else if args.json {
-        print!(
-            "{{\"collection\":\"{collection}\",\"path\":\"{path}\",\"file\":\"{}\"",
-            full_path.display()
+        let content = std::fs::read_to_string(&full_path)?;
+        println!(
+            "{}",
+            get_json_string(&collection, &path, &full_path, Some(&content))?
         );
-        if !args.meta {
-            let content = std::fs::read_to_string(&full_path)?;
-            print!(",\"content\":{}", search::json_escape(&content));
-        }
-        println!("}}");
     } else {
         let content = std::fs::read_to_string(&full_path)?;
         print!("{content}");
@@ -422,32 +539,30 @@ fn cmd_multi_get(
     matches.sort();
 
     if args.json {
-        print!("[");
-        for (i, (collection, path)) in matches.iter().enumerate() {
-            if i > 0 {
-                print!(",");
-            }
+        let mut items = Vec::with_capacity(matches.len());
+        for (collection, path) in &matches {
             let collection_path = config_db.get_collection(collection)?;
-            print!(
-                "{{\"collection\":{},\"path\":{}",
-                search::json_escape(collection),
-                search::json_escape(path),
-            );
-            if let Some(ref cp) = collection_path {
+            let (file, content) = if let Some(ref cp) = collection_path {
                 let full_path = std::path::Path::new(cp).join(path);
-                print!(
-                    ",\"file\":{}",
-                    search::json_escape(&full_path.to_string_lossy()),
-                );
-                if args.full
-                    && let Ok(content) = std::fs::read_to_string(&full_path)
-                {
-                    print!(",\"content\":{}", search::json_escape(&content));
-                }
-            }
-            print!("}}");
+                let content = if args.full {
+                    std::fs::read_to_string(&full_path).ok()
+                } else {
+                    None
+                };
+                (Some(full_path.to_string_lossy().to_string()), content)
+            } else {
+                (None, None)
+            };
+
+            items.push(MultiGetJsonItem {
+                collection: collection.clone(),
+                path: path.clone(),
+                file,
+                content,
+            });
         }
-        println!("]");
+
+        println!("{}", multi_get_json_string(&items)?);
     } else if args.files {
         for (collection, path) in &matches {
             if let Ok(Some(collection_path)) =
@@ -555,15 +670,15 @@ fn cmd_status(
     let embedding_model = config_db.get_setting(EMBEDDING_MODEL_KEY)?;
 
     if json {
-        let emb_model_json = match &embedding_model {
-            Some(m) => search::json_escape(m),
-            None => "null".to_string(),
-        };
         println!(
-            "{{\"data_dir\":\"{}\",\"model\":\"{model_name}\",\"model_source\":\"{}\",\"embedding_model\":{emb_model_json},\"collections\":{},\"documents\":{doc_count}}}",
-            data_dir.root().display(),
-            model_resolution.source.as_str(),
-            collections.len()
+            "{}",
+            status_json_string(
+                data_dir,
+                model_resolution,
+                embedding_model.as_deref(),
+                collections.len(),
+                doc_count,
+            )?
         );
     } else {
         println!("Data directory: {}", data_dir.root().display());
@@ -589,22 +704,12 @@ fn cmd_status(
     Ok(())
 }
 
-fn json_optional(value: Option<&str>) -> String {
-    match value {
-        Some(v) => search::json_escape(v),
-        None => "null".to_string(),
-    }
-}
-
 fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
     if json {
         println!(
-            "{{\"resolved\":{},\"source\":{},\"cli\":{},\"env\":{},\"config\":{}}}",
-            search::json_escape(&model_resolution.model_id),
-            search::json_escape(model_resolution.source.as_str()),
-            json_optional(model_resolution.cli_model.as_deref()),
-            json_optional(model_resolution.env_model.as_deref()),
-            json_optional(model_resolution.config_model.as_deref()),
+            "{}",
+            model_show_json_string(model_resolution)
+                .expect("model resolution JSON serialization should succeed")
         );
     } else {
         println!("Resolved model: {}", model_resolution.model_id);
@@ -1017,4 +1122,136 @@ fn cmd_sync(
 
     eprintln!("Sync complete.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use docbert::model_manager::ModelSource;
+
+    use super::*;
+
+    #[test]
+    fn collection_list_json_snapshot() {
+        let json = collection_list_json_string(&[
+            ("notes".to_string(), "/tmp/notes".to_string()),
+            ("docs".to_string(), "/tmp/docs".to_string()),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            json,
+            "[{\"name\":\"notes\",\"path\":\"/tmp/notes\"},{\"name\":\"docs\",\"path\":\"/tmp/docs\"}]"
+        );
+    }
+
+    #[test]
+    fn context_list_json_snapshot() {
+        let json = context_list_json_string(&[(
+            "bert://notes".to_string(),
+            "Personal notes".to_string(),
+        )])
+        .unwrap();
+
+        assert_eq!(
+            json,
+            "[{\"uri\":\"bert://notes\",\"description\":\"Personal notes\"}]"
+        );
+    }
+
+    #[test]
+    fn get_json_snapshot() {
+        let json = get_json_string(
+            "notes",
+            "hello.md",
+            Path::new("/tmp/notes/hello.md"),
+            Some("Hello\nWorld\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            json,
+            "{\"collection\":\"notes\",\"path\":\"hello.md\",\"file\":\"/tmp/notes/hello.md\",\"content\":\"Hello\\nWorld\\n\"}"
+        );
+    }
+
+    #[test]
+    fn multi_get_json_snapshot() {
+        let json = multi_get_json_string(&[
+            MultiGetJsonItem {
+                collection: "notes".to_string(),
+                path: "hello.md".to_string(),
+                file: Some("/tmp/notes/hello.md".to_string()),
+                content: Some("Hello\n".to_string()),
+            },
+            MultiGetJsonItem {
+                collection: "docs".to_string(),
+                path: "missing.md".to_string(),
+                file: None,
+                content: None,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            json,
+            "[{\"collection\":\"notes\",\"path\":\"hello.md\",\"file\":\"/tmp/notes/hello.md\",\"content\":\"Hello\\n\"},{\"collection\":\"docs\",\"path\":\"missing.md\"}]"
+        );
+    }
+
+    #[test]
+    fn status_json_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let model_resolution = ModelResolution {
+            model_id: "lightonai/ColBERT-Zero".to_string(),
+            source: ModelSource::Config,
+            env_model: None,
+            config_model: Some("lightonai/ColBERT-Zero".to_string()),
+            cli_model: None,
+        };
+
+        let with_embedding = status_json_string(
+            &data_dir,
+            &model_resolution,
+            Some("lightonai/ColBERT-Zero"),
+            2,
+            15,
+        )
+        .unwrap();
+        assert_eq!(
+            with_embedding,
+            format!(
+                "{{\"data_dir\":\"{}\",\"model\":\"lightonai/ColBERT-Zero\",\"model_source\":\"config\",\"embedding_model\":\"lightonai/ColBERT-Zero\",\"collections\":2,\"documents\":15}}",
+                data_dir.root().display()
+            )
+        );
+
+        let without_embedding =
+            status_json_string(&data_dir, &model_resolution, None, 2, 15)
+                .unwrap();
+        assert_eq!(
+            without_embedding,
+            format!(
+                "{{\"data_dir\":\"{}\",\"model\":\"lightonai/ColBERT-Zero\",\"model_source\":\"config\",\"embedding_model\":null,\"collections\":2,\"documents\":15}}",
+                data_dir.root().display()
+            )
+        );
+    }
+
+    #[test]
+    fn model_show_json_snapshot() {
+        let resolution = ModelResolution {
+            model_id: "cli/model".to_string(),
+            source: ModelSource::Cli,
+            cli_model: Some("cli/model".to_string()),
+            env_model: Some("env/model".to_string()),
+            config_model: None,
+        };
+
+        let json = model_show_json_string(&resolution).unwrap();
+        assert_eq!(
+            json,
+            "{\"resolved\":\"cli/model\",\"source\":\"cli\",\"cli\":\"cli/model\",\"env\":\"env/model\",\"config\":null}"
+        );
+    }
 }

@@ -486,33 +486,42 @@ pub fn format_human(results: &[FinalResult]) {
     println!("\n{} result(s)", results.len());
 }
 
-/// Print results as JSON.
-///
-/// The output object contains `query`, `result_count`, and a `results` array
-/// with `rank`, `score`, `doc_id`, `collection`, `path`, and `title`.
-pub fn format_json(results: &[FinalResult], query: &str) {
-    print!(
+fn search_result_json_string(result: &FinalResult) -> String {
+    format!(
+        "{{\"rank\":{},\"score\":{:.6},\"doc_id\":{},\"collection\":{},\"path\":{},\"title\":{}}}",
+        result.rank,
+        result.score,
+        json_escape(&result.doc_id),
+        json_escape(&result.collection),
+        json_escape(&result.path),
+        json_escape(&result.title),
+    )
+}
+
+fn format_json_string(results: &[FinalResult], query: &str) -> String {
+    let mut output = format!(
         "{{\"query\":{},\"result_count\":{},\"results\":[",
         json_escape(query),
         results.len()
     );
 
-    for (i, r) in results.iter().enumerate() {
+    for (i, result) in results.iter().enumerate() {
         if i > 0 {
-            print!(",");
+            output.push(',');
         }
-        print!(
-            "{{\"rank\":{},\"score\":{:.6},\"doc_id\":{},\"collection\":{},\"path\":{},\"title\":{}}}",
-            r.rank,
-            r.score,
-            json_escape(&r.doc_id),
-            json_escape(&r.collection),
-            json_escape(&r.path),
-            json_escape(&r.title),
-        );
+        output.push_str(&search_result_json_string(result));
     }
 
-    println!("]}}");
+    output.push_str("]}");
+    output
+}
+
+/// Print results as JSON.
+///
+/// The output object contains `query`, `result_count`, and a `results` array
+/// with `rank`, `score`, `doc_id`, `collection`, `path`, and `title`.
+pub fn format_json(results: &[FinalResult], query: &str) {
+    println!("{}", format_json_string(results, query));
 }
 
 /// Print matching files as absolute paths, one per line.
@@ -1370,6 +1379,42 @@ mod tests {
         assert_eq!(output[0].rank, 1);
         assert_eq!(output[1].rank, 2);
         assert_eq!(output[2].rank, 3);
+    }
+
+    #[test]
+    fn search_json_snapshot() {
+        let results = vec![FinalResult {
+            rank: 1,
+            score: 1.2345678,
+            doc_id: "#abc123".to_string(),
+            doc_num_id: 42,
+            collection: "notes".to_string(),
+            path: "hello.md".to_string(),
+            title: "Hello \"Rust\"".to_string(),
+        }];
+
+        let json = format_json_string(&results, "rust\nquery");
+
+        assert_eq!(
+            json,
+            "{\"query\":\"rust\\nquery\",\"result_count\":1,\"results\":[{\"rank\":1,\"score\":1.234568,\"doc_id\":\"#abc123\",\"collection\":\"notes\",\"path\":\"hello.md\",\"title\":\"Hello \\\"Rust\\\"\"}]}"
+        );
+    }
+
+    #[test]
+    fn search_json_score_precision_is_six_decimals() {
+        let results = vec![FinalResult {
+            rank: 1,
+            score: 1.2,
+            doc_id: "#abc123".to_string(),
+            doc_num_id: 42,
+            collection: "notes".to_string(),
+            path: "hello.md".to_string(),
+            title: "Hello".to_string(),
+        }];
+
+        let json = format_json_string(&results, "rust");
+        assert!(json.contains("\"score\":1.200000"));
     }
 
     #[test]
