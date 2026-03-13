@@ -30,6 +30,26 @@ pub struct LoadedDocument {
     pub mtime: u64,
 }
 
+/// A file that could not be read during document loading.
+#[derive(Debug, Clone)]
+pub struct LoadFailure {
+    /// The file that failed to load.
+    pub file: DiscoveredFile,
+    /// The I/O error message returned while reading the file.
+    pub error: String,
+}
+
+/// Result of loading discovered files into memory.
+#[derive(Debug, Clone, Default)]
+pub struct LoadDocumentsResult {
+    /// Successfully loaded documents in file order.
+    pub documents: Vec<LoadedDocument>,
+    /// Discovered files that were loaded successfully.
+    pub loaded_files: Vec<DiscoveredFile>,
+    /// Files that could not be read.
+    pub failures: Vec<LoadFailure>,
+}
+
 /// Pick a title from file content.
 ///
 /// If the file has a Markdown heading that starts with `# `, the first one wins.
@@ -56,29 +76,59 @@ pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
 /// Read discovered files into memory and derive the metadata needed for indexing.
 ///
 /// This runs in parallel, extracts titles, and computes stable document IDs.
-/// Files that cannot be read are skipped.
+/// Files that cannot be read are reported in [`LoadDocumentsResult::failures`]
+/// so callers can avoid marking them as successfully processed.
 pub fn load_documents(
     collection: &str,
     files: &[DiscoveredFile],
-) -> Vec<LoadedDocument> {
-    files
+) -> LoadDocumentsResult {
+    enum LoadOutcome {
+        Loaded {
+            file: DiscoveredFile,
+            document: LoadedDocument,
+        },
+        Failed(LoadFailure),
+    }
+
+    let outcomes: Vec<_> = files
         .par_iter()
-        .filter_map(|file| {
-            let content = std::fs::read_to_string(&file.absolute_path).ok()?;
-            let title = extract_title(&content, &file.relative_path);
-            let relative_path =
-                file.relative_path.to_string_lossy().to_string();
-            let did = DocumentId::new(collection, &relative_path);
-            Some(LoadedDocument {
-                doc_id: did.to_string(),
-                doc_num_id: did.numeric,
-                relative_path,
-                title,
-                content,
-                mtime: file.mtime,
-            })
+        .map(|file| match std::fs::read_to_string(&file.absolute_path) {
+            Ok(content) => {
+                let title = extract_title(&content, &file.relative_path);
+                let relative_path =
+                    file.relative_path.to_string_lossy().to_string();
+                let did = DocumentId::new(collection, &relative_path);
+                LoadOutcome::Loaded {
+                    file: file.clone(),
+                    document: LoadedDocument {
+                        doc_id: did.to_string(),
+                        doc_num_id: did.numeric,
+                        relative_path,
+                        title,
+                        content,
+                        mtime: file.mtime,
+                    },
+                }
+            }
+            Err(error) => LoadOutcome::Failed(LoadFailure {
+                file: file.clone(),
+                error: error.to_string(),
+            }),
         })
-        .collect()
+        .collect();
+
+    let mut result = LoadDocumentsResult::default();
+    for outcome in outcomes {
+        match outcome {
+            LoadOutcome::Loaded { file, document } => {
+                result.loaded_files.push(file);
+                result.documents.push(document);
+            }
+            LoadOutcome::Failed(failure) => result.failures.push(failure),
+        }
+    }
+
+    result
 }
 
 /// Write preloaded documents into the Tantivy index.
@@ -137,12 +187,13 @@ pub fn ingest_files(
     files: &[DiscoveredFile],
 ) -> Result<usize> {
     let loaded = load_documents(collection, files);
-    ingest_loaded_documents(index, writer, collection, &loaded)
+    ingest_loaded_documents(index, writer, collection, &loaded.documents)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ConfigDb, incremental};
 
     #[test]
     fn extract_title_from_heading() {
@@ -239,8 +290,11 @@ mod tests {
         let files = crate::walker::discover_files(tmp.path()).unwrap();
         let loaded = load_documents("notes", &files);
 
-        assert_eq!(loaded.len(), 1);
-        let doc = &loaded[0];
+        assert_eq!(loaded.documents.len(), 1);
+        assert_eq!(loaded.loaded_files.len(), 1);
+        assert!(loaded.failures.is_empty());
+
+        let doc = &loaded.documents[0];
         assert_eq!(doc.relative_path, "note.md");
         assert_eq!(doc.title, "Title");
         assert!(doc.doc_id.starts_with('#'));
@@ -249,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn load_documents_skips_unreadable_files() {
+    fn unreadable_file_does_not_block_other_readable_files_from_loading() {
         use std::path::PathBuf;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -270,8 +324,90 @@ mod tests {
         ];
 
         let loaded = load_documents("notes", &files);
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].relative_path, "ok.md");
+        assert_eq!(loaded.documents.len(), 1);
+        assert_eq!(loaded.documents[0].relative_path, "ok.md");
+        assert_eq!(loaded.loaded_files.len(), 1);
+        assert_eq!(
+            loaded.loaded_files[0].relative_path,
+            PathBuf::from("ok.md")
+        );
+        assert_eq!(loaded.failures.len(), 1);
+        assert_eq!(
+            loaded.failures[0].file.relative_path,
+            PathBuf::from("missing.md")
+        );
+    }
+
+    #[test]
+    fn sync_does_not_advance_metadata_for_unreadable_changed_file() {
+        use std::path::PathBuf;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let stored = DiscoveredFile {
+            relative_path: PathBuf::from("note.md"),
+            absolute_path: tmp.path().join("note.md"),
+            mtime: 10,
+        };
+        incremental::store_metadata(&config_db, "notes", &stored).unwrap();
+
+        let changed = DiscoveredFile {
+            relative_path: PathBuf::from("note.md"),
+            absolute_path: tmp.path().join("missing-note.md"),
+            mtime: 20,
+        };
+        let loaded = load_documents("notes", &[changed]);
+        assert!(loaded.documents.is_empty());
+        assert!(loaded.loaded_files.is_empty());
+        assert_eq!(loaded.failures.len(), 1);
+
+        incremental::batch_store_metadata(
+            &config_db,
+            "notes",
+            &loaded.loaded_files,
+        )
+        .unwrap();
+
+        let doc_id = DocumentId::new("notes", "note.md");
+        let stored = config_db
+            .get_document_metadata(doc_id.numeric)
+            .unwrap()
+            .unwrap();
+        let metadata =
+            incremental::DocumentMetadata::deserialize(&stored).unwrap();
+        assert_eq!(metadata.mtime, 10);
+    }
+
+    #[test]
+    fn rebuild_does_not_store_metadata_for_unreadable_file() {
+        use std::path::PathBuf;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let unreadable = DiscoveredFile {
+            relative_path: PathBuf::from("note.md"),
+            absolute_path: tmp.path().join("missing-note.md"),
+            mtime: 20,
+        };
+        let loaded = load_documents("notes", &[unreadable]);
+        assert!(loaded.documents.is_empty());
+        assert!(loaded.loaded_files.is_empty());
+        assert_eq!(loaded.failures.len(), 1);
+
+        incremental::batch_store_metadata(
+            &config_db,
+            "notes",
+            &loaded.loaded_files,
+        )
+        .unwrap();
+
+        let doc_id = DocumentId::new("notes", "note.md");
+        assert!(
+            config_db
+                .get_document_metadata(doc_id.numeric)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -770,6 +770,16 @@ fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
     Ok(())
 }
 
+fn log_load_failures(failures: &[ingestion::LoadFailure]) {
+    for failure in failures {
+        eprintln!(
+            "  Warning: failed to read {}: {}",
+            failure.file.relative_path.display(),
+            failure.error
+        );
+    }
+}
+
 /// Create a progress bar with docbert's standard styling.
 fn create_progress_bar(total: usize, desc: &str) -> kdam::Bar {
     tqdm!(
@@ -882,12 +892,15 @@ fn cmd_rebuild(
         let files = walker::discover_files(root)?;
         eprintln!("  Found {} files", files.len());
 
-        let loaded_docs = if args.embeddings_only && args.index_only {
-            Vec::new()
-        } else {
-            eprintln!("  Loading {} files...", files.len());
-            ingestion::load_documents(name, &files)
-        };
+        let (loaded_docs, metadata_files) =
+            if args.embeddings_only && args.index_only {
+                (Vec::new(), files.clone())
+            } else {
+                eprintln!("  Loading {} files...", files.len());
+                let load_result = ingestion::load_documents(name, &files);
+                log_load_failures(&load_result.failures);
+                (load_result.documents, load_result.loaded_files)
+            };
 
         // Re-index into Tantivy
         if !args.embeddings_only {
@@ -938,8 +951,8 @@ fn cmd_rebuild(
             }
         }
 
-        // Store metadata for all files
-        incremental::batch_store_metadata(config_db, name, &files)?;
+        // Store metadata for files that were read successfully.
+        incremental::batch_store_metadata(config_db, name, &metadata_files)?;
 
         eprintln!("  Done.");
     }
@@ -1059,8 +1072,11 @@ fn cmd_sync(
 
         if !files_to_process.is_empty() {
             eprintln!("  Loading {} files...", files_to_process.len());
-            let loaded_docs =
+            let load_result =
                 ingestion::load_documents(name, &files_to_process);
+            log_load_failures(&load_result.failures);
+            let loaded_docs = load_result.documents;
+            let loaded_files = load_result.loaded_files;
 
             // Index into Tantivy (add_document handles delete-before-add)
             let mut writer = search_index.writer(15_000_000)?;
@@ -1106,12 +1122,8 @@ fn cmd_sync(
                 finish_progress_bar(&mut pb);
             }
 
-            // Store metadata for processed files
-            incremental::batch_store_metadata(
-                config_db,
-                name,
-                &files_to_process,
-            )?;
+            // Store metadata for files that were read successfully.
+            incremental::batch_store_metadata(config_db, name, &loaded_files)?;
         }
 
         eprintln!("  Done.");
