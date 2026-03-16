@@ -3,7 +3,7 @@ use candle_core::Tensor;
 use crate::{
     embedding::batch_load_embedding_tensors,
     embedding_db::EmbeddingDb,
-    error::Result,
+    error::{Error, Result},
     model_manager::ModelManager,
 };
 
@@ -38,23 +38,34 @@ pub fn rerank(
     // Batch load all embeddings in a single transaction
     let embeddings = batch_load_embedding_tensors(embedding_db, candidate_ids)?;
 
-    let mut ranked: Vec<RankedDocument> = embeddings
-        .into_iter()
-        .filter_map(|(doc_id, doc_embedding_opt)| {
-            // Skip documents without embeddings
-            let doc_embedding = doc_embedding_opt?;
-            let doc_3d = doc_embedding.unsqueeze(0).ok()?;
+    let mut ranked = Vec::new();
+    for (doc_id, doc_embedding_opt) in embeddings {
+        // Skip documents without embeddings
+        let Some(doc_embedding) = doc_embedding_opt else {
+            continue;
+        };
+        let doc_embedding =
+            doc_embedding.to_device(query_embedding.device())?;
+        let doc_3d = doc_embedding.unsqueeze(0)?;
 
-            // Use pylate's similarity: returns Similarities { data: [[score]] }
-            let similarities = model.similarity(&query_3d, &doc_3d).ok()?;
-            let score = *similarities.data.first()?.first()?;
+        // Use pylate's similarity: returns Similarities { data: [[score]] }
+        let similarities = model.similarity(&query_3d, &doc_3d)?;
+        let score = similarities
+            .data
+            .first()
+            .and_then(|row| row.first())
+            .copied()
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "missing similarity score for candidate doc {doc_id}"
+                ))
+            })?;
 
-            Some(RankedDocument {
-                doc_num_id: doc_id,
-                score,
-            })
-        })
-        .collect();
+        ranked.push(RankedDocument {
+            doc_num_id: doc_id,
+            score,
+        });
+    }
 
     // Sort by score descending.
     ranked.sort_by(|a, b| {
@@ -108,5 +119,24 @@ mod tests {
         let ids = vec![999, 1000, 1001];
         let results = rerank(&query, &ids, &embedding_db, &model).unwrap();
         assert!(results.is_empty(), "missing embeddings should be skipped");
+    }
+
+    #[test]
+    fn rerank_propagates_similarity_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+
+        let query = Tensor::zeros(
+            &[2, 128],
+            candle_core::DType::F32,
+            &candle_core::Device::Cpu,
+        )
+        .unwrap();
+        embedding_db.store(42, 2, 128, &vec![0.0; 256]).unwrap();
+
+        let err = rerank(&query, &[42], &embedding_db, &model).unwrap_err();
+        assert!(err.to_string().contains("model not loaded"));
     }
 }

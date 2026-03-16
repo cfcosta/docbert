@@ -4,7 +4,7 @@ use crate::{
     config_db::ConfigDb,
     embedding,
     embedding_db::EmbeddingDb,
-    error::Result,
+    error::{Error, Result},
     incremental::DocumentMetadata,
     ingestion,
     model_manager::ModelManager,
@@ -244,17 +244,20 @@ pub fn execute_semantic_search(
             let Some(doc_embedding) = doc_embedding_opt else {
                 continue;
             };
-            let Ok(doc_3d) = doc_embedding.unsqueeze(0) else {
-                continue;
-            };
-            let Ok(similarities) = model.similarity(&query_3d, &doc_3d) else {
-                continue;
-            };
-            let score = match similarities.data.first().and_then(|r| r.first())
-            {
-                Some(score) => *score,
-                None => continue,
-            };
+            let doc_embedding =
+                doc_embedding.to_device(query_embedding.device())?;
+            let doc_3d = doc_embedding.unsqueeze(0)?;
+            let similarities = model.similarity(&query_3d, &doc_3d)?;
+            let score = similarities
+                .data
+                .first()
+                .and_then(|row| row.first())
+                .copied()
+                .ok_or_else(|| {
+                    Error::Config(format!(
+                        "missing similarity score for semantic search doc {doc_id}"
+                    ))
+                })?;
             scored.push((doc_id, score));
         }
     }
