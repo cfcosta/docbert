@@ -217,6 +217,32 @@ mod tests {
     }
 
     #[test]
+    fn chunk_documents_for_embedding_skips_frontmatter_only_docs() {
+        let docs = vec![LoadedDocument {
+            doc_id: "#abc123".to_string(),
+            doc_num_id: 123,
+            relative_path: "note.md".to_string(),
+            title: "note".to_string(),
+            content: String::new(),
+            mtime: 1,
+        }];
+
+        let chunking_config = ChunkingConfig {
+            chunk_size: 100,
+            overlap: 0,
+            document_length: None,
+        };
+        let mut processed = 0;
+        let chunks =
+            chunk_documents_for_embedding(&docs, chunking_config, |_| {
+                processed += 1;
+            });
+
+        assert!(chunks.is_empty());
+        assert_eq!(processed, 1);
+    }
+
+    #[test]
     fn rebuild_flag_matrix_preserves_index_only_and_embeddings_only_behavior() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("notes");

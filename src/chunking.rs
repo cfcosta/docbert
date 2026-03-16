@@ -118,8 +118,9 @@ pub struct Chunk {
 /// This works in characters, not tokens. The `4 chars ~= 1 token` rule is only
 /// a rough estimate, but it is good enough for chunk sizing.
 ///
-/// If the text already fits in `chunk_size`, you get one chunk back. UTF-8 text
-/// is handled correctly, so multi-byte characters such as emoji do not break the math.
+/// If the text already fits in `chunk_size`, you get one chunk back. Empty or
+/// whitespace-only text returns no chunks. UTF-8 text is handled correctly, so
+/// multi-byte characters such as emoji do not break the math.
 ///
 /// # Examples
 ///
@@ -137,6 +138,10 @@ pub struct Chunk {
 /// assert!(chunks.len() >= 2);
 /// ```
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
     let char_count = text.chars().count();
 
     // Short text doesn't need chunking
@@ -272,6 +277,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn empty_text_produces_no_chunks() {
+        let chunks =
+            chunk_text("   \n\t", DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+        assert!(chunks.is_empty());
+    }
 
     #[test]
     fn short_text_single_chunk() {

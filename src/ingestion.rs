@@ -7,6 +7,7 @@ use crate::{
     doc_id::DocumentId,
     error::Result,
     tantivy_index::SearchIndex,
+    text_util,
     walker::DiscoveredFile,
 };
 
@@ -24,7 +25,8 @@ pub struct LoadedDocument {
     pub relative_path: String,
     /// Extracted title (first `# ` heading or filename fallback).
     pub title: String,
-    /// Full file content.
+    /// Document content used for indexing and embedding, with leading YAML
+    /// frontmatter stripped when present.
     pub content: String,
     /// Last modification time (seconds since Unix epoch).
     pub mtime: u64,
@@ -93,7 +95,9 @@ pub fn load_documents(
     let outcomes: Vec<_> = files
         .par_iter()
         .map(|file| match std::fs::read_to_string(&file.absolute_path) {
-            Ok(content) => {
+            Ok(raw_content) => {
+                let content =
+                    text_util::strip_yaml_frontmatter(&raw_content).to_string();
                 let title = extract_title(&content, &file.relative_path);
                 let relative_path =
                     file.relative_path.to_string_lossy().to_string();
@@ -300,6 +304,23 @@ mod tests {
         assert!(doc.doc_id.starts_with('#'));
         assert!(doc.doc_num_id > 0);
         assert!(doc.content.contains("Body content"));
+    }
+
+    #[test]
+    fn load_documents_strips_frontmatter_before_indexing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("note.md"),
+            "---\ntitle: ignored\ntags:\n  - test\n---\n# Real Title\n\nBody content.",
+        )
+        .unwrap();
+
+        let files = crate::walker::discover_files(tmp.path()).unwrap();
+        let loaded = load_documents("notes", &files);
+
+        let doc = &loaded.documents[0];
+        assert_eq!(doc.title, "Real Title");
+        assert_eq!(doc.content, "# Real Title\n\nBody content.");
     }
 
     #[test]
