@@ -125,6 +125,8 @@
                       $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
                       $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
                     '';
+
+                    meta.mainProgram = "docbert";
                   }
                   // extraEnv
                 );
