@@ -18,6 +18,45 @@ pub struct RankedDocument {
     pub score: f32,
 }
 
+/// Score a batch of already loaded document embeddings with ColBERT MaxSim.
+///
+/// `query_3d` must have shape `[1, tokens, dim]`. Document embeddings are moved
+/// to the same device as the query before similarity is computed. Missing
+/// embeddings are skipped. Results keep input order.
+pub(crate) fn score_loaded_embeddings(
+    query_3d: &Tensor,
+    embeddings: Vec<(u64, Option<Tensor>)>,
+    model: &ModelManager,
+) -> Result<Vec<RankedDocument>> {
+    let mut ranked = Vec::new();
+    for (doc_id, doc_embedding_opt) in embeddings {
+        let Some(doc_embedding) = doc_embedding_opt else {
+            continue;
+        };
+        let doc_embedding = doc_embedding.to_device(query_3d.device())?;
+        let doc_3d = doc_embedding.unsqueeze(0)?;
+
+        let similarities = model.similarity(query_3d, &doc_3d)?;
+        let score = similarities
+            .data
+            .first()
+            .and_then(|row| row.first())
+            .copied()
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "missing similarity score for doc {doc_id}"
+                ))
+            })?;
+
+        ranked.push(RankedDocument {
+            doc_num_id: doc_id,
+            score,
+        });
+    }
+
+    Ok(ranked)
+}
+
 /// Rerank candidate documents with ColBERT MaxSim scoring.
 ///
 /// For each candidate, this loads the stored embedding, scores it against the
@@ -38,34 +77,7 @@ pub fn rerank(
     // Batch load all embeddings in a single transaction
     let embeddings = batch_load_embedding_tensors(embedding_db, candidate_ids)?;
 
-    let mut ranked = Vec::new();
-    for (doc_id, doc_embedding_opt) in embeddings {
-        // Skip documents without embeddings
-        let Some(doc_embedding) = doc_embedding_opt else {
-            continue;
-        };
-        let doc_embedding =
-            doc_embedding.to_device(query_embedding.device())?;
-        let doc_3d = doc_embedding.unsqueeze(0)?;
-
-        // Use pylate's similarity: returns Similarities { data: [[score]] }
-        let similarities = model.similarity(&query_3d, &doc_3d)?;
-        let score = similarities
-            .data
-            .first()
-            .and_then(|row| row.first())
-            .copied()
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "missing similarity score for candidate doc {doc_id}"
-                ))
-            })?;
-
-        ranked.push(RankedDocument {
-            doc_num_id: doc_id,
-            score,
-        });
-    }
+    let mut ranked = score_loaded_embeddings(&query_3d, embeddings, model)?;
 
     // Sort by score descending.
     ranked.sort_by(|a, b| {

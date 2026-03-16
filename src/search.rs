@@ -4,7 +4,7 @@ use crate::{
     config_db::ConfigDb,
     embedding,
     embedding_db::EmbeddingDb,
-    error::{Error, Result},
+    error::Result,
     incremental::DocumentMetadata,
     ingestion,
     model_manager::ModelManager,
@@ -240,26 +240,13 @@ pub fn execute_semantic_search(
     for batch in doc_ids.chunks(SEMANTIC_SEARCH_BATCH_SIZE) {
         let embeddings =
             embedding::batch_load_embedding_tensors(embedding_db, batch)?;
-        for (doc_id, doc_embedding_opt) in embeddings {
-            let Some(doc_embedding) = doc_embedding_opt else {
-                continue;
-            };
-            let doc_embedding =
-                doc_embedding.to_device(query_embedding.device())?;
-            let doc_3d = doc_embedding.unsqueeze(0)?;
-            let similarities = model.similarity(&query_3d, &doc_3d)?;
-            let score = similarities
-                .data
-                .first()
-                .and_then(|row| row.first())
-                .copied()
-                .ok_or_else(|| {
-                    Error::Config(format!(
-                        "missing similarity score for semantic search doc {doc_id}"
-                    ))
-                })?;
-            scored.push((doc_id, score));
-        }
+        let batch_scores =
+            reranker::score_loaded_embeddings(&query_3d, embeddings, model)?;
+        scored.extend(
+            batch_scores
+                .into_iter()
+                .map(|ranked| (ranked.doc_num_id, ranked.score)),
+        );
     }
 
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
