@@ -741,6 +741,95 @@ fn finish_progress_bar(pb: &mut kdam::Bar) {
     eprintln!();
 }
 
+struct IndexingRuntime {
+    search_index: SearchIndex,
+    embedding_db: EmbeddingDb,
+    model: ModelManager,
+    chunking_config: chunking::ChunkingConfig,
+}
+
+fn initialize_indexing_runtime(
+    data_dir: &DataDir,
+    model_id: &str,
+) -> error::Result<IndexingRuntime> {
+    let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
+    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
+    let mut model = ModelManager::with_model_id(model_id.to_string());
+    log_model_runtime(&mut model)?;
+    let chunking_config = chunking::resolve_chunking_config(model_id);
+    if let Some(doc_len) = chunking_config.document_length {
+        eprintln!(
+            "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
+            chunking_config.chunk_size
+        );
+    }
+
+    Ok(IndexingRuntime {
+        search_index,
+        embedding_db,
+        model,
+        chunking_config,
+    })
+}
+
+fn process_document_batch(
+    config_db: &ConfigDb,
+    runtime: &mut IndexingRuntime,
+    collection: &str,
+    document_batch: &indexing_workflow::DocumentLoadBatch,
+    index_documents: bool,
+    embed_documents: bool,
+) -> error::Result<()> {
+    log_load_failures(&document_batch.failures);
+
+    if index_documents {
+        let mut writer = runtime.search_index.writer(15_000_000)?;
+        let count = ingestion::ingest_loaded_documents(
+            &runtime.search_index,
+            &mut writer,
+            collection,
+            &document_batch.documents,
+        )?;
+        eprintln!("  Indexed {count} documents");
+    }
+
+    if embed_documents {
+        let mut pb =
+            create_progress_bar(document_batch.documents.len(), "Chunking");
+        let docs_to_embed = indexing_workflow::chunk_documents_for_embedding(
+            &document_batch.documents,
+            runtime.chunking_config,
+            |processed_count| {
+                let _ = pb.update_to(processed_count);
+            },
+        );
+        finish_progress_bar(&mut pb);
+
+        if !docs_to_embed.is_empty() {
+            let total_chunks = docs_to_embed.len();
+            let mut pb = create_progress_bar(total_chunks, "Embedding");
+            embedding::embed_and_store_in_batches(
+                &mut runtime.model,
+                &runtime.embedding_db,
+                docs_to_embed,
+                embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
+                |embedded_count| {
+                    let _ = pb.update_to(embedded_count);
+                },
+            )?;
+            finish_progress_bar(&mut pb);
+        }
+    }
+
+    incremental::batch_store_metadata(
+        config_db,
+        collection,
+        &document_batch.metadata_files,
+    )?;
+
+    Ok(())
+}
+
 pub(crate) fn cmd_rebuild(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -757,17 +846,7 @@ pub(crate) fn cmd_rebuild(
         return Ok(());
     }
 
-    let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model = ModelManager::with_model_id(model_id.to_string());
-    log_model_runtime(&mut model)?;
-    let chunking_config = chunking::resolve_chunking_config(model_id);
-    if let Some(doc_len) = chunking_config.document_length {
-        eprintln!(
-            "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
-            chunking_config.chunk_size
-        );
-    }
+    let mut runtime = initialize_indexing_runtime(data_dir, model_id)?;
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -782,8 +861,8 @@ pub(crate) fn cmd_rebuild(
 
         // Delete existing Tantivy entries for this collection
         if !args.embeddings_only {
-            let mut writer = search_index.writer(15_000_000)?;
-            search_index.delete_collection(&writer, name);
+            let mut writer = runtime.search_index.writer(15_000_000)?;
+            runtime.search_index.delete_collection(&writer, name);
             writer.commit()?;
         }
 
@@ -797,7 +876,7 @@ pub(crate) fn cmd_rebuild(
             })
             .collect();
         if !args.index_only {
-            embedding_db.batch_remove(&old_doc_ids)?;
+            runtime.embedding_db.batch_remove(&old_doc_ids)?;
         }
         config_db.batch_remove_document_metadata(&old_doc_ids)?;
 
@@ -810,56 +889,13 @@ pub(crate) fn cmd_rebuild(
         }
         let document_batch =
             indexing_workflow::load_rebuild_batch(name, &files, args);
-        log_load_failures(&document_batch.failures);
-
-        // Re-index into Tantivy
-        if !args.embeddings_only {
-            let mut writer = search_index.writer(15_000_000)?;
-            let count = ingestion::ingest_loaded_documents(
-                &search_index,
-                &mut writer,
-                name,
-                &document_batch.documents,
-            )?;
-            eprintln!("  Indexed {count} documents");
-        }
-
-        // Re-compute embeddings with chunking for long documents
-        if !args.index_only {
-            let mut pb =
-                create_progress_bar(document_batch.documents.len(), "Chunking");
-            let docs_to_embed =
-                indexing_workflow::chunk_documents_for_embedding(
-                    &document_batch.documents,
-                    chunking_config,
-                    |processed_count| {
-                        let _ = pb.update_to(processed_count);
-                    },
-                );
-            finish_progress_bar(&mut pb);
-
-            // Embed documents in submission batches with progress.
-            if !docs_to_embed.is_empty() {
-                let total_chunks = docs_to_embed.len();
-                let mut pb = create_progress_bar(total_chunks, "Embedding");
-                embedding::embed_and_store_in_batches(
-                    &mut model,
-                    &embedding_db,
-                    docs_to_embed,
-                    embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
-                    |embedded_count| {
-                        let _ = pb.update_to(embedded_count);
-                    },
-                )?;
-                finish_progress_bar(&mut pb);
-            }
-        }
-
-        // Store metadata for files that were read successfully.
-        incremental::batch_store_metadata(
+        process_document_batch(
             config_db,
+            &mut runtime,
             name,
-            &document_batch.metadata_files,
+            &document_batch,
+            !args.embeddings_only,
+            !args.index_only,
         )?;
 
         eprintln!("  Done.");
@@ -906,17 +942,7 @@ pub(crate) fn cmd_sync(
         )));
     }
 
-    let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model = ModelManager::with_model_id(model_id.to_string());
-    log_model_runtime(&mut model)?;
-    let chunking_config = chunking::resolve_chunking_config(model_id);
-    if let Some(doc_len) = chunking_config.document_length {
-        eprintln!(
-            "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
-            chunking_config.chunk_size
-        );
-    }
+    let mut runtime = initialize_indexing_runtime(data_dir, model_id)?;
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -951,14 +977,14 @@ pub(crate) fn cmd_sync(
 
         // Handle deleted documents
         if !diff.deleted_ids.is_empty() {
-            let mut writer = search_index.writer(15_000_000)?;
+            let mut writer = runtime.search_index.writer(15_000_000)?;
             for &doc_id in &diff.deleted_ids {
                 let display = search::short_doc_id(doc_id);
-                search_index.delete_document(&writer, &display);
+                runtime.search_index.delete_document(&writer, &display);
             }
             writer.commit()?;
 
-            embedding_db.batch_remove(&diff.deleted_ids)?;
+            runtime.embedding_db.batch_remove(&diff.deleted_ids)?;
             config_db.batch_remove_document_metadata(&diff.deleted_ids)?;
             eprintln!("  Removed {} documents", diff.deleted_ids.len());
         }
@@ -974,51 +1000,13 @@ pub(crate) fn cmd_sync(
             eprintln!("  Loading {} files...", files_to_process.len());
             let document_batch =
                 indexing_workflow::load_sync_batch(name, &files_to_process);
-            log_load_failures(&document_batch.failures);
-
-            // Index into Tantivy (add_document handles delete-before-add)
-            let mut writer = search_index.writer(15_000_000)?;
-            let count = ingestion::ingest_loaded_documents(
-                &search_index,
-                &mut writer,
-                name,
-                &document_batch.documents,
-            )?;
-            eprintln!("  Indexed {count} documents");
-
-            let mut pb =
-                create_progress_bar(document_batch.documents.len(), "Chunking");
-            let docs_to_embed =
-                indexing_workflow::chunk_documents_for_embedding(
-                    &document_batch.documents,
-                    chunking_config,
-                    |processed_count| {
-                        let _ = pb.update_to(processed_count);
-                    },
-                );
-            finish_progress_bar(&mut pb);
-
-            // Embed documents in submission batches with progress.
-            if !docs_to_embed.is_empty() {
-                let total_chunks = docs_to_embed.len();
-                let mut pb = create_progress_bar(total_chunks, "Embedding");
-                embedding::embed_and_store_in_batches(
-                    &mut model,
-                    &embedding_db,
-                    docs_to_embed,
-                    embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
-                    |embedded_count| {
-                        let _ = pb.update_to(embedded_count);
-                    },
-                )?;
-                finish_progress_bar(&mut pb);
-            }
-
-            // Store metadata for files that were read successfully.
-            incremental::batch_store_metadata(
+            process_document_batch(
                 config_db,
+                &mut runtime,
                 name,
-                &document_batch.metadata_files,
+                &document_batch,
+                true,
+                true,
             )?;
         }
 
