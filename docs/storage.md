@@ -4,11 +4,11 @@
 
 docbert stores three different kinds of data, and each one lives in the place that fits it best.
 
-| System                | Purpose                                             | Format                 |
-| --------------------- | --------------------------------------------------- | ---------------------- |
-| redb (config)         | Collection definitions, document metadata, settings | Typed key-value store  |
-| redb (embeddings)     | ColBERT per-token embedding matrices                | Binary key-value store |
-| Tantivy               | Full-text search index (BM25 + fuzzy)               | Inverted index on disk |
+| System            | Purpose                                             | Format                 |
+| ----------------- | --------------------------------------------------- | ---------------------- |
+| redb (config)     | Collection definitions, document metadata, settings | Typed key-value store  |
+| redb (embeddings) | ColBERT per-token embedding matrices                | Binary key-value store |
+| Tantivy           | Full-text search index (BM25 + fuzzy)               | Inverted index on disk |
 
 All of it lives under the XDG data directory: `$XDG_DATA_HOME/docbert/`, usually `~/.local/share/docbert/`.
 
@@ -94,15 +94,15 @@ Embeddings live in their own database for a few practical reasons:
 
 ### Fields
 
-| Field        | Type   | Options      | Purpose                                                             |
-| ------------ | ------ | ------------ | ------------------------------------------------------------------- |
-| `doc_id`     | STRING | STORED       | Short hash ID with `#` prefix, used for display and `docbert get`   |
-| `doc_num_id` | `u64`  | STORED, FAST | Numeric ID matching redb keys                                       |
-| `collection` | STRING | STORED, FAST | Collection name for filtering                                       |
-| `path`       | STRING | STORED       | Relative file path within the collection                            |
-| `title`      | TEXT   | STORED       | Document title from the first heading or the filename               |
-| `body`       | TEXT   | not stored   | Full document text used for search                                  |
-| `mtime`      | `u64`  | STORED, FAST | File modification time in epoch seconds                             |
+| Field        | Type   | Options      | Purpose                                                           |
+| ------------ | ------ | ------------ | ----------------------------------------------------------------- |
+| `doc_id`     | STRING | STORED       | Short hash ID with `#` prefix, used for display and `docbert get` |
+| `doc_num_id` | `u64`  | STORED, FAST | Numeric ID matching redb keys                                     |
+| `collection` | STRING | STORED, FAST | Collection name for filtering                                     |
+| `path`       | STRING | STORED       | Relative file path within the collection                          |
+| `title`      | TEXT   | STORED       | Document title from the first heading or the filename             |
+| `body`       | TEXT   | not stored   | Full document text used for search                                |
+| `mtime`      | `u64`  | STORED, FAST | File modification time in epoch seconds                           |
 
 ### Tokenizer configuration
 

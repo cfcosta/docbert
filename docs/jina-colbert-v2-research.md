@@ -93,13 +93,13 @@ Assumptions:
 - docbert uses roughly 4 characters per token when sizing chunks
 - ColBERT late-interaction cost and storage grow roughly linearly with token count
 
-| doc_length (tokens) | approx chunk chars | relative cost vs 300 | Recommended when |
-| ------------------- | ------------------ | -------------------- | ---------------- |
-| 300                 | ~1200              | 1.0x                 | ColBERT metadata default; short docs or cost-sensitive usage. |
-| 519                 | ~2076              | 1.7x                 | docbert default; matches ColBERT-Zero training length. |
-| 1024                | ~4096              | 3.4x                 | Medium-long docs; want fewer chunks per doc. |
-| 2048                | ~8192              | 6.8x                 | Long-form content; compute budget is healthy. |
-| 4096                | ~16384             | 13.7x                | A conservative step below full 8K context. |
+| doc_length (tokens) | approx chunk chars | relative cost vs 300 | Recommended when                                                     |
+| ------------------- | ------------------ | -------------------- | -------------------------------------------------------------------- |
+| 300                 | ~1200              | 1.0x                 | ColBERT metadata default; short docs or cost-sensitive usage.        |
+| 519                 | ~2076              | 1.7x                 | docbert default; matches ColBERT-Zero training length.               |
+| 1024                | ~4096              | 3.4x                 | Medium-long docs; want fewer chunks per doc.                         |
+| 2048                | ~8192              | 6.8x                 | Long-form content; compute budget is healthy.                        |
+| 4096                | ~16384             | 13.7x                | A conservative step below full 8K context.                           |
 | 8192                | ~32768             | 27.3x                | Full 8K context; only if the storage and latency cost is acceptable. |
 
 Notes:

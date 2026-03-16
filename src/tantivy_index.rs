@@ -153,13 +153,46 @@ fn build_schema() -> (Schema, SchemaFields) {
     (schema, fields)
 }
 
-fn register_tokenizers(index: &Index) {
-    let en_stem = TextAnalyzer::builder(SimpleTokenizer::default())
+fn default_text_analyzer() -> TextAnalyzer {
+    TextAnalyzer::builder(SimpleTokenizer::default())
+        .filter(RemoveLongFilter::limit(40))
+        .filter(LowerCaser)
+        .build()
+}
+
+fn stemmed_text_analyzer() -> TextAnalyzer {
+    TextAnalyzer::builder(SimpleTokenizer::default())
         .filter(RemoveLongFilter::limit(40))
         .filter(LowerCaser)
         .filter(Stemmer::new(tantivy::tokenizer::Language::English))
-        .build();
-    index.tokenizers().register("en_stem", en_stem);
+        .build()
+}
+
+fn register_tokenizers(index: &Index) {
+    index
+        .tokenizers()
+        .register("en_stem", stemmed_text_analyzer());
+}
+
+fn normalize_query_tokens(
+    query: &str,
+    mut analyzer: TextAnalyzer,
+) -> Vec<String> {
+    let mut stream = analyzer.token_stream(query);
+    let mut tokens = Vec::new();
+    while let Some(token) = stream.next() {
+        tokens.push(token.text.clone());
+    }
+    tokens
+}
+
+fn normalize_query_for_parser(query: &str) -> Option<String> {
+    let tokens = normalize_query_tokens(query, default_text_analyzer());
+    (!tokens.is_empty()).then(|| tokens.join(" "))
+}
+
+fn normalize_query_for_fuzzy(query: &str) -> Vec<String> {
+    normalize_query_tokens(query, stemmed_text_analyzer())
 }
 
 fn create_query_parser(index: &Index, fields: SchemaFields) -> QueryParser {
@@ -353,9 +386,14 @@ impl SearchIndex {
         query_str: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
+            return Ok(vec![]);
+        };
+
         let fields = self.fields();
         let parser = create_query_parser(&self.index, fields);
-        let (query, _errors) = parser.parse_query_lenient(query_str);
+        let (query, _errors) = parser.parse_query_lenient(&normalized_query);
         self.execute_query(&*query, limit)
     }
 
@@ -369,9 +407,15 @@ impl SearchIndex {
         collection: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
+            return Ok(vec![]);
+        };
+
         let fields = self.fields();
         let parser = create_query_parser(&self.index, fields);
-        let (user_query, _errors) = parser.parse_query_lenient(query_str);
+        let (user_query, _errors) =
+            parser.parse_query_lenient(&normalized_query);
 
         // Combine with collection filter.
         let collection_term =
@@ -399,25 +443,29 @@ impl SearchIndex {
         collection: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
+            return Ok(vec![]);
+        };
+        let fuzzy_terms = normalize_query_for_fuzzy(query_str);
+
         let fields = self.fields();
 
         // BM25 query
         let parser = create_query_parser(&self.index, fields);
-        let (bm25_query, _errors) = parser.parse_query_lenient(query_str);
+        let (bm25_query, _errors) =
+            parser.parse_query_lenient(&normalized_query);
 
         // Build fuzzy queries for each significant term
-        let terms: Vec<&str> = query_str.split_whitespace().collect();
         let mut should_clauses: Vec<(
             tantivy::query::Occur,
             Box<dyn tantivy::query::Query>,
         )> = vec![(tantivy::query::Occur::Should, bm25_query)];
 
-        for term_str in &terms {
+        for term_str in &fuzzy_terms {
             if term_str.len() >= 3 {
-                let term = tantivy::Term::from_field_text(
-                    fields.body,
-                    &term_str.to_lowercase(),
-                );
+                let term =
+                    tantivy::Term::from_field_text(fields.body, term_str);
                 let fuzzy = tantivy::query::FuzzyTermQuery::new(term, 1, true);
                 should_clauses
                     .push((tantivy::query::Occur::Should, Box::new(fuzzy)));
@@ -709,6 +757,58 @@ mod tests {
         // "run" should match "running" and "runners" via stemming.
         let results = idx.search("run", 10).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_treats_hyphenated_filename_queries_as_plain_text() {
+        let idx = SearchIndex::open_in_ram().unwrap();
+        let mut writer = idx.writer(15_000_000).unwrap();
+
+        idx.add_document(
+            &writer,
+            "a",
+            1,
+            "notes",
+            "docs/01-start-here.md",
+            "Start here",
+            "First week onboarding checklist.",
+            1000,
+        )
+        .unwrap();
+        writer.commit().unwrap();
+
+        let results = idx.search("01-start-here.md", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_id, "a");
+    }
+
+    #[test]
+    fn search_fuzzy_treats_path_like_queries_as_plain_text() {
+        let idx = SearchIndex::open_in_ram().unwrap();
+        let mut writer = idx.writer(15_000_000).unwrap();
+
+        idx.add_document(
+            &writer,
+            "a",
+            1,
+            "notes",
+            "output/chrome-cdp/wiki/security-policy.txt",
+            "security-policy",
+            "Read the security policy before client work.",
+            1000,
+        )
+        .unwrap();
+        writer.commit().unwrap();
+
+        let results = idx
+            .search_fuzzy(
+                "output/chrome-cdp/wiki/security-policy.txt",
+                Some("notes"),
+                10,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_id, "a");
     }
 
     #[test]

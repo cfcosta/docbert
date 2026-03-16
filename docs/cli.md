@@ -8,10 +8,10 @@ docbert <subcommand> [options]
 
 ## Global options
 
-| Option              | Description                            |
-| ------------------- | -------------------------------------- |
-| `--data-dir <path>` | Override the XDG data directory        |
-| `--model <id>`      | Override the ColBERT model ID or path  |
+| Option              | Description                             |
+| ------------------- | --------------------------------------- |
+| `--data-dir <path>` | Override the XDG data directory         |
+| `--model <id>`      | Override the ColBERT model ID or path   |
 | `--verbose` / `-v`  | Increase log verbosity; can be repeated |
 
 ## Subcommands
@@ -62,8 +62,8 @@ JSON output (`--json`):
 
 ```json
 [
-  {"name": "notes", "path": "/home/user/notes"},
-  {"name": "docs", "path": "/home/user/docs"}
+  { "name": "notes", "path": "/home/user/notes" },
+  { "name": "docs", "path": "/home/user/docs" }
 ]
 ```
 
@@ -94,16 +94,16 @@ Search all collections, or one collection if `-c` is set.
 
 #### Options
 
-| Option                | Description                                                 |
-| --------------------- | ----------------------------------------------------------- |
-| `-n <count>`          | Number of results to return (default: 10)                   |
-| `-c <collection>`     | Search only this collection                                 |
-| `--json`              | Output results as JSON                                      |
-| `--all`               | Return all results above the score threshold; ignores `-n`  |
-| `--files`             | Output only file paths, one per line                        |
-| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
-| `--bm25-only`         | Skip ColBERT reranking and return BM25 results              |
-| `--no-fuzzy`          | Disable fuzzy matching in the first stage                   |
+| Option                | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `-n <count>`          | Number of results to return (default: 10)                  |
+| `-c <collection>`     | Search only this collection                                |
+| `--json`              | Output results as JSON                                     |
+| `--all`               | Return all results above the score threshold; ignores `-n` |
+| `--files`             | Output only file paths, one per line                       |
+| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)              |
+| `--bm25-only`         | Skip ColBERT reranking and return BM25 results             |
+| `--no-fuzzy`          | Disable fuzzy matching in the first stage                  |
 
 #### Behavior
 
@@ -147,13 +147,13 @@ That makes it useful when wording differs a lot from the query, but it is slower
 
 #### Options
 
-| Option                | Description                                                 |
-| --------------------- | ----------------------------------------------------------- |
-| `-n <count>`          | Number of results to return (default: 10)                   |
-| `--json`              | Output results as JSON                                      |
-| `--all`               | Return all results above the score threshold; ignores `-n`  |
-| `--files`             | Output only file paths, one per line                        |
-| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)               |
+| Option                | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `-n <count>`          | Number of results to return (default: 10)                  |
+| `--json`              | Output results as JSON                                     |
+| `--all`               | Return all results above the score threshold; ignores `-n` |
+| `--files`             | Output only file paths, one per line                       |
+| `--min-score <float>` | Minimum MaxSim score threshold (default: 0.0)              |
 
 #### Behavior
 
@@ -174,11 +174,11 @@ Retrieve a document's full content.
 
 #### Options
 
-| Option   | Description                                                            |
-| -------- | ---------------------------------------------------------------------- |
-| `--full` | Print full document content; this is currently the default anyway      |
-| `--json` | Output JSON with metadata                                              |
-| `--meta` | Print only metadata: collection, path, and full file path             |
+| Option   | Description                                                       |
+| -------- | ----------------------------------------------------------------- |
+| `--full` | Print full document content; this is currently the default anyway |
+| `--json` | Output JSON with metadata                                         |
+| `--meta` | Print only metadata: collection, path, and full file path         |
 
 ### `docbert multi-get <pattern>`
 
@@ -189,12 +189,12 @@ Retrieve multiple documents that match a glob pattern.
 
 #### Options
 
-| Option            | Description                       |
-| ----------------- | --------------------------------- |
-| `-c <collection>` | Restrict to one collection        |
-| `--json`          | Output as a JSON array            |
-| `--files`         | Output only file paths            |
-| `--full`          | Include full document content     |
+| Option            | Description                   |
+| ----------------- | ----------------------------- |
+| `-c <collection>` | Restrict to one collection    |
+| `--json`          | Output as a JSON array        |
+| `--files`         | Output only file paths        |
+| `--full`          | Include full document content |
 
 ### `docbert sync`
 
@@ -202,8 +202,8 @@ Incrementally sync collections with source files. Only new, changed, or deleted 
 
 #### Options
 
-| Option            | Description             |
-| ----------------- | ----------------------- |
+| Option            | Description               |
+| ----------------- | ------------------------- |
 | `-c <collection>` | Sync only this collection |
 
 Use this for normal updates. It is much faster than `rebuild` because it only touches files that changed since the last sync.
@@ -230,11 +230,11 @@ Manage the default ColBERT model stored in `config.db`.
 
 #### Subcommands
 
-| Command                     | Description                                 |
-| --------------------------- | ------------------------------------------- |
+| Command                     | Description                                    |
+| --------------------------- | ---------------------------------------------- |
 | `docbert model show`        | Show the resolved model and where it came from |
-| `docbert model set <model>` | Persist a HuggingFace model ID or local path |
-| `docbert model clear`       | Clear the stored model setting              |
+| `docbert model set <model>` | Persist a HuggingFace model ID or local path   |
+| `docbert model clear`       | Clear the stored model setting                 |
 
 You can still override the model per command with `--model`.
 
@@ -282,17 +282,17 @@ Example configuration for Claude Desktop or Claude Code:
 
 ## Exit codes
 
-| Code | Meaning                                |
-| ---- | -------------------------------------- |
-| 0    | Success                                |
-| 1    | General error; used for any failure    |
+| Code | Meaning                             |
+| ---- | ----------------------------------- |
+| 0    | Success                             |
+| 1    | General error; used for any failure |
 
 ## Environment variables
 
-| Variable           | Description                                                  |
-| ------------------ | ------------------------------------------------------------ |
-| `DOCBERT_DATA_DIR` | Override the XDG data directory                              |
+| Variable           | Description                                                    |
+| ------------------ | -------------------------------------------------------------- |
+| `DOCBERT_DATA_DIR` | Override the XDG data directory                                |
 | `DOCBERT_MODEL`    | Override the default model name; lower priority than `--model` |
-| `DOCBERT_LOG`      | Log level: `trace`, `debug`, `info`, `warn`, or `error`     |
-| `HF_HOME`          | HuggingFace Hub cache directory used by pylate-rs            |
-| `NO_COLOR`         | Disable colored output                                       |
+| `DOCBERT_LOG`      | Log level: `trace`, `debug`, `info`, `warn`, or `error`        |
+| `HF_HOME`          | HuggingFace Hub cache directory used by pylate-rs              |
+| `NO_COLOR`         | Disable colored output                                         |

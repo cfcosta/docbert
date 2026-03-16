@@ -48,6 +48,7 @@ docbert search "todo" --files | xargs -I {} code {}
 docbert can also run as an MCP (Model Context Protocol) server for editors and AI tools.
 
 Available tools:
+
 - `docbert_search`: keyword + semantic search, with optional collection filters
 - `semantic_search`: semantic-only search across all documents
 - `docbert_get`: fetch a document by path or `#doc_id`
