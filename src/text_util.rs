@@ -4,6 +4,32 @@ pub const DEFAULT_SNIPPET_LINES: usize = 6;
 /// Maximum number of characters in a snippet before truncation.
 pub const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 
+/// Strip a leading YAML frontmatter block when one is present.
+///
+/// Frontmatter must start at the beginning of the document with `---` and end
+/// with a closing `---` or `...` line. If the block is unterminated, the
+/// original text is returned unchanged.
+pub fn strip_yaml_frontmatter(text: &str) -> &str {
+    let rest = if let Some(rest) = text.strip_prefix("---\n") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("---\r\n") {
+        rest
+    } else {
+        return text;
+    };
+
+    let mut offset = text.len() - rest.len();
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed == "---" || trimmed == "..." {
+            return &text[offset..];
+        }
+    }
+
+    text
+}
+
 /// Add line numbers to each line of text.
 ///
 /// `start_line` is the number assigned to the first line. It is 1-indexed.
@@ -132,6 +158,24 @@ pub fn apply_line_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_yaml_frontmatter_removes_leading_block() {
+        let text = "---\ntitle: Hello\ntags: [a, b]\n---\n# Heading\n\nBody";
+        assert_eq!(strip_yaml_frontmatter(text), "# Heading\n\nBody");
+    }
+
+    #[test]
+    fn strip_yaml_frontmatter_keeps_plain_text() {
+        let text = "# Heading\n\nBody";
+        assert_eq!(strip_yaml_frontmatter(text), text);
+    }
+
+    #[test]
+    fn strip_yaml_frontmatter_ignores_unterminated_block() {
+        let text = "---\ntitle: Hello\n# Heading";
+        assert_eq!(strip_yaml_frontmatter(text), text);
+    }
 
     #[test]
     fn add_line_numbers_basic() {

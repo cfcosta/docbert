@@ -10,6 +10,7 @@ use crate::{
     model_manager::ModelManager,
     reranker::{self, RankedDocument},
     tantivy_index::{SearchIndex, SearchResult},
+    text_util,
 };
 
 const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
@@ -212,9 +213,16 @@ pub fn execute_semantic_search(
 
     let mut metadata = HashMap::with_capacity(metadata_entries.len());
     let mut doc_ids = Vec::with_capacity(metadata_entries.len());
+    let mut collection_paths = HashMap::new();
 
     for (doc_id, bytes) in metadata_entries {
-        if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
+        if let Some(meta) = DocumentMetadata::deserialize(&bytes)
+            && document_has_semantic_body(
+                config_db,
+                &mut collection_paths,
+                &meta,
+            )
+        {
             doc_ids.push(doc_id);
             metadata.insert(doc_id, meta);
         }
@@ -396,6 +404,30 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
 pub fn short_doc_id(numeric: u64) -> String {
     let full = format!("{numeric:016x}");
     format!("#{}", &full[..6])
+}
+
+fn document_has_semantic_body(
+    config_db: &ConfigDb,
+    collection_paths: &mut std::collections::HashMap<String, Option<String>>,
+    meta: &DocumentMetadata,
+) -> bool {
+    let collection_path = collection_paths
+        .entry(meta.collection.clone())
+        .or_insert_with(|| {
+            config_db.get_collection(&meta.collection).ok().flatten()
+        });
+    let Some(collection_path) = collection_path.as_deref() else {
+        return false;
+    };
+
+    let full_path = Path::new(collection_path).join(&meta.relative_path);
+    let Ok(content) = std::fs::read_to_string(full_path) else {
+        return false;
+    };
+
+    !text_util::strip_yaml_frontmatter(&content)
+        .trim()
+        .is_empty()
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
@@ -612,6 +644,64 @@ mod tests {
             bm25_only: true,
             no_fuzzy: false,
         }
+    }
+
+    #[test]
+    fn semantic_body_skips_empty_and_frontmatter_only_docs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let collection_dir = tmp.path().join("notes");
+        std::fs::create_dir_all(&collection_dir).unwrap();
+        config_db
+            .set_collection("notes", collection_dir.to_str().unwrap())
+            .unwrap();
+
+        std::fs::write(collection_dir.join("empty.md"), "").unwrap();
+        std::fs::write(
+            collection_dir.join("frontmatter.md"),
+            "---\nid: 1\ntags:\n  - diary\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            collection_dir.join("body.md"),
+            "---\ntitle: Hello\n---\nActual body text",
+        )
+        .unwrap();
+
+        let mut collection_paths = std::collections::HashMap::new();
+
+        let empty = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "empty.md".to_string(),
+            mtime: 1,
+        };
+        assert!(!document_has_semantic_body(
+            &config_db,
+            &mut collection_paths,
+            &empty,
+        ));
+
+        let frontmatter_only = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "frontmatter.md".to_string(),
+            mtime: 1,
+        };
+        assert!(!document_has_semantic_body(
+            &config_db,
+            &mut collection_paths,
+            &frontmatter_only,
+        ));
+
+        let with_body = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "body.md".to_string(),
+            mtime: 1,
+        };
+        assert!(document_has_semantic_body(
+            &config_db,
+            &mut collection_paths,
+            &with_body,
+        ));
     }
 
     /// Set up a search index with sample documents and commit them.
