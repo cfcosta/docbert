@@ -1,10 +1,6 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -18,7 +14,6 @@
   outputs =
     {
       nixpkgs,
-      pre-commit-hooks,
       rust-overlay,
       treefmt-nix,
       ...
@@ -77,19 +72,6 @@
                   };
                 }).config.build.wrapper;
 
-              pre-commit-check = pre-commit-hooks.lib.${system}.run {
-                src = ./.;
-
-                hooks = {
-                  deadnix.enable = true;
-                  nixfmt-rfc-style.enable = true;
-                  treefmt = {
-                    enable = true;
-                    package = formatter;
-                  };
-                };
-              };
-
               mkDocbert =
                 {
                   name ? "docbert",
@@ -137,7 +119,6 @@
                 pkgs
                 rust
                 formatter
-                pre-commit-check
                 mkDocbert
                 ;
             }
@@ -174,13 +155,6 @@
       );
 
       formatter = forEachSupportedSystem ({ formatter, ... }: formatter);
-
-      checks = forEachSupportedSystem (
-        { pre-commit-check, ... }:
-        {
-          inherit pre-commit-check;
-        }
-      );
 
       devShells = forEachSupportedSystem (
         {
