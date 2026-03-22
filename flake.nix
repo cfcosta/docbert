@@ -151,6 +151,10 @@
               CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
             };
           };
+          docbert-metal = mkDocbert {
+            name = "docbert-metal";
+            buildFeatures = [ "metal" ];
+          };
         }
       );
 

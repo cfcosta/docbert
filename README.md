@@ -95,6 +95,9 @@ nix build github:cfcosta/docbert
 
 # CUDA version (for NVIDIA GPUs)
 nix build github:cfcosta/docbert#docbert-cuda
+
+# Metal version (for Apple GPUs on macOS)
+nix build github:cfcosta/docbert#docbert-metal
 ```
 
 Shell completions for bash, zsh, and fish are installed with the Nix package.
