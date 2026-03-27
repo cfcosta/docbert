@@ -11,7 +11,7 @@ mod ui;
 
 fn main() {
     let log_filter =
-        std::env::var("DOCSERVER_LOG").unwrap_or_else(|_| "warn".into());
+        std::env::var("DOCSERVER_LOG").unwrap_or_else(|_| "info".into());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(log_filter))
         .with_writer(std::io::stderr)

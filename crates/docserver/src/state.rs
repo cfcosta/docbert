@@ -29,11 +29,18 @@ pub fn init(
     // Eagerly load the ColBERT model so the first ingestion doesn't block.
     tracing::info!("loading ColBERT model: {}", model.model_id());
     match model.runtime_config() {
-        Ok(cfg) => tracing::info!(
-            "model loaded: {} on {}",
-            model.model_id(),
-            cfg.device,
-        ),
+        Ok(cfg) => {
+            tracing::info!(
+                device = %cfg.device,
+                batch_size = cfg.embedding_batch_size,
+                document_length = cfg.document_length,
+                "model loaded: {}",
+                model.model_id(),
+            );
+            if let Some(note) = &cfg.fallback_note {
+                tracing::warn!("{note}");
+            }
+        }
         Err(e) => tracing::warn!("failed to preload model (will retry on first use): {e}"),
     }
 
