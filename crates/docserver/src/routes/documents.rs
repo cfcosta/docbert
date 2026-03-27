@@ -148,6 +148,50 @@ pub async fn ingest(
 }
 
 #[derive(Serialize)]
+pub struct DocumentListItem {
+    doc_id: String,
+    path: String,
+    title: String,
+}
+
+pub async fn list_by_collection(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+) -> Result<Json<Vec<DocumentListItem>>, ApiError> {
+    let existing = state.config_db.get_collection(&collection)?;
+    if existing.is_none() {
+        return Err(ApiError::NotFound(format!(
+            "collection not found: {collection}"
+        )));
+    }
+
+    let all_meta = state.config_db.list_all_document_metadata()?;
+    let mut items = Vec::new();
+    for (doc_id, bytes) in &all_meta {
+        if let Some(meta) = incremental::DocumentMetadata::deserialize(bytes) {
+            if meta.collection == collection {
+                let short_id = docbert_core::search::short_doc_id(*doc_id);
+                // Try to get title from Tantivy search results.
+                let title = state
+                    .search_index
+                    .search(&format!("\"{short_id}\""), 1)
+                    .ok()
+                    .and_then(|r| r.into_iter().next())
+                    .map(|r| r.title)
+                    .unwrap_or_else(|| meta.relative_path.clone());
+                items.push(DocumentListItem {
+                    doc_id: short_id,
+                    path: meta.relative_path,
+                    title,
+                });
+            }
+        }
+    }
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(items))
+}
+
+#[derive(Serialize)]
 pub struct DocumentResponse {
     doc_id: String,
     collection: String,

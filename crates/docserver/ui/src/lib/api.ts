@@ -62,8 +62,17 @@ export interface DocumentResponse {
   metadata?: Record<string, unknown>;
 }
 
+export interface DocumentListItem {
+  doc_id: string;
+  path: string;
+  title: string;
+}
+
 export const api = {
   listCollections: () => request<Collection[]>("/collections"),
+
+  listDocuments: (collection: string) =>
+    request<DocumentListItem[]>(`/collections/${encodeURIComponent(collection)}/documents`),
 
   createCollection: (name: string) =>
     request<Collection>("/collections", {
@@ -83,15 +92,10 @@ export const api = {
     }),
 
   getDocument: (collection: string, path: string) =>
-    request<DocumentResponse>(
-      `/documents/${encodeURIComponent(collection)}/${path}`,
-    ),
+    request<DocumentResponse>(`/documents/${encodeURIComponent(collection)}/${path}`),
 
   deleteDocument: (collection: string, path: string) =>
-    request<void>(
-      `/documents/${encodeURIComponent(collection)}/${path}`,
-      { method: "DELETE" },
-    ),
+    request<void>(`/documents/${encodeURIComponent(collection)}/${path}`, { method: "DELETE" }),
 
   search: (params: {
     query: string;

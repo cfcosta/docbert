@@ -16,6 +16,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/documents", routing::post(documents::ingest))
         .route(
+            "/v1/collections/{name}/documents",
+            routing::get(documents::list_by_collection),
+        )
+        .route(
             "/v1/documents/{collection}/{*path}",
             routing::get(documents::get),
         )
