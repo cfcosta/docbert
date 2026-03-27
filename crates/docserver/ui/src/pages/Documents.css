@@ -71,10 +71,11 @@
 
 .collection-add-form {
   display: flex;
+  gap: 4px;
 }
 
 .collection-add-input {
-  width: 110px;
+  width: 100px;
   padding: 4px 8px;
   min-height: 28px;
   border: 1px solid var(--border);
@@ -84,6 +85,32 @@
   font-size: 0.75rem;
   outline: none;
   transition: border-color 0.15s;
+}
+
+.collection-add-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.collection-add-btn:hover:not(:disabled) {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.collection-add-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .collection-add-input:focus {

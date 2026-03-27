@@ -90,10 +90,12 @@ export default function Chat() {
 
   return (
     <div className="chat-page">
-      <header className="chat-header">
-        <h2>Chat</h2>
-        <p className="chat-subtitle">Ask questions about your documents</p>
-      </header>
+      <div className="chat-header-wrap">
+        <header className="chat-header">
+          <h2>Chat</h2>
+          <p className="chat-subtitle">Ask questions about your documents</p>
+        </header>
+      </div>
 
       <div className="chat-messages">
         {messages.length === 0 && (
@@ -151,43 +153,45 @@ export default function Chat() {
         <div ref={bottomRef} />
       </div>
 
-      <form
-        className="chat-input-bar"
-        onSubmit={(e) => {
-          e.preventDefault();
-          sendMessage();
-        }}
-      >
-        <input
-          type="text"
-          placeholder="Ask a question..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          className="chat-input"
-          disabled={loading}
-        />
-        <button
-          type="submit"
-          className="chat-send"
-          disabled={loading || !input.trim()}
-          aria-label="Send message"
+      <div className="chat-input-wrap">
+        <form
+          className="chat-input-bar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            sendMessage();
+          }}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+          <input
+            type="text"
+            placeholder="Ask a question..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            className="chat-input"
+            disabled={loading}
+          />
+          <button
+            type="submit"
+            className="chat-send"
+            disabled={loading || !input.trim()}
+            aria-label="Send message"
           >
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        </button>
-      </form>
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
