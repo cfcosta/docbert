@@ -362,6 +362,39 @@
   font-size: 0.75rem;
 }
 
+.preview-frontmatter {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.preview-fm-field {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 0.8rem;
+}
+
+.preview-fm-field dt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.preview-fm-field dt::after {
+  content: ":";
+}
+
+.preview-fm-field dd {
+  margin: 0;
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
 .preview-body {
   flex: 1;
   overflow-y: auto;

@@ -1,10 +1,43 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ComponentProps } from "react";
 import Markdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { api } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import "./Documents.css";
+
+interface ParsedDocument {
+  frontmatter: Record<string, string> | null;
+  body: string;
+}
+
+function parseFrontmatter(content: string): ParsedDocument {
+  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
+    return { frontmatter: null, body: content };
+  }
+
+  const endIdx = content.indexOf("\n---", 4);
+  if (endIdx === -1) {
+    return { frontmatter: null, body: content };
+  }
+
+  const raw = content.slice(4, endIdx);
+  const body = content.slice(endIdx + 4).replace(/^\r?\n/, "");
+
+  const fields: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = line.slice(0, colonIdx).trim();
+    const value = line.slice(colonIdx + 1).trim();
+    if (key) fields[key] = value;
+  }
+
+  return {
+    frontmatter: Object.keys(fields).length > 0 ? fields : null,
+    body,
+  };
+}
 
 interface TreeNode {
   name: string;
@@ -557,30 +590,7 @@ export default function Documents() {
 
         <section className="preview-panel" aria-live="polite">
           {selectedDoc ? (
-            <>
-              <div className="preview-header">
-                <p className="preview-kicker">{selectedDoc.collection}</p>
-                <h2 className="preview-title">{selectedDoc.title}</h2>
-                <div className="preview-meta">
-                  <code>{selectedDoc.doc_id}</code>
-                  <span className="preview-path" title={selectedDoc.path}>
-                    {selectedDoc.path}
-                  </span>
-                </div>
-              </div>
-
-              <div className="preview-body">
-                {preview === null ? (
-                  <div className="preview-loading">Loading document…</div>
-                ) : (
-                  <div className="preview-content">
-                    <Markdown components={{ code: CodeBlock }}>
-                      {preview}
-                    </Markdown>
-                  </div>
-                )}
-              </div>
-            </>
+            <PreviewContent selectedDoc={selectedDoc} preview={preview} />
           ) : (
             <div className="preview-empty">
               <div className="preview-empty-icon">
@@ -595,6 +605,56 @@ export default function Documents() {
         </section>
       </div>
     </div>
+  );
+}
+
+function PreviewContent({
+  selectedDoc,
+  preview,
+}: {
+  selectedDoc: { collection: string; path: string; title: string; doc_id: string };
+  preview: string | null;
+}) {
+  const parsed = useMemo(
+    () => (preview ? parseFrontmatter(preview) : null),
+    [preview],
+  );
+
+  return (
+    <>
+      <div className="preview-header">
+        <p className="preview-kicker">{selectedDoc.collection}</p>
+        <h2 className="preview-title">{selectedDoc.title}</h2>
+        <div className="preview-meta">
+          <code>{selectedDoc.doc_id}</code>
+          <span className="preview-path" title={selectedDoc.path}>
+            {selectedDoc.path}
+          </span>
+        </div>
+        {parsed?.frontmatter && (
+          <dl className="preview-frontmatter">
+            {Object.entries(parsed.frontmatter).map(([key, value]) => (
+              <div key={key} className="preview-fm-field">
+                <dt>{key}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </div>
+
+      <div className="preview-body">
+        {preview === null ? (
+          <div className="preview-loading">Loading document…</div>
+        ) : (
+          <div className="preview-content">
+            <Markdown components={{ code: CodeBlock }}>
+              {parsed?.body ?? preview}
+            </Markdown>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
