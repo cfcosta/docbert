@@ -1,6 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { getModel, stream } from "@mariozechner/pi-ai";
-import type { Context, UserMessage } from "@mariozechner/pi-ai";
+import { Type, getModel, stream } from "@mariozechner/pi-ai";
+import type {
+  Context,
+  Tool,
+  UserMessage,
+  ToolResultMessage,
+  Message as PiMessage,
+} from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
 import type { SearchResult } from "../lib/api";
 import "./Chat.css";
@@ -12,24 +18,91 @@ interface Message {
   sources?: SearchResult[];
 }
 
-function buildSystemPrompt(
-  docs: { title: string; collection: string; path: string; content: string }[],
-): string {
-  if (docs.length === 0) {
-    return "You are a helpful assistant. The user has a document collection but no relevant documents were found for this query. Answer as best you can and suggest they might want to ingest relevant documents.";
+// ── Tool definitions for pi-ai ──
+
+const tools: Tool[] = [
+  {
+    name: "search_semantic",
+    description:
+      "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents.",
+    parameters: Type.Object({
+      query: Type.String({ description: "The search query" }),
+      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+    }),
+  },
+  {
+    name: "search_hybrid",
+    description:
+      "Search the document store using hybrid BM25 + semantic search. Best when the query shares keywords with the target documents. Faster on large collections.",
+    parameters: Type.Object({
+      query: Type.String({ description: "The search query" }),
+      collection: Type.Optional(Type.String({ description: "Restrict search to this collection" })),
+      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+    }),
+  },
+  {
+    name: "document_get",
+    description: "Retrieve the full content of a specific document by collection and path.",
+    parameters: Type.Object({
+      collection: Type.String({ description: "The collection name" }),
+      path: Type.String({
+        description: "The document path within the collection",
+      }),
+    }),
+  },
+];
+
+// ── Tool execution ──
+
+async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ text: string; sources?: SearchResult[] }> {
+  switch (name) {
+    case "search_semantic": {
+      const res = await api.search({
+        query: args.query as string,
+        mode: "semantic",
+        count: (args.count as number) ?? 5,
+      });
+      return {
+        text: JSON.stringify(res.results, null, 2),
+        sources: res.results,
+      };
+    }
+    case "search_hybrid": {
+      const res = await api.search({
+        query: args.query as string,
+        mode: "hybrid",
+        collection: args.collection as string | undefined,
+        count: (args.count as number) ?? 5,
+      });
+      return {
+        text: JSON.stringify(res.results, null, 2),
+        sources: res.results,
+      };
+    }
+    case "document_get": {
+      const doc = await api.getDocument(args.collection as string, args.path as string);
+      return {
+        text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
+      };
+    }
+    default:
+      return { text: `Unknown tool: ${name}` };
   }
-
-  let prompt =
-    "You are a helpful assistant that answers questions based on the user's document collection.\n\n";
-  prompt +=
-    "Use the following documents as context to answer the user's question. If the documents don't contain relevant information, say so.\n\n";
-
-  for (const doc of docs) {
-    prompt += `---\nDocument: ${doc.title} (${doc.collection}/${doc.path})\n${doc.content}\n---\n\n`;
-  }
-
-  return prompt;
 }
+
+const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store. You can search for documents and retrieve their content using the provided tools.
+
+When the user asks a question:
+1. Use search_hybrid or search_semantic to find relevant documents
+2. Use document_get to retrieve the full content of promising results
+3. Answer the user's question based on the document content
+
+If no relevant documents are found, say so and suggest what the user might want to ingest.`;
+
+const MAX_TOOL_ROUNDS = 10;
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -56,15 +129,6 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      // 1. Search for relevant documents.
-      const searchRes = await api.search({
-        query: text,
-        mode: "hybrid",
-        count: 5,
-      });
-      const sources = searchRes.results;
-
-      // 2. Load LLM settings.
       const settings = await api.getLlmSettings();
 
       if (!settings.provider || !settings.model || !settings.api_key) {
@@ -75,84 +139,123 @@ export default function Chat() {
             role: "assistant",
             content:
               "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
-            sources,
           },
         ]);
         return;
       }
 
-      // 3. Fetch document content for RAG context.
-      const docContents = await Promise.all(
-        sources.slice(0, 3).map(async (s) => {
-          try {
-            const doc = await api.getDocument(s.collection, s.path);
-            return {
-              title: s.title,
-              collection: s.collection,
-              path: s.path,
-              content: doc.content,
-            };
-          } catch {
-            return {
-              title: s.title,
-              collection: s.collection,
-              path: s.path,
-              content: "(content unavailable)",
-            };
-          }
-        }),
-      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const model = getModel(settings.provider as any, settings.model as any);
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-      // 4. Build pi-ai context with user message.
       const userPiMsg: UserMessage = {
         role: "user",
         content: text,
         timestamp: Date.now(),
       };
+
       const piContext: Context = {
-        systemPrompt: buildSystemPrompt(docContents),
+        systemPrompt: SYSTEM_PROMPT,
         messages: [userPiMsg],
+        tools,
       };
 
-      // 5. Stream the response.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const model = getModel(settings.provider as any, settings.model as any);
       const assistantId = crypto.randomUUID();
+      const allSources: SearchResult[] = [];
 
-      // Add empty assistant message that we'll stream into.
-      setMessages((prev) => [
-        ...prev,
-        { id: assistantId, role: "assistant", content: "", sources },
-      ]);
+      // Add empty assistant message to stream into.
+      setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
 
-      const controller = new AbortController();
-      abortRef.current = controller;
+      // Agentic tool loop: stream, handle tool calls, continue.
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        const s = stream(model, piContext, {
+          apiKey: settings.api_key,
+          abortSignal: controller.signal,
+        });
 
-      const s = stream(model, piContext, {
-        apiKey: settings.api_key,
-        abortSignal: controller.signal,
-      });
+        for await (const event of s) {
+          if (event.type === "text_delta") {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
+              ),
+            );
+          }
+          if (event.type === "error") {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: m.content || `Error from ${settings.provider}: ${event.error}`,
+                    }
+                  : m,
+              ),
+            );
+          }
+        }
 
-      for await (const event of s) {
-        if (event.type === "text_delta") {
+        // Get the final assistant message.
+        const result = await s.result();
+        piContext.messages.push(result);
+
+        // Check for tool calls.
+        const toolCalls = result.content.filter((b) => b.type === "toolCall");
+
+        if (toolCalls.length === 0) {
+          // No tool calls — done.
+          break;
+        }
+
+        // Execute tool calls and add results.
+        for (const call of toolCalls) {
+          try {
+            const toolResult = await executeTool(
+              call.name,
+              call.arguments as Record<string, unknown>,
+            );
+
+            if (toolResult.sources) {
+              allSources.push(...toolResult.sources);
+            }
+
+            const resultMsg: ToolResultMessage = {
+              role: "toolResult",
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: "text", text: toolResult.text }],
+              isError: false,
+              timestamp: Date.now(),
+            };
+            piContext.messages.push(resultMsg as PiMessage);
+          } catch (err) {
+            const resultMsg: ToolResultMessage = {
+              role: "toolResult",
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: ${err instanceof Error ? err.message : "unknown error"}`,
+                },
+              ],
+              isError: true,
+              timestamp: Date.now(),
+            };
+            piContext.messages.push(resultMsg as PiMessage);
+          }
+        }
+
+        // Update sources on the message after each round.
+        if (allSources.length > 0) {
+          const uniqueSources = deduplicateSources(allSources);
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
-            ),
+            prev.map((m) => (m.id === assistantId ? { ...m, sources: uniqueSources } : m)),
           );
         }
-        if (event.type === "error") {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: m.content || `Error from ${settings.provider}: ${event.error}`,
-                  }
-                : m,
-            ),
-          );
-        }
+
+        // Continue to next round — the model will see tool results and respond.
       }
 
       abortRef.current = null;
@@ -198,7 +301,7 @@ export default function Chat() {
               </svg>
             </div>
             <h3>Start a conversation</h3>
-            <p>Ask a question and your documents will be searched for relevant context.</p>
+            <p>Ask a question and the assistant will search your documents for context.</p>
           </div>
         )}
 
@@ -276,6 +379,16 @@ export default function Chat() {
       </div>
     </div>
   );
+}
+
+function deduplicateSources(sources: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+  return sources.filter((s) => {
+    const key = `${s.collection}:${s.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function renderContent(text: string) {
