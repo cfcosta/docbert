@@ -56,7 +56,7 @@ pub struct LoadDocumentsResult {
 ///
 /// If the file has a Markdown heading that starts with `# `, the first one wins.
 /// Otherwise the filename stem becomes the title.
-pub(crate) fn extract_title(content: &str, file_path: &Path) -> String {
+pub fn extract_title(content: &str, file_path: &Path) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(heading) = trimmed.strip_prefix("# ") {

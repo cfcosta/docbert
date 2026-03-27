@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/docbert-core", "."]
+members = ["crates/docbert-core", "crates/docserver", "."]
 resolver = "3"
 
 [package]
