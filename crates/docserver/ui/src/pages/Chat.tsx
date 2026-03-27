@@ -26,6 +26,8 @@ import {
   decideAnalyzeFiles,
   formatAnalyzeFilesAcknowledgement,
   mergeCurrentTurnSearchResults,
+  queueAcceptedSubagentMessages,
+  type AnalyzeFilesAcceptedItem,
   type ChatToolRuntimeState,
 } from "./chat-subagents";
 import "./Chat.css";
@@ -68,6 +70,7 @@ interface ReadyLlmSettings {
 }
 
 type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
+type QueueSubagentMessages = (acceptedFiles: AnalyzeFilesAcceptedItem[]) => void;
 
 // ── Tool definitions for pi-ai ──
 
@@ -322,6 +325,25 @@ function createAssistantPlaceholder(id: string): Message {
   return { id, role: "assistant", content: "", parts: [] };
 }
 
+function createQueuedSubagentMessage(
+  messageId: string,
+  file: AnalyzeFilesAcceptedItem,
+): Message {
+  return {
+    id: messageId,
+    role: "assistant",
+    content: "Queued for file analysis.",
+    parts: [{ type: "text", text: "Queued for file analysis." }],
+    actor: {
+      type: "subagent",
+      id: messageId,
+      collection: file.collection,
+      path: file.path,
+      status: "queued",
+    },
+  };
+}
+
 function createMissingConfigMessage(): Message {
   return {
     id: uuid(),
@@ -481,6 +503,7 @@ async function runParentAgentRound({
   updateAssistantMessage,
   allSources,
   runtimeState,
+  enqueueSubagentMessages,
 }: {
   model: ReturnType<typeof getModel>;
   settings: ReadyLlmSettings;
@@ -489,6 +512,7 @@ async function runParentAgentRound({
   updateAssistantMessage: UpdateAssistantMessage;
   allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
+  enqueueSubagentMessages: QueueSubagentMessages;
 }): Promise<boolean> {
   let streamedText = "";
   let streamedThinking = "";
@@ -537,6 +561,10 @@ async function runParentAgentRound({
     );
 
     updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
+
+    if (call.name === "analyze_files" && runtimeState.acceptedAnalysisFiles.length > 0) {
+      enqueueSubagentMessages(runtimeState.acceptedAnalysisFiles);
+    }
   }
 
   return true;
@@ -551,6 +579,16 @@ function formatRelativeTime(ms: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function SubagentHeader({ actor }: { actor: Extract<ChatActor, { type: "subagent" }> }) {
+  return (
+    <div className="chat-subagent-header">
+      <span className="chat-subagent-label">Subagent</span>
+      <code className="chat-subagent-path">{actor.collection}/{actor.path}</code>
+      <span className={`chat-subagent-status chat-subagent-status-${actor.status}`}>{actor.status}</span>
+    </div>
+  );
 }
 
 export default function Chat() {
@@ -708,9 +746,23 @@ export default function Chat() {
       const runtimeState: ChatToolRuntimeState = {
         currentTurnSearchResults: [],
         acceptedAnalysisFiles: [],
+        queuedAnalysisFiles: [],
       };
       const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
         setMessages((prev) => updateMessageById(prev, assistantId, fn));
+      const enqueueSubagentMessages: QueueSubagentMessages = (acceptedFiles) => {
+        setMessages((prev) => {
+          const queued = queueAcceptedSubagentMessages({
+            messages: prev,
+            acceptedFiles,
+            queuedFiles: runtimeState.queuedAnalysisFiles,
+            createMessageId: uuid,
+            createMessage: createQueuedSubagentMessage,
+          });
+          runtimeState.queuedAnalysisFiles = queued.queuedFiles;
+          return queued.messages;
+        });
+      };
 
       setMessages((prev) => [...prev, createAssistantPlaceholder(assistantId)]);
 
@@ -723,6 +775,7 @@ export default function Chat() {
           updateAssistantMessage,
           allSources,
           runtimeState,
+          enqueueSubagentMessages,
         });
         if (!shouldContinue) {
           break;
@@ -831,9 +884,12 @@ export default function Chat() {
             </div>
           )}
 
-          {messages.map((msg) => (
-            <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
+          {messages.map((msg) => {
+            const isSubagent = msg.actor?.type === "subagent";
+            return (
+            <div key={msg.id} className={`chat-msg chat-msg-${msg.role}${isSubagent ? " chat-msg-subagent" : ""}`}>
               <div className="chat-msg-bubble">
+                {msg.actor?.type === "subagent" ? <SubagentHeader actor={msg.actor} /> : null}
                 {msg.parts && msg.parts.length > 0 ? (
                   <>
                     {msg.parts.map((part, i) => {
@@ -879,7 +935,7 @@ export default function Chat() {
                 )}
               </div>
             </div>
-          ))}
+          );})}
 
           {loading && messages[messages.length - 1]?.role !== "assistant" && (
             <div className="chat-msg chat-msg-assistant">

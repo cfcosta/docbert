@@ -4,7 +4,9 @@ import type { SearchResult } from "../lib/api";
 import {
   decideAnalyzeFiles,
   formatAnalyzeFilesAcknowledgement,
+  insertOrUpdateSubagentMessage,
   mergeCurrentTurnSearchResults,
+  queueAcceptedSubagentMessages,
 } from "./chat-subagents";
 
 function result(
@@ -141,5 +143,116 @@ describe("decideAnalyzeFiles", () => {
       rejected: [],
       capped: false,
     });
+  });
+});
+
+describe("insertOrUpdateSubagentMessage", () => {
+  test("creates a missing message", () => {
+    const messages = insertOrUpdateSubagentMessage([], {
+      id: "sub-1",
+      role: "assistant",
+      content: "Queued for analysis.",
+      actor: {
+        type: "subagent",
+        id: "sub-1",
+        collection: "notes",
+        path: "a.md",
+        status: "queued",
+      },
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].id).toBe("sub-1");
+  });
+
+  test("updates only the targeted message id", () => {
+    const messages = insertOrUpdateSubagentMessage(
+      [
+        { id: "user-1", role: "user", content: "Question" },
+        {
+          id: "sub-1",
+          role: "assistant",
+          content: "Queued for analysis.",
+          actor: {
+            type: "subagent",
+            id: "sub-1",
+            collection: "notes",
+            path: "a.md",
+            status: "queued",
+          },
+        },
+      ],
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "Still queued.",
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "queued",
+        },
+      },
+    );
+
+    expect(messages[0]).toEqual({ id: "user-1", role: "user", content: "Question" });
+    expect(messages[1].content).toBe("Still queued.");
+  });
+
+  test("preserves surrounding message order", () => {
+    const messages = insertOrUpdateSubagentMessage(
+      [
+        { id: "user-1", role: "user", content: "Question" },
+        { id: "assistant-1", role: "assistant", content: "Answer" },
+      ],
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "Queued for analysis.",
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "queued",
+        },
+      },
+    );
+
+    expect(messages.map((message) => message.id)).toEqual(["user-1", "assistant-1", "sub-1"]);
+  });
+});
+
+describe("queueAcceptedSubagentMessages", () => {
+  test("queues one message per accepted file in order", () => {
+    let nextId = 0;
+    const queued = queueAcceptedSubagentMessages({
+      messages: [{ id: "assistant-1", role: "assistant", content: "Ack" }],
+      acceptedFiles: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B" },
+      ],
+      queuedFiles: [],
+      createMessageId: () => `sub-${++nextId}`,
+      createMessage: (messageId, file) => ({
+        id: messageId,
+        role: "assistant",
+        content: `Queued ${file.path}`,
+        actor: {
+          type: "subagent",
+          id: messageId,
+          collection: file.collection,
+          path: file.path,
+          status: "queued",
+        },
+      }),
+    });
+
+    expect(queued.messages.map((message) => message.id)).toEqual(["assistant-1", "sub-1", "sub-2"]);
+    expect(queued.queuedFiles.map((file) => `${file.messageId}:${file.path}`)).toEqual([
+      "sub-1:a.md",
+      "sub-2:b.md",
+    ]);
   });
 });

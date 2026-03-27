@@ -1,4 +1,4 @@
-import type { SearchResult } from "../lib/api";
+import type { ChatActor, SearchResult } from "../lib/api";
 
 export interface AnalyzeFilesRequestItem {
   collection: string;
@@ -23,9 +23,21 @@ export interface AnalyzeFilesDecision {
   capped: boolean;
 }
 
+export interface QueuedAnalysisFile extends AnalyzeFilesAcceptedItem {
+  messageId: string;
+}
+
 export interface ChatToolRuntimeState {
   currentTurnSearchResults: SearchResult[];
   acceptedAnalysisFiles: AnalyzeFilesAcceptedItem[];
+  queuedAnalysisFiles: QueuedAnalysisFile[];
+}
+
+export interface SubagentTranscriptMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  actor?: ChatActor;
 }
 
 const MAX_ANALYZE_FILES = 3;
@@ -135,4 +147,50 @@ export function formatAnalyzeFilesAcknowledgement(
     null,
     2,
   );
+}
+
+export function insertOrUpdateSubagentMessage<T extends SubagentTranscriptMessage>(
+  messages: T[],
+  nextMessage: T,
+): T[] {
+  const index = messages.findIndex((message) => message.id === nextMessage.id);
+  if (index === -1) {
+    return [...messages, nextMessage];
+  }
+
+  const updated = [...messages];
+  updated[index] = nextMessage;
+  return updated;
+}
+
+export function queueAcceptedSubagentMessages<T extends SubagentTranscriptMessage>({
+  messages,
+  acceptedFiles,
+  queuedFiles,
+  createMessageId,
+  createMessage,
+}: {
+  messages: T[];
+  acceptedFiles: AnalyzeFilesAcceptedItem[];
+  queuedFiles: QueuedAnalysisFile[];
+  createMessageId: () => string;
+  createMessage: (messageId: string, file: AnalyzeFilesAcceptedItem) => T;
+}): { messages: T[]; queuedFiles: QueuedAnalysisFile[] } {
+  let nextMessages = messages;
+  const nextQueuedFiles = [...queuedFiles];
+
+  for (const file of acceptedFiles) {
+    const existing = nextQueuedFiles.find(
+      (queued) => queued.collection === file.collection && queued.path === file.path,
+    );
+    if (existing) {
+      continue;
+    }
+
+    const messageId = createMessageId();
+    nextQueuedFiles.push({ ...file, messageId });
+    nextMessages = insertOrUpdateSubagentMessage(nextMessages, createMessage(messageId, file));
+  }
+
+  return { messages: nextMessages, queuedFiles: nextQueuedFiles };
 }
