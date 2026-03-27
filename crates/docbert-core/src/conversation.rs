@@ -20,6 +20,8 @@ pub struct ChatMessage {
     pub sources: Option<Vec<ChatSource>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ChatToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_parts: Option<Vec<ChatContentPart>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,13 @@ pub struct ChatToolCall {
     pub result: Option<String>,
     #[serde(default)]
     pub is_error: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatContentPart {
+    Text { text: String },
+    Thinking { text: String },
 }
 
 impl Conversation {

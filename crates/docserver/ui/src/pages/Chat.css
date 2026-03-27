@@ -357,6 +357,71 @@
   margin: 0.6em 0;
 }
 
+.chat-thinking {
+  margin: 6px 0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chat-thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  min-height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.chat-thinking-header:hover {
+  background: var(--accent-bg);
+}
+
+.chat-thinking-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.chat-thinking-title {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.chat-thinking-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  transition: transform 0.15s ease-out;
+}
+
+.chat-thinking-chevron.open {
+  transform: rotate(90deg);
+}
+
+.chat-thinking-body {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.chat-thinking-body > :first-child {
+  margin-top: 0;
+}
+
+.chat-thinking-body > :last-child {
+  margin-bottom: 0;
+}
+
 .chat-tool-call {
   margin: 6px 0;
   border-radius: 6px;

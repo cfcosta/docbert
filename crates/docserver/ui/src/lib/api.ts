@@ -96,12 +96,15 @@ export interface ChatToolCall {
   is_error?: boolean;
 }
 
+export type ChatContentPart = { type: "text"; text: string } | { type: "thinking"; text: string };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   sources?: ChatSource[];
   tool_calls?: ChatToolCall[];
+  content_parts?: ChatContentPart[];
 }
 
 export interface ConversationFull {

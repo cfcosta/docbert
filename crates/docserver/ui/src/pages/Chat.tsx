@@ -4,7 +4,7 @@ import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { Type, getModel, stream } from "@mariozechner/pi-ai";
+import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
 import "katex/dist/katex.min.css";
 import type {
   Context,
@@ -34,7 +34,10 @@ interface ToolCallInfo {
   isError?: boolean;
 }
 
-type ContentPart = { type: "text"; text: string } | { type: "tool_call"; call: ToolCallInfo };
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_call"; call: ToolCallInfo };
 
 interface Message {
   id: string;
@@ -148,6 +151,14 @@ function messagesToApi(messages: Message[]): ConversationFull["messages"] {
         result: p.call.result,
         is_error: p.call.isError,
       }));
+    const contentParts = m.parts
+      ?.filter(
+        (p): p is Extract<ContentPart, { type: "text" | "thinking" }> => p.type !== "tool_call",
+      )
+      .map((p) => ({
+        type: p.type,
+        text: p.text,
+      }));
     return {
       id: m.id,
       role: m.role,
@@ -158,6 +169,7 @@ function messagesToApi(messages: Message[]): ConversationFull["messages"] {
         title: s.title,
       })),
       tool_calls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+      content_parts: contentParts && contentParts.length > 0 ? contentParts : undefined,
     };
   });
 }
@@ -165,6 +177,13 @@ function messagesToApi(messages: Message[]): ConversationFull["messages"] {
 function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
   return msgs.map((m) => {
     const parts: ContentPart[] = [];
+    if (m.content_parts && m.content_parts.length > 0) {
+      for (const part of m.content_parts) {
+        parts.push({ type: part.type, text: part.text });
+      }
+    } else if (m.content) {
+      parts.push({ type: "text", text: m.content });
+    }
     if (m.tool_calls && m.tool_calls.length > 0) {
       for (const tc of m.tool_calls) {
         parts.push({
@@ -172,9 +191,6 @@ function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
           call: { name: tc.name, args: tc.args, result: tc.result, isError: tc.is_error },
         });
       }
-    }
-    if (m.content) {
-      parts.push({ type: "text", text: m.content });
     }
     return {
       id: m.id,
@@ -391,14 +407,17 @@ export default function Chat() {
 
       // Track the current streaming text so we can finalize it as a part.
       let streamedText = "";
+      let streamedThinking = "";
 
       // Agentic tool loop: stream, handle tool calls, continue.
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         streamedText = "";
+        streamedThinking = "";
 
-        const s = stream(model, piContext, {
+        const s = streamSimple(model, piContext, {
           apiKey: settings.api_key,
-          abortSignal: controller.signal,
+          signal: controller.signal,
+          reasoning: model.reasoning ? "medium" : undefined,
         });
 
         for await (const event of s) {
@@ -415,6 +434,20 @@ export default function Chat() {
                 parts.push({ type: "text", text: captured });
               }
               return { ...m, content: m.content + event.delta, parts };
+            });
+          }
+          if (event.type === "thinking_delta") {
+            streamedThinking += event.delta;
+            const captured = streamedThinking;
+            updateMsg((m) => {
+              const parts = [...(m.parts ?? [])];
+              const last = parts[parts.length - 1];
+              if (last && last.type === "thinking") {
+                parts[parts.length - 1] = { type: "thinking", text: captured };
+              } else {
+                parts.push({ type: "thinking", text: captured });
+              }
+              return { ...m, parts };
             });
           }
           if (event.type === "error") {
@@ -622,20 +655,26 @@ export default function Chat() {
               <div className="chat-msg-bubble">
                 {msg.parts && msg.parts.length > 0 ? (
                   <>
-                    {msg.parts.map((part, i) =>
-                      part.type === "text" ? (
-                        <div key={i} className="chat-msg-content">
-                          <Markdown
-                            remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-                            rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-                          >
-                            {part.text}
-                          </Markdown>
-                        </div>
-                      ) : (
-                        <ToolCallInline key={i} call={part.call} />
-                      ),
-                    )}
+                    {msg.parts.map((part, i) => {
+                      if (part.type === "text") {
+                        return (
+                          <div key={i} className="chat-msg-content">
+                            <Markdown
+                              remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                              rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                            >
+                              {part.text}
+                            </Markdown>
+                          </div>
+                        );
+                      }
+
+                      if (part.type === "thinking") {
+                        return <ThinkingInline key={i} text={part.text} />;
+                      }
+
+                      return <ToolCallInline key={i} call={part.call} />;
+                    })}
                   </>
                 ) : (
                   <div className="chat-msg-content">
@@ -716,6 +755,35 @@ export default function Chat() {
           </form>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ThinkingInline({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="chat-thinking">
+      <button
+        type="button"
+        className="chat-thinking-header"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
+        <span className="chat-thinking-icon">◎</span>
+        <span className="chat-thinking-title">Reasoning</span>
+        <span className={`chat-thinking-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
+      </button>
+      {expanded && (
+        <div className="chat-thinking-body">
+          <Markdown
+            remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+            rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+          >
+            {text}
+          </Markdown>
+        </div>
+      )}
     </div>
   );
 }
