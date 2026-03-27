@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type ComponentProps } from "react";
+import Markdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { api } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import "./Documents.css";
@@ -570,7 +573,11 @@ export default function Documents() {
                 {preview === null ? (
                   <div className="preview-loading">Loading document…</div>
                 ) : (
-                  <pre className="preview-content">{preview}</pre>
+                  <div className="preview-content">
+                    <Markdown components={{ code: CodeBlock }}>
+                      {preview}
+                    </Markdown>
+                  </div>
                 )}
               </div>
             </>
@@ -588,6 +595,26 @@ export default function Documents() {
         </section>
       </div>
     </div>
+  );
+}
+
+function CodeBlock({ className, children, ...props }: ComponentProps<"code">) {
+  const match = /language-(\w+)/.exec(className ?? "");
+  const code = String(children).replace(/\n$/, "");
+
+  if (!match) {
+    return <code className={className} {...props}>{children}</code>;
+  }
+
+  return (
+    <SyntaxHighlighter
+      style={oneDark}
+      language={match[1]}
+      PreTag="div"
+      customStyle={{ margin: 0, borderRadius: "6px", fontSize: "0.85em" }}
+    >
+      {code}
+    </SyntaxHighlighter>
   );
 }
 
