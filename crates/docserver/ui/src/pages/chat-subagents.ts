@@ -23,6 +23,11 @@ export interface AnalyzeFilesDecision {
   capped: boolean;
 }
 
+export interface AutoAnalyzeTopKDecision {
+  accepted: AnalyzeFilesAcceptedItem[];
+  available: number;
+}
+
 export interface QueuedAnalysisFile extends AnalyzeFilesAcceptedItem {
   messageId: string;
 }
@@ -167,6 +172,25 @@ export function formatAnalyzeFilesAcknowledgement(decision: AnalyzeFilesDecision
     null,
     2,
   );
+}
+
+export function selectTopSearchResultsForAnalysis(
+  availableResults: SearchResult[],
+  maxFiles: number,
+): AutoAnalyzeTopKDecision {
+  const accepted = uniqueSearchResults(availableResults)
+    .slice(0, Math.max(0, maxFiles))
+    .map((result, index) => ({
+      collection: result.collection,
+      path: result.path,
+      title: result.title,
+      reason: `Auto-selected from top search results (rank ${index + 1}).`,
+    }));
+
+  return {
+    accepted,
+    available: uniqueSearchResults(availableResults).length,
+  };
 }
 
 export function insertOrUpdateSubagentMessage<T extends SubagentTranscriptMessage>(

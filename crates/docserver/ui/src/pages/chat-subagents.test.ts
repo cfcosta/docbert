@@ -8,6 +8,7 @@ import {
   insertOrUpdateSubagentMessage,
   mergeCurrentTurnSearchResults,
   queueAcceptedSubagentMessages,
+  selectTopSearchResultsForAnalysis,
   setSubagentStatus,
   updateSubagentMessageById,
   upsertSubagentPart,
@@ -36,6 +37,43 @@ describe("mergeCurrentTurnSearchResults", () => {
       "notes:a.md",
       "notes:b.md",
     ]);
+  });
+});
+
+describe("selectTopSearchResultsForAnalysis", () => {
+  test("selects the first k unique search results in order", () => {
+    const decision = selectTopSearchResultsForAnalysis(
+      [
+        result("notes", "a.md", "A"),
+        result("notes", "a.md", "A duplicate"),
+        result("notes", "b.md", "B"),
+        result("notes", "c.md", "C"),
+      ],
+      2,
+    );
+
+    expect(decision.available).toBe(3);
+    expect(decision.accepted).toEqual([
+      {
+        collection: "notes",
+        path: "a.md",
+        title: "A",
+        reason: "Auto-selected from top search results (rank 1).",
+      },
+      {
+        collection: "notes",
+        path: "b.md",
+        title: "B",
+        reason: "Auto-selected from top search results (rank 2).",
+      },
+    ]);
+  });
+
+  test("returns no files for non-positive k", () => {
+    const decision = selectTopSearchResultsForAnalysis([result("notes", "a.md", "A")], 0);
+
+    expect(decision.available).toBe(1);
+    expect(decision.accepted).toEqual([]);
   });
 });
 

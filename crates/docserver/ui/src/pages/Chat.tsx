@@ -24,10 +24,9 @@ import type {
 } from "../lib/api";
 import {
   buildSynthesisPayload,
-  decideAnalyzeFiles,
-  formatAnalyzeFilesAcknowledgement,
+  insertOrUpdateSubagentMessage,
   mergeCurrentTurnSearchResults,
-  queueAcceptedSubagentMessages,
+  selectTopSearchResultsForAnalysis,
   setSubagentStatus,
   updateSubagentMessageById,
   upsertSubagentPart,
@@ -77,7 +76,6 @@ interface ReadyLlmSettings {
 }
 
 type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
-type QueueSubagentMessages = (acceptedFiles: AnalyzeFilesAcceptedItem[]) => void;
 
 // ── Tool definitions for pi-ai ──
 
@@ -114,20 +112,6 @@ const tools: Tool[] = [
       path: Type.String({
         description: "The document path within the collection",
       }),
-    }),
-  },
-  {
-    name: "analyze_files",
-    description:
-      "Request deeper per-file analysis for up to three files selected from the current turn's search results.",
-    parameters: Type.Object({
-      files: Type.Array(
-        Type.Object({
-          collection: Type.String({ description: "The collection name" }),
-          path: Type.String({ description: "The document path within the collection" }),
-          reason: Type.String({ description: "Why this file needs deeper analysis" }),
-        }),
-      ),
     }),
   },
 ];
@@ -178,13 +162,6 @@ async function executeTool(
         text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
       };
     }
-    case "analyze_files": {
-      const decision = decideAnalyzeFiles(args, runtimeState.currentTurnSearchResults);
-      runtimeState.acceptedAnalysisFiles = decision.accepted;
-      return {
-        text: formatAnalyzeFilesAcknowledgement(decision),
-      };
-    }
     default:
       return { text: `Unknown tool: ${name}` };
   }
@@ -194,13 +171,14 @@ const SYSTEM_PROMPT = `You are a helpful assistant with access to a document sto
 
 When the user asks a question:
 1. Use search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once — this is usually the best default.
-2. Review the search results — if multiple files deserve deeper file-by-file analysis, call analyze_files with up to three files from the current turn's search results and explain why each file matters.
+2. Focus on finding the best search results. The host will automatically run per-file analysis on the top search results after your tool phase.
 3. Retrieve relevant documents with document_get when you need their full contents.
-4. Synthesize your answer from all retrieved documents, citing which documents contributed to the answer.
+4. Give a concise answer grounded in the documents you inspected, and leave room for the later synthesized answer if deeper file analysis is still pending.
 
 If no relevant documents are found, say so and suggest what the user might want to ingest.`;
 
 const MAX_TOOL_ROUNDS = 10;
+const AUTO_SUBAGENT_TOP_K = 5;
 const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
@@ -702,7 +680,6 @@ async function runParentAgentRound({
   updateAssistantMessage,
   allSources,
   runtimeState,
-  enqueueSubagentMessages,
 }: {
   model: ReturnType<typeof getModel>;
   settings: ReadyLlmSettings;
@@ -711,7 +688,6 @@ async function runParentAgentRound({
   updateAssistantMessage: UpdateAssistantMessage;
   allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
-  enqueueSubagentMessages: QueueSubagentMessages;
 }): Promise<boolean> {
   let streamedText = "";
   let streamedThinking = "";
@@ -762,10 +738,6 @@ async function runParentAgentRound({
     );
 
     updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
-
-    if (call.name === "analyze_files" && runtimeState.acceptedAnalysisFiles.length > 0) {
-      enqueueSubagentMessages(runtimeState.acceptedAnalysisFiles);
-    }
   }
 
   return true;
@@ -996,19 +968,6 @@ export default function Chat() {
       };
       const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
         setMessages((prev) => updateMessageById(prev, assistantId, fn));
-      const enqueueSubagentMessages: QueueSubagentMessages = (acceptedFiles) => {
-        setMessages((prev) => {
-          const queued = queueAcceptedSubagentMessages({
-            messages: prev,
-            acceptedFiles,
-            queuedFiles: runtimeState.queuedAnalysisFiles,
-            createMessageId: uuid,
-            createMessage: createQueuedSubagentMessage,
-          });
-          runtimeState.queuedAnalysisFiles = queued.queuedFiles;
-          return queued.messages;
-        });
-      };
 
       setMessages((prev) => [...prev, createAssistantPlaceholder(assistantId)]);
 
@@ -1021,11 +980,36 @@ export default function Chat() {
           updateAssistantMessage,
           allSources,
           runtimeState,
-          enqueueSubagentMessages,
         });
         if (!shouldContinue) {
           break;
         }
+      }
+
+      const autoAnalyzeDecision = selectTopSearchResultsForAnalysis(
+        runtimeState.currentTurnSearchResults,
+        AUTO_SUBAGENT_TOP_K,
+      );
+      runtimeState.acceptedAnalysisFiles = autoAnalyzeDecision.accepted;
+
+      if (runtimeState.acceptedAnalysisFiles.length > 0) {
+        const newQueuedFiles: QueuedAnalysisFile[] = runtimeState.acceptedAnalysisFiles.map(
+          (file) => ({
+            ...file,
+            messageId: uuid(),
+          }),
+        );
+        runtimeState.queuedAnalysisFiles = newQueuedFiles;
+        setMessages((prev) =>
+          newQueuedFiles.reduce(
+            (nextMessages, file) =>
+              insertOrUpdateSubagentMessage(
+                nextMessages,
+                createQueuedSubagentMessage(file.messageId, file),
+              ),
+            prev,
+          ),
+        );
       }
 
       const subagentRuns = await Promise.allSettled(
