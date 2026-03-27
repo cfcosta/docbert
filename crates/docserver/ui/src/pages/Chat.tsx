@@ -28,6 +28,7 @@ import {
   mergeCurrentTurnSearchResults,
   queueAcceptedSubagentMessages,
   setSubagentStatus,
+  updateSubagentMessageById,
   upsertSubagentPart,
   type AnalyzeFilesAcceptedItem,
   type ChatToolRuntimeState,
@@ -328,10 +329,7 @@ function createAssistantPlaceholder(id: string): Message {
   return { id, role: "assistant", content: "", parts: [] };
 }
 
-function createQueuedSubagentMessage(
-  messageId: string,
-  file: AnalyzeFilesAcceptedItem,
-): Message {
+function createQueuedSubagentMessage(messageId: string, file: AnalyzeFilesAcceptedItem): Message {
   return {
     id: messageId,
     role: "assistant",
@@ -382,7 +380,11 @@ function createPiContext(text: string): Context {
   };
 }
 
-function createSubagentContext(userQuestion: string, fileContent: string, file: QueuedAnalysisFile): Context {
+function createSubagentContext(
+  userQuestion: string,
+  fileContent: string,
+  file: QueuedAnalysisFile,
+): Context {
   const userPiMsg: UserMessage = {
     role: "user",
     content: [
@@ -650,7 +652,9 @@ async function runParentAgentRound({
       updateAssistantMessage((message) => applyThinkingDelta(message, captured));
     }
     if (event.type === "error") {
-      updateAssistantMessage((message) => applyStreamError(message, settings.provider, event.error));
+      updateAssistantMessage((message) =>
+        applyStreamError(message, settings.provider, event.error),
+      );
     }
   }
 
@@ -700,8 +704,12 @@ function SubagentHeader({ actor }: { actor: Extract<ChatActor, { type: "subagent
   return (
     <div className="chat-subagent-header">
       <span className="chat-subagent-label">Subagent</span>
-      <code className="chat-subagent-path">{actor.collection}/{actor.path}</code>
-      <span className={`chat-subagent-status chat-subagent-status-${actor.status}`}>{actor.status}</span>
+      <code className="chat-subagent-path">
+        {actor.collection}/{actor.path}
+      </code>
+      <span className={`chat-subagent-status chat-subagent-status-${actor.status}`}>
+        {actor.status}
+      </span>
     </div>
   );
 }
@@ -836,9 +844,7 @@ export default function Chat() {
     }
 
     try {
-      const maybeReadySettings = resolveReadyLlmSettings(
-        await api.getLlmSettings(),
-      );
+      const maybeReadySettings = resolveReadyLlmSettings(await api.getLlmSettings());
 
       if (!maybeReadySettings) {
         const errMsgs = [...nextMessages, createMissingConfigMessage()];
@@ -897,18 +903,20 @@ export default function Chat() {
         }
       }
 
-      for (const queuedFile of runtimeState.queuedAnalysisFiles) {
-        await runFileSubagent({
-          model,
-          settings,
-          controller,
-          file: queuedFile,
-          userQuestion: text,
-          updateMessage: (updater) => {
-            setMessages((prev) => updateMessageById(prev, queuedFile.messageId, updater));
-          },
-        });
-      }
+      await Promise.allSettled(
+        runtimeState.queuedAnalysisFiles.map((queuedFile) =>
+          runFileSubagent({
+            model,
+            settings,
+            controller,
+            file: queuedFile,
+            userQuestion: text,
+            updateMessage: (updater) => {
+              setMessages((prev) => updateSubagentMessageById(prev, queuedFile.messageId, updater));
+            },
+          }),
+        ),
+      );
 
       abortRef.current = null;
     } catch (err) {
@@ -1015,55 +1023,59 @@ export default function Chat() {
           {messages.map((msg) => {
             const isSubagent = msg.actor?.type === "subagent";
             return (
-            <div key={msg.id} className={`chat-msg chat-msg-${msg.role}${isSubagent ? " chat-msg-subagent" : ""}`}>
-              <div className="chat-msg-bubble">
-                {msg.actor?.type === "subagent" ? <SubagentHeader actor={msg.actor} /> : null}
-                {msg.parts && msg.parts.length > 0 ? (
-                  <>
-                    {msg.parts.map((part, i) => {
-                      if (part.type === "text") {
-                        return (
-                          <div key={i} className="chat-msg-content">
-                            <Markdown
-                              remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-                              rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-                            >
-                              {part.text}
-                            </Markdown>
-                          </div>
-                        );
-                      }
+              <div
+                key={msg.id}
+                className={`chat-msg chat-msg-${msg.role}${isSubagent ? " chat-msg-subagent" : ""}`}
+              >
+                <div className="chat-msg-bubble">
+                  {msg.actor?.type === "subagent" ? <SubagentHeader actor={msg.actor} /> : null}
+                  {msg.parts && msg.parts.length > 0 ? (
+                    <>
+                      {msg.parts.map((part, i) => {
+                        if (part.type === "text") {
+                          return (
+                            <div key={i} className="chat-msg-content">
+                              <Markdown
+                                remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                                rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                              >
+                                {part.text}
+                              </Markdown>
+                            </div>
+                          );
+                        }
 
-                      if (part.type === "thinking") {
-                        return <ThinkingInline key={i} text={part.text} />;
-                      }
+                        if (part.type === "thinking") {
+                          return <ThinkingInline key={i} text={part.text} />;
+                        }
 
-                      return <ToolCallInline key={i} call={part.call} />;
-                    })}
-                  </>
-                ) : (
-                  <div className="chat-msg-content">
-                    <Markdown
-                      remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-                      rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-                    >
-                      {msg.content}
-                    </Markdown>
-                  </div>
-                )}
-                {msg.sources && msg.sources.length > 0 && (
-                  <div className="chat-sources">
-                    <span className="chat-sources-label">Sources:</span>
-                    {msg.sources.map((s) => (
-                      <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
-                        {s.collection}/{s.path}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                        return <ToolCallInline key={i} call={part.call} />;
+                      })}
+                    </>
+                  ) : (
+                    <div className="chat-msg-content">
+                      <Markdown
+                        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                      >
+                        {msg.content}
+                      </Markdown>
+                    </div>
+                  )}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="chat-sources">
+                      <span className="chat-sources-label">Sources:</span>
+                      {msg.sources.map((s) => (
+                        <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
+                          {s.collection}/{s.path}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          );})}
+            );
+          })}
 
           {loading && messages[messages.length - 1]?.role !== "assistant" && (
             <div className="chat-msg chat-msg-assistant">

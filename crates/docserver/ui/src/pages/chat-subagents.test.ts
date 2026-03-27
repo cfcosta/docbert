@@ -8,14 +8,11 @@ import {
   mergeCurrentTurnSearchResults,
   queueAcceptedSubagentMessages,
   setSubagentStatus,
+  updateSubagentMessageById,
   upsertSubagentPart,
 } from "./chat-subagents";
 
-function result(
-  collection: string,
-  path: string,
-  title: string,
-): SearchResult {
+function result(collection: string, path: string, title: string): SearchResult {
   return {
     rank: 1,
     score: 1,
@@ -256,6 +253,39 @@ describe("queueAcceptedSubagentMessages", () => {
       "sub-1:a.md",
       "sub-2:b.md",
     ]);
+  });
+});
+
+describe("updateSubagentMessageById", () => {
+  test("updates only the targeted message", () => {
+    const messages = updateSubagentMessageById(
+      [
+        { id: "sub-1", role: "assistant", content: "one" },
+        { id: "sub-2", role: "assistant", content: "two" },
+      ],
+      "sub-2",
+      (message) => ({ ...message, content: "updated" }),
+    );
+
+    expect(messages).toEqual([
+      { id: "sub-1", role: "assistant", content: "one" },
+      { id: "sub-2", role: "assistant", content: "updated" },
+    ]);
+  });
+
+  test("preserves stable order while updating by id", () => {
+    const messages = updateSubagentMessageById(
+      [
+        { id: "assistant-1", role: "assistant", content: "Ack" },
+        { id: "sub-1", role: "assistant", content: "first" },
+        { id: "sub-2", role: "assistant", content: "second" },
+      ],
+      "sub-1",
+      (message) => ({ ...message, content: "still first" }),
+    );
+
+    expect(messages.map((message) => message.id)).toEqual(["assistant-1", "sub-1", "sub-2"]);
+    expect(messages[1].content).toBe("still first");
   });
 });
 

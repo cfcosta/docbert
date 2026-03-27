@@ -141,9 +141,7 @@ export function decideAnalyzeFiles(
   return { accepted, rejected, capped };
 }
 
-export function formatAnalyzeFilesAcknowledgement(
-  decision: AnalyzeFilesDecision,
-): string {
+export function formatAnalyzeFilesAcknowledgement(decision: AnalyzeFilesDecision): string {
   return JSON.stringify(
     {
       accepted: decision.accepted,
@@ -208,6 +206,14 @@ export function upsertSubagentPart<T extends SubagentTranscriptMessage>(
     content,
     parts: parts as T["parts"],
   };
+}
+
+export function updateSubagentMessageById<T extends SubagentTranscriptMessage>(
+  messages: T[],
+  messageId: string,
+  updater: (message: T) => T,
+): T[] {
+  return messages.map((message) => (message.id === messageId ? updater(message) : message));
 }
 
 export function queueAcceptedSubagentMessages<T extends SubagentTranscriptMessage>({
