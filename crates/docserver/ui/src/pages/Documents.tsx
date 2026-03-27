@@ -8,9 +8,12 @@ import {
   type ComponentProps,
 } from "react";
 import Markdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import "katex/dist/katex.min.css";
 import { api } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import "./Documents.css";
@@ -63,6 +66,8 @@ interface StatusMessage {
 
 const ACCEPTED_MARKDOWN = ".md,.markdown,.mdown,.mkd";
 const MARKDOWN_FILE_RE = /\.(md|markdown|mdown|mkd)$/i;
+const DOCUMENT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+const DOCUMENT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
 function buildTree(docs: DocumentListItem[]): TreeNode[] {
   const root: TreeNode[] = [];
@@ -714,7 +719,11 @@ function PreviewContent({
           <div className="preview-loading">Loading document…</div>
         ) : (
           <div className="preview-content">
-            <Markdown remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
+            <Markdown
+              remarkPlugins={DOCUMENT_MARKDOWN_REMARK_PLUGINS}
+              rehypePlugins={DOCUMENT_MARKDOWN_REHYPE_PLUGINS}
+              components={{ code: CodeBlock }}
+            >
               {parsed?.body ?? preview}
             </Markdown>
           </div>
