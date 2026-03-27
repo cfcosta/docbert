@@ -185,6 +185,11 @@
 .tree-collection-head {
   display: flex;
   align-items: center;
+  transition: background 0.15s;
+}
+
+.tree-collection-head:hover {
+  background: var(--accent-bg);
 }
 
 .tree-collection-header {
@@ -349,7 +354,7 @@
 
 /* ── Drag-and-drop ── */
 
-.tree-collection.drag-over > .tree-collection-header {
+.tree-collection.drag-over > .tree-collection-head {
   background: var(--accent-bg);
 }
 
