@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { api } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import "./Documents.css";
@@ -112,7 +112,9 @@ export default function Documents() {
       setStatus({
         tone: "error",
         text:
-          error instanceof Error ? error.message : `Failed to load documents for ${collection}.`,
+          error instanceof Error
+            ? error.message
+            : `Failed to load documents for ${collection}.`,
       });
     } finally {
       setLoadingColls((prev) => {
@@ -167,9 +169,7 @@ export default function Documents() {
       setPreview(full.content || "_No content stored._");
     } catch (error) {
       setPreview(
-        error instanceof Error
-          ? `_Failed to load document: ${error.message}_`
-          : "_Failed to load document._",
+        error instanceof Error ? `_Failed to load document: ${error.message}_` : "_Failed to load document._",
       );
     }
   }, []);
@@ -255,7 +255,9 @@ export default function Documents() {
     uploadInputRef.current?.click();
   };
 
-  const handleUploadInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadInputChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const collection = uploadCollection;
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
@@ -326,14 +328,17 @@ export default function Documents() {
     }
   };
 
-  const collectionSummary = useMemo(
-    () => `${collections.length} collection${collections.length === 1 ? "" : "s"}`,
-    [collections.length],
-  );
-
-  const renderTree = (nodes: TreeNode[], collection: string, depth: number) => {
-    const dirs = nodes.filter((node) => node.isDir).sort((a, b) => a.name.localeCompare(b.name));
-    const files = nodes.filter((node) => !node.isDir).sort((a, b) => a.name.localeCompare(b.name));
+  const renderTree = (
+    nodes: TreeNode[],
+    collection: string,
+    depth: number,
+  ) => {
+    const dirs = nodes
+      .filter((node) => node.isDir)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const files = nodes
+      .filter((node) => !node.isDir)
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     return (
       <>
@@ -358,7 +363,9 @@ export default function Documents() {
                 <span className="tree-name">{node.name}</span>
               </button>
 
-              {isExpanded && <div>{renderTree(node.children, collection, depth + 1)}</div>}
+              {isExpanded && (
+                <div>{renderTree(node.children, collection, depth + 1)}</div>
+              )}
             </div>
           );
         })}
@@ -409,37 +416,35 @@ export default function Documents() {
       <div className="file-manager">
         <section className="file-tree-panel" aria-labelledby="collections-heading">
           <div className="file-tree-header">
-            <div className="file-tree-header-top">
-              <div>
-                <span id="collections-heading" className="file-tree-title">
-                  Collections
-                </span>
-                <p className="file-tree-help">{collectionSummary}.</p>
-              </div>
-
-              <form
-                className="collection-add-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void handleCreateCollection();
-                }}
+            <span id="collections-heading" className="file-tree-title">
+              Collections
+            </span>
+            <form
+              className="collection-add-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleCreateCollection();
+              }}
+            >
+              <label className="sr-only" htmlFor="collection-name">
+                New collection name
+              </label>
+              <input
+                id="collection-name"
+                type="text"
+                placeholder="New collection"
+                value={newCollName}
+                onChange={(event) => setNewCollName(event.target.value)}
+                className="collection-add-input"
+              />
+              <button
+                type="submit"
+                className="collection-add-btn"
+                disabled={!newCollName.trim()}
               >
-                <label className="sr-only" htmlFor="collection-name">
-                  New collection name
-                </label>
-                <input
-                  id="collection-name"
-                  type="text"
-                  placeholder="New collection"
-                  value={newCollName}
-                  onChange={(event) => setNewCollName(event.target.value)}
-                  className="collection-add-input"
-                />
-                <button type="submit" className="collection-add-btn" disabled={!newCollName.trim()}>
-                  +
-                </button>
-              </form>
-            </div>
+                +
+              </button>
+            </form>
           </div>
 
           <div className="file-tree" aria-label="Document collections">
@@ -480,7 +485,9 @@ export default function Documents() {
                       <FolderIcon />
                       <span className="tree-name">{collection.name}</span>
                       {(isLoading || countLabel) && (
-                        <span className="tree-count">{isLoading ? "Loading…" : countLabel}</span>
+                        <span className="tree-count">
+                          {isLoading ? "Loading…" : countLabel}
+                        </span>
                       )}
                     </button>
 
@@ -574,8 +581,7 @@ export default function Documents() {
               </div>
               <h3>No document selected</h3>
               <p>
-                Select a file from the tree to preview it, or upload Markdown files into any
-                collection.
+                Select a file from the tree to preview it, or upload Markdown files into any collection.
               </p>
             </div>
           )}
@@ -587,17 +593,7 @@ export default function Documents() {
 
 function ChevronIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <polyline points="9 18 15 12 9 6" />
     </svg>
   );
@@ -605,17 +601,7 @@ function ChevronIcon() {
 
 function FolderIcon() {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
     </svg>
   );
@@ -623,17 +609,7 @@ function FolderIcon() {
 
 function FileIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
     </svg>
@@ -642,17 +618,7 @@ function FileIcon({ size = 16 }: { size?: number }) {
 
 function UploadIcon() {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <polyline points="17 8 12 3 7 8" />
       <line x1="12" y1="3" x2="12" y2="15" />
@@ -662,17 +628,7 @@ function UploadIcon() {
 
 function TrashIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
