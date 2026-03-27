@@ -1,13 +1,13 @@
 use axum::{Router, routing};
 
-use crate::state::AppState;
+use crate::{state::AppState, ui};
 
 mod collections;
 mod documents;
 mod search;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    let api = Router::new()
         .route("/v1/collections", routing::post(collections::create))
         .route("/v1/collections", routing::get(collections::list))
         .route(
@@ -23,5 +23,7 @@ pub fn router() -> Router<AppState> {
             "/v1/documents/{collection}/{*path}",
             routing::delete(documents::delete),
         )
-        .route("/v1/search", routing::post(search::search))
+        .route("/v1/search", routing::post(search::search));
+
+    api.fallback(ui::serve)
 }

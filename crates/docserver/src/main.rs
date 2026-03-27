@@ -7,6 +7,7 @@ mod content;
 mod error;
 mod routes;
 mod state;
+mod ui;
 
 fn main() {
     let log_filter =
