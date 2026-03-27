@@ -71,6 +71,7 @@ export interface DocumentListItem {
 export interface LlmSettings {
   provider: string | null;
   model: string | null;
+  api_key: string | null;
 }
 
 export const api = {

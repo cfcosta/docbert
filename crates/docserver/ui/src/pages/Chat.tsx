@@ -1,4 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { getModel, stream } from "@mariozechner/pi-ai";
+import type { Context, UserMessage } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
 import type { SearchResult } from "../lib/api";
 import "./Chat.css";
@@ -10,31 +12,23 @@ interface Message {
   sources?: SearchResult[];
 }
 
-function stubResponse(query: string, sources: SearchResult[]): string {
-  if (sources.length === 0) {
-    return "I couldn't find any relevant documents for that query. Try ingesting some documents first, or rephrase your question.";
+function buildSystemPrompt(
+  docs: { title: string; collection: string; path: string; content: string }[],
+): string {
+  if (docs.length === 0) {
+    return "You are a helpful assistant. The user has a document collection but no relevant documents were found for this query. Answer as best you can and suggest they might want to ingest relevant documents.";
   }
 
-  const top = sources[0];
-  const otherCount = sources.length - 1;
+  let prompt =
+    "You are a helpful assistant that answers questions based on the user's document collection.\n\n";
+  prompt +=
+    "Use the following documents as context to answer the user's question. If the documents don't contain relevant information, say so.\n\n";
 
-  let response = `Based on your documents, here's what I found about "${query}":\n\n`;
-  response += `The most relevant result is **${top.title}** from the **${top.collection}** collection`;
-  response += ` (score: ${top.score.toFixed(2)}).`;
-
-  if (otherCount > 0) {
-    response += ` I also found ${otherCount} other related document${otherCount === 1 ? "" : "s"}`;
-    if (otherCount <= 3) {
-      const others = sources.slice(1).map((s) => `**${s.title}**`);
-      response += `: ${others.join(", ")}`;
-    }
-    response += ".";
+  for (const doc of docs) {
+    prompt += `---\nDocument: ${doc.title} (${doc.collection}/${doc.path})\n${doc.content}\n---\n\n`;
   }
 
-  response +=
-    "\n\n_This is a stub response. When an LLM provider is configured, this will use the retrieved documents as context to generate a real answer._";
-
-  return response;
+  return prompt;
 }
 
 export default function Chat() {
@@ -42,12 +36,13 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
 
@@ -61,32 +56,119 @@ export default function Chat() {
     setLoading(true);
 
     try {
+      // 1. Search for relevant documents.
       const searchRes = await api.search({
         query: text,
         mode: "hybrid",
         count: 5,
       });
-
       const sources = searchRes.results;
 
-      const assistantMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: stubResponse(text, sources),
-        sources,
+      // 2. Load LLM settings.
+      const settings = await api.getLlmSettings();
+
+      if (!settings.provider || !settings.model || !settings.api_key) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content:
+              "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
+            sources,
+          },
+        ]);
+        return;
+      }
+
+      // 3. Fetch document content for RAG context.
+      const docContents = await Promise.all(
+        sources.slice(0, 3).map(async (s) => {
+          try {
+            const doc = await api.getDocument(s.collection, s.path);
+            return {
+              title: s.title,
+              collection: s.collection,
+              path: s.path,
+              content: doc.content,
+            };
+          } catch {
+            return {
+              title: s.title,
+              collection: s.collection,
+              path: s.path,
+              content: "(content unavailable)",
+            };
+          }
+        }),
+      );
+
+      // 4. Build pi-ai context with user message.
+      const userPiMsg: UserMessage = {
+        role: "user",
+        content: text,
+        timestamp: Date.now(),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch {
-      const errorMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "Something went wrong while searching. Please try again.",
+      const piContext: Context = {
+        systemPrompt: buildSystemPrompt(docContents),
+        messages: [userPiMsg],
       };
-      setMessages((prev) => [...prev, errorMsg]);
+
+      // 5. Stream the response.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const model = getModel(settings.provider as any, settings.model as any);
+      const assistantId = crypto.randomUUID();
+
+      // Add empty assistant message that we'll stream into.
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant", content: "", sources },
+      ]);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const s = stream(model, piContext, {
+        apiKey: settings.api_key,
+        abortSignal: controller.signal,
+      });
+
+      for await (const event of s) {
+        if (event.type === "text_delta") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
+            ),
+          );
+        }
+        if (event.type === "error") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: m.content || `Error from ${settings.provider}: ${event.error}`,
+                  }
+                : m,
+            ),
+          );
+        }
+      }
+
+      abortRef.current = null;
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Something went wrong: ${err instanceof Error ? err.message : "unknown error"}`,
+        },
+      ]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading, messages]);
 
   return (
     <div className="chat-page">
@@ -138,7 +220,7 @@ export default function Chat() {
           </div>
         ))}
 
-        {loading && (
+        {loading && messages[messages.length - 1]?.role !== "assistant" && (
           <div className="chat-msg chat-msg-assistant">
             <div className="chat-msg-bubble">
               <div className="chat-typing">
@@ -158,7 +240,7 @@ export default function Chat() {
           className="chat-input-bar"
           onSubmit={(e) => {
             e.preventDefault();
-            sendMessage();
+            void sendMessage();
           }}
         >
           <input

@@ -92,6 +92,28 @@
   border-color: var(--border-focus);
 }
 
+.settings-input {
+  padding: 8px 12px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-input:focus {
+  border-color: var(--border-focus);
+}
+
+.settings-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .settings-actions {
   display: flex;
   align-items: center;

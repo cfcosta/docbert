@@ -25,6 +25,7 @@ const PROVIDERS: Record<string, { label: string; models: string[] }> = {
 export default function Settings() {
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -35,16 +36,14 @@ export default function Settings() {
       .then((s) => {
         setProvider(s.provider);
         setModel(s.model);
+        setApiKey(s.api_key ?? "");
       })
-      .catch(() => {
-        // Settings not configured yet — show the form anyway.
-      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   const handleProviderChange = (p: string) => {
     setProvider(p);
-    // Reset model to first option for this provider.
     const models = PROVIDERS[p]?.models ?? [];
     setModel(models[0] ?? null);
     setSaved(false);
@@ -59,7 +58,11 @@ export default function Settings() {
     setSaving(true);
     setSaved(false);
     try {
-      await api.updateLlmSettings({ provider, model });
+      await api.updateLlmSettings({
+        provider,
+        model,
+        api_key: apiKey || null,
+      });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -125,6 +128,26 @@ export default function Settings() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {provider && (
+            <div className="settings-field">
+              <label className="settings-label" htmlFor="api-key">
+                API Key
+              </label>
+              <input
+                id="api-key"
+                type="password"
+                className="settings-input"
+                placeholder={`Enter ${PROVIDERS[provider]?.label ?? provider} API key`}
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setSaved(false);
+                }}
+              />
+              <p className="settings-hint">Falls back to environment variable if not set.</p>
             </div>
           )}
 
