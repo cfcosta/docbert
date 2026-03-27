@@ -22,6 +22,12 @@ import type {
   ConversationSummary,
   ConversationFull,
 } from "../lib/api";
+import {
+  decideAnalyzeFiles,
+  formatAnalyzeFilesAcknowledgement,
+  mergeCurrentTurnSearchResults,
+  type ChatToolRuntimeState,
+} from "./chat-subagents";
 import "./Chat.css";
 
 function uuid(): string {
@@ -100,6 +106,20 @@ const tools: Tool[] = [
       }),
     }),
   },
+  {
+    name: "analyze_files",
+    description:
+      "Request deeper per-file analysis for up to three files selected from the current turn's search results.",
+    parameters: Type.Object({
+      files: Type.Array(
+        Type.Object({
+          collection: Type.String({ description: "The collection name" }),
+          path: Type.String({ description: "The document path within the collection" }),
+          reason: Type.String({ description: "Why this file needs deeper analysis" }),
+        }),
+      ),
+    }),
+  },
 ];
 
 // ── Tool execution ──
@@ -107,6 +127,7 @@ const tools: Tool[] = [
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
+  runtimeState: ChatToolRuntimeState,
 ): Promise<{ text: string; sources?: SearchResult[] }> {
   switch (name) {
     case "search_semantic": {
@@ -116,6 +137,10 @@ async function executeTool(
         collection: args.collection as string | undefined,
         count: (args.count as number) ?? 5,
       });
+      runtimeState.currentTurnSearchResults = mergeCurrentTurnSearchResults(
+        runtimeState.currentTurnSearchResults,
+        res.results,
+      );
       return {
         text: JSON.stringify(res.results, null, 2),
         sources: res.results,
@@ -128,6 +153,10 @@ async function executeTool(
         collection: args.collection as string | undefined,
         count: (args.count as number) ?? 5,
       });
+      runtimeState.currentTurnSearchResults = mergeCurrentTurnSearchResults(
+        runtimeState.currentTurnSearchResults,
+        res.results,
+      );
       return {
         text: JSON.stringify(res.results, null, 2),
         sources: res.results,
@@ -139,6 +168,13 @@ async function executeTool(
         text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
       };
     }
+    case "analyze_files": {
+      const decision = decideAnalyzeFiles(args, runtimeState.currentTurnSearchResults);
+      runtimeState.acceptedAnalysisFiles = decision.accepted;
+      return {
+        text: formatAnalyzeFilesAcknowledgement(decision),
+      };
+    }
     default:
       return { text: `Unknown tool: ${name}` };
   }
@@ -148,8 +184,9 @@ const SYSTEM_PROMPT = `You are a helpful assistant with access to a document sto
 
 When the user asks a question:
 1. Use search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once — this is usually the best default.
-2. Review the search results — if multiple documents look relevant, retrieve ALL of them with document_get, not just the top result. Answers often span several documents.
-3. Synthesize your answer from all retrieved documents, citing which documents contributed to the answer.
+2. Review the search results — if multiple files deserve deeper file-by-file analysis, call analyze_files with up to three files from the current turn's search results and explain why each file matters.
+3. Retrieve relevant documents with document_get when you need their full contents.
+4. Synthesize your answer from all retrieved documents, citing which documents contributed to the answer.
 
 If no relevant documents are found, say so and suggest what the user might want to ingest.`;
 
@@ -409,11 +446,12 @@ async function executeToolCallAndRecord(
   call: { id: string; name: string; arguments: Record<string, unknown> },
   piContext: Context,
   allSources: SearchResult[],
+  runtimeState: ChatToolRuntimeState,
 ): Promise<ToolCallInfo> {
   const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
 
   try {
-    const toolResult = await executeTool(call.name, call.arguments);
+    const toolResult = await executeTool(call.name, call.arguments, runtimeState);
 
     if (toolResult.sources) {
       allSources.push(...toolResult.sources);
@@ -442,6 +480,7 @@ async function runParentAgentRound({
   piContext,
   updateAssistantMessage,
   allSources,
+  runtimeState,
 }: {
   model: ReturnType<typeof getModel>;
   settings: ReadyLlmSettings;
@@ -449,6 +488,7 @@ async function runParentAgentRound({
   piContext: Context;
   updateAssistantMessage: UpdateAssistantMessage;
   allSources: SearchResult[];
+  runtimeState: ChatToolRuntimeState;
 }): Promise<boolean> {
   let streamedText = "";
   let streamedThinking = "";
@@ -493,6 +533,7 @@ async function runParentAgentRound({
       { id: call.id, name: call.name, arguments: callArgs },
       piContext,
       allSources,
+      runtimeState,
     );
 
     updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
@@ -664,6 +705,10 @@ export default function Chat() {
       const piContext = createPiContext(text);
       const assistantId = uuid();
       const allSources: SearchResult[] = [];
+      const runtimeState: ChatToolRuntimeState = {
+        currentTurnSearchResults: [],
+        acceptedAnalysisFiles: [],
+      };
       const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
         setMessages((prev) => updateMessageById(prev, assistantId, fn));
 
@@ -677,6 +722,7 @@ export default function Chat() {
           piContext,
           updateAssistantMessage,
           allSources,
+          runtimeState,
         });
         if (!shouldContinue) {
           break;
