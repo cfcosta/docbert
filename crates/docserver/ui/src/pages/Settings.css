@@ -14,9 +14,115 @@
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  max-width: 560px;
 }
 
-.settings-empty {
+.settings-loading {
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-description {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.settings-radio-group {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-radio {
+  padding: 8px 20px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.settings-radio:hover {
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.settings-radio.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.settings-select {
+  padding: 8px 12px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.settings-select:focus {
+  border-color: var(--border-focus);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.settings-save {
+  padding: 8px 24px;
+  min-height: 36px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.settings-save:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.settings-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-saved {
+  font-size: 0.85rem;
+  color: var(--success, #16a34a);
+  font-weight: 500;
 }

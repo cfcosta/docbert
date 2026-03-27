@@ -68,7 +68,19 @@ export interface DocumentListItem {
   title: string;
 }
 
+export interface LlmSettings {
+  provider: string | null;
+  model: string | null;
+}
+
 export const api = {
+  getLlmSettings: () => request<LlmSettings>("/settings/llm"),
+
+  updateLlmSettings: (settings: LlmSettings) =>
+    request<LlmSettings>("/settings/llm", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
   listCollections: () => request<Collection[]>("/collections"),
 
   listDocuments: (collection: string) =>

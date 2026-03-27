@@ -8,10 +8,13 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   return (
-    <nav className="sidebar">
+    <nav className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-header">
-        <h1 className="sidebar-title">docserver</h1>
+        <NavLink to="/" className="sidebar-title-link">
+          <h1 className="sidebar-title">docserver</h1>
+        </NavLink>
       </div>
+
       <ul className="sidebar-nav">
         {NAV_ITEMS.map((item) => (
           <li key={item.to}>
@@ -26,6 +29,7 @@ export default function Sidebar() {
           </li>
         ))}
       </ul>
+
       <div className="sidebar-footer">
         <NavLink
           to="/settings"

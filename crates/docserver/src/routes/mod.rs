@@ -5,6 +5,7 @@ use crate::{state::AppState, ui};
 mod collections;
 mod documents;
 mod search;
+mod settings;
 
 pub fn router() -> Router<AppState> {
     let api = Router::new()
@@ -27,7 +28,9 @@ pub fn router() -> Router<AppState> {
             "/v1/documents/{collection}/{*path}",
             routing::delete(documents::delete),
         )
-        .route("/v1/search", routing::post(search::search));
+        .route("/v1/search", routing::post(search::search))
+        .route("/v1/settings/llm", routing::get(settings::get))
+        .route("/v1/settings/llm", routing::put(settings::update));
 
     api.fallback(ui::serve)
 }
