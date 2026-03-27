@@ -293,6 +293,39 @@ export default function Documents() {
     await ingestFiles(collection, Array.from(event.dataTransfer.files));
   };
 
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const handleDeleteCollection = async (name: string) => {
+    try {
+      await api.deleteCollection(name);
+      setConfirmDelete(null);
+
+      // Clean up local state.
+      setDocs((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
+      if (selectedDoc?.collection === name) {
+        setSelectedDoc(null);
+        setPreview(null);
+      }
+
+      setStatus({ tone: "success", text: `Deleted collection ${name}.` });
+      await loadCollections();
+    } catch (error) {
+      setStatus({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Could not delete collection.",
+      });
+    }
+  };
+
   const collectionSummary = useMemo(
     () => `${collections.length} collection${collections.length === 1 ? "" : "s"}`,
     [collections.length],
@@ -381,10 +414,7 @@ export default function Documents() {
                 <span id="collections-heading" className="file-tree-title">
                   Collections
                 </span>
-                <p className="file-tree-help">
-                  {collectionSummary}. Create a collection, then upload Markdown files or drop them
-                  onto a collection.
-                </p>
+                <p className="file-tree-help">{collectionSummary}.</p>
               </div>
 
               <form
@@ -406,7 +436,7 @@ export default function Documents() {
                   className="collection-add-input"
                 />
                 <button type="submit" className="collection-add-btn" disabled={!newCollName.trim()}>
-                  Create
+                  +
                 </button>
               </form>
             </div>
@@ -464,6 +494,36 @@ export default function Documents() {
                     >
                       <UploadIcon />
                     </button>
+                    {confirmDelete === collection.name ? (
+                      <div className="tree-confirm-delete">
+                        <button
+                          type="button"
+                          className="tree-confirm-yes"
+                          onClick={() => void handleDeleteCollection(collection.name)}
+                          title="Confirm delete"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          className="tree-confirm-no"
+                          onClick={() => setConfirmDelete(null)}
+                          title="Cancel"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="tree-delete-btn"
+                        onClick={() => setConfirmDelete(collection.name)}
+                        aria-label={`Delete collection ${collection.name}`}
+                        title={`Delete collection ${collection.name}`}
+                      >
+                        <TrashIcon />
+                      </button>
+                    )}
                   </div>
 
                   {isExpanded && (
@@ -596,6 +656,25 @@ function UploadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <polyline points="17 8 12 3 7 8" />
       <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
   );
 }
