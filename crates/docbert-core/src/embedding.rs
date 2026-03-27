@@ -23,6 +23,26 @@ impl DocumentEncoder for ModelManager {
     }
 }
 
+/// Encoded embedding entry ready to write into [`EmbeddingDb`].
+///
+/// The tuple fields are `(doc_id, num_tokens, dimension, data)`.
+pub type EncodedEmbeddingEntry = (u64, u32, u32, Vec<f32>);
+
+/// Encode a batch of documents without writing them to the database.
+///
+/// Accepts `(doc_numeric_id, document_text)` pairs, runs them through ColBERT,
+/// and returns the per-token embeddings in the same format used by
+/// [`EmbeddingDb::batch_store`].
+///
+/// This is useful when callers need embedding generation to succeed before they
+/// mutate other storage layers.
+pub fn embed_documents(
+    model: &mut ModelManager,
+    documents: Vec<(u64, String)>,
+) -> Result<Vec<EncodedEmbeddingEntry>> {
+    embed_documents_with(model, documents)
+}
+
 /// Encode a batch of documents and write the embeddings to the database.
 ///
 /// Accepts `(doc_numeric_id, document_text)` pairs, runs them through ColBERT,
@@ -64,13 +84,12 @@ where
     )
 }
 
-fn embed_and_store_with<E: DocumentEncoder>(
+fn embed_documents_with<E: DocumentEncoder>(
     model: &mut E,
-    db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
-) -> Result<usize> {
+) -> Result<Vec<EncodedEmbeddingEntry>> {
     if documents.is_empty() {
-        return Ok(0);
+        return Ok(vec![]);
     }
 
     // Unzip to avoid cloning - we take ownership of the strings
@@ -107,8 +126,18 @@ fn embed_and_store_with<E: DocumentEncoder>(
             trimmed.to_vec(),
         ));
     }
-    db.batch_store(&entries)?;
 
+    Ok(entries)
+}
+
+fn embed_and_store_with<E: DocumentEncoder>(
+    model: &mut E,
+    db: &EmbeddingDb,
+    documents: Vec<(u64, String)>,
+) -> Result<usize> {
+    let entries = embed_documents_with(model, documents)?;
+    let batch_size = entries.len();
+    db.batch_store(&entries)?;
     Ok(batch_size)
 }
 
@@ -310,6 +339,21 @@ mod tests {
                 &candle_core::Device::Cpu,
             )?)
         }
+    }
+
+    #[test]
+    fn embed_documents_trims_trailing_zero_padding() {
+        let mut encoder = PaddedEncoder;
+
+        let entries = embed_documents_with(
+            &mut encoder,
+            vec![(1, "short".to_string()), (2, "long".to_string())],
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (1, 2, 2, vec![1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(entries[1], (2, 3, 2, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]));
     }
 
     #[test]

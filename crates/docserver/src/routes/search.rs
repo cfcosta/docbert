@@ -62,8 +62,7 @@ pub async fn search(
                 min_score: body.min_score,
                 all: false,
             };
-            let mut model =
-                state.model.lock().map_err(|e| ApiError::internal(e))?;
+            let mut model = state.model.lock().map_err(ApiError::internal)?;
             search::execute_semantic_search(
                 &params,
                 &state.config_db,
@@ -81,8 +80,7 @@ pub async fn search(
                 no_fuzzy: false,
                 all: false,
             };
-            let mut model =
-                state.model.lock().map_err(|e| ApiError::internal(e))?;
+            let mut model = state.model.lock().map_err(ApiError::internal)?;
             search::execute_search(
                 &params,
                 &state.search_index,

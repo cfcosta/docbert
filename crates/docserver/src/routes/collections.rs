@@ -64,8 +64,7 @@ pub async fn delete(
 
     // Delete Tantivy entries for this collection.
     {
-        let mut writer =
-            state.writer.lock().map_err(|e| ApiError::internal(e))?;
+        let mut writer = state.writer.lock().map_err(ApiError::internal)?;
         state.search_index.delete_collection(&writer, &name);
         writer.commit().map_err(ApiError::internal)?;
     }
@@ -76,10 +75,9 @@ pub async fn delete(
     for (doc_id, bytes) in &all_meta {
         if let Some(meta) =
             docbert_core::incremental::DocumentMetadata::deserialize(bytes)
+            && meta.collection == name
         {
-            if meta.collection == name {
-                ids_to_remove.push(*doc_id);
-            }
+            ids_to_remove.push(*doc_id);
         }
     }
     if !ids_to_remove.is_empty() {
