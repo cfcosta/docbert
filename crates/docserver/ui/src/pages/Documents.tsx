@@ -8,6 +8,7 @@ import {
   type ComponentProps,
 } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { api } from "../lib/api";
@@ -638,7 +639,9 @@ function PreviewContent({
           <div className="preview-loading">Loading document…</div>
         ) : (
           <div className="preview-content">
-            <Markdown components={{ code: CodeBlock }}>{parsed?.body ?? preview}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
+              {parsed?.body ?? preview}
+            </Markdown>
           </div>
         )}
       </div>

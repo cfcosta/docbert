@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Type, getModel, stream } from "@mariozechner/pi-ai";
 import type {
   Context,
@@ -548,7 +549,7 @@ export default function Chat() {
             <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
               <div className="chat-msg-bubble">
                 <div className="chat-msg-content">
-                  <Markdown>{msg.content}</Markdown>
+                  <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                 </div>
                 {msg.toolCalls && msg.toolCalls.length > 0 && (
                   <ToolCallsDisplay calls={msg.toolCalls} />

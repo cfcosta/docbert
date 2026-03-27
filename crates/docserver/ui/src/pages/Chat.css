@@ -335,6 +335,25 @@
   text-underline-offset: 0.15em;
 }
 
+.chat-msg-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.4em 0;
+  font-size: 0.85em;
+}
+
+.chat-msg-content th,
+.chat-msg-content td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.chat-msg-content th {
+  font-weight: 600;
+  background: var(--bg-secondary);
+}
+
 .chat-msg-content hr {
   border: none;
   border-top: 1px solid var(--border);
