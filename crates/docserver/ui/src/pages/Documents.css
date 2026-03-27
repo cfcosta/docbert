@@ -155,7 +155,14 @@
   color: var(--accent);
 }
 
+.tree-collection-head {
+  display: flex;
+  align-items: center;
+}
+
 .tree-collection-header {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   color: var(--text-h);
 }
@@ -200,6 +207,40 @@
   color: var(--text-muted);
   font-size: 0.8rem;
   font-style: italic;
+}
+
+.tree-count {
+  margin-left: auto;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tree-upload-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.tree-collection-head:hover .tree-upload-btn,
+.tree-upload-btn:focus-visible {
+  opacity: 1;
+}
+
+.tree-upload-btn:hover {
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 
 /* ── Collection actions ── */

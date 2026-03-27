@@ -1,26 +1,48 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { getProviders, getModels } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
 import "./Settings.css";
 
-const PROVIDERS: Record<string, { label: string; models: string[] }> = {
-  anthropic: {
-    label: "Anthropic",
-    models: ["claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001", "claude-opus-4-20250514"],
-  },
-  openai: {
-    label: "OpenAI",
-    models: [
-      "gpt-4o",
-      "gpt-4o-mini",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-      "gpt-4.1-nano",
-      "o4-mini",
-      "o3",
-      "o3-mini",
-    ],
-  },
-};
+// Build the provider/model list from pi-ai's registry at module load.
+function buildProviderMap() {
+  const map: Record<string, { label: string; models: { id: string; name: string }[] }> = {};
+
+  for (const provider of getProviders()) {
+    const models = getModels(provider);
+    if (models.length === 0) continue;
+
+    map[provider] = {
+      label: formatProviderLabel(provider),
+      models: models.map((m) => ({ id: m.id, name: m.name || m.id })),
+    };
+  }
+
+  return map;
+}
+
+function formatProviderLabel(provider: string): string {
+  const labels: Record<string, string> = {
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    google: "Google",
+    "google-vertex": "Google Vertex",
+    "google-gemini-cli": "Gemini CLI",
+    mistral: "Mistral",
+    groq: "Groq",
+    cerebras: "Cerebras",
+    xai: "xAI",
+    openrouter: "OpenRouter",
+    "amazon-bedrock": "Amazon Bedrock",
+    "azure-openai-responses": "Azure OpenAI",
+    "openai-codex": "OpenAI Codex",
+    "github-copilot": "GitHub Copilot",
+    "vercel-ai-gateway": "Vercel AI Gateway",
+    minimax: "MiniMax",
+  };
+  return labels[provider] ?? provider;
+}
+
+const PROVIDERS = buildProviderMap();
 
 export default function Settings() {
   const [provider, setProvider] = useState<string | null>(null);
@@ -45,7 +67,7 @@ export default function Settings() {
   const handleProviderChange = (p: string) => {
     setProvider(p);
     const models = PROVIDERS[p]?.models ?? [];
-    setModel(models[0] ?? null);
+    setModel(models[0]?.id ?? null);
     setSaved(false);
   };
 
@@ -72,7 +94,12 @@ export default function Settings() {
     }
   };
 
-  const models = provider ? (PROVIDERS[provider]?.models ?? []) : [];
+  const models = useMemo(
+    () => (provider ? PROVIDERS[provider]?.models ?? [] : []),
+    [provider],
+  );
+
+  const providerEntries = useMemo(() => Object.entries(PROVIDERS), []);
 
   if (loading) {
     return (
@@ -100,31 +127,42 @@ export default function Settings() {
           </p>
 
           <div className="settings-field">
-            <label className="settings-label">Provider</label>
-            <div className="settings-radio-group">
-              {Object.entries(PROVIDERS).map(([key, { label }]) => (
-                <button
-                  key={key}
-                  className={`settings-radio${provider === key ? " active" : ""}`}
-                  onClick={() => handleProviderChange(key)}
-                >
+            <label className="settings-label" htmlFor="provider-select">
+              Provider
+            </label>
+            <select
+              id="provider-select"
+              className="settings-select"
+              value={provider ?? ""}
+              onChange={(e) =>
+                e.target.value
+                  ? handleProviderChange(e.target.value)
+                  : setProvider(null)
+              }
+            >
+              <option value="">Select a provider...</option>
+              {providerEntries.map(([key, { label }]) => (
+                <option key={key} value={key}>
                   {label}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           </div>
 
           {provider && models.length > 0 && (
             <div className="settings-field">
-              <label className="settings-label">Model</label>
+              <label className="settings-label" htmlFor="model-select">
+                Model
+              </label>
               <select
+                id="model-select"
                 className="settings-select"
                 value={model ?? ""}
                 onChange={(e) => handleModelChange(e.target.value)}
               >
                 {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                  <option key={m.id} value={m.id}>
+                    {m.name}
                   </option>
                 ))}
               </select>
@@ -147,7 +185,9 @@ export default function Settings() {
                   setSaved(false);
                 }}
               />
-              <p className="settings-hint">Falls back to environment variable if not set.</p>
+              <p className="settings-hint">
+                Falls back to environment variable if not set.
+              </p>
             </div>
           )}
 
