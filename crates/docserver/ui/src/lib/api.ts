@@ -98,9 +98,34 @@ export interface ChatToolCall {
 
 export type ChatContentPart = { type: "text"; text: string } | { type: "thinking"; text: string };
 
+export type ChatPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | {
+      type: "tool_call";
+      name: string;
+      args: Record<string, unknown>;
+      result?: string;
+      is_error?: boolean;
+    };
+
+export type ChatSubagentStatus = "queued" | "running" | "done" | "error";
+
+export type ChatActor =
+  | { type: "parent" }
+  | {
+      type: "subagent";
+      id: string;
+      collection: string;
+      path: string;
+      status: ChatSubagentStatus;
+    };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
+  parts?: ChatPart[];
+  actor?: ChatActor;
   content: string;
   sources?: ChatSource[];
   tool_calls?: ChatToolCall[];
