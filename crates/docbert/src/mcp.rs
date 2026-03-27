@@ -242,6 +242,7 @@ impl DocbertMcpServer {
 
         let args = search::SemanticSearchParams {
             query: params.query,
+            collection: None,
             count: params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
             all: params.all.unwrap_or(false),
             min_score: params.min_score.unwrap_or(0.0),

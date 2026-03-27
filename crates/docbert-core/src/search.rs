@@ -59,6 +59,7 @@ pub struct SearchParams {
 ///
 /// let params = SemanticSearchParams {
 ///     query: "machine learning concepts".to_string(),
+///     collection: None,
 ///     count: 5,
 ///     min_score: 0.0,
 ///     all: false,
@@ -68,6 +69,8 @@ pub struct SearchParams {
 pub struct SemanticSearchParams {
     /// The search query.
     pub query: String,
+    /// Optional collection filter. When `None`, searches all collections.
+    pub collection: Option<String>,
     /// Number of results to return.
     pub count: usize,
     /// Minimum score threshold.
@@ -217,6 +220,10 @@ pub fn execute_semantic_search(
 
     for (doc_id, bytes) in metadata_entries {
         if let Some(meta) = DocumentMetadata::deserialize(&bytes)
+            && args
+                .collection
+                .as_ref()
+                .is_none_or(|c| c == &meta.collection)
             && document_has_semantic_body(
                 config_db,
                 &mut collection_paths,
@@ -625,6 +632,7 @@ mod tests {
     fn make_semantic_args(query: &str) -> SemanticSearchParams {
         SemanticSearchParams {
             query: query.to_string(),
+            collection: None,
             count: 10,
             all: false,
             min_score: 0.0,

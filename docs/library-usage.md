@@ -275,6 +275,7 @@ fn main() -> docbert_core::Result<()> {
 
     let params = SemanticSearchParams {
         query: "how does garbage collection work".to_string(),
+        collection: None,
         count: 10,
         min_score: 0.0,
         all: false,

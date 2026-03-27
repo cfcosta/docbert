@@ -208,6 +208,7 @@ pub(crate) fn run_semantic_search(
 
     let params = search::SemanticSearchParams {
         query: args.query.clone(),
+        collection: None,
         count: args.count,
         min_score: args.min_score,
         all: args.all,

@@ -33,9 +33,14 @@ const tools: Tool[] = [
   {
     name: "search_semantic",
     description:
-      "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents.",
+      "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents. Searches all collections by default.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
+      collection: Type.Optional(
+        Type.String({
+          description: "Restrict search to this collection. Omit to search all collections.",
+        }),
+      ),
       count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
     }),
   },
@@ -72,6 +77,7 @@ async function executeTool(
       const res = await api.search({
         query: args.query as string,
         mode: "semantic",
+        collection: args.collection as string | undefined,
         count: (args.count as number) ?? 5,
       });
       return {
@@ -105,7 +111,7 @@ async function executeTool(
 const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store. You can search for documents and retrieve their content using the provided tools.
 
 When the user asks a question:
-1. Use search_hybrid or search_semantic to find relevant documents.
+1. Use search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once — this is usually the best default.
 2. Review the search results — if multiple documents look relevant, retrieve ALL of them with document_get, not just the top result. Answers often span several documents.
 3. Synthesize your answer from all retrieved documents, citing which documents contributed to the answer.
 

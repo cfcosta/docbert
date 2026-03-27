@@ -57,6 +57,7 @@ pub async fn search(
         "semantic" => {
             let params = SemanticSearchParams {
                 query: body.query.clone(),
+                collection: body.collection.clone(),
                 count: body.count,
                 min_score: body.min_score,
                 all: false,
