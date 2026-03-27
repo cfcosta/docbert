@@ -68,6 +68,43 @@ export interface DocumentListItem {
   title: string;
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export interface ChatSource {
+  collection: string;
+  path: string;
+  title: string;
+}
+
+export interface ChatToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+  is_error?: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: ChatSource[];
+  tool_calls?: ChatToolCall[];
+}
+
+export interface ConversationFull {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  messages: ChatMessage[];
+}
+
 export interface LlmSettings {
   provider: string | null;
   model: string | null;
@@ -109,6 +146,28 @@ export const api = {
 
   deleteDocument: (collection: string, path: string) =>
     request<void>(`/documents/${encodeURIComponent(collection)}/${path}`, { method: "DELETE" }),
+
+  listConversations: () => request<ConversationSummary[]>("/conversations"),
+
+  createConversation: (id: string, title?: string) =>
+    request<ConversationFull>("/conversations", {
+      method: "POST",
+      body: JSON.stringify({ id, title }),
+    }),
+
+  getConversation: (id: string) =>
+    request<ConversationFull>(`/conversations/${encodeURIComponent(id)}`),
+
+  updateConversation: (id: string, conv: ConversationFull) =>
+    request<ConversationFull>(`/conversations/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(conv),
+    }),
+
+  deleteConversation: (id: string) =>
+    request<void>(`/conversations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 
   search: (params: {
     query: string;

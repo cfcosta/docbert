@@ -9,7 +9,7 @@ import type {
   Message as PiMessage,
 } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
-import type { SearchResult } from "../lib/api";
+import type { SearchResult, ConversationSummary, ConversationFull } from "../lib/api";
 import "./Chat.css";
 
 interface ToolCallInfo {
@@ -113,16 +113,134 @@ If no relevant documents are found, say so and suggest what the user might want 
 
 const MAX_TOOL_ROUNDS = 10;
 
+function messagesToApi(messages: Message[]): ConversationFull["messages"] {
+  return messages.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    sources: m.sources?.map((s) => ({
+      collection: s.collection,
+      path: s.path,
+      title: s.title,
+    })),
+    tool_calls: m.toolCalls?.map((tc) => ({
+      name: tc.name,
+      args: tc.args,
+      result: tc.result,
+      is_error: tc.isError,
+    })),
+  }));
+}
+
+function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
+  return msgs.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    sources: m.sources?.map((s) => ({
+      rank: 0,
+      score: 0,
+      doc_id: "",
+      collection: s.collection,
+      path: s.path,
+      title: s.title,
+    })),
+    toolCalls: m.tool_calls?.map((tc) => ({
+      name: tc.name,
+      args: tc.args,
+      result: tc.result,
+      isError: tc.is_error,
+    })),
+  }));
+}
+
+function formatRelativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export default function Chat() {
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeConv, setActiveConv] = useState<ConversationFull | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  const loadConversations = useCallback(async () => {
+    try {
+      const list = await api.listConversations();
+      setConversations(list);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConversations();
+  }, [loadConversations]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const selectConversation = useCallback(async (id: string) => {
+    try {
+      const conv = await api.getConversation(id);
+      setActiveId(id);
+      setActiveConv(conv);
+      setMessages(apiToMessages(conv.messages));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const startNewChat = useCallback(() => {
+    setActiveId(null);
+    setActiveConv(null);
+    setMessages([]);
+    setInput("");
+  }, []);
+
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteConversation(id);
+        setConfirmDelete(null);
+        if (activeId === id) {
+          startNewChat();
+        }
+        await loadConversations();
+      } catch {
+        /* ignore */
+      }
+    },
+    [activeId, startNewChat, loadConversations],
+  );
+
+  const saveConversation = useCallback(
+    async (convId: string, conv: ConversationFull | null, msgs: Message[]) => {
+      try {
+        const apiMsgs = messagesToApi(msgs);
+        if (conv) {
+          await api.updateConversation(convId, { ...conv, messages: apiMsgs });
+        }
+        await loadConversations();
+      } catch {
+        /* ignore */
+      }
+    },
+    [loadConversations],
+  );
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -133,23 +251,44 @@ export default function Chat() {
       role: "user",
       content: text,
     };
-    setMessages((prev) => [...prev, userMsg]);
+    const nextMessages = [...messages, userMsg];
+    setMessages(nextMessages);
     setInput("");
     setLoading(true);
+
+    // Create conversation on first message if needed.
+    let convId = activeId;
+    let conv = activeConv;
+    if (!convId) {
+      const id = crypto.randomUUID();
+      const title = text.length > 80 ? text.slice(0, 80) + "..." : text;
+      try {
+        conv = await api.createConversation(id, title);
+        convId = id;
+        setActiveId(id);
+        setActiveConv(conv);
+      } catch {
+        /* ignore -- we'll still show the chat, just won't persist */
+      }
+    }
 
     try {
       const settings = await api.getLlmSettings();
 
       if (!settings.provider || !settings.model || !settings.api_key) {
-        setMessages((prev) => [
-          ...prev,
+        const errMsgs = [
+          ...nextMessages,
           {
             id: crypto.randomUUID(),
-            role: "assistant",
+            role: "assistant" as const,
             content:
               "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
           },
-        ]);
+        ];
+        setMessages(errMsgs);
+        if (convId && conv) {
+          void saveConversation(convId, conv, errMsgs);
+        }
         return;
       }
 
@@ -289,117 +428,183 @@ export default function Chat() {
       ]);
     } finally {
       setLoading(false);
+
+      // Persist conversation after the response completes.
+      if (convId && conv) {
+        // We need the latest messages from state, so use a small trick:
+        // read from the setter callback.
+        setMessages((latest) => {
+          void saveConversation(convId, conv, latest);
+          return latest;
+        });
+      }
     }
-  }, [input, loading, messages]);
+  }, [input, loading, messages, activeId, activeConv, saveConversation]);
 
   return (
     <div className="chat-page">
-      <div className="chat-header-wrap">
-        <header className="chat-header">
-          <h2>Chat</h2>
-          <p className="chat-subtitle">Ask questions about your documents</p>
-        </header>
-      </div>
+      <aside className="chat-sidebar">
+        <div className="chat-sidebar-header">
+          <button type="button" className="chat-new-btn" onClick={startNewChat}>
+            + New chat
+          </button>
+        </div>
+        <div className="chat-conv-list">
+          {conversations.length === 0 && (
+            <div className="chat-conv-empty">No conversations yet.</div>
+          )}
+          {conversations.map((c) => (
+            <div key={c.id} className={`chat-conv-item${activeId === c.id ? " active" : ""}`}>
+              <button
+                type="button"
+                className="chat-conv-btn"
+                onClick={() => void selectConversation(c.id)}
+                title={c.title}
+              >
+                <span className="chat-conv-title">{c.title}</span>
+                <span className="chat-conv-time">{formatRelativeTime(c.updated_at)}</span>
+              </button>
+              {confirmDelete === c.id ? (
+                <div className="chat-conv-confirm">
+                  <button
+                    type="button"
+                    className="chat-conv-confirm-yes"
+                    onClick={() => void deleteConversation(c.id)}
+                  >
+                    Delete
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-conv-confirm-no"
+                    onClick={() => setConfirmDelete(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="chat-conv-delete"
+                  onClick={() => setConfirmDelete(c.id)}
+                  aria-label={`Delete ${c.title}`}
+                  title="Delete conversation"
+                >
+                  <TrashIcon />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </aside>
 
-      <div className="chat-messages">
-        {messages.length === 0 && (
-          <div className="chat-empty">
-            <div className="chat-empty-icon">
+      <div className="chat-main">
+        <div className="chat-header-wrap">
+          <header className="chat-header">
+            <h2>Chat</h2>
+            <p className="chat-subtitle">Ask questions about your documents</p>
+          </header>
+        </div>
+
+        <div className="chat-messages">
+          {messages.length === 0 && (
+            <div className="chat-empty">
+              <div className="chat-empty-icon">
+                <svg
+                  width="48"
+                  height="48"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+              </div>
+              <h3>Start a conversation</h3>
+              <p>Ask a question and the assistant will search your documents for context.</p>
+            </div>
+          )}
+
+          {messages.map((msg) => (
+            <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
+              <div className="chat-msg-bubble">
+                <div className="chat-msg-content">
+                  <Markdown>{msg.content}</Markdown>
+                </div>
+                {msg.toolCalls && msg.toolCalls.length > 0 && (
+                  <ToolCallsDisplay calls={msg.toolCalls} />
+                )}
+                {msg.sources && msg.sources.length > 0 && (
+                  <div className="chat-sources">
+                    <span className="chat-sources-label">Sources:</span>
+                    {msg.sources.map((s) => (
+                      <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
+                        {s.collection}/{s.path}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {loading && messages[messages.length - 1]?.role !== "assistant" && (
+            <div className="chat-msg chat-msg-assistant">
+              <div className="chat-msg-bubble">
+                <div className="chat-typing">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="chat-input-wrap">
+          <form
+            className="chat-input-bar"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void sendMessage();
+            }}
+          >
+            <input
+              type="text"
+              placeholder="Ask a question..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              className="chat-input"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              className="chat-send"
+              disabled={loading || !input.trim()}
+              aria-label="Send message"
+            >
               <svg
-                width="48"
-                height="48"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.5"
+                strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 aria-hidden="true"
               >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>
-            </div>
-            <h3>Start a conversation</h3>
-            <p>Ask a question and the assistant will search your documents for context.</p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
-            <div className="chat-msg-bubble">
-              <div className="chat-msg-content">
-                <Markdown>{msg.content}</Markdown>
-              </div>
-              {msg.toolCalls && msg.toolCalls.length > 0 && (
-                <ToolCallsDisplay calls={msg.toolCalls} />
-              )}
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="chat-sources">
-                  <span className="chat-sources-label">Sources:</span>
-                  {msg.sources.map((s) => (
-                    <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
-                      {s.collection}/{s.path}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {loading && messages[messages.length - 1]?.role !== "assistant" && (
-          <div className="chat-msg chat-msg-assistant">
-            <div className="chat-msg-bubble">
-              <div className="chat-typing">
-                <span />
-                <span />
-                <span />
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div ref={bottomRef} />
-      </div>
-
-      <div className="chat-input-wrap">
-        <form
-          className="chat-input-bar"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void sendMessage();
-          }}
-        >
-          <input
-            type="text"
-            placeholder="Ask a question..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            className="chat-input"
-            disabled={loading}
-          />
-          <button
-            type="submit"
-            className="chat-send"
-            disabled={loading || !input.trim()}
-            aria-label="Send message"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
-        </form>
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
@@ -438,6 +643,25 @@ function ToolCallsDisplay({ calls }: { calls: ToolCallInfo[] }) {
         );
       })}
     </div>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
   );
 }
 

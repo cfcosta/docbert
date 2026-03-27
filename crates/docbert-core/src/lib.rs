@@ -79,6 +79,7 @@
 
 pub mod chunking;
 pub mod config_db;
+pub mod conversation;
 pub mod data_dir;
 pub mod doc_id;
 pub mod embedding;
@@ -94,6 +95,7 @@ pub mod text_util;
 pub mod walker;
 
 pub use config_db::ConfigDb;
+pub use conversation::{ChatMessage, Conversation};
 pub use data_dir::DataDir;
 pub use doc_id::DocumentId;
 pub use embedding_db::EmbeddingDb;

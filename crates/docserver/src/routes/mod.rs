@@ -3,6 +3,7 @@ use axum::{Router, routing};
 use crate::{state::AppState, ui};
 
 mod collections;
+mod conversations;
 mod documents;
 mod search;
 mod settings;
@@ -14,6 +15,16 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/collections/{name}",
             routing::delete(collections::delete),
+        )
+        .route(
+            "/v1/conversations",
+            routing::get(conversations::list).post(conversations::create),
+        )
+        .route(
+            "/v1/conversations/{id}",
+            routing::get(conversations::get)
+                .put(conversations::update)
+                .delete(conversations::delete),
         )
         .route("/v1/documents", routing::post(documents::ingest))
         .route(

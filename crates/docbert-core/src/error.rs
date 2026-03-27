@@ -71,4 +71,7 @@ pub enum Error {
 
     #[error("tensor error: {0}")]
     Candle(#[from] candle_core::Error),
+
+    #[error("serialization error: {0}")]
+    Json(#[from] serde_json::Error),
 }
