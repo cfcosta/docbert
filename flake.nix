@@ -168,19 +168,39 @@
           ...
         }:
         {
-          default = pkgs.mkShell {
-            name = "docbert";
+          default = pkgs.mkShell (
+            {
+              name = "docbert";
 
-            buildInputs = with pkgs; [
-              rust
-              formatter
+              buildInputs =
+                with pkgs;
+                [
+                  rust
+                  formatter
 
-              bacon
-              bun
-              cargo-mutants
-              cargo-nextest
-            ];
-          };
+                  bacon
+                  bun
+                  cargo-mutants
+                  cargo-nextest
+                ]
+                ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+                  with pkgs.cudaPackages;
+                  [
+                    cuda_nvcc
+                    cudatoolkit
+                    cudnn
+                  ]
+                );
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              CUDA_COMPUTE_CAP = "80";
+              CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
+
+              shellHook = ''
+                export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LD_LIBRARY_PATH"
+              '';
+            }
+          );
         }
       );
     };
