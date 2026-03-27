@@ -23,6 +23,7 @@ import type {
   ConversationFull,
 } from "../lib/api";
 import {
+  buildSynthesisPayload,
   decideAnalyzeFiles,
   formatAnalyzeFilesAcknowledgement,
   mergeCurrentTurnSearchResults,
@@ -33,6 +34,8 @@ import {
   type AnalyzeFilesAcceptedItem,
   type ChatToolRuntimeState,
   type QueuedAnalysisFile,
+  type SubagentAnalysisResult,
+  type SynthesisPayload,
 } from "./chat-subagents";
 import "./Chat.css";
 
@@ -405,6 +408,25 @@ function createSubagentContext(
   };
 }
 
+function createSynthesisContext(payload: SynthesisPayload): Context {
+  const userPiMsg: UserMessage = {
+    role: "user",
+    content: [
+      "Synthesize a final answer for the user using only the provided file analyses.",
+      "If some file analyses failed, mention the uncertainty instead of inventing details.",
+      JSON.stringify(payload, null, 2),
+    ].join("\n\n"),
+    timestamp: Date.now(),
+  };
+
+  return {
+    systemPrompt:
+      "You are the parent synthesis agent. Combine the file analyses into one direct answer. Do not call tools.",
+    messages: [userPiMsg],
+    tools: [],
+  };
+}
+
 function updateMessageById(
   messages: Message[],
   id: string,
@@ -523,6 +545,38 @@ function createToolResultMessage(
   };
 }
 
+function buildFinalSources(
+  payload: SynthesisPayload,
+  availableResults: SearchResult[],
+): SearchResult[] {
+  const lookup = new Map(
+    availableResults.map((result) => [`${result.collection}:${result.path}`, result]),
+  );
+
+  return payload.sourceFiles
+    .map((file) => {
+      const matched = lookup.get(`${file.collection}:${file.path}`);
+      if (matched) {
+        return matched;
+      }
+      return {
+        rank: 0,
+        score: 0,
+        doc_id: `${file.collection}:${file.path}`,
+        collection: file.collection,
+        path: file.path,
+        title: file.title ?? file.path,
+      };
+    })
+    .filter(
+      (result, index, array) =>
+        index ===
+        array.findIndex(
+          (item) => item.collection === result.collection && item.path === result.path,
+        ),
+    );
+}
+
 async function executeToolCallAndRecord(
   call: { id: string; name: string; arguments: Record<string, unknown> },
   piContext: Context,
@@ -568,12 +622,13 @@ async function runFileSubagent({
   file: QueuedAnalysisFile;
   userQuestion: string;
   updateMessage: (updater: (message: Message) => Message) => void;
-}): Promise<void> {
+}): Promise<SubagentAnalysisResult> {
   try {
     const document = await api.getDocument(file.collection, file.path);
     const context = createSubagentContext(userQuestion, document.content, file);
     let streamedText = "";
     let streamedThinking = "";
+    let streamError: string | undefined;
 
     updateMessage((message) => startSubagentMessage(message));
 
@@ -595,6 +650,7 @@ async function runFileSubagent({
         updateMessage((message) => applySubagentThinkingDelta(message, captured));
       }
       if (event.type === "error") {
+        streamError = typeof event.error === "string" ? event.error : JSON.stringify(event.error);
         updateMessage((message) => {
           const next = applyStreamError(message, settings.provider, event.error);
           return finalizeSubagentMessage(next, "error");
@@ -603,12 +659,38 @@ async function runFileSubagent({
     }
 
     await stream.result();
+    if (streamError) {
+      updateMessage((message) => finalizeSubagentMessage(message, "error"));
+      return {
+        collection: file.collection,
+        path: file.path,
+        reason: file.reason,
+        title: file.title,
+        error: streamError,
+      };
+    }
+
     updateMessage((message) => finalizeSubagentMessage(message, "done"));
+    return {
+      collection: file.collection,
+      path: file.path,
+      reason: file.reason,
+      title: file.title,
+      text: streamedText,
+    };
   } catch (error) {
+    const rendered = error instanceof Error ? error.message : "unknown error";
     updateMessage((message) => {
-      const next = applyStreamError(message, settings.provider, error);
+      const next = applyStreamError(message, settings.provider, rendered);
       return finalizeSubagentMessage(next, "error");
     });
+    return {
+      collection: file.collection,
+      path: file.path,
+      reason: file.reason,
+      title: file.title,
+      error: rendered,
+    };
   }
 }
 
@@ -687,6 +769,49 @@ async function runParentAgentRound({
   }
 
   return true;
+}
+
+async function runParentSynthesis({
+  model,
+  settings,
+  controller,
+  payload,
+  updateAssistantMessage,
+}: {
+  model: ReturnType<typeof getModel>;
+  settings: ReadyLlmSettings;
+  controller: AbortController;
+  payload: SynthesisPayload;
+  updateAssistantMessage: UpdateAssistantMessage;
+}): Promise<void> {
+  let streamedText = "";
+  let streamedThinking = "";
+
+  const stream = streamSimple(model, createSynthesisContext(payload), {
+    apiKey: settings.api_key,
+    signal: controller.signal,
+    reasoning: model.reasoning ? "medium" : undefined,
+  });
+
+  for await (const event of stream) {
+    if (event.type === "text_delta") {
+      streamedText += event.delta;
+      const captured = streamedText;
+      updateAssistantMessage((message) => applyTextDelta(message, captured, event.delta));
+    }
+    if (event.type === "thinking_delta") {
+      streamedThinking += event.delta;
+      const captured = streamedThinking;
+      updateAssistantMessage((message) => applyThinkingDelta(message, captured));
+    }
+    if (event.type === "error") {
+      updateAssistantMessage((message) =>
+        applyStreamError(message, settings.provider, event.error),
+      );
+    }
+  }
+
+  await stream.result();
 }
 
 function formatRelativeTime(ms: number): string {
@@ -903,7 +1028,7 @@ export default function Chat() {
         }
       }
 
-      await Promise.allSettled(
+      const subagentRuns = await Promise.allSettled(
         runtimeState.queuedAnalysisFiles.map((queuedFile) =>
           runFileSubagent({
             model,
@@ -917,6 +1042,40 @@ export default function Chat() {
           }),
         ),
       );
+
+      if (runtimeState.acceptedAnalysisFiles.length > 0) {
+        const subagentResults = subagentRuns.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const synthesisPayload = buildSynthesisPayload({
+          userQuestion: text,
+          acceptedFiles: runtimeState.acceptedAnalysisFiles,
+          subagentResults,
+        });
+        const synthesisMessageId = uuid();
+        const synthesisSources = buildFinalSources(
+          synthesisPayload,
+          runtimeState.currentTurnSearchResults,
+        );
+        const updateSynthesisMessage: UpdateAssistantMessage = (fn) =>
+          setMessages((prev) => updateMessageById(prev, synthesisMessageId, fn));
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            ...createAssistantPlaceholder(synthesisMessageId),
+            sources: synthesisSources,
+          },
+        ]);
+
+        await runParentSynthesis({
+          model,
+          settings,
+          controller,
+          payload: synthesisPayload,
+          updateAssistantMessage: updateSynthesisMessage,
+        });
+      }
 
       abortRef.current = null;
     } catch (err) {

@@ -27,6 +27,22 @@ export interface QueuedAnalysisFile extends AnalyzeFilesAcceptedItem {
   messageId: string;
 }
 
+export interface SubagentAnalysisResult extends AnalyzeFilesAcceptedItem {
+  text?: string;
+  error?: string;
+}
+
+export interface SynthesisPayloadFile extends AnalyzeFilesAcceptedItem {
+  analysis?: string;
+  error?: string;
+}
+
+export interface SynthesisPayload {
+  userQuestion: string;
+  files: SynthesisPayloadFile[];
+  sourceFiles: Array<Pick<AnalyzeFilesAcceptedItem, "collection" | "path" | "title">>;
+}
+
 export interface ChatToolRuntimeState {
   currentTurnSearchResults: SearchResult[];
   acceptedAnalysisFiles: AnalyzeFilesAcceptedItem[];
@@ -214,6 +230,53 @@ export function updateSubagentMessageById<T extends SubagentTranscriptMessage>(
   updater: (message: T) => T,
 ): T[] {
   return messages.map((message) => (message.id === messageId ? updater(message) : message));
+}
+
+export function buildSynthesisPayload({
+  userQuestion,
+  acceptedFiles,
+  subagentResults,
+}: {
+  userQuestion: string;
+  acceptedFiles: AnalyzeFilesAcceptedItem[];
+  subagentResults: SubagentAnalysisResult[];
+}): SynthesisPayload {
+  const resultLookup = new Map(
+    subagentResults.map((result) => [`${result.collection}:${result.path}`, result]),
+  );
+  const files: SynthesisPayloadFile[] = [];
+  const sourceFiles: Array<Pick<AnalyzeFilesAcceptedItem, "collection" | "path" | "title">> = [];
+
+  for (const file of acceptedFiles) {
+    const result = resultLookup.get(`${file.collection}:${file.path}`);
+    const payloadFile: SynthesisPayloadFile = {
+      collection: file.collection,
+      path: file.path,
+      reason: file.reason,
+      title: file.title,
+    };
+
+    if (result?.error) {
+      payloadFile.error = result.error;
+    } else if (result?.text && result.text.trim().length > 0) {
+      payloadFile.analysis = result.text;
+      sourceFiles.push({
+        collection: file.collection,
+        path: file.path,
+        title: file.title,
+      });
+    } else {
+      payloadFile.error = "missing_subagent_result";
+    }
+
+    files.push(payloadFile);
+  }
+
+  return {
+    userQuestion,
+    files,
+    sourceFiles,
+  };
 }
 
 export function queueAcceptedSubagentMessages<T extends SubagentTranscriptMessage>({

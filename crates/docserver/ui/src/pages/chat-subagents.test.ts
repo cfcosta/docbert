@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SearchResult } from "../lib/api";
 import {
+  buildSynthesisPayload,
   decideAnalyzeFiles,
   formatAnalyzeFilesAcknowledgement,
   insertOrUpdateSubagentMessage,
@@ -286,6 +287,71 @@ describe("updateSubagentMessageById", () => {
 
     expect(messages.map((message) => message.id)).toEqual(["assistant-1", "sub-1", "sub-2"]);
     expect(messages[1].content).toBe("still first");
+  });
+});
+
+describe("buildSynthesisPayload", () => {
+  test("includes failed subagent markers", () => {
+    const payload = buildSynthesisPayload({
+      userQuestion: "What matters?",
+      acceptedFiles: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B" },
+      ],
+      subagentResults: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A", text: "Useful" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B", error: "timeout" },
+      ],
+    });
+
+    expect(payload.files).toEqual([
+      {
+        collection: "notes",
+        path: "a.md",
+        reason: "first",
+        title: "A",
+        analysis: "Useful",
+      },
+      {
+        collection: "notes",
+        path: "b.md",
+        reason: "second",
+        title: "B",
+        error: "timeout",
+      },
+    ]);
+  });
+
+  test("only successful files contribute final sources", () => {
+    const payload = buildSynthesisPayload({
+      userQuestion: "What matters?",
+      acceptedFiles: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B" },
+      ],
+      subagentResults: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A", text: "Useful" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B", error: "timeout" },
+      ],
+    });
+
+    expect(payload.sourceFiles).toEqual([{ collection: "notes", path: "a.md", title: "A" }]);
+  });
+
+  test("preserves accepted-file order in the payload", () => {
+    const payload = buildSynthesisPayload({
+      userQuestion: "What matters?",
+      acceptedFiles: [
+        { collection: "notes", path: "b.md", reason: "second", title: "B" },
+        { collection: "notes", path: "a.md", reason: "first", title: "A" },
+      ],
+      subagentResults: [
+        { collection: "notes", path: "a.md", reason: "first", title: "A", text: "Useful A" },
+        { collection: "notes", path: "b.md", reason: "second", title: "B", text: "Useful B" },
+      ],
+    });
+
+    expect(payload.files.map((file) => file.path)).toEqual(["b.md", "a.md"]);
   });
 });
 
