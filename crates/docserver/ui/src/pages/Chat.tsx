@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router";
 import Markdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { Type, getModel, stream } from "@mariozechner/pi-ai";
+import "katex/dist/katex.min.css";
 import type {
   Context,
   Tool,
@@ -132,6 +135,8 @@ When the user asks a question:
 If no relevant documents are found, say so and suggest what the user might want to ingest.`;
 
 const MAX_TOOL_ROUNDS = 10;
+const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
 function messagesToApi(messages: Message[]): ConversationFull["messages"] {
   return messages.map((m) => {
@@ -620,7 +625,12 @@ export default function Chat() {
                     {msg.parts.map((part, i) =>
                       part.type === "text" ? (
                         <div key={i} className="chat-msg-content">
-                          <Markdown remarkPlugins={[remarkGfm]}>{part.text}</Markdown>
+                          <Markdown
+                            remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                            rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                          >
+                            {part.text}
+                          </Markdown>
                         </div>
                       ) : (
                         <ToolCallInline key={i} call={part.call} />
@@ -629,7 +639,12 @@ export default function Chat() {
                   </>
                 ) : (
                   <div className="chat-msg-content">
-                    <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+                    <Markdown
+                      remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                      rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                    >
+                      {msg.content}
+                    </Markdown>
                   </div>
                 )}
                 {msg.sources && msg.sources.length > 0 && (
