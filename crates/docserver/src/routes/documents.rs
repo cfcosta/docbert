@@ -68,6 +68,17 @@ pub async fn ingest(
     // Acquire the Tantivy writer for the duration of this ingestion.
     let mut writer = state.writer.lock().map_err(|e| ApiError::internal(e))?;
 
+    // Phase 1: Add all documents to Tantivy and prepare embedding data.
+    // No metadata is written yet — if Tantivy fails, nothing is persisted.
+    struct Prepared {
+        did: docbert_core::DocumentId,
+        path: String,
+        title: String,
+        content: String,
+        metadata: Option<serde_json::Value>,
+    }
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(body.documents.len());
+
     for doc in &body.documents {
         let processed =
             content::process(&doc.content_type, &doc.path, &doc.content);
@@ -101,48 +112,58 @@ pub async fn ingest(
             docs_to_embed.push((chunk_id, chunk.text));
         }
 
-        // Build metadata for storage: collection\0path\0mtime format
-        // used by docbert-core's incremental module.
-        let doc_meta = incremental::DocumentMetadata {
-            collection: body.collection.clone(),
-            relative_path: doc.path.clone(),
-            mtime: 0,
-        };
-        state
-            .config_db
-            .set_document_metadata(did.numeric, &doc_meta.serialize())?;
-
-        // Store raw content so GET /documents can return it.
-        let content_key = format!("doc_content:{}", did.numeric);
-        state.config_db.set_setting(&content_key, &doc.content)?;
-
-        // Store user metadata as a setting keyed by doc ID if provided.
-        if let Some(ref user_meta) = doc.metadata {
-            let meta_key = format!("doc_meta:{}", did.numeric);
-            let meta_val = serde_json::to_string(user_meta)
-                .map_err(|e| ApiError::internal(e))?;
-            state.config_db.set_setting(&meta_key, &meta_val)?;
-        }
-
-        ingested_docs.push(IngestedDoc {
-            doc_id: did.to_string(),
+        prepared.push(Prepared {
+            did,
             path: doc.path.clone(),
             title: processed.title,
+            content: doc.content.clone(),
             metadata: doc.metadata.clone(),
         });
     }
 
+    // Phase 2: Commit Tantivy. If this fails, no metadata is written.
     writer.commit().map_err(ApiError::internal)?;
 
-    // Compute embeddings (this can be slow, runs after Tantivy commit).
+    // Phase 3: Now that Tantivy is committed, persist metadata and content.
+    // These writes go to redb which auto-commits, so they're durable.
+    for p in &prepared {
+        let doc_meta = incremental::DocumentMetadata {
+            collection: body.collection.clone(),
+            relative_path: p.path.clone(),
+            mtime: 0,
+        };
+        state
+            .config_db
+            .set_document_metadata(p.did.numeric, &doc_meta.serialize())?;
+
+        let content_key = format!("doc_content:{}", p.did.numeric);
+        state.config_db.set_setting(&content_key, &p.content)?;
+
+        if let Some(ref user_meta) = p.metadata {
+            let meta_key = format!("doc_meta:{}", p.did.numeric);
+            let meta_val = serde_json::to_string(user_meta).map_err(|e| ApiError::internal(e))?;
+            state.config_db.set_setting(&meta_key, &meta_val)?;
+        }
+
+        ingested_docs.push(IngestedDoc {
+            doc_id: p.did.to_string(),
+            path: p.path.clone(),
+            title: p.title.clone(),
+            metadata: p.metadata.clone(),
+        });
+    }
+
+    // Phase 4: Compute embeddings. This is best-effort — if it fails,
+    // the document is still searchable via BM25, just not via semantic search.
     if !docs_to_embed.is_empty() {
-        let mut model =
-            state.model.lock().map_err(|e| ApiError::internal(e))?;
-        embedding::embed_and_store(
-            &mut model,
-            &state.embedding_db,
-            docs_to_embed,
-        )?;
+        if let Ok(mut model) = state.model.lock() {
+            if let Err(e) = embedding::embed_and_store(&mut model, &state.embedding_db, docs_to_embed)
+            {
+                tracing::warn!("embedding failed (documents are still BM25-searchable): {e}");
+            }
+        } else {
+            tracing::warn!("could not acquire model lock for embedding");
+        }
     }
 
     Ok(Json(IngestResponse {

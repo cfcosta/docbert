@@ -21,10 +21,21 @@ pub fn init(
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
-    let model = match model_id {
+    let mut model = match model_id {
         Some(id) => ModelManager::with_model_id(id),
         None => ModelManager::new(),
     };
+
+    // Eagerly load the ColBERT model so the first ingestion doesn't block.
+    tracing::info!("loading ColBERT model: {}", model.model_id());
+    match model.runtime_config() {
+        Ok(cfg) => tracing::info!(
+            "model loaded: {} on {}",
+            model.model_id(),
+            cfg.device,
+        ),
+        Err(e) => tracing::warn!("failed to preload model (will retry on first use): {e}"),
+    }
 
     let writer = search_index.writer(50_000_000)?;
 
