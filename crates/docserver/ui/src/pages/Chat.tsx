@@ -1,21 +1,23 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Type, getModel, stream } from "@mariozechner/pi-ai";
-import type {
-  Context,
-  Tool,
-  UserMessage,
-  ToolResultMessage,
-  Message as PiMessage,
-} from "@mariozechner/pi-ai";
+import type { Context, Tool, UserMessage, ToolResultMessage, Message as PiMessage } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
 import type { SearchResult } from "../lib/api";
 import "./Chat.css";
+
+interface ToolCallInfo {
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+}
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   sources?: SearchResult[];
+  toolCalls?: ToolCallInfo[];
 }
 
 // ── Tool definitions for pi-ai ──
@@ -27,7 +29,9 @@ const tools: Tool[] = [
       "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
-      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+      count: Type.Optional(
+        Type.Number({ description: "Number of results to return (default 5)" }),
+      ),
     }),
   },
   {
@@ -36,13 +40,18 @@ const tools: Tool[] = [
       "Search the document store using hybrid BM25 + semantic search. Best when the query shares keywords with the target documents. Faster on large collections.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
-      collection: Type.Optional(Type.String({ description: "Restrict search to this collection" })),
-      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+      collection: Type.Optional(
+        Type.String({ description: "Restrict search to this collection" }),
+      ),
+      count: Type.Optional(
+        Type.Number({ description: "Number of results to return (default 5)" }),
+      ),
     }),
   },
   {
     name: "document_get",
-    description: "Retrieve the full content of a specific document by collection and path.",
+    description:
+      "Retrieve the full content of a specific document by collection and path.",
     parameters: Type.Object({
       collection: Type.String({ description: "The collection name" }),
       path: Type.String({
@@ -83,7 +92,10 @@ async function executeTool(
       };
     }
     case "document_get": {
-      const doc = await api.getDocument(args.collection as string, args.path as string);
+      const doc = await api.getDocument(
+        args.collection as string,
+        args.path as string,
+      );
       return {
         text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
       };
@@ -163,9 +175,13 @@ export default function Chat() {
 
       const assistantId = crypto.randomUUID();
       const allSources: SearchResult[] = [];
+      const allToolCalls: ToolCallInfo[] = [];
 
       // Add empty assistant message to stream into.
-      setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant", content: "" },
+      ]);
 
       // Agentic tool loop: stream, handle tool calls, continue.
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -178,7 +194,9 @@ export default function Chat() {
           if (event.type === "text_delta") {
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
+                m.id === assistantId
+                  ? { ...m, content: m.content + event.delta }
+                  : m,
               ),
             );
           }
@@ -188,7 +206,9 @@ export default function Chat() {
                 m.id === assistantId
                   ? {
                       ...m,
-                      content: m.content || `Error from ${settings.provider}: ${event.error}`,
+                      content:
+                        m.content ||
+                        `Error from ${settings.provider}: ${event.error}`,
                     }
                   : m,
               ),
@@ -201,7 +221,9 @@ export default function Chat() {
         piContext.messages.push(result);
 
         // Check for tool calls.
-        const toolCalls = result.content.filter((b) => b.type === "toolCall");
+        const toolCalls = result.content.filter(
+          (b) => b.type === "toolCall",
+        );
 
         if (toolCalls.length === 0) {
           // No tool calls — done.
@@ -210,15 +232,17 @@ export default function Chat() {
 
         // Execute tool calls and add results.
         for (const call of toolCalls) {
+          const callArgs = call.arguments as Record<string, unknown>;
+          const callInfo: ToolCallInfo = { name: call.name, args: callArgs };
+
           try {
-            const toolResult = await executeTool(
-              call.name,
-              call.arguments as Record<string, unknown>,
-            );
+            const toolResult = await executeTool(call.name, callArgs);
 
             if (toolResult.sources) {
               allSources.push(...toolResult.sources);
             }
+
+            callInfo.result = toolResult.text;
 
             const resultMsg: ToolResultMessage = {
               role: "toolResult",
@@ -230,30 +254,33 @@ export default function Chat() {
             };
             piContext.messages.push(resultMsg as PiMessage);
           } catch (err) {
+            const errText = err instanceof Error ? err.message : "unknown error";
+            callInfo.result = `Error: ${errText}`;
+            callInfo.isError = true;
+
             const resultMsg: ToolResultMessage = {
               role: "toolResult",
               toolCallId: call.id,
               toolName: call.name,
-              content: [
-                {
-                  type: "text",
-                  text: `Error: ${err instanceof Error ? err.message : "unknown error"}`,
-                },
-              ],
+              content: [{ type: "text", text: `Error: ${errText}` }],
               isError: true,
               timestamp: Date.now(),
             };
             piContext.messages.push(resultMsg as PiMessage);
           }
+
+          allToolCalls.push(callInfo);
         }
 
-        // Update sources on the message after each round.
-        if (allSources.length > 0) {
-          const uniqueSources = deduplicateSources(allSources);
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, sources: uniqueSources } : m)),
-          );
-        }
+        // Update sources and tool calls on the message after each round.
+        const uniqueSources = deduplicateSources(allSources);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, sources: uniqueSources.length > 0 ? uniqueSources : m.sources, toolCalls: [...allToolCalls] }
+              : m,
+          ),
+        );
 
         // Continue to next round — the model will see tool results and respond.
       }
@@ -301,19 +328,30 @@ export default function Chat() {
               </svg>
             </div>
             <h3>Start a conversation</h3>
-            <p>Ask a question and the assistant will search your documents for context.</p>
+            <p>
+              Ask a question and the assistant will search your documents for
+              context.
+            </p>
           </div>
         )}
 
         {messages.map((msg) => (
           <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
             <div className="chat-msg-bubble">
-              <div className="chat-msg-content">{renderContent(msg.content)}</div>
+              <div className="chat-msg-content">
+                {renderContent(msg.content)}
+              </div>
+              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                <ToolCallsDisplay calls={msg.toolCalls} />
+              )}
               {msg.sources && msg.sources.length > 0 && (
                 <div className="chat-sources">
                   <span className="chat-sources-label">Sources:</span>
                   {msg.sources.map((s) => (
-                    <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
+                    <span
+                      key={`${s.collection}:${s.path}`}
+                      className="chat-source-tag"
+                    >
                       {s.collection}/{s.path}
                     </span>
                   ))}
@@ -381,6 +419,44 @@ export default function Chat() {
   );
 }
 
+function ToolCallsDisplay({ calls }: { calls: ToolCallInfo[] }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  return (
+    <div className="chat-tool-calls">
+      {calls.map((call, i) => {
+        const isExpanded = expandedIdx === i;
+        const argsStr = Object.entries(call.args)
+          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+          .join(", ");
+
+        return (
+          <div key={i} className={`chat-tool-call${call.isError ? " error" : ""}`}>
+            <button
+              type="button"
+              className="chat-tool-call-header"
+              onClick={() => setExpandedIdx(isExpanded ? null : i)}
+              aria-expanded={isExpanded}
+            >
+              <span className="chat-tool-call-icon">
+                {call.isError ? "!" : "\u2713"}
+              </span>
+              <span className="chat-tool-call-name">{call.name}</span>
+              <span className="chat-tool-call-args">{argsStr}</span>
+              <span className={`chat-tool-call-chevron${isExpanded ? " open" : ""}`}>
+                {"\u25B8"}
+              </span>
+            </button>
+            {isExpanded && call.result && (
+              <pre className="chat-tool-call-result">{call.result}</pre>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function deduplicateSources(sources: SearchResult[]): SearchResult[] {
   const seen = new Set<string>();
   return sources.filter((s) => {
@@ -392,21 +468,19 @@ function deduplicateSources(sources: SearchResult[]): SearchResult[] {
 }
 
 function renderContent(text: string) {
-  return text
-    .split("\n")
-    .map((line, i) => (
-      <p key={i}>
-        {line
-          .split(/(\*\*[^*]+\*\*|_[^_]+_)/)
-          .map((part, j) =>
-            part.startsWith("**") && part.endsWith("**") ? (
-              <strong key={j}>{part.slice(2, -2)}</strong>
-            ) : part.startsWith("_") && part.endsWith("_") ? (
-              <em key={j}>{part.slice(1, -1)}</em>
-            ) : (
-              <span key={j}>{part}</span>
-            ),
-          )}
-      </p>
-    ));
+  return text.split("\n").map((line, i) => (
+    <p key={i}>
+      {line
+        .split(/(\*\*[^*]+\*\*|_[^_]+_)/)
+        .map((part, j) =>
+          part.startsWith("**") && part.endsWith("**") ? (
+            <strong key={j}>{part.slice(2, -2)}</strong>
+          ) : part.startsWith("_") && part.endsWith("_") ? (
+            <em key={j}>{part.slice(1, -1)}</em>
+          ) : (
+            <span key={j}>{part}</span>
+          ),
+        )}
+    </p>
+  ));
 }
