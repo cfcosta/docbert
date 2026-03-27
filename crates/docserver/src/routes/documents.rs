@@ -112,6 +112,10 @@ pub async fn ingest(
             .config_db
             .set_document_metadata(did.numeric, &doc_meta.serialize())?;
 
+        // Store raw content so GET /documents can return it.
+        let content_key = format!("doc_content:{}", did.numeric);
+        state.config_db.set_setting(&content_key, &doc.content)?;
+
         // Store user metadata as a setting keyed by doc ID if provided.
         if let Some(ref user_meta) = doc.metadata {
             let meta_key = format!("doc_meta:{}", did.numeric);
@@ -238,17 +242,22 @@ pub async fn get(
         path.clone()
     };
 
+    // Load stored content.
+    let content_key = format!("doc_content:{}", did.numeric);
+    let content = state
+        .config_db
+        .get_setting(&content_key)?
+        .unwrap_or_default();
+
     // Load user metadata from settings.
     let user_meta = load_user_metadata(&state, did.numeric);
 
-    // We don't store the raw content in Tantivy (body is not stored).
-    // Return what we have from metadata.
     Ok(Json(DocumentResponse {
         doc_id: did.to_string(),
         collection: meta.collection,
         path: meta.relative_path,
         title,
-        content: String::new(), // body is not stored in Tantivy
+        content,
         metadata: user_meta,
     }))
 }
@@ -285,7 +294,9 @@ pub async fn delete(
     // Delete metadata.
     state.config_db.remove_document_metadata(did.numeric)?;
 
-    // Delete user metadata setting.
+    // Delete stored content and user metadata.
+    let content_key = format!("doc_content:{}", did.numeric);
+    let _ = state.config_db.remove_setting(&content_key);
     let meta_key = format!("doc_meta:{}", did.numeric);
     let _ = state.config_db.remove_setting(&meta_key);
 

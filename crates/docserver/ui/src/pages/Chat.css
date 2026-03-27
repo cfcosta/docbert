@@ -96,6 +96,31 @@
   font-weight: 600;
 }
 
+.chat-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.chat-sources-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.chat-source-tag {
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.1);
+  color: var(--text-muted);
+}
+
 .chat-typing {
   display: flex;
   gap: 4px;

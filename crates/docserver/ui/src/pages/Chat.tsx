@@ -10,6 +10,33 @@ interface Message {
   sources?: SearchResult[];
 }
 
+function stubResponse(query: string, sources: SearchResult[]): string {
+  if (sources.length === 0) {
+    return "I couldn't find any relevant documents for that query. Try ingesting some documents first, or rephrase your question.";
+  }
+
+  const top = sources[0];
+  const otherCount = sources.length - 1;
+
+  let response = `Based on your documents, here's what I found about "${query}":\n\n`;
+  response += `The most relevant result is **${top.title}** from the **${top.collection}** collection`;
+  response += ` (score: ${top.score.toFixed(2)}).`;
+
+  if (otherCount > 0) {
+    response += ` I also found ${otherCount} other related document${otherCount === 1 ? "" : "s"}`;
+    if (otherCount <= 3) {
+      const others = sources.slice(1).map((s) => `**${s.title}**`);
+      response += `: ${others.join(", ")}`;
+    }
+    response += ".";
+  }
+
+  response +=
+    "\n\n_This is a stub response. When an LLM provider is configured, this will use the retrieved documents as context to generate a real answer._";
+
+  return response;
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -34,32 +61,18 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      // Search the document store for relevant context.
       const searchRes = await api.search({
         query: text,
         mode: "hybrid",
         count: 5,
       });
 
-      // For now, show search results as the assistant response.
-      // A real LLM integration would send these as RAG context to a model.
       const sources = searchRes.results;
-      const assistantContent =
-        sources.length > 0
-          ? `Found ${sources.length} relevant document${sources.length === 1 ? "" : "s"}:\n\n${sources
-              .map(
-                (s, i) =>
-                  `**${i + 1}. ${s.title}** (${s.collection}/${s.path})\nRelevance: ${s.score.toFixed(3)}`,
-              )
-              .join(
-                "\n\n",
-              )}\n\n_LLM integration pending. These results would be sent as context to a language model to generate a response._`
-          : "No relevant documents found for your query. Try ingesting some documents first.";
 
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: assistantContent,
+        content: stubResponse(text, sources),
         sources,
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -95,6 +108,7 @@ export default function Chat() {
                 strokeWidth="1.5"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                aria-hidden="true"
               >
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
@@ -107,23 +121,17 @@ export default function Chat() {
         {messages.map((msg) => (
           <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
             <div className="chat-msg-bubble">
-              <div className="chat-msg-content">
-                {msg.content.split("\n").map((line, i) => (
-                  <p key={i}>
-                    {line
-                      .split(/(\*\*[^*]+\*\*)/)
-                      .map((part, j) =>
-                        part.startsWith("**") && part.endsWith("**") ? (
-                          <strong key={j}>{part.slice(2, -2)}</strong>
-                        ) : part.startsWith("_") && part.endsWith("_") ? (
-                          <em key={j}>{part.slice(1, -1)}</em>
-                        ) : (
-                          <span key={j}>{part}</span>
-                        ),
-                      )}
-                  </p>
-                ))}
-              </div>
+              <div className="chat-msg-content">{renderContent(msg.content)}</div>
+              {msg.sources && msg.sources.length > 0 && (
+                <div className="chat-sources">
+                  <span className="chat-sources-label">Sources:</span>
+                  {msg.sources.map((s) => (
+                    <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
+                      {s.collection}/{s.path}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -173,6 +181,7 @@ export default function Chat() {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden="true"
           >
             <line x1="22" y1="2" x2="11" y2="13" />
             <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -181,4 +190,24 @@ export default function Chat() {
       </form>
     </div>
   );
+}
+
+function renderContent(text: string) {
+  return text
+    .split("\n")
+    .map((line, i) => (
+      <p key={i}>
+        {line
+          .split(/(\*\*[^*]+\*\*|_[^_]+_)/)
+          .map((part, j) =>
+            part.startsWith("**") && part.endsWith("**") ? (
+              <strong key={j}>{part.slice(2, -2)}</strong>
+            ) : part.startsWith("_") && part.endsWith("_") ? (
+              <em key={j}>{part.slice(1, -1)}</em>
+            ) : (
+              <span key={j}>{part}</span>
+            ),
+          )}
+      </p>
+    ));
 }
