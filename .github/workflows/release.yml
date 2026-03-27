@@ -36,7 +36,7 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Bump crate version
+      - name: Bump crate versions
         id: version
         shell: bash
         run: |
@@ -47,29 +47,30 @@ jobs:
           import tomllib
 
           release_type = "${{ github.event.inputs.release_type }}"
-          cargo_toml_path = pathlib.Path("Cargo.toml")
+
+          # All crate Cargo.toml files in the workspace.
+          crate_tomls = [
+              pathlib.Path("Cargo.toml"),
+              pathlib.Path("crates/docbert-core/Cargo.toml"),
+              pathlib.Path("crates/docserver/Cargo.toml"),
+          ]
+
           cargo_lock_path = pathlib.Path("Cargo.lock")
 
-          cargo_toml = cargo_toml_path.read_text(encoding="utf-8")
-          cargo_manifest = tomllib.loads(cargo_toml)
-          package = cargo_manifest.get("package", {})
-          package_name = package.get("name")
-          old_version = package.get("version")
-          if not package_name or not old_version:
-              raise SystemExit("Could not find package name/version in Cargo.toml")
+          # Read the current version from the root Cargo.toml.
+          root_toml = crate_tomls[0].read_text(encoding="utf-8")
+          root_manifest = tomllib.loads(root_toml)
+          old_version = root_manifest["package"]["version"]
 
           match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", old_version)
           if not match:
-              raise SystemExit(f"Unsupported package version format: {old_version}")
+              raise SystemExit(f"Unsupported version format: {old_version}")
 
           major, minor, patch = map(int, match.groups())
           if release_type == "major":
-              major += 1
-              minor = 0
-              patch = 0
+              major, minor, patch = major + 1, 0, 0
           elif release_type == "minor":
-              minor += 1
-              patch = 0
+              minor, patch = minor + 1, 0
           elif release_type == "patch":
               patch += 1
           else:
@@ -77,29 +78,35 @@ jobs:
 
           new_version = f"{major}.{minor}.{patch}"
 
-          cargo_toml, replacements = re.subn(
-              r'(?m)^version = "' + re.escape(old_version) + r'"$',
-              f'version = "{new_version}"',
-              cargo_toml,
-              count=1,
-          )
-          if replacements != 1:
-              raise SystemExit("Could not update package version in Cargo.toml")
-          cargo_toml_path.write_text(cargo_toml, encoding="utf-8")
+          # Update version in each crate's Cargo.toml.
+          for toml_path in crate_tomls:
+              text = toml_path.read_text(encoding="utf-8")
+              text, n = re.subn(
+                  r'(?m)^version = "' + re.escape(old_version) + r'"$',
+                  f'version = "{new_version}"',
+                  text,
+                  count=1,
+              )
+              if n != 1:
+                  raise SystemExit(f"Could not update version in {toml_path}")
+              toml_path.write_text(text, encoding="utf-8")
 
+          # Update all workspace package versions in Cargo.lock.
+          package_names = ["docbert", "docbert-core", "docserver"]
           cargo_lock = cargo_lock_path.read_text(encoding="utf-8")
-          cargo_lock, replacements = re.subn(
-              r'(\[\[package\]\]\nname = "'
-              + re.escape(package_name)
-              + r'"\nversion = ")'
-              + re.escape(old_version)
-              + r'(")',
-              r'\g<1>' + new_version + r'\g<2>',
-              cargo_lock,
-              count=1,
-          )
-          if replacements != 1:
-              raise SystemExit("Could not update root package version in Cargo.lock")
+          for name in package_names:
+              cargo_lock, n = re.subn(
+                  r'(\[\[package\]\]\nname = "'
+                  + re.escape(name)
+                  + r'"\nversion = ")'
+                  + re.escape(old_version)
+                  + r'(")',
+                  r'\g<1>' + new_version + r'\g<2>',
+                  cargo_lock,
+                  count=1,
+              )
+              if n != 1:
+                  raise SystemExit(f"Could not update {name} version in Cargo.lock")
           cargo_lock_path.write_text(cargo_lock, encoding="utf-8")
 
           github_output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
@@ -114,7 +121,9 @@ jobs:
           cargo fmt --check
           cargo clippy --all --all-targets -- -D warnings
           cargo test
-          cargo publish --dry-run --locked --allow-dirty
+          cargo publish -p docbert-core --dry-run --locked --allow-dirty
+          cargo publish -p docserver --dry-run --locked --allow-dirty
+          cargo publish -p docbert --dry-run --locked --allow-dirty
 
       - name: Configure git
         run: |
@@ -123,12 +132,15 @@ jobs:
 
       - name: Create release commit and tag
         run: |
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml Cargo.lock crates/docbert-core/Cargo.toml crates/docserver/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
           git tag "${{ steps.version.outputs.tag }}"
 
-      - name: Publish crate
-        run: cargo publish --locked
+      - name: Publish crates
+        run: |
+          cargo publish -p docbert-core --locked
+          cargo publish -p docserver --locked
+          cargo publish -p docbert --locked
 
       - name: Push release commit and tag
         run: |
