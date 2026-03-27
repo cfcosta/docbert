@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import Markdown from "react-markdown";
 import { Type, getModel, stream } from "@mariozechner/pi-ai";
-import type { Context, Tool, UserMessage, ToolResultMessage, Message as PiMessage } from "@mariozechner/pi-ai";
+import type {
+  Context,
+  Tool,
+  UserMessage,
+  ToolResultMessage,
+  Message as PiMessage,
+} from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
 import type { SearchResult } from "../lib/api";
 import "./Chat.css";
@@ -29,9 +36,7 @@ const tools: Tool[] = [
       "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
-      count: Type.Optional(
-        Type.Number({ description: "Number of results to return (default 5)" }),
-      ),
+      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
     }),
   },
   {
@@ -40,18 +45,13 @@ const tools: Tool[] = [
       "Search the document store using hybrid BM25 + semantic search. Best when the query shares keywords with the target documents. Faster on large collections.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
-      collection: Type.Optional(
-        Type.String({ description: "Restrict search to this collection" }),
-      ),
-      count: Type.Optional(
-        Type.Number({ description: "Number of results to return (default 5)" }),
-      ),
+      collection: Type.Optional(Type.String({ description: "Restrict search to this collection" })),
+      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
     }),
   },
   {
     name: "document_get",
-    description:
-      "Retrieve the full content of a specific document by collection and path.",
+    description: "Retrieve the full content of a specific document by collection and path.",
     parameters: Type.Object({
       collection: Type.String({ description: "The collection name" }),
       path: Type.String({
@@ -92,10 +92,7 @@ async function executeTool(
       };
     }
     case "document_get": {
-      const doc = await api.getDocument(
-        args.collection as string,
-        args.path as string,
-      );
+      const doc = await api.getDocument(args.collection as string, args.path as string);
       return {
         text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
       };
@@ -178,10 +175,7 @@ export default function Chat() {
       const allToolCalls: ToolCallInfo[] = [];
 
       // Add empty assistant message to stream into.
-      setMessages((prev) => [
-        ...prev,
-        { id: assistantId, role: "assistant", content: "" },
-      ]);
+      setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
 
       // Agentic tool loop: stream, handle tool calls, continue.
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -194,9 +188,7 @@ export default function Chat() {
           if (event.type === "text_delta") {
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + event.delta }
-                  : m,
+                m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
               ),
             );
           }
@@ -206,9 +198,7 @@ export default function Chat() {
                 m.id === assistantId
                   ? {
                       ...m,
-                      content:
-                        m.content ||
-                        `Error from ${settings.provider}: ${event.error}`,
+                      content: m.content || `Error from ${settings.provider}: ${event.error}`,
                     }
                   : m,
               ),
@@ -221,9 +211,7 @@ export default function Chat() {
         piContext.messages.push(result);
 
         // Check for tool calls.
-        const toolCalls = result.content.filter(
-          (b) => b.type === "toolCall",
-        );
+        const toolCalls = result.content.filter((b) => b.type === "toolCall");
 
         if (toolCalls.length === 0) {
           // No tool calls — done.
@@ -277,7 +265,11 @@ export default function Chat() {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
-              ? { ...m, sources: uniqueSources.length > 0 ? uniqueSources : m.sources, toolCalls: [...allToolCalls] }
+              ? {
+                  ...m,
+                  sources: uniqueSources.length > 0 ? uniqueSources : m.sources,
+                  toolCalls: [...allToolCalls],
+                }
               : m,
           ),
         );
@@ -328,10 +320,7 @@ export default function Chat() {
               </svg>
             </div>
             <h3>Start a conversation</h3>
-            <p>
-              Ask a question and the assistant will search your documents for
-              context.
-            </p>
+            <p>Ask a question and the assistant will search your documents for context.</p>
           </div>
         )}
 
@@ -339,7 +328,7 @@ export default function Chat() {
           <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
             <div className="chat-msg-bubble">
               <div className="chat-msg-content">
-                {renderContent(msg.content)}
+                <Markdown>{msg.content}</Markdown>
               </div>
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <ToolCallsDisplay calls={msg.toolCalls} />
@@ -348,10 +337,7 @@ export default function Chat() {
                 <div className="chat-sources">
                   <span className="chat-sources-label">Sources:</span>
                   {msg.sources.map((s) => (
-                    <span
-                      key={`${s.collection}:${s.path}`}
-                      className="chat-source-tag"
-                    >
+                    <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
                       {s.collection}/{s.path}
                     </span>
                   ))}
@@ -438,9 +424,7 @@ function ToolCallsDisplay({ calls }: { calls: ToolCallInfo[] }) {
               onClick={() => setExpandedIdx(isExpanded ? null : i)}
               aria-expanded={isExpanded}
             >
-              <span className="chat-tool-call-icon">
-                {call.isError ? "!" : "\u2713"}
-              </span>
+              <span className="chat-tool-call-icon">{call.isError ? "!" : "\u2713"}</span>
               <span className="chat-tool-call-name">{call.name}</span>
               <span className="chat-tool-call-args">{argsStr}</span>
               <span className={`chat-tool-call-chevron${isExpanded ? " open" : ""}`}>
@@ -465,22 +449,4 @@ function deduplicateSources(sources: SearchResult[]): SearchResult[] {
     seen.add(key);
     return true;
   });
-}
-
-function renderContent(text: string) {
-  return text.split("\n").map((line, i) => (
-    <p key={i}>
-      {line
-        .split(/(\*\*[^*]+\*\*|_[^_]+_)/)
-        .map((part, j) =>
-          part.startsWith("**") && part.endsWith("**") ? (
-            <strong key={j}>{part.slice(2, -2)}</strong>
-          ) : part.startsWith("_") && part.endsWith("_") ? (
-            <em key={j}>{part.slice(1, -1)}</em>
-          ) : (
-            <span key={j}>{part}</span>
-          ),
-        )}
-    </p>
-  ));
 }

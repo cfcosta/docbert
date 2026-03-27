@@ -13,6 +13,7 @@
     "@mariozechner/pi-ai": "^0.63.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
     "react-router": "^7.13.2"
   },
   "devDependencies": {
