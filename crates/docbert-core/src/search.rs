@@ -410,6 +410,13 @@ fn document_has_semantic_body(
         return false;
     };
 
+    // Server-managed collections store an empty path. Their documents
+    // are API-ingested so we can't check the filesystem — assume they
+    // have a body if metadata exists.
+    if collection_path.is_empty() {
+        return true;
+    }
+
     let full_path = Path::new(collection_path).join(&meta.relative_path);
     let Ok(content) = std::fs::read_to_string(full_path) else {
         return false;

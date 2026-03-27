@@ -62,7 +62,14 @@ pub async fn ingest(
         }
     }
 
-    let mut ingested_docs = Vec::with_capacity(body.documents.len());
+    let doc_count = body.documents.len();
+    tracing::info!(
+        collection = %body.collection,
+        documents = doc_count,
+        "starting ingestion",
+    );
+
+    let mut ingested_docs = Vec::with_capacity(doc_count);
     let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
 
     // Acquire the Tantivy writer for the duration of this ingestion.
@@ -77,12 +84,20 @@ pub async fn ingest(
         content: String,
         metadata: Option<serde_json::Value>,
     }
-    let mut prepared: Vec<Prepared> = Vec::with_capacity(body.documents.len());
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(doc_count);
 
     for doc in &body.documents {
         let processed =
             content::process(&doc.content_type, &doc.path, &doc.content);
         let did = DocumentId::new(&body.collection, &doc.path);
+
+        tracing::debug!(
+            doc_id = %did,
+            path = %doc.path,
+            title = %processed.title,
+            body_len = processed.body.len(),
+            "indexing document into tantivy",
+        );
 
         // Delete any existing entry for this document.
         state
@@ -107,6 +122,11 @@ pub async fn ingest(
             chunking::DEFAULT_CHUNK_SIZE,
             chunking::DEFAULT_CHUNK_OVERLAP,
         );
+        tracing::debug!(
+            doc_id = %did,
+            chunks = chunks.len(),
+            "chunked document for embedding",
+        );
         for chunk in chunks {
             let chunk_id = chunking::chunk_doc_id(did.numeric, chunk.index);
             docs_to_embed.push((chunk_id, chunk.text));
@@ -122,7 +142,13 @@ pub async fn ingest(
     }
 
     // Phase 2: Commit Tantivy. If this fails, no metadata is written.
+    tracing::debug!("committing tantivy index");
     writer.commit().map_err(ApiError::internal)?;
+    tracing::info!(
+        collection = %body.collection,
+        documents = prepared.len(),
+        "tantivy index committed",
+    );
 
     // Phase 3: Now that Tantivy is committed, persist metadata and content.
     // These writes go to redb which auto-commits, so they're durable.
@@ -152,19 +178,44 @@ pub async fn ingest(
             metadata: p.metadata.clone(),
         });
     }
+    tracing::debug!(
+        collection = %body.collection,
+        documents = prepared.len(),
+        "metadata and content persisted",
+    );
 
     // Phase 4: Compute embeddings. This is best-effort — if it fails,
     // the document is still searchable via BM25, just not via semantic search.
     if !docs_to_embed.is_empty() {
+        let embed_count = docs_to_embed.len();
+        tracing::info!(
+            collection = %body.collection,
+            chunks = embed_count,
+            "computing embeddings",
+        );
         if let Ok(mut model) = state.model.lock() {
-            if let Err(e) = embedding::embed_and_store(&mut model, &state.embedding_db, docs_to_embed)
-            {
-                tracing::warn!("embedding failed (documents are still BM25-searchable): {e}");
+            match embedding::embed_and_store(&mut model, &state.embedding_db, docs_to_embed) {
+                Ok(stored) => tracing::info!(
+                    collection = %body.collection,
+                    stored,
+                    "embeddings computed and stored",
+                ),
+                Err(e) => tracing::warn!(
+                    collection = %body.collection,
+                    error = %e,
+                    "embedding failed (documents are still BM25-searchable)",
+                ),
             }
         } else {
             tracing::warn!("could not acquire model lock for embedding");
         }
     }
+
+    tracing::info!(
+        collection = %body.collection,
+        ingested = ingested_docs.len(),
+        "ingestion complete",
+    );
 
     Ok(Json(IngestResponse {
         ingested: ingested_docs.len(),
