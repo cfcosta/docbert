@@ -14,7 +14,13 @@ import type {
   Message as PiMessage,
 } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
-import type { SearchResult, ConversationSummary, ConversationFull } from "../lib/api";
+import type {
+  ChatActor,
+  ChatPart,
+  SearchResult,
+  ConversationSummary,
+  ConversationFull,
+} from "../lib/api";
 import "./Chat.css";
 
 function uuid(): string {
@@ -44,6 +50,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   parts?: ContentPart[];
+  actor?: ChatActor;
   sources?: SearchResult[];
 }
 
@@ -141,62 +148,98 @@ const MAX_TOOL_ROUNDS = 10;
 const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
+function toApiPart(part: ContentPart): ChatPart {
+  switch (part.type) {
+    case "text":
+      return { type: "text", text: part.text };
+    case "thinking":
+      return { type: "thinking", text: part.text };
+    case "tool_call":
+      return {
+        type: "tool_call",
+        name: part.call.name,
+        args: part.call.args,
+        result: part.call.result,
+        is_error: part.call.isError,
+      };
+  }
+}
+
+function fromApiPart(part: ChatPart): ContentPart {
+  switch (part.type) {
+    case "text":
+      return { type: "text", text: part.text };
+    case "thinking":
+      return { type: "thinking", text: part.text };
+    case "tool_call":
+      return {
+        type: "tool_call",
+        call: {
+          name: part.name,
+          args: part.args,
+          result: part.result,
+          isError: part.is_error,
+        },
+      };
+  }
+}
+
+function contentFromParts(parts: ContentPart[]): string {
+  return parts
+    .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+function legacyParts(message: ConversationFull["messages"][number]): ContentPart[] {
+  const parts: ContentPart[] = [];
+  if (message.content_parts && message.content_parts.length > 0) {
+    for (const part of message.content_parts) {
+      parts.push({ type: part.type, text: part.text });
+    }
+  } else if (message.content) {
+    parts.push({ type: "text", text: message.content });
+  }
+
+  if (message.tool_calls && message.tool_calls.length > 0) {
+    for (const tc of message.tool_calls) {
+      parts.push({
+        type: "tool_call",
+        call: { name: tc.name, args: tc.args, result: tc.result, isError: tc.is_error },
+      });
+    }
+  }
+
+  return parts;
+}
+
 function messagesToApi(messages: Message[]): ConversationFull["messages"] {
   return messages.map((m) => {
-    const toolCalls = m.parts
-      ?.filter((p): p is Extract<ContentPart, { type: "tool_call" }> => p.type === "tool_call")
-      .map((p) => ({
-        name: p.call.name,
-        args: p.call.args,
-        result: p.call.result,
-        is_error: p.call.isError,
-      }));
-    const contentParts = m.parts
-      ?.filter(
-        (p): p is Extract<ContentPart, { type: "text" | "thinking" }> => p.type !== "tool_call",
-      )
-      .map((p) => ({
-        type: p.type,
-        text: p.text,
-      }));
+    const parts = (m.parts ?? []).map(toApiPart);
     return {
       id: m.id,
       role: m.role,
-      content: m.content,
+      actor: m.actor ?? { type: "parent" },
+      parts,
+      content: contentFromParts(m.parts ?? []),
       sources: m.sources?.map((s) => ({
         collection: s.collection,
         path: s.path,
         title: s.title,
       })),
-      tool_calls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-      content_parts: contentParts && contentParts.length > 0 ? contentParts : undefined,
     };
   });
 }
 
 function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
   return msgs.map((m) => {
-    const parts: ContentPart[] = [];
-    if (m.content_parts && m.content_parts.length > 0) {
-      for (const part of m.content_parts) {
-        parts.push({ type: part.type, text: part.text });
-      }
-    } else if (m.content) {
-      parts.push({ type: "text", text: m.content });
-    }
-    if (m.tool_calls && m.tool_calls.length > 0) {
-      for (const tc of m.tool_calls) {
-        parts.push({
-          type: "tool_call",
-          call: { name: tc.name, args: tc.args, result: tc.result, isError: tc.is_error },
-        });
-      }
-    }
+    const parts = (m.parts && m.parts.length > 0 ? m.parts.map(fromApiPart) : legacyParts(m)) || [];
     return {
       id: m.id,
       role: m.role,
-      content: m.content,
+      content: contentFromParts(parts),
       parts: parts.length > 0 ? parts : undefined,
+      actor: m.actor,
       sources: m.sources?.map((s) => ({
         rank: 0,
         score: 0,
