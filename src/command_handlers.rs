@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn status_json_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let data_dir = DataDir::new(tmp.path());
         let model_resolution = ModelResolution {
             model_id: "lightonai/ColBERT-Zero".to_string(),
             source: ModelSource::Config,

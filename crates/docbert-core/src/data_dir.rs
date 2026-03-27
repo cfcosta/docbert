@@ -9,14 +9,17 @@ use crate::error::{Error, Result};
 /// - `embeddings.db`: ColBERT embedding matrices
 /// - `tantivy/`: the Tantivy search index
 ///
+/// `DataDir` is a thin wrapper around a [`PathBuf`]. It does not resolve
+/// default locations or create directories on its own — use
+/// [`DataDir::new`] with an already-resolved path.
+///
 /// # Examples
 ///
 /// ```
 /// # let tmp = tempfile::tempdir().unwrap();
 /// use docbert_core::DataDir;
 ///
-/// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
-/// assert!(dir.root().exists());
+/// let dir = DataDir::new(tmp.path());
 /// assert_eq!(dir.config_db(), tmp.path().join("config.db"));
 /// ```
 #[derive(Debug, Clone)]
@@ -25,12 +28,10 @@ pub struct DataDir {
 }
 
 impl DataDir {
-    /// Pick the data directory using this priority order:
-    /// 1. an explicit path, such as `--data-dir`
-    /// 2. the `DOCBERT_DATA_DIR` environment variable
-    /// 3. the XDG data directory (`~/.local/share/docbert/`)
+    /// Wrap an existing path as a data directory.
     ///
-    /// Creates the directory, along with any missing parents, if needed.
+    /// This does **not** create the directory or resolve defaults.  The
+    /// caller is responsible for ensuring the path exists.
     ///
     /// # Examples
     ///
@@ -38,23 +39,11 @@ impl DataDir {
     /// # let tmp = tempfile::tempdir().unwrap();
     /// use docbert_core::DataDir;
     ///
-    /// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
-    /// assert!(dir.root().exists());
+    /// let dir = DataDir::new(tmp.path());
+    /// assert_eq!(dir.root(), tmp.path());
     /// ```
-    pub fn resolve(explicit: Option<&Path>) -> Result<Self> {
-        let root = if let Some(path) = explicit {
-            path.to_path_buf()
-        } else if let Ok(val) = std::env::var("DOCBERT_DATA_DIR") {
-            PathBuf::from(val)
-        } else {
-            xdg::BaseDirectories::with_prefix("docbert")
-                .get_data_home()
-                .ok_or_else(|| Error::Config("could not determine XDG data home directory".into()))?
-        };
-
-        std::fs::create_dir_all(&root).map_err(|_| Error::DataDir(root.clone()))?;
-
-        Ok(Self { root })
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
     }
 
     /// Returns the root path of the data directory.
@@ -82,7 +71,7 @@ impl DataDir {
     /// # let tmp = tempfile::tempdir().unwrap();
     /// use docbert_core::DataDir;
     ///
-    /// let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+    /// let dir = DataDir::new(tmp.path());
     /// let tantivy = dir.tantivy_dir().unwrap();
     /// assert!(tantivy.exists());
     /// assert_eq!(tantivy, tmp.path().join("tantivy"));
@@ -99,9 +88,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_with_explicit_path() {
+    fn new_wraps_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let dir = DataDir::new(tmp.path());
 
         assert_eq!(dir.root(), tmp.path());
         assert_eq!(dir.config_db(), tmp.path().join("config.db"));
@@ -111,7 +100,7 @@ mod tests {
     #[test]
     fn tantivy_dir_is_created() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let dir = DataDir::new(tmp.path());
         let tantivy = dir.tantivy_dir().unwrap();
 
         assert!(tantivy.exists());
@@ -119,18 +108,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_creates_nonexistent_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let nested = tmp.path().join("a").join("b").join("c");
-        let dir = DataDir::resolve(Some(&nested)).unwrap();
-        assert!(dir.root().exists());
-        assert_eq!(dir.root(), nested);
-    }
-
-    #[test]
     fn tantivy_dir_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let dir = DataDir::new(tmp.path());
         let first = dir.tantivy_dir().unwrap();
         let second = dir.tantivy_dir().unwrap();
         assert_eq!(first, second);

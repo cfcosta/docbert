@@ -860,7 +860,7 @@ mod tests {
         let collection_dir = tmp.path().join("notes");
         std::fs::create_dir_all(&collection_dir).unwrap();
 
-        let data_dir = DataDir::resolve(Some(tmp.path())).unwrap();
+        let data_dir = DataDir::new(tmp.path());
         let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         config_db
             .set_collection("notes", collection_dir.to_str().unwrap())

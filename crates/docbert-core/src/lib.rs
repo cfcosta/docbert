@@ -27,11 +27,12 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use std::path::Path;
 //! use docbert_core::{ConfigDb, DataDir, SearchIndex, EmbeddingDb, ModelManager};
 //! use docbert_core::search::{self, SearchParams};
 //!
-//! // Open the local databases.
-//! let data_dir = DataDir::resolve(None).unwrap();
+//! // Open the local databases (the caller decides the root path).
+//! let data_dir = DataDir::new(Path::new("/home/user/.local/share/docbert"));
 //! let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
 //! let search_index = SearchIndex::open(&data_dir.tantivy_dir().unwrap()).unwrap();
 //! let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();

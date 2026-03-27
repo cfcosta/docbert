@@ -14,12 +14,13 @@ docbert-core = { path = "../docbert/crates/docbert-core" }
 ## Quick start
 
 ```rust,no_run
+use std::path::Path;
 use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
 use docbert_core::search::{SearchParams, execute_search};
 
 fn main() -> docbert_core::Result<()> {
-    // Resolve the data directory from $DOCBERT_DATA_DIR or XDG defaults.
-    let data_dir = DataDir::resolve(None)?;
+    // The caller decides where docbert stores its state.
+    let data_dir = DataDir::new(Path::new("/home/user/.local/share/docbert"));
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
@@ -48,18 +49,14 @@ fn main() -> docbert_core::Result<()> {
 
 ### `DataDir`
 
-`DataDir` resolves the docbert data directory and gives you paths for the config database, embeddings database, and Tantivy index.
+`DataDir` wraps a root path and gives you sub-paths for the config database, embeddings database, and Tantivy index. The caller is responsible for choosing the root path.
 
 ```rust,no_run
 use std::path::Path;
 use docbert_core::DataDir;
 
 fn main() -> docbert_core::Result<()> {
-    // Use the default XDG location (~/.local/share/docbert)
-    let data_dir = DataDir::resolve(None)?;
-
-    // Or use an explicit path
-    let data_dir = DataDir::resolve(Some(Path::new("/tmp/myindex")))?;
+    let data_dir = DataDir::new(Path::new("/tmp/myindex"));
 
     // Access subpaths
     let config_path = data_dir.config_db();          // config.db

@@ -912,6 +912,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "xdg",
 ]
 
 [[package]]
@@ -929,7 +930,6 @@ dependencies = [
  "tantivy",
  "tempfile",
  "thiserror 2.0.18",
- "xdg",
 ]
 
 [[package]]

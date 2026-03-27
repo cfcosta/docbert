@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use clap::Parser;
 use docbert_core::{ConfigDb, DataDir, error, model_manager::resolve_model};
 use tracing_subscriber::EnvFilter;
@@ -8,6 +10,30 @@ mod indexing_workflow;
 mod mcp;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
+
+/// Resolve the data directory using this priority order:
+/// 1. an explicit path, such as `--data-dir`
+/// 2. the `DOCBERT_DATA_DIR` environment variable
+/// 3. the XDG data directory (`~/.local/share/docbert/`)
+///
+/// Creates the directory, along with any missing parents, if needed.
+fn resolve_data_dir(explicit: Option<&Path>) -> error::Result<DataDir> {
+    let root = if let Some(path) = explicit {
+        path.to_path_buf()
+    } else if let Ok(val) = std::env::var("DOCBERT_DATA_DIR") {
+        PathBuf::from(val)
+    } else {
+        xdg::BaseDirectories::with_prefix("docbert")
+            .get_data_home()
+            .ok_or_else(|| {
+                error::Error::Config("could not determine XDG data home directory".into())
+            })?
+    };
+
+    std::fs::create_dir_all(&root).map_err(|_| error::Error::DataDir(root.clone()))?;
+
+    Ok(DataDir::new(root))
+}
 
 fn init_tracing(verbose: u8) {
     let filter = if let Ok(env) = std::env::var("DOCBERT_LOG") {
@@ -44,7 +70,7 @@ fn main() -> error::Result<()> {
         return Ok(());
     }
 
-    let data_dir = DataDir::resolve(cli.data_dir.as_deref())?;
+    let data_dir = resolve_data_dir(cli.data_dir.as_deref())?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let model_resolution = resolve_model(&config_db, cli.model.as_deref())?;
 
