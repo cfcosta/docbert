@@ -111,7 +111,7 @@
   align-items: center;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid rgba(128, 128, 128, 0.15);
+  border-top: 1px solid var(--border);
 }
 
 .chat-sources-label {
@@ -125,7 +125,7 @@
   font-family: var(--mono);
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--bg-tertiary);
   color: var(--text-muted);
 }
 

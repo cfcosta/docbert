@@ -25,7 +25,7 @@
 }
 
 .ingest-toast.error {
-  background: #dc2626;
+  background: var(--error);
   color: #fff;
 }
 
@@ -66,7 +66,7 @@
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
 }
 
 .collection-add-form {
@@ -138,7 +138,7 @@
   font-size: 0.85rem;
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background 0.15s;
 }
 
 .tree-item:hover {
@@ -204,8 +204,8 @@
 /* ── Collection actions ── */
 
 .tree-delete-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: none;
   border-radius: var(--radius);
   background: none;
@@ -219,7 +219,8 @@
   transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
 
-.tree-collection-head:hover .tree-delete-btn {
+.tree-collection-head:hover .tree-delete-btn,
+.tree-delete-btn:focus-visible {
   opacity: 1;
 }
 
@@ -235,8 +236,8 @@
 }
 
 .tree-confirm-yes {
-  padding: 2px 10px;
-  min-height: 28px;
+  padding: 4px 12px;
+  min-height: 32px;
   border: none;
   border-radius: var(--radius);
   background: var(--error, #b91c1c);
@@ -251,8 +252,8 @@
 }
 
 .tree-confirm-no {
-  padding: 2px 10px;
-  min-height: 28px;
+  padding: 4px 12px;
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
