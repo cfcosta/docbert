@@ -52,3 +52,9 @@
   background: var(--accent-bg);
   color: var(--accent);
 }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}

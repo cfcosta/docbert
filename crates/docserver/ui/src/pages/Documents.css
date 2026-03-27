@@ -77,7 +77,7 @@
 .collection-add-input {
   width: 100px;
   padding: 4px 8px;
-  min-height: 28px;
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
@@ -88,9 +88,9 @@
 }
 
 .collection-add-btn {
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
@@ -188,6 +188,12 @@
   text-align: center;
 }
 
+.tree-loading {
+  padding: 8px 16px 8px 44px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
 .tree-empty-hint {
   padding: 8px 16px 8px 44px;
   color: var(--text-muted);
@@ -257,6 +263,7 @@
 .preview-content {
   font-family: var(--mono);
   font-size: 0.85rem;
+  font-variant-numeric: slashed-zero;
   line-height: 1.65;
   white-space: pre-wrap;
   word-wrap: break-word;

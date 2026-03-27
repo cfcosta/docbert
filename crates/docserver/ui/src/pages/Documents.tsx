@@ -40,6 +40,7 @@ function buildTree(docs: DocumentListItem[]): TreeNode[] {
 export default function Documents() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [docs, setDocs] = useState<Record<string, DocumentListItem[]>>({});
+  const [loadingColls, setLoadingColls] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedDoc, setSelectedDoc] = useState<{
     collection: string;
@@ -69,11 +70,18 @@ export default function Documents() {
   }, [loadCollections]);
 
   const loadDocs = useCallback(async (collection: string) => {
+    setLoadingColls((prev) => new Set(prev).add(collection));
     try {
       const items = await api.listDocuments(collection);
       setDocs((prev) => ({ ...prev, [collection]: items }));
     } catch {
       /* ignore */
+    } finally {
+      setLoadingColls((prev) => {
+        const next = new Set(prev);
+        next.delete(collection);
+        return next;
+      });
     }
   }, []);
 
@@ -165,13 +173,19 @@ export default function Documents() {
       // Auto-clear success message
       setTimeout(() => setIngestResult(null), 3000);
     } catch (err) {
-      setIngestResult(`Error: ${err instanceof Error ? err.message : "ingestion failed"}`);
+      setIngestResult(
+        `Error: ${err instanceof Error ? err.message : "ingestion failed"}`,
+      );
     } finally {
       setIngesting(false);
     }
   };
 
-  const renderTree = (nodes: TreeNode[], collection: string, depth: number) => {
+  const renderTree = (
+    nodes: TreeNode[],
+    collection: string,
+    depth: number,
+  ) => {
     const dirs = nodes.filter((n) => n.isDir).sort((a, b) => a.name.localeCompare(b.name));
     const files = nodes.filter((n) => !n.isDir).sort((a, b) => a.name.localeCompare(b.name));
     return (
@@ -192,13 +206,16 @@ export default function Documents() {
                 <FolderIcon />
                 <span className="tree-name">{node.name}</span>
               </button>
-              {isExpanded && <div>{renderTree(node.children, collection, depth + 1)}</div>}
+              {isExpanded && (
+                <div>{renderTree(node.children, collection, depth + 1)}</div>
+              )}
             </div>
           );
         })}
         {files.map((node) => {
           const isSelected =
-            selectedDoc?.collection === collection && selectedDoc?.path === node.path;
+            selectedDoc?.collection === collection &&
+            selectedDoc?.path === node.path;
           return (
             <button
               key={`${collection}/${node.path}`}
@@ -249,17 +266,7 @@ export default function Documents() {
                 disabled={!newCollName.trim()}
                 aria-label="Create collection"
               >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <line x1="12" y1="5" x2="12" y2="19" />
                   <line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
@@ -268,7 +275,9 @@ export default function Documents() {
           </div>
           <div className="file-tree">
             {collections.length === 0 && (
-              <div className="tree-empty">Create a collection to get started.</div>
+              <div className="tree-empty">
+                Create a collection to get started.
+              </div>
             )}
             {collections.map((coll) => {
               const isExpanded = expanded.has(coll.name);
@@ -292,12 +301,18 @@ export default function Documents() {
                     </span>
                     <FolderIcon />
                     <span className="tree-name">{coll.name}</span>
-                    {isDragTarget && <span className="drop-badge">Drop here</span>}
+                    {isDragTarget && (
+                      <span className="drop-badge">Drop here</span>
+                    )}
                   </button>
                   {isExpanded && (
                     <div className="tree-children">
-                      {collDocs.length === 0 ? (
-                        <div className="tree-empty-hint">Drop files here to ingest</div>
+                      {loadingColls.has(coll.name) ? (
+                        <div className="tree-loading">Loading...</div>
+                      ) : collDocs.length === 0 ? (
+                        <div className="tree-empty-hint">
+                          Drop files here to ingest
+                        </div>
                       ) : (
                         renderTree(tree, coll.name, 1)
                       )}
@@ -336,10 +351,7 @@ export default function Documents() {
                 <FileIcon size={48} />
               </div>
               <h3>No document selected</h3>
-              <p>
-                Select a file from the tree, or drag and drop files onto a collection to ingest
-                them.
-              </p>
+              <p>Select a file from the tree, or drag and drop files onto a collection to ingest them.</p>
             </div>
           )}
         </div>
@@ -350,17 +362,7 @@ export default function Documents() {
 
 function ChevronIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <polyline points="9 18 15 12 9 6" />
     </svg>
   );
@@ -368,17 +370,7 @@ function ChevronIcon() {
 
 function FolderIcon() {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
     </svg>
   );
@@ -386,17 +378,7 @@ function FolderIcon() {
 
 function FileIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
     </svg>

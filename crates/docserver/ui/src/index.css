@@ -99,6 +99,16 @@ input, textarea {
   font-size: inherit;
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+p, .chat-msg-content, .preview-content {
+  text-wrap: pretty;
+}
+
 code {
   font-family: var(--mono);
   font-size: 0.875em;
