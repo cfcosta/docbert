@@ -14,6 +14,7 @@ createRoot(document.getElementById("root")!).render(
         <Route element={<App />}>
           <Route index element={<Documents />} />
           <Route path="chat" element={<Chat />} />
+          <Route path="chat/:conversationId" element={<Chat />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>

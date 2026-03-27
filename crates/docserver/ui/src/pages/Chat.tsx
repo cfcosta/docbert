@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useParams, useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Type, getModel, stream } from "@mariozechner/pi-ai";
@@ -199,6 +200,8 @@ function formatRelativeTime(ms: number): string {
 }
 
 export default function Chat() {
+  const { conversationId } = useParams<{ conversationId?: string }>();
+  const navigate = useNavigate();
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeConv, setActiveConv] = useState<ConversationFull | null>(null);
@@ -222,27 +225,52 @@ export default function Chat() {
     void loadConversations();
   }, [loadConversations]);
 
+  // Load conversation from URL param on mount or when param changes.
+  useEffect(() => {
+    if (conversationId && conversationId !== activeId) {
+      void (async () => {
+        try {
+          const conv = await api.getConversation(conversationId);
+          setActiveId(conversationId);
+          setActiveConv(conv);
+          setMessages(apiToMessages(conv.messages));
+        } catch {
+          navigate("/chat", { replace: true });
+        }
+      })();
+    } else if (!conversationId && activeId) {
+      setActiveId(null);
+      setActiveConv(null);
+      setMessages([]);
+    }
+  }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const selectConversation = useCallback(async (id: string) => {
-    try {
-      const conv = await api.getConversation(id);
-      setActiveId(id);
-      setActiveConv(conv);
-      setMessages(apiToMessages(conv.messages));
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const selectConversation = useCallback(
+    async (id: string) => {
+      try {
+        const conv = await api.getConversation(id);
+        setActiveId(id);
+        setActiveConv(conv);
+        setMessages(apiToMessages(conv.messages));
+        navigate(`/chat/${id}`);
+      } catch {
+        /* ignore */
+      }
+    },
+    [navigate],
+  );
 
   const startNewChat = useCallback(() => {
     setActiveId(null);
     setActiveConv(null);
     setMessages([]);
     setInput("");
-  }, []);
+    navigate("/chat");
+  }, [navigate]);
 
   const deleteConversation = useCallback(
     async (id: string) => {
@@ -300,6 +328,7 @@ export default function Chat() {
         convId = id;
         setActiveId(id);
         setActiveConv(conv);
+        navigate(`/chat/${id}`, { replace: true });
       } catch {
         /* ignore -- we'll still show the chat, just won't persist */
       }
@@ -494,7 +523,7 @@ export default function Chat() {
         });
       }
     }
-  }, [input, loading, messages, activeId, activeConv, saveConversation]);
+  }, [input, loading, messages, activeId, activeConv, saveConversation, navigate]);
 
   return (
     <div className="chat-page">
