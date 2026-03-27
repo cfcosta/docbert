@@ -1,4 +1,4 @@
-use docbert::{
+use docbert_core::{
     ConfigDb,
     chunking::{self, ChunkingConfig},
     error,
@@ -20,12 +20,12 @@ pub(crate) fn resolve_target_collections(
     collection: Option<&str>,
 ) -> error::Result<Vec<(String, String)>> {
     if let Some(name) = collection {
-        let path = config_db.get_collection(name)?.ok_or_else(|| {
-            error::Error::NotFound {
+        let path = config_db
+            .get_collection(name)?
+            .ok_or_else(|| error::Error::NotFound {
                 kind: "collection",
                 name: name.to_string(),
-            }
-        })?;
+            })?;
         Ok(vec![(name.to_string(), path)])
     } else {
         config_db.list_collections()
@@ -52,10 +52,7 @@ pub(crate) fn load_rebuild_batch(
     }
 }
 
-pub(crate) fn load_sync_batch(
-    collection: &str,
-    files: &[DiscoveredFile],
-) -> DocumentLoadBatch {
+pub(crate) fn load_sync_batch(collection: &str, files: &[DiscoveredFile]) -> DocumentLoadBatch {
     let result = ingestion::load_documents(collection, files);
     DocumentLoadBatch {
         documents: result.documents,
@@ -81,8 +78,7 @@ where
             chunking_config.overlap,
         );
         for chunk in chunks {
-            let chunk_id =
-                chunking::chunk_doc_id(document.doc_num_id, chunk.index);
+            let chunk_id = chunking::chunk_doc_id(document.doc_num_id, chunk.index);
             docs_to_embed.push((chunk_id, chunk.text));
         }
         on_document_processed(i + 1);
@@ -95,14 +91,11 @@ where
 mod tests {
     use std::path::PathBuf;
 
-    use docbert::{doc_id::DocumentId, incremental};
+    use docbert_core::{doc_id::DocumentId, incremental};
 
     use super::*;
 
-    fn rebuild_args(
-        index_only: bool,
-        embeddings_only: bool,
-    ) -> cli::RebuildArgs {
+    fn rebuild_args(index_only: bool, embeddings_only: bool) -> cli::RebuildArgs {
         cli::RebuildArgs {
             collection: Some("notes".to_string()),
             embeddings_only,
@@ -119,16 +112,10 @@ mod tests {
         std::fs::write(root.join("a.md"), "# A\n\nFirst").unwrap();
         std::fs::write(root.join("b.md"), "# B\n\nSecond").unwrap();
 
-        let files = docbert::walker::discover_files(&root).unwrap();
-        let batch =
-            load_rebuild_batch("notes", &files, &rebuild_args(false, false));
+        let files = docbert_core::walker::discover_files(&root).unwrap();
+        let batch = load_rebuild_batch("notes", &files, &rebuild_args(false, false));
 
-        incremental::batch_store_metadata(
-            &config_db,
-            "notes",
-            &batch.metadata_files,
-        )
-        .unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &batch.metadata_files).unwrap();
 
         let a_id = DocumentId::new("notes", "a.md");
         let b_id = DocumentId::new("notes", "b.md");
@@ -169,8 +156,7 @@ mod tests {
 
         incremental::store_metadata(&config_db, "notes", &stored_a).unwrap();
         incremental::store_metadata(&config_db, "notes", &stored_b).unwrap();
-        incremental::store_metadata(&config_db, "notes", &stored_deleted)
-            .unwrap();
+        incremental::store_metadata(&config_db, "notes", &stored_deleted).unwrap();
 
         std::fs::write(tmp.path().join("a.md"), "# A\n\nUpdated").unwrap();
         let changed_a = DiscoveredFile {
@@ -180,12 +166,7 @@ mod tests {
         };
 
         let batch = load_sync_batch("notes", &[changed_a]);
-        incremental::batch_store_metadata(
-            &config_db,
-            "notes",
-            &batch.metadata_files,
-        )
-        .unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &batch.metadata_files).unwrap();
 
         let deleted_id = DocumentId::new("notes", "deleted.md");
         config_db
@@ -196,16 +177,14 @@ mod tests {
             .get_document_metadata(DocumentId::new("notes", "a.md").numeric)
             .unwrap()
             .unwrap();
-        let updated_a =
-            incremental::DocumentMetadata::deserialize(&updated_a).unwrap();
+        let updated_a = incremental::DocumentMetadata::deserialize(&updated_a).unwrap();
         assert_eq!(updated_a.mtime, 99);
 
         let unchanged_b = config_db
             .get_document_metadata(DocumentId::new("notes", "b.md").numeric)
             .unwrap()
             .unwrap();
-        let unchanged_b =
-            incremental::DocumentMetadata::deserialize(&unchanged_b).unwrap();
+        let unchanged_b = incremental::DocumentMetadata::deserialize(&unchanged_b).unwrap();
         assert_eq!(unchanged_b.mtime, 15);
 
         assert!(
@@ -233,10 +212,9 @@ mod tests {
             document_length: None,
         };
         let mut processed = 0;
-        let chunks =
-            chunk_documents_for_embedding(&docs, chunking_config, |_| {
-                processed += 1;
-            });
+        let chunks = chunk_documents_for_embedding(&docs, chunking_config, |_| {
+            processed += 1;
+        });
 
         assert!(chunks.is_empty());
         assert_eq!(processed, 1);
@@ -248,25 +226,21 @@ mod tests {
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.md"), "# Note\n\nBody").unwrap();
-        let files = docbert::walker::discover_files(&root).unwrap();
+        let files = docbert_core::walker::discover_files(&root).unwrap();
 
-        let normal =
-            load_rebuild_batch("notes", &files, &rebuild_args(false, false));
+        let normal = load_rebuild_batch("notes", &files, &rebuild_args(false, false));
         assert_eq!(normal.documents.len(), 1);
         assert_eq!(normal.metadata_files.len(), 1);
 
-        let index_only =
-            load_rebuild_batch("notes", &files, &rebuild_args(true, false));
+        let index_only = load_rebuild_batch("notes", &files, &rebuild_args(true, false));
         assert_eq!(index_only.documents.len(), 1);
         assert_eq!(index_only.metadata_files.len(), 1);
 
-        let embeddings_only =
-            load_rebuild_batch("notes", &files, &rebuild_args(false, true));
+        let embeddings_only = load_rebuild_batch("notes", &files, &rebuild_args(false, true));
         assert_eq!(embeddings_only.documents.len(), 1);
         assert_eq!(embeddings_only.metadata_files.len(), 1);
 
-        let skip_loading =
-            load_rebuild_batch("notes", &files, &rebuild_args(true, true));
+        let skip_loading = load_rebuild_batch("notes", &files, &rebuild_args(true, true));
         assert!(skip_loading.documents.is_empty());
         assert_eq!(skip_loading.metadata_files.len(), 1);
         assert!(skip_loading.failures.is_empty());

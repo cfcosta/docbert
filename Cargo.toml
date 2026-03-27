@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/docbert-core", "."]
+resolver = "3"
+
 [package]
 name = "docbert"
 version = "0.2.1"
@@ -6,23 +10,16 @@ license = "MIT OR Apache-2.0"
 description = "A powerful semantic search CLI for your documents"
 
 [dependencies]
-bytemuck = { version = "1.25.0", features = ["derive"] }
-candle-core = "0.9.1"
+docbert-core = { path = "crates/docbert-core" }
 clap = { version = "4.5.57", features = ["derive"] }
 clap_complete = "4.5"
 globset = "0.4"
-hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
-pylate-rs = { version = "1.0.4", git = "https://github.com/cfcosta/pylate-rs", rev = "4a014da31ab13faef5155aefb92851100cca5035" }
-rayon = "1.11.0"
-redb = "3.1.0"
 rmcp = { version = "1.2.0", features = ["transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tantivy = "0.25"
-thiserror = "2"
 tokio = { version = "1", features = [
   "io-std",
   "macros",
@@ -30,14 +27,13 @@ tokio = { version = "1", features = [
   "time",
 ] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-xdg = "3.0.0"
 
 [features]
 default = []
-mkl = ["pylate-rs/mkl"]
-accelerate = ["pylate-rs/accelerate"]
-metal = ["pylate-rs/metal"]
-cuda = ["pylate-rs/cuda"]
+mkl = ["docbert-core/mkl"]
+accelerate = ["docbert-core/accelerate"]
+metal = ["docbert-core/metal"]
+cuda = ["docbert-core/cuda"]
 
 [dev-dependencies]
 rmcp = { version = "1.2.0", features = ["client", "transport-child-process"] }

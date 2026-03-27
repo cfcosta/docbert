@@ -1,23 +1,23 @@
-# Using docbert as a library
+# Using docbert-core as a library
 
-If you want to embed docbert in another Rust application, the CLI is not doing anything magical. It uses the same library types exposed by the crate.
+If you want to embed docbert in another Rust application, the CLI is not doing anything magical. It uses the same library types exposed by the `docbert-core` crate.
 
 ## Installation
 
-Add docbert to your `Cargo.toml`:
+Add docbert-core to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-docbert = { path = "../docbert" }
+docbert-core = { path = "../docbert/crates/docbert-core" }
 ```
 
 ## Quick start
 
 ```rust,no_run
-use docbert::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
-use docbert::search::{SearchParams, execute_search};
+use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
+use docbert_core::search::{SearchParams, execute_search};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     // Resolve the data directory from $DOCBERT_DATA_DIR or XDG defaults.
     let data_dir = DataDir::resolve(None)?;
     let config_db = ConfigDb::open(&data_dir.config_db())?;
@@ -52,9 +52,9 @@ fn main() -> docbert::Result<()> {
 
 ```rust,no_run
 use std::path::Path;
-use docbert::DataDir;
+use docbert_core::DataDir;
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     // Use the default XDG location (~/.local/share/docbert)
     let data_dir = DataDir::resolve(None)?;
 
@@ -75,9 +75,9 @@ fn main() -> docbert::Result<()> {
 `ConfigDb` manages collections, context strings, document metadata, and settings in a redb database.
 
 ```rust,no_run
-use docbert::ConfigDb;
+use docbert_core::ConfigDb;
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
 
     // Register a collection (name -> directory path)
@@ -103,9 +103,9 @@ fn main() -> docbert::Result<()> {
 
 ```rust,no_run
 use std::path::Path;
-use docbert::SearchIndex;
+use docbert_core::SearchIndex;
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     // Open on disk (creates the directory if needed)
     let index = SearchIndex::open(Path::new("/path/to/tantivy"))?;
 
@@ -147,9 +147,9 @@ Each entry is a flat `f32` array with a small header that records the dimensions
 
 ```rust,no_run
 use std::path::Path;
-use docbert::EmbeddingDb;
+use docbert_core::EmbeddingDb;
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let db = EmbeddingDb::open(Path::new("embeddings.db"))?;
 
     // Store an embedding matrix (2 tokens, 3 dimensions = 6 floats)
@@ -186,9 +186,9 @@ fn main() -> docbert::Result<()> {
 By default, documents are encoded at 519 tokens. Call `with_document_length(...)` if you need a different value.
 
 ```rust,no_run
-use docbert::ModelManager;
+use docbert_core::ModelManager;
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     // Use the default model, or DOCBERT_MODEL if it is set
     let mut model = ModelManager::new();
 
@@ -214,7 +214,7 @@ fn main() -> docbert::Result<()> {
 `DocumentId` generates a stable ID from the collection name and relative path. The same inputs always produce the same ID.
 
 ```rust,ignore
-use docbert::DocumentId;
+use docbert_core::DocumentId;
 
 let id = DocumentId::new("notes", "hello.md");
 println!("Short ID: {}", id);           // e.g. #a1b2c3
@@ -236,10 +236,10 @@ The default search path looks like this:
 4. Result limiting with `count`
 
 ```rust,no_run
-use docbert::{SearchIndex, EmbeddingDb, ModelManager};
-use docbert::search::{SearchParams, execute_search};
+use docbert_core::{SearchIndex, EmbeddingDb, ModelManager};
+use docbert_core::search::{SearchParams, execute_search};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let search_index = SearchIndex::open_in_ram()?;
     let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
@@ -268,10 +268,10 @@ fn main() -> docbert::Result<()> {
 Semantic-only search skips BM25 and scores every stored embedding. That can surface related documents even when the query shares few or no keywords with them.
 
 ```rust,no_run
-use docbert::{ConfigDb, EmbeddingDb, ModelManager};
-use docbert::search::{SemanticSearchParams, execute_semantic_search};
+use docbert_core::{ConfigDb, EmbeddingDb, ModelManager};
+use docbert_core::search::{SemanticSearchParams, execute_semantic_search};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
     let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
@@ -293,10 +293,10 @@ fn main() -> docbert::Result<()> {
 If you only want fast keyword search, set `bm25_only` and skip model loading entirely.
 
 ```rust,no_run
-use docbert::{SearchIndex, EmbeddingDb, ModelManager};
-use docbert::search::{SearchParams, execute_search};
+use docbert_core::{SearchIndex, EmbeddingDb, ModelManager};
+use docbert_core::search::{SearchParams, execute_search};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let search_index = SearchIndex::open_in_ram()?;
     let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
@@ -322,9 +322,9 @@ fn main() -> docbert::Result<()> {
 
 ```rust,no_run
 use std::path::Path;
-use docbert::{SearchIndex, walker, ingestion};
+use docbert_core::{SearchIndex, walker, ingestion};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     // Discover .md and .txt files; hidden files and directories are skipped
     let files = walker::discover_files(Path::new("/home/user/notes"))?;
 
@@ -343,7 +343,7 @@ fn main() -> docbert::Result<()> {
 Long documents can be split into overlapping chunks before embedding.
 
 ```rust,ignore
-use docbert::chunking::{chunk_text, chunk_doc_id, ChunkingConfig, DEFAULT_CHUNK_SIZE};
+use docbert_core::chunking::{chunk_text, chunk_doc_id, ChunkingConfig, DEFAULT_CHUNK_SIZE};
 
 // Split text into chunks of about 1000 characters with 200 chars of overlap
 let chunks = chunk_text("long document text...", 1000, 200);
@@ -363,10 +363,10 @@ Incremental sync uses modification times to find what changed since the last run
 
 ```rust,no_run
 use std::path::Path;
-use docbert::{ConfigDb, walker};
-use docbert::incremental::{diff_collection, store_metadata, DiffResult};
+use docbert_core::{ConfigDb, walker};
+use docbert_core::incremental::{diff_collection, store_metadata, DiffResult};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(Path::new("config.db"))?;
     let files = walker::discover_files(Path::new("/home/user/notes"))?;
 
@@ -389,28 +389,15 @@ fn main() -> docbert::Result<()> {
 
 ## MCP server
 
-To run docbert as an MCP server from Rust:
-
-```rust,no_run
-use docbert::{ConfigDb, DataDir};
-use docbert::model_manager::DEFAULT_MODEL_ID;
-
-fn main() -> docbert::Result<()> {
-    let data_dir = DataDir::resolve(None)?;
-    let config_db = ConfigDb::open(&data_dir.config_db())?;
-
-    // Blocks until the client disconnects
-    docbert::mcp::run_mcp(data_dir, config_db, DEFAULT_MODEL_ID.to_string())?;
-    Ok(())
-}
-```
+The MCP server is part of the `docbert` CLI binary, not the `docbert-core` library.
+Run it with `docbert mcp` or configure it as an MCP server in your editor.
 
 ## Error handling
 
-Most fallible operations return `docbert::Result<T>`, which wraps `docbert::Error`.
+Most fallible operations return `docbert_core::Result<T>`, which wraps `docbert_core::Error`.
 
 ```rust,ignore
-use docbert::{Error, Result};
+use docbert_core::{Error, Result};
 
 fn my_function() -> Result<()> {
     // Common variants:
@@ -436,10 +423,10 @@ The ColBERT model ID is resolved in this order:
 4. compiled-in default: `lightonai/ColBERT-Zero`
 
 ```rust,no_run
-use docbert::ConfigDb;
-use docbert::model_manager::{resolve_model, ModelSource};
+use docbert_core::ConfigDb;
+use docbert_core::model_manager::{resolve_model, ModelSource};
 
-fn main() -> docbert::Result<()> {
+fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
 
     let resolution = resolve_model(&config_db, Some("my/model"))?;

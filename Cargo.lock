@@ -899,26 +899,36 @@ dependencies = [
 name = "docbert"
 version = "0.2.1"
 dependencies = [
- "bytemuck",
- "candle-core",
  "clap",
  "clap_complete",
+ "docbert-core",
  "globset",
- "hf-hub 0.5.0",
  "kdam",
  "percent-encoding",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "docbert-core"
+version = "0.2.1"
+dependencies = [
+ "bytemuck",
+ "candle-core",
+ "hf-hub 0.5.0",
  "pylate-rs",
  "rayon",
  "redb",
- "rmcp",
- "schemars",
  "serde",
  "serde_json",
  "tantivy",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tracing-subscriber",
  "xdg",
 ]
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use docbert::{
+use docbert_core::{
     ConfigDb,
     DataDir,
     EmbeddingDb,
@@ -20,12 +20,8 @@ use serde::Serialize;
 
 use crate::{cli, indexing_workflow};
 
-fn serialize_json<T: Serialize + ?Sized>(
-    value: &T,
-    error_context: &str,
-) -> error::Result<String> {
-    serde_json::to_string(value)
-        .map_err(|e| error::Error::Config(format!("{error_context}: {e}")))
+fn serialize_json<T: Serialize + ?Sized>(value: &T, error_context: &str) -> error::Result<String> {
+    serde_json::to_string(value).map_err(|e| error::Error::Config(format!("{error_context}: {e}")))
 }
 
 #[derive(Serialize)]
@@ -34,9 +30,7 @@ struct CollectionListItem<'a> {
     path: &'a str,
 }
 
-fn collection_list_json_string(
-    collections: &[(String, String)],
-) -> error::Result<String> {
+fn collection_list_json_string(collections: &[(String, String)]) -> error::Result<String> {
     let items: Vec<_> = collections
         .iter()
         .map(|(name, path)| CollectionListItem { name, path })
@@ -50,9 +44,7 @@ struct ContextListItem<'a> {
     description: &'a str,
 }
 
-fn context_list_json_string(
-    contexts: &[(String, String)],
-) -> error::Result<String> {
+fn context_list_json_string(contexts: &[(String, String)]) -> error::Result<String> {
     let items: Vec<_> = contexts
         .iter()
         .map(|(uri, description)| ContextListItem { uri, description })
@@ -139,9 +131,7 @@ struct ModelShowJsonOutput<'a> {
     config: Option<&'a str>,
 }
 
-fn model_show_json_string(
-    model_resolution: &ModelResolution,
-) -> error::Result<String> {
+fn model_show_json_string(model_resolution: &ModelResolution) -> error::Result<String> {
     serialize_json(
         &ModelShowJsonOutput {
             resolved: &model_resolution.model_id,
@@ -162,8 +152,7 @@ pub(crate) fn run_search(
 ) -> error::Result<()> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model =
-        ModelManager::with_model_id(model_resolution.model_id.clone());
+    let mut model = ModelManager::with_model_id(model_resolution.model_id.clone());
     if !args.bm25_only {
         log_model_runtime(&mut model)?;
     }
@@ -178,12 +167,7 @@ pub(crate) fn run_search(
         all: args.all,
     };
 
-    let results = search::execute_search(
-        &params,
-        &search_index,
-        &embedding_db,
-        &mut model,
-    )?;
+    let results = search::execute_search(&params, &search_index, &embedding_db, &mut model)?;
 
     if args.json {
         search::format_json(&results, &args.query);
@@ -202,8 +186,7 @@ pub(crate) fn run_semantic_search(
     args: &cli::SemanticSearchArgs,
 ) -> error::Result<()> {
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
-    let mut model =
-        ModelManager::with_model_id(model_resolution.model_id.clone());
+    let mut model = ModelManager::with_model_id(model_resolution.model_id.clone());
     log_model_runtime(&mut model)?;
 
     let params = search::SemanticSearchParams {
@@ -213,12 +196,7 @@ pub(crate) fn run_semantic_search(
         all: args.all,
     };
 
-    let results = search::execute_semantic_search(
-        &params,
-        config_db,
-        &embedding_db,
-        &mut model,
-    )?;
+    let results = search::execute_semantic_search(&params, config_db, &embedding_db, &mut model)?;
 
     if args.json {
         search::format_json(&results, &args.query);
@@ -250,12 +228,9 @@ pub(crate) fn collection_add(
     }
 
     // Resolve to absolute path
-    let abs_path = path.canonicalize().map_err(|e| {
-        error::Error::Config(format!(
-            "cannot resolve path {}: {e}",
-            path.display()
-        ))
-    })?;
+    let abs_path = path
+        .canonicalize()
+        .map_err(|e| error::Error::Config(format!("cannot resolve path {}: {e}", path.display())))?;
 
     // Check for duplicate collection name
     if config_db.get_collection(name)?.is_some() {
@@ -310,10 +285,7 @@ pub(crate) fn collection_remove(
     Ok(())
 }
 
-pub(crate) fn collection_list(
-    config_db: &ConfigDb,
-    json: bool,
-) -> error::Result<()> {
+pub(crate) fn collection_list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let collections = config_db.list_collections()?;
 
     if json {
@@ -328,20 +300,13 @@ pub(crate) fn collection_list(
     Ok(())
 }
 
-pub(crate) fn context_add(
-    config_db: &ConfigDb,
-    uri: &str,
-    description: &str,
-) -> error::Result<()> {
+pub(crate) fn context_add(config_db: &ConfigDb, uri: &str, description: &str) -> error::Result<()> {
     config_db.set_context(uri, description)?;
     println!("Added context for '{uri}'");
     Ok(())
 }
 
-pub(crate) fn context_remove(
-    config_db: &ConfigDb,
-    uri: &str,
-) -> error::Result<()> {
+pub(crate) fn context_remove(config_db: &ConfigDb, uri: &str) -> error::Result<()> {
     if !config_db.remove_context(uri)? {
         return Err(error::Error::NotFound {
             kind: "context",
@@ -352,10 +317,7 @@ pub(crate) fn context_remove(
     Ok(())
 }
 
-pub(crate) fn context_list(
-    config_db: &ConfigDb,
-    json: bool,
-) -> error::Result<()> {
+pub(crate) fn context_list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let contexts = config_db.list_contexts()?;
 
     if json {
@@ -370,41 +332,33 @@ pub(crate) fn context_list(
     Ok(())
 }
 
-pub(crate) fn cmd_get(
-    config_db: &ConfigDb,
-    args: &cli::GetArgs,
-) -> error::Result<()> {
+pub(crate) fn cmd_get(config_db: &ConfigDb, args: &cli::GetArgs) -> error::Result<()> {
     let reference = &args.reference;
 
     // Try to resolve the reference
-    let (collection, path) = if let Some(stripped) = reference.strip_prefix('#')
-    {
+    let (collection, path) = if let Some(stripped) = reference.strip_prefix('#') {
         // Doc ID reference: look up in metadata
-        search::resolve_by_doc_id(config_db, stripped).ok_or_else(|| {
-            error::Error::NotFound {
-                kind: "document",
-                name: format!("#{stripped}"),
-            }
+        search::resolve_by_doc_id(config_db, stripped).ok_or_else(|| error::Error::NotFound {
+            kind: "document",
+            name: format!("#{stripped}"),
         })?
     } else if let Some((coll, path)) = reference.split_once(':') {
         (coll.to_string(), path.to_string())
     } else {
         // Plain path: search all collections
-        search::resolve_by_path(config_db, reference).ok_or_else(|| {
-            error::Error::NotFound {
-                kind: "document",
-                name: reference.to_string(),
-            }
+        search::resolve_by_path(config_db, reference).ok_or_else(|| error::Error::NotFound {
+            kind: "document",
+            name: reference.to_string(),
         })?
     };
 
     let collection_path =
-        config_db.get_collection(&collection)?.ok_or_else(|| {
-            error::Error::NotFound {
+        config_db
+            .get_collection(&collection)?
+            .ok_or_else(|| error::Error::NotFound {
                 kind: "collection",
                 name: collection.clone(),
-            }
-        })?;
+            })?;
 
     let full_path = std::path::Path::new(&collection_path).join(&path);
 
@@ -426,14 +380,9 @@ pub(crate) fn cmd_get(
     Ok(())
 }
 
-pub(crate) fn cmd_multi_get(
-    config_db: &ConfigDb,
-    args: &cli::MultiGetArgs,
-) -> error::Result<()> {
+pub(crate) fn cmd_multi_get(config_db: &ConfigDb, args: &cli::MultiGetArgs) -> error::Result<()> {
     let glob = globset::Glob::new(&args.pattern)
-        .map_err(|e| {
-            error::Error::Config(format!("invalid glob pattern: {e}"))
-        })?
+        .map_err(|e| error::Error::Config(format!("invalid glob pattern: {e}")))?
         .compile_matcher();
 
     // Collect matching documents
@@ -483,21 +432,15 @@ pub(crate) fn cmd_multi_get(
         println!("{}", multi_get_json_string(&items)?);
     } else if args.files {
         for (collection, path) in &matches {
-            if let Ok(Some(collection_path)) =
-                config_db.get_collection(collection)
-            {
-                let full_path =
-                    std::path::Path::new(&collection_path).join(path);
+            if let Ok(Some(collection_path)) = config_db.get_collection(collection) {
+                let full_path = std::path::Path::new(&collection_path).join(path);
                 println!("{}", full_path.display());
             }
         }
     } else if args.full {
         for (collection, path) in &matches {
-            if let Ok(Some(collection_path)) =
-                config_db.get_collection(collection)
-            {
-                let full_path =
-                    std::path::Path::new(&collection_path).join(path);
+            if let Ok(Some(collection_path)) = config_db.get_collection(collection) {
+                let full_path = std::path::Path::new(&collection_path).join(path);
                 println!("--- {collection}:{path} ---");
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     print!("{content}");
@@ -520,15 +463,13 @@ pub(crate) fn cmd_multi_get(
 }
 
 pub(crate) fn cmd_doctor(json: bool) -> error::Result<()> {
-    let report = docbert::model_manager::doctor_report();
+    let report = docbert_core::model_manager::doctor_report();
 
     if json {
         println!(
             "{}",
             serde_json::to_string(&report).map_err(|e| {
-                error::Error::Config(format!(
-                    "failed to serialize doctor report: {e}"
-                ))
+                error::Error::Config(format!("failed to serialize doctor report: {e}"))
             })?
         );
         return Ok(());
@@ -604,9 +545,7 @@ pub(crate) fn cmd_status(
         println!("Model source: {}", model_resolution.source.as_str());
         if let Some(ref emb) = embedding_model {
             if emb != model_name {
-                println!(
-                    "Embedding model: {emb} (MISMATCH -- run `docbert rebuild`)"
-                );
+                println!("Embedding model: {emb} (MISMATCH -- run `docbert rebuild`)");
             } else {
                 println!("Embedding model: {emb}");
             }
@@ -646,10 +585,7 @@ pub(crate) fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
     }
 }
 
-pub(crate) fn cmd_model_set(
-    config_db: &ConfigDb,
-    model: &str,
-) -> error::Result<()> {
+pub(crate) fn cmd_model_set(config_db: &ConfigDb, model: &str) -> error::Result<()> {
     config_db.set_setting("model_name", model)?;
 
     let model_path = Path::new(model);
@@ -748,10 +684,7 @@ struct IndexingRuntime {
     chunking_config: chunking::ChunkingConfig,
 }
 
-fn initialize_indexing_runtime(
-    data_dir: &DataDir,
-    model_id: &str,
-) -> error::Result<IndexingRuntime> {
+fn initialize_indexing_runtime(data_dir: &DataDir, model_id: &str) -> error::Result<IndexingRuntime> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
@@ -794,8 +727,7 @@ fn process_document_batch(
     }
 
     if embed_documents {
-        let mut pb =
-            create_progress_bar(document_batch.documents.len(), "Chunking");
+        let mut pb = create_progress_bar(document_batch.documents.len(), "Chunking");
         let docs_to_embed = indexing_workflow::chunk_documents_for_embedding(
             &document_batch.documents,
             runtime.chunking_config,
@@ -821,11 +753,7 @@ fn process_document_batch(
         }
     }
 
-    incremental::batch_store_metadata(
-        config_db,
-        collection,
-        &document_batch.metadata_files,
-    )?;
+    incremental::batch_store_metadata(config_db, collection, &document_batch.metadata_files)?;
 
     Ok(())
 }
@@ -836,10 +764,8 @@ pub(crate) fn cmd_rebuild(
     args: &cli::RebuildArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections = indexing_workflow::resolve_target_collections(
-        config_db,
-        args.collection.as_deref(),
-    )?;
+    let collections =
+        indexing_workflow::resolve_target_collections(config_db, args.collection.as_deref())?;
 
     if collections.is_empty() {
         eprintln!("No collections to rebuild.");
@@ -851,9 +777,7 @@ pub(crate) fn cmd_rebuild(
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
         if !root.is_dir() {
-            eprintln!(
-                "Warning: collection '{name}' path does not exist: {path}"
-            );
+            eprintln!("Warning: collection '{name}' path does not exist: {path}");
             continue;
         }
 
@@ -887,8 +811,7 @@ pub(crate) fn cmd_rebuild(
         if !args.embeddings_only || !args.index_only {
             eprintln!("  Loading {} files...", files.len());
         }
-        let document_batch =
-            indexing_workflow::load_rebuild_batch(name, &files, args);
+        let document_batch = indexing_workflow::load_rebuild_batch(name, &files, args);
         process_document_batch(
             config_db,
             &mut runtime,
@@ -914,10 +837,8 @@ pub(crate) fn cmd_sync(
     args: &cli::SyncArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections = indexing_workflow::resolve_target_collections(
-        config_db,
-        args.collection.as_deref(),
-    )?;
+    let collections =
+        indexing_workflow::resolve_target_collections(config_db, args.collection.as_deref())?;
 
     if collections.is_empty() {
         eprintln!("No collections to sync.");
@@ -931,12 +852,8 @@ pub(crate) fn cmd_sync(
         eprintln!(
             "Warning: embeddings were computed with '{prev_model}', but current model is '{model_id}'."
         );
-        eprintln!(
-            "Mixing embeddings from different models produces invalid results."
-        );
-        eprintln!(
-            "Run `docbert rebuild` to re-embed all documents with the new model."
-        );
+        eprintln!("Mixing embeddings from different models produces invalid results.");
+        eprintln!("Run `docbert rebuild` to re-embed all documents with the new model.");
         return Err(error::Error::Config(format!(
             "model mismatch: embeddings use '{prev_model}', current is '{model_id}'"
         )));
@@ -947,9 +864,7 @@ pub(crate) fn cmd_sync(
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
         if !root.is_dir() {
-            eprintln!(
-                "Warning: collection '{name}' path does not exist: {path}"
-            );
+            eprintln!("Warning: collection '{name}' path does not exist: {path}");
             continue;
         }
 
@@ -959,10 +874,7 @@ pub(crate) fn cmd_sync(
         // Diff against stored metadata
         let diff = incremental::diff_collection(config_db, name, &files)?;
 
-        if diff.new_files.is_empty()
-            && diff.changed_files.is_empty()
-            && diff.deleted_ids.is_empty()
-        {
+        if diff.new_files.is_empty() && diff.changed_files.is_empty() && diff.deleted_ids.is_empty() {
             eprintln!("Collection '{name}' is up to date.");
             continue;
         }
@@ -998,16 +910,8 @@ pub(crate) fn cmd_sync(
 
         if !files_to_process.is_empty() {
             eprintln!("  Loading {} files...", files_to_process.len());
-            let document_batch =
-                indexing_workflow::load_sync_batch(name, &files_to_process);
-            process_document_batch(
-                config_db,
-                &mut runtime,
-                name,
-                &document_batch,
-                true,
-                true,
-            )?;
+            let document_batch = indexing_workflow::load_sync_batch(name, &files_to_process);
+            process_document_batch(config_db, &mut runtime, name, &document_batch, true, true)?;
         }
 
         eprintln!("  Done.");
@@ -1022,7 +926,7 @@ pub(crate) fn cmd_sync(
 
 #[cfg(test)]
 mod tests {
-    use docbert::model_manager::ModelSource;
+    use docbert_core::model_manager::ModelSource;
 
     use super::*;
 
@@ -1042,11 +946,9 @@ mod tests {
 
     #[test]
     fn context_list_json_snapshot() {
-        let json = context_list_json_string(&[(
-            "bert://notes".to_string(),
-            "Personal notes".to_string(),
-        )])
-        .unwrap();
+        let json =
+            context_list_json_string(&[("bert://notes".to_string(), "Personal notes".to_string())])
+                .unwrap();
 
         assert_eq!(
             json,
@@ -1123,8 +1025,7 @@ mod tests {
         );
 
         let without_embedding =
-            status_json_string(&data_dir, &model_resolution, None, 2, 15)
-                .unwrap();
+            status_json_string(&data_dir, &model_resolution, None, 2, 15).unwrap();
         assert_eq!(
             without_embedding,
             format!(

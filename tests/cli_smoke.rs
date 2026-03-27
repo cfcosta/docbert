@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use docbert::{ConfigDb, SearchIndex};
+use docbert_core::{ConfigDb, SearchIndex};
 use serde_json::Value;
 
 fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -34,8 +34,7 @@ fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn doctor_short_circuits_without_data_dir()
--> Result<(), Box<dyn std::error::Error>> {
+fn doctor_short_circuits_without_data_dir() -> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let invalid_data_dir = tempdir.path().join("not-a-directory");
     std::fs::write(&invalid_data_dir, "occupied by file")?;
