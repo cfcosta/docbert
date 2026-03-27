@@ -15,7 +15,11 @@ use docbert_core::{
     text_util,
 };
 use globset::Glob;
-use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use percent_encoding::{
+    NON_ALPHANUMERIC,
+    percent_decode_str,
+    utf8_percent_encode,
+};
 use rmcp::{
     RoleServer,
     ServerHandler,
@@ -93,8 +97,10 @@ fn sanitize_tool_router(
     mut tool_router: ToolRouter<DocbertMcpServer>,
 ) -> ToolRouter<DocbertMcpServer> {
     for route in tool_router.map.values_mut() {
-        route.attr.input_schema = strip_schema_keyword(&route.attr.input_schema);
-        route.attr.output_schema = route.attr.output_schema.as_ref().map(strip_schema_keyword);
+        route.attr.input_schema =
+            strip_schema_keyword(&route.attr.input_schema);
+        route.attr.output_schema =
+            route.attr.output_schema.as_ref().map(strip_schema_keyword);
     }
 
     tool_router
@@ -113,7 +119,10 @@ fn strip_schema_keyword(
 }
 
 /// Build the structured MCP response shape used by the search and status tools.
-fn structured_tool_result(summary: String, structured: serde_json::Value) -> CallToolResult {
+fn structured_tool_result(
+    summary: String,
+    structured: serde_json::Value,
+) -> CallToolResult {
     let mut result = CallToolResult::success(vec![Content::text(summary)]);
     result.structured_content = Some(structured);
     result
@@ -131,7 +140,9 @@ fn build_search_result_item(
         resolve_full_path(config_db, &result.collection, &result.path)
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|content| text_util::extract_snippet(&content, query))
-            .map(|(snippet, start_line)| text_util::add_line_numbers(&snippet, start_line))
+            .map(|(snippet, start_line)| {
+                text_util::add_line_numbers(&snippet, start_line)
+            })
     } else {
         None
     };
@@ -156,7 +167,9 @@ fn build_search_tool_result(
 ) -> Result<CallToolResult, rmcp::ErrorData> {
     let items: Vec<_> = results
         .into_iter()
-        .map(|result| build_search_result_item(config_db, result, &query, include_snippet))
+        .map(|result| {
+            build_search_result_item(config_db, result, &query, include_snippet)
+        })
         .collect();
 
     let summary = format_search_summary(&items, &query);
@@ -194,11 +207,9 @@ impl DocbertMcpServer {
             no_fuzzy: params.no_fuzzy.unwrap_or(false),
         };
 
-        let mut model = self
-            .state
-            .model
-            .lock()
-            .map_err(|_| rmcp::ErrorData::internal_error("model lock poisoned", None))?;
+        let mut model = self.state.model.lock().map_err(|_| {
+            rmcp::ErrorData::internal_error("model lock poisoned", None)
+        })?;
 
         let results = search::execute_search(
             &args,
@@ -209,7 +220,12 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        build_search_tool_result(&self.state.config_db, results, query, include_snippet)
+        build_search_tool_result(
+            &self.state.config_db,
+            results,
+            query,
+            include_snippet,
+        )
     }
 
     /// Semantic-only search across all indexed documents.
@@ -231,11 +247,9 @@ impl DocbertMcpServer {
             min_score: params.min_score.unwrap_or(0.0),
         };
 
-        let mut model = self
-            .state
-            .model
-            .lock()
-            .map_err(|_| rmcp::ErrorData::internal_error("model lock poisoned", None))?;
+        let mut model = self.state.model.lock().map_err(|_| {
+            rmcp::ErrorData::internal_error("model lock poisoned", None)
+        })?;
 
         let results = search::execute_semantic_search(
             &args,
@@ -246,7 +260,12 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("semantic search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        build_search_tool_result(&self.state.config_db, results, query, include_snippet)
+        build_search_tool_result(
+            &self.state.config_db,
+            results,
+            query,
+            include_snippet,
+        )
     }
 
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
@@ -272,27 +291,31 @@ impl DocbertMcpServer {
             reference = base.to_string();
         }
 
-        let (collection, path) = resolve_reference(&self.state.config_db, &reference)?;
+        let (collection, path) =
+            resolve_reference(&self.state.config_db, &reference)?;
 
         let full_path =
-            resolve_full_path(&self.state.config_db, &collection, &path).ok_or_else(|| {
-                rmcp::ErrorData::resource_not_found(
-                    format!("collection not found: {collection}"),
-                    None,
-                )
-            })?;
+            resolve_full_path(&self.state.config_db, &collection, &path)
+                .ok_or_else(|| {
+                    rmcp::ErrorData::resource_not_found(
+                        format!("collection not found: {collection}"),
+                        None,
+                    )
+                })?;
 
         if let Some(max_bytes) = params.max_bytes {
             let size = std::fs::metadata(&full_path)
                 .map(|m| m.len())
                 .unwrap_or_default();
             if size > max_bytes {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "File too large ({} bytes > {}): {}",
-                    size,
-                    max_bytes,
-                    full_path.display()
-                ))]));
+                return Ok(CallToolResult::error(vec![Content::text(
+                    format!(
+                        "File too large ({} bytes > {}): {}",
+                        size,
+                        max_bytes,
+                        full_path.display()
+                    ),
+                )]));
             }
         }
 
@@ -300,13 +323,19 @@ impl DocbertMcpServer {
             .map_err(|e| mcp_error("failed to read document", e))?;
 
         let start_line = from_line.unwrap_or(1);
-        let mut body = text_util::apply_line_limits(&content, start_line, params.max_lines);
+        let mut body = text_util::apply_line_limits(
+            &content,
+            start_line,
+            params.max_lines,
+        );
 
         if params.line_numbers.unwrap_or(false) {
             body = text_util::add_line_numbers(&body, start_line);
         }
 
-        if let Some(context) = context_for_doc(&self.state.config_db, &collection, &path) {
+        if let Some(context) =
+            context_for_doc(&self.state.config_db, &collection, &path)
+        {
             body = format!("<!-- Context: {context} -->\n\n{body}");
         }
 
@@ -332,7 +361,12 @@ impl DocbertMcpServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let params = params.0;
         let matcher = Glob::new(&params.pattern)
-            .map_err(|e| rmcp::ErrorData::invalid_params(format!("invalid glob pattern: {e}"), None))?
+            .map_err(|e| {
+                rmcp::ErrorData::invalid_params(
+                    format!("invalid glob pattern: {e}"),
+                    None,
+                )
+            })?
             .compile_matcher();
 
         let mut matches: Vec<(String, String)> = Vec::new();
@@ -369,7 +403,8 @@ impl DocbertMcpServer {
         let mut content: Vec<Content> = Vec::new();
 
         for (collection, path) in matches {
-            let full_path = resolve_full_path(&self.state.config_db, &collection, &path);
+            let full_path =
+                resolve_full_path(&self.state.config_db, &collection, &path);
             let Some(full_path) = full_path else {
                 content.push(Content::text(format!(
                     "[SKIPPED: {collection}:{path} - collection not found]"
@@ -399,11 +434,14 @@ impl DocbertMcpServer {
                 body = text_util::add_line_numbers(&body, 1);
             }
 
-            if let Some(context) = context_for_doc(&self.state.config_db, &collection, &path) {
+            if let Some(context) =
+                context_for_doc(&self.state.config_db, &collection, &path)
+            {
                 body = format!("<!-- Context: {context} -->\n\n{body}");
             }
 
-            let uri = format!("bert://{}/{}", collection, encode_bert_path(&path));
+            let uri =
+                format!("bert://{}/{}", collection, encode_bert_path(&path));
             let resource = ResourceContents::TextResourceContents {
                 uri,
                 mime_type: Some("text/markdown".to_string()),
@@ -421,7 +459,9 @@ impl DocbertMcpServer {
         name = "docbert_status",
         description = "Show index status, collections, and document counts."
     )]
-    pub async fn docbert_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn docbert_status(
+        &self,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let collections = self
             .state
             .config_db
@@ -461,8 +501,12 @@ impl DocbertMcpServer {
         }
 
         let data_dir = self.state.data_dir.root().display().to_string();
-        let summary =
-            format_status_summary(&data_dir, &model_name, doc_ids.len(), &collection_status);
+        let summary = format_status_summary(
+            &data_dir,
+            &model_name,
+            doc_ids.len(),
+            &collection_status,
+        );
 
         let structured = serde_json::to_value(StatusResponse {
             data_dir,
@@ -560,7 +604,8 @@ impl ServerHandler for DocbertMcpServer {
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-        let contents = read_resource_contents(&self.state.config_db, &request.uri)?;
+        let contents =
+            read_resource_contents(&self.state.config_db, &request.uri)?;
         Ok(ReadResourceResult::new(vec![contents]))
     }
 }
@@ -715,9 +760,14 @@ fn resolve_reference(
     reference: &str,
 ) -> Result<(String, String), rmcp::ErrorData> {
     if let Some(short_id) = reference.strip_prefix('#') {
-        return search::resolve_by_doc_id(config_db, short_id).ok_or_else(|| {
-            rmcp::ErrorData::resource_not_found(format!("document not found: #{short_id}"), None)
-        });
+        return search::resolve_by_doc_id(config_db, short_id).ok_or_else(
+            || {
+                rmcp::ErrorData::resource_not_found(
+                    format!("document not found: #{short_id}"),
+                    None,
+                )
+            },
+        );
     }
 
     if let Some((collection, path)) = reference.split_once(':') {
@@ -725,27 +775,37 @@ fn resolve_reference(
     }
 
     search::resolve_by_path(config_db, reference).ok_or_else(|| {
-        rmcp::ErrorData::resource_not_found(format!("document not found: {reference}"), None)
+        rmcp::ErrorData::resource_not_found(
+            format!("document not found: {reference}"),
+            None,
+        )
     })
 }
 
 fn encode_bert_path(path: &str) -> String {
     path.split('/')
-        .map(|segment| utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string())
+        .map(|segment| {
+            utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string()
+        })
         .collect::<Vec<_>>()
         .join("/")
 }
 
 fn decode_bert_path(path: &str) -> String {
     path.split('/')
-        .map(|segment| percent_decode_str(segment).decode_utf8_lossy().to_string())
+        .map(|segment| {
+            percent_decode_str(segment).decode_utf8_lossy().to_string()
+        })
         .collect::<Vec<_>>()
         .join("/")
 }
 
 fn parse_bert_uri(uri: &str) -> Result<(String, String), rmcp::ErrorData> {
     let stripped = uri.strip_prefix("bert://").ok_or_else(|| {
-        rmcp::ErrorData::resource_not_found(format!("unsupported uri: {uri}"), None)
+        rmcp::ErrorData::resource_not_found(
+            format!("unsupported uri: {uri}"),
+            None,
+        )
     })?;
 
     let decoded = decode_bert_path(stripped);
@@ -768,12 +828,16 @@ fn read_resource_contents(
     uri: &str,
 ) -> Result<ResourceContents, rmcp::ErrorData> {
     let (collection, path) = parse_bert_uri(uri)?;
-    let full_path = resolve_full_path(config_db, &collection, &path).ok_or_else(|| {
-        rmcp::ErrorData::resource_not_found(format!("collection not found: {collection}"), None)
-    })?;
+    let full_path = resolve_full_path(config_db, &collection, &path)
+        .ok_or_else(|| {
+            rmcp::ErrorData::resource_not_found(
+                format!("collection not found: {collection}"),
+                None,
+            )
+        })?;
 
-    let mut text =
-        std::fs::read_to_string(&full_path).map_err(|e| mcp_error("failed to read resource", e))?;
+    let mut text = std::fs::read_to_string(&full_path)
+        .map_err(|e| mcp_error("failed to read resource", e))?;
     text = text_util::add_line_numbers(&text, 1);
 
     if let Some(context) = context_for_doc(config_db, &collection, &path) {
@@ -788,12 +852,20 @@ fn read_resource_contents(
     })
 }
 
-fn resolve_full_path(config_db: &ConfigDb, collection: &str, path: &str) -> Option<PathBuf> {
+fn resolve_full_path(
+    config_db: &ConfigDb,
+    collection: &str,
+    path: &str,
+) -> Option<PathBuf> {
     let base = config_db.get_collection(collection).ok()??;
     Some(PathBuf::from(base).join(path))
 }
 
-fn context_for_doc(config_db: &ConfigDb, collection: &str, path: &str) -> Option<String> {
+fn context_for_doc(
+    config_db: &ConfigDb,
+    collection: &str,
+    path: &str,
+) -> Option<String> {
     let doc_uri = format!("bert://{collection}/{path}");
     if let Ok(Some(ctx)) = config_db.get_context(&doc_uri) {
         return Some(ctx);
@@ -814,7 +886,11 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
 ///
 /// This blocks until the client disconnects. In practice, it is what
 /// `docbert mcp` calls.
-pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb, model_id: String) -> error::Result<()> {
+pub fn run_mcp(
+    data_dir: DataDir,
+    config_db: ConfigDb,
+    model_id: String,
+) -> error::Result<()> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
@@ -831,18 +907,20 @@ pub fn run_mcp(data_dir: DataDir, config_db: ConfigDb, model_id: String) -> erro
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|e| error::Error::Config(format!("failed to start tokio runtime: {e}")))?;
+        .map_err(|e| {
+            error::Error::Config(format!("failed to start tokio runtime: {e}"))
+        })?;
 
     runtime.block_on(async move {
         let transport = rmcp::transport::stdio();
-        let running = server
-            .serve(transport)
-            .await
-            .map_err(|e| error::Error::Config(format!("MCP server initialization failed: {e}")))?;
-        running
-            .waiting()
-            .await
-            .map_err(|e| error::Error::Config(format!("MCP server error: {e}")))?;
+        let running = server.serve(transport).await.map_err(|e| {
+            error::Error::Config(format!(
+                "MCP server initialization failed: {e}"
+            ))
+        })?;
+        running.waiting().await.map_err(|e| {
+            error::Error::Config(format!("MCP server error: {e}"))
+        })?;
         Ok(())
     })
 }
@@ -870,7 +948,8 @@ mod tests {
             .unwrap();
 
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
 
         let mut writer = search_index.writer(15_000_000).unwrap();
         let mut doc_ids = Vec::new();
@@ -924,8 +1003,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_tool_returns_structured_results() {
-        let (server, _tmp, _doc_ids) =
-            build_server(&[("rust.md", "Rust is fast.\nOwnership keeps memory safe.\n")]);
+        let (server, _tmp, _doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
 
         let params = SearchParams {
             query: "Rust".to_string(),
@@ -958,7 +1039,8 @@ mod tests {
             first.get("context").and_then(|v| v.as_str()),
             Some("Personal notes")
         );
-        let snippet = first.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet =
+            first.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
         assert!(snippet.contains("1: Rust is fast."));
 
         let summary = result
@@ -994,8 +1076,10 @@ mod tests {
 
     #[test]
     fn semantic_search_tool_payload_snapshot() {
-        let (server, _tmp, doc_ids) =
-            build_server(&[("rust.md", "Rust is fast.\nOwnership keeps memory safe.\n")]);
+        let (server, _tmp, doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
         let doc_id = doc_ids.first().unwrap();
 
         let result = build_search_tool_result(
@@ -1050,7 +1134,8 @@ mod tests {
 
     #[tokio::test]
     async fn get_tool_returns_resource_with_line_numbers() {
-        let (server, _tmp, doc_ids) = build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
+        let (server, _tmp, doc_ids) =
+            build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
         let doc_id = doc_ids.first().unwrap();
 
         let params = GetParams {
@@ -1092,7 +1177,8 @@ mod tests {
             line_numbers: None,
         };
 
-        let result = server.docbert_multi_get(Parameters(params)).await.unwrap();
+        let result =
+            server.docbert_multi_get(Parameters(params)).await.unwrap();
 
         let mut saw_resource = false;
         let mut saw_skip = false;
@@ -1114,7 +1200,8 @@ mod tests {
 
     #[tokio::test]
     async fn multi_get_tool_payload_snapshot() {
-        let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
+        let (server, _tmp, _doc_ids) =
+            build_server(&[("rust.md", "Rust is fast.\nLine two.\n")]);
 
         let params = MultiGetParams {
             pattern: "*.md".to_string(),
@@ -1124,7 +1211,8 @@ mod tests {
             line_numbers: Some(true),
         };
 
-        let result = server.docbert_multi_get(Parameters(params)).await.unwrap();
+        let result =
+            server.docbert_multi_get(Parameters(params)).await.unwrap();
 
         assert_eq!(result.content.len(), 1);
         let resource = result
@@ -1147,9 +1235,11 @@ mod tests {
 
     #[test]
     fn read_resource_decodes_uri() {
-        let (server, _tmp, _doc_ids) = build_server(&[("space name.md", "Hello world\n")]);
+        let (server, _tmp, _doc_ids) =
+            build_server(&[("space name.md", "Hello world\n")]);
         let uri = "bert://notes/space%20name.md";
-        let contents = read_resource_contents(&server.state.config_db, uri).unwrap();
+        let contents =
+            read_resource_contents(&server.state.config_db, uri).unwrap();
         match contents {
             ResourceContents::TextResourceContents { text, .. } => {
                 assert!(text.contains("1: Hello world"));
@@ -1187,14 +1277,16 @@ mod tests {
 
     #[test]
     fn parse_bert_uri_valid() {
-        let (collection, path) = parse_bert_uri("bert://notes/hello.md").unwrap();
+        let (collection, path) =
+            parse_bert_uri("bert://notes/hello.md").unwrap();
         assert_eq!(collection, "notes");
         assert_eq!(path, "hello.md");
     }
 
     #[test]
     fn parse_bert_uri_nested_path() {
-        let (collection, path) = parse_bert_uri("bert://notes/sub/dir/file.md").unwrap();
+        let (collection, path) =
+            parse_bert_uri("bert://notes/sub/dir/file.md").unwrap();
         assert_eq!(collection, "notes");
         assert_eq!(path, "sub/dir/file.md");
     }

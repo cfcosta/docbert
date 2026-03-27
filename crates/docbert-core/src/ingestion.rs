@@ -80,7 +80,10 @@ pub fn extract_title(content: &str, file_path: &Path) -> String {
 /// This runs in parallel, extracts titles, and computes stable document IDs.
 /// Files that cannot be read are reported in [`LoadDocumentsResult::failures`]
 /// so callers can avoid marking them as successfully processed.
-pub fn load_documents(collection: &str, files: &[DiscoveredFile]) -> LoadDocumentsResult {
+pub fn load_documents(
+    collection: &str,
+    files: &[DiscoveredFile],
+) -> LoadDocumentsResult {
     enum LoadOutcome {
         Loaded {
             file: DiscoveredFile,
@@ -93,9 +96,11 @@ pub fn load_documents(collection: &str, files: &[DiscoveredFile]) -> LoadDocumen
         .par_iter()
         .map(|file| match std::fs::read_to_string(&file.absolute_path) {
             Ok(raw_content) => {
-                let content = text_util::strip_yaml_frontmatter(&raw_content).to_string();
+                let content =
+                    text_util::strip_yaml_frontmatter(&raw_content).to_string();
                 let title = extract_title(&content, &file.relative_path);
-                let relative_path = file.relative_path.to_string_lossy().to_string();
+                let relative_path =
+                    file.relative_path.to_string_lossy().to_string();
                 let did = DocumentId::new(collection, &relative_path);
                 LoadOutcome::Loaded {
                     file: file.clone(),
@@ -209,7 +214,10 @@ mod tests {
     #[test]
     fn extract_title_fallback_to_filename() {
         let content = "No heading here, just plain text.";
-        assert_eq!(extract_title(content, Path::new("my-notes.md")), "my-notes");
+        assert_eq!(
+            extract_title(content, Path::new("my-notes.md")),
+            "my-notes"
+        );
     }
 
     #[test]
@@ -340,7 +348,10 @@ mod tests {
         assert_eq!(loaded.documents.len(), 1);
         assert_eq!(loaded.documents[0].relative_path, "ok.md");
         assert_eq!(loaded.loaded_files.len(), 1);
-        assert_eq!(loaded.loaded_files[0].relative_path, PathBuf::from("ok.md"));
+        assert_eq!(
+            loaded.loaded_files[0].relative_path,
+            PathBuf::from("ok.md")
+        );
         assert_eq!(loaded.failures.len(), 1);
         assert_eq!(
             loaded.failures[0].file.relative_path,
@@ -371,14 +382,20 @@ mod tests {
         assert!(loaded.loaded_files.is_empty());
         assert_eq!(loaded.failures.len(), 1);
 
-        incremental::batch_store_metadata(&config_db, "notes", &loaded.loaded_files).unwrap();
+        incremental::batch_store_metadata(
+            &config_db,
+            "notes",
+            &loaded.loaded_files,
+        )
+        .unwrap();
 
         let doc_id = DocumentId::new("notes", "note.md");
         let stored = config_db
             .get_document_metadata(doc_id.numeric)
             .unwrap()
             .unwrap();
-        let metadata = incremental::DocumentMetadata::deserialize(&stored).unwrap();
+        let metadata =
+            incremental::DocumentMetadata::deserialize(&stored).unwrap();
         assert_eq!(metadata.mtime, 10);
     }
 
@@ -398,7 +415,12 @@ mod tests {
         assert!(loaded.loaded_files.is_empty());
         assert_eq!(loaded.failures.len(), 1);
 
-        incremental::batch_store_metadata(&config_db, "notes", &loaded.loaded_files).unwrap();
+        incremental::batch_store_metadata(
+            &config_db,
+            "notes",
+            &loaded.loaded_files,
+        )
+        .unwrap();
 
         let doc_id = DocumentId::new("notes", "note.md");
         assert!(
@@ -423,7 +445,9 @@ mod tests {
             mtime: 1000,
         }];
 
-        let count = ingest_loaded_documents(&index, &mut writer, "notes", &docs).unwrap();
+        let count =
+            ingest_loaded_documents(&index, &mut writer, "notes", &docs)
+                .unwrap();
         assert_eq!(count, 1);
 
         let results = index.search("ownership", 10).unwrap();

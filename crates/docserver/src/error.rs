@@ -28,7 +28,9 @@ impl ApiError {
 impl From<docbert_core::Error> for ApiError {
     fn from(err: docbert_core::Error) -> Self {
         match &err {
-            docbert_core::Error::NotFound { .. } => Self::NotFound(err.to_string()),
+            docbert_core::Error::NotFound { .. } => {
+                Self::NotFound(err.to_string())
+            }
             _ => Self::Internal(err.to_string()),
         }
     }
@@ -37,8 +39,12 @@ impl From<docbert_core::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            ApiError::BadRequest(msg) => {
+                (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg)
+            }
+            ApiError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, "NOT_FOUND", msg)
+            }
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             ApiError::Internal(msg) => {
                 tracing::error!("internal error: {msg}");

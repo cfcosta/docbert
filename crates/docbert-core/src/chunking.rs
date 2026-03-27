@@ -58,7 +58,8 @@ fn chars_for_tokens(tokens: usize) -> usize {
 fn load_document_length(model_dir: &Path) -> Option<usize> {
     let config_path = model_dir.join("config_sentence_transformers.json");
     let contents = std::fs::read_to_string(config_path).ok()?;
-    let config: SentenceTransformersConfig = serde_json::from_str(&contents).ok()?;
+    let config: SentenceTransformersConfig =
+        serde_json::from_str(&contents).ok()?;
     config.document_length
 }
 
@@ -190,7 +191,9 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
         start_char += step;
 
         // Avoid creating a tiny final chunk
-        if char_count.saturating_sub(start_char) < chunk_size / 4 && !chunks.is_empty() {
+        if char_count.saturating_sub(start_char) < chunk_size / 4
+            && !chunks.is_empty()
+        {
             break;
         }
     }
@@ -199,7 +202,11 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
 }
 
 /// Find a nearby word boundary so we can avoid splitting in the middle of a word.
-fn find_word_boundary_char(text: &str, char_to_byte: &[usize], pos_char: usize) -> usize {
+fn find_word_boundary_char(
+    text: &str,
+    char_to_byte: &[usize],
+    pos_char: usize,
+) -> usize {
     // Look back up to 100 chars for a good break point
     let search_start_char = pos_char.saturating_sub(100);
 
@@ -208,7 +215,9 @@ fn find_word_boundary_char(text: &str, char_to_byte: &[usize], pos_char: usize) 
     let search_region = &text[start_byte..end_byte];
 
     // Find the last whitespace in the region
-    if let Some(ws_byte_offset) = search_region.rfind(|c: char| c.is_whitespace()) {
+    if let Some(ws_byte_offset) =
+        search_region.rfind(|c: char| c.is_whitespace())
+    {
         // Convert byte offset back to char position
         let ws_byte = start_byte + ws_byte_offset;
         // Find the char index for this byte position
@@ -271,13 +280,18 @@ mod tests {
 
     #[test]
     fn empty_text_produces_no_chunks() {
-        let chunks = chunk_text("   \n\t", DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+        let chunks =
+            chunk_text("   \n\t", DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
         assert!(chunks.is_empty());
     }
 
     #[test]
     fn short_text_single_chunk() {
-        let chunks = chunk_text("Hello, world!", DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+        let chunks = chunk_text(
+            "Hello, world!",
+            DEFAULT_CHUNK_SIZE,
+            DEFAULT_CHUNK_OVERLAP,
+        );
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "Hello, world!");
         assert_eq!(chunks[0].index, 0);

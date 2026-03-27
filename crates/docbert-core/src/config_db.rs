@@ -4,9 +4,11 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::error::Result;
 
-const COLLECTIONS: TableDefinition<&str, &str> = TableDefinition::new("collections");
+const COLLECTIONS: TableDefinition<&str, &str> =
+    TableDefinition::new("collections");
 const CONTEXTS: TableDefinition<&str, &str> = TableDefinition::new("contexts");
-const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> = TableDefinition::new("document_metadata");
+const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
+    TableDefinition::new("document_metadata");
 const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
 /// redb-backed store for collections, settings, and document metadata.
@@ -253,7 +255,11 @@ impl ConfigDb {
     /// let bytes = db.get_document_metadata(42).unwrap().unwrap();
     /// assert_eq!(bytes, b"collection\0path\01000");
     /// ```
-    pub fn set_document_metadata(&self, doc_id: u64, data: &[u8]) -> Result<()> {
+    pub fn set_document_metadata(
+        &self,
+        doc_id: u64,
+        data: &[u8],
+    ) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DOCUMENT_METADATA)?;
@@ -274,7 +280,10 @@ impl ConfigDb {
     /// db.set_document_metadata(42, b"data").unwrap();
     /// assert_eq!(db.get_document_metadata(42).unwrap().unwrap(), b"data");
     /// ```
-    pub fn get_document_metadata(&self, doc_id: u64) -> Result<Option<Vec<u8>>> {
+    pub fn get_document_metadata(
+        &self,
+        doc_id: u64,
+    ) -> Result<Option<Vec<u8>>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;
         Ok(table.get(doc_id)?.map(|v| v.value().to_vec()))
@@ -317,7 +326,10 @@ impl ConfigDb {
     /// assert!(db.get_document_metadata(1).unwrap().is_none());
     /// assert!(db.get_document_metadata(2).unwrap().is_none());
     /// ```
-    pub fn batch_remove_document_metadata(&self, doc_ids: &[u64]) -> Result<()> {
+    pub fn batch_remove_document_metadata(
+        &self,
+        doc_ids: &[u64],
+    ) -> Result<()> {
         if doc_ids.is_empty() {
             return Ok(());
         }
@@ -349,7 +361,10 @@ impl ConfigDb {
     /// assert_eq!(db.get_document_metadata(1).unwrap().unwrap(), b"meta_a");
     /// assert_eq!(db.get_document_metadata(2).unwrap().unwrap(), b"meta_b");
     /// ```
-    pub fn batch_set_document_metadata(&self, entries: &[(u64, Vec<u8>)]) -> Result<()> {
+    pub fn batch_set_document_metadata(
+        &self,
+        entries: &[(u64, Vec<u8>)],
+    ) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -618,7 +633,10 @@ mod tests {
                 db.get_collection("notes").unwrap(),
                 Some("/path/to/notes".to_string())
             );
-            assert_eq!(db.get_setting("version").unwrap(), Some("1".to_string()));
+            assert_eq!(
+                db.get_setting("version").unwrap(),
+                Some("1".to_string())
+            );
         }
     }
 

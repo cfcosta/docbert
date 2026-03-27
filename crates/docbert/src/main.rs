@@ -26,11 +26,14 @@ fn resolve_data_dir(explicit: Option<&Path>) -> error::Result<DataDir> {
         xdg::BaseDirectories::with_prefix("docbert")
             .get_data_home()
             .ok_or_else(|| {
-                error::Error::Config("could not determine XDG data home directory".into())
+                error::Error::Config(
+                    "could not determine XDG data home directory".into(),
+                )
             })?
     };
 
-    std::fs::create_dir_all(&root).map_err(|_| error::Error::DataDir(root.clone()))?;
+    std::fs::create_dir_all(&root)
+        .map_err(|_| error::Error::DataDir(root.clone()))?;
 
     Ok(DataDir::new(root))
 }
@@ -82,7 +85,9 @@ fn main() -> error::Result<()> {
                 command_handlers::collection_add(&config_db, &path, &name)?;
             }
             CollectionAction::Remove { name } => {
-                command_handlers::collection_remove(&config_db, &data_dir, &name)?;
+                command_handlers::collection_remove(
+                    &config_db, &data_dir, &name,
+                )?;
             }
             CollectionAction::List { json } => {
                 command_handlers::collection_list(&config_db, json)?;
@@ -100,10 +105,20 @@ fn main() -> error::Result<()> {
             }
         },
         Command::Search(args) => {
-            command_handlers::run_search(&config_db, &data_dir, &model_resolution, &args)?;
+            command_handlers::run_search(
+                &config_db,
+                &data_dir,
+                &model_resolution,
+                &args,
+            )?;
         }
         Command::Ssearch(args) => {
-            command_handlers::run_semantic_search(&config_db, &data_dir, &model_resolution, &args)?;
+            command_handlers::run_semantic_search(
+                &config_db,
+                &data_dir,
+                &model_resolution,
+                &args,
+            )?;
         }
         Command::Get(args) => {
             command_handlers::cmd_get(&config_db, &args)?;
@@ -112,13 +127,28 @@ fn main() -> error::Result<()> {
             command_handlers::cmd_multi_get(&config_db, &args)?;
         }
         Command::Rebuild(args) => {
-            command_handlers::cmd_rebuild(&config_db, &data_dir, &args, &model_resolution.model_id)?;
+            command_handlers::cmd_rebuild(
+                &config_db,
+                &data_dir,
+                &args,
+                &model_resolution.model_id,
+            )?;
         }
         Command::Sync(args) => {
-            command_handlers::cmd_sync(&config_db, &data_dir, &args, &model_resolution.model_id)?;
+            command_handlers::cmd_sync(
+                &config_db,
+                &data_dir,
+                &args,
+                &model_resolution.model_id,
+            )?;
         }
         Command::Status(args) => {
-            command_handlers::cmd_status(&config_db, &data_dir, &model_resolution, args.json)?;
+            command_handlers::cmd_status(
+                &config_db,
+                &data_dir,
+                &model_resolution,
+                args.json,
+            )?;
         }
         Command::Mcp => {
             mcp::run_mcp(data_dir, config_db, model_resolution.model_id)?;

@@ -303,7 +303,12 @@ impl CompletionsArgs {
     /// Generate shell completions and print to stdout.
     pub fn generate(&self) {
         let mut cmd = Cli::command();
-        clap_complete::generate(self.shell, &mut cmd, "docbert", &mut std::io::stdout());
+        clap_complete::generate(
+            self.shell,
+            &mut cmd,
+            "docbert",
+            &mut std::io::stdout(),
+        );
     }
 }
 
@@ -425,7 +430,9 @@ mod tests {
 
     #[test]
     fn parse_get_with_flags() {
-        let cli = Cli::parse_from(["docbert", "get", "#abc", "--json", "--meta", "--full"]);
+        let cli = Cli::parse_from([
+            "docbert", "get", "#abc", "--json", "--meta", "--full",
+        ]);
         match cli.command {
             Command::Get(args) => {
                 assert_eq!(args.reference, "#abc");
@@ -478,7 +485,14 @@ mod tests {
 
     #[test]
     fn parse_collection_add() {
-        let cli = Cli::parse_from(["docbert", "collection", "add", "/tmp/foo", "--name", "bar"]);
+        let cli = Cli::parse_from([
+            "docbert",
+            "collection",
+            "add",
+            "/tmp/foo",
+            "--name",
+            "bar",
+        ]);
         match cli.command {
             Command::Collection {
                 action: CollectionAction::Add { path, name },
@@ -538,7 +552,8 @@ mod tests {
 
     #[test]
     fn parse_context_remove() {
-        let cli = Cli::parse_from(["docbert", "context", "remove", "bert://notes"]);
+        let cli =
+            Cli::parse_from(["docbert", "context", "remove", "bert://notes"]);
         match cli.command {
             Command::Context {
                 action: ContextAction::Remove { uri },
@@ -577,7 +592,13 @@ mod tests {
 
     #[test]
     fn parse_rebuild_with_flags() {
-        let cli = Cli::parse_from(["docbert", "rebuild", "-c", "notes", "--embeddings-only"]);
+        let cli = Cli::parse_from([
+            "docbert",
+            "rebuild",
+            "-c",
+            "notes",
+            "--embeddings-only",
+        ]);
         match cli.command {
             Command::Rebuild(args) => {
                 assert_eq!(args.collection.as_deref(), Some("notes"));

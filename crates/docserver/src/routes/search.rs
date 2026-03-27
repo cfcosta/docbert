@@ -1,5 +1,10 @@
 use axum::{Json, extract::State};
-use docbert_core::search::{self, FinalResult, SearchParams, SemanticSearchParams};
+use docbert_core::search::{
+    self,
+    FinalResult,
+    SearchParams,
+    SemanticSearchParams,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{error::ApiError, state::AppState};
@@ -56,7 +61,8 @@ pub async fn search(
                 min_score: body.min_score,
                 all: false,
             };
-            let mut model = state.model.lock().map_err(|e| ApiError::internal(e))?;
+            let mut model =
+                state.model.lock().map_err(|e| ApiError::internal(e))?;
             search::execute_semantic_search(
                 &params,
                 &state.config_db,
@@ -74,7 +80,8 @@ pub async fn search(
                 no_fuzzy: false,
                 all: false,
             };
-            let mut model = state.model.lock().map_err(|e| ApiError::internal(e))?;
+            let mut model =
+                state.model.lock().map_err(|e| ApiError::internal(e))?;
             search::execute_search(
                 &params,
                 &state.search_index,
@@ -116,7 +123,10 @@ fn to_result_item(state: &AppState, r: FinalResult) -> SearchResultItem {
     }
 }
 
-fn load_user_metadata(state: &AppState, doc_numeric_id: u64) -> Option<serde_json::Value> {
+fn load_user_metadata(
+    state: &AppState,
+    doc_numeric_id: u64,
+) -> Option<serde_json::Value> {
     let meta_key = format!("doc_meta:{doc_numeric_id}");
     state
         .config_db

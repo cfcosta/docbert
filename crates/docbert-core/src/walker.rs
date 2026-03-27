@@ -47,7 +47,11 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     Ok(results)
 }
 
-fn walk_dir(root: &Path, current: &Path, results: &mut Vec<DiscoveredFile>) -> Result<()> {
+fn walk_dir(
+    root: &Path,
+    current: &Path,
+    results: &mut Vec<DiscoveredFile>,
+) -> Result<()> {
     let entries = std::fs::read_dir(current)?;
 
     for entry in entries {

@@ -69,7 +69,8 @@ pub async fn ingest(
     let mut writer = state.writer.lock().map_err(|e| ApiError::internal(e))?;
 
     for doc in &body.documents {
-        let processed = content::process(&doc.content_type, &doc.path, &doc.content);
+        let processed =
+            content::process(&doc.content_type, &doc.path, &doc.content);
         let did = DocumentId::new(&body.collection, &doc.path);
 
         // Delete any existing entry for this document.
@@ -114,7 +115,8 @@ pub async fn ingest(
         // Store user metadata as a setting keyed by doc ID if provided.
         if let Some(ref user_meta) = doc.metadata {
             let meta_key = format!("doc_meta:{}", did.numeric);
-            let meta_val = serde_json::to_string(user_meta).map_err(|e| ApiError::internal(e))?;
+            let meta_val = serde_json::to_string(user_meta)
+                .map_err(|e| ApiError::internal(e))?;
             state.config_db.set_setting(&meta_key, &meta_val)?;
         }
 
@@ -130,8 +132,13 @@ pub async fn ingest(
 
     // Compute embeddings (this can be slow, runs after Tantivy commit).
     if !docs_to_embed.is_empty() {
-        let mut model = state.model.lock().map_err(|e| ApiError::internal(e))?;
-        embedding::embed_and_store(&mut model, &state.embedding_db, docs_to_embed)?;
+        let mut model =
+            state.model.lock().map_err(|e| ApiError::internal(e))?;
+        embedding::embed_and_store(
+            &mut model,
+            &state.embedding_db,
+            docs_to_embed,
+        )?;
     }
 
     Ok(Json(IngestResponse {
@@ -161,10 +168,16 @@ pub async fn get(
     let meta_bytes = state
         .config_db
         .get_document_metadata(did.numeric)?
-        .ok_or_else(|| ApiError::NotFound(format!("document not found: {collection}:{path}")))?;
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "document not found: {collection}:{path}"
+            ))
+        })?;
 
     let meta = incremental::DocumentMetadata::deserialize(&meta_bytes)
-        .ok_or_else(|| ApiError::internal("failed to deserialize document metadata"))?;
+        .ok_or_else(|| {
+            ApiError::internal("failed to deserialize document metadata")
+        })?;
 
     // Retrieve the document content from Tantivy.
     // Search by the doc_id to find it.
@@ -214,7 +227,8 @@ pub async fn delete(
 
     // Delete from Tantivy.
     {
-        let mut writer = state.writer.lock().map_err(|e| ApiError::internal(e))?;
+        let mut writer =
+            state.writer.lock().map_err(|e| ApiError::internal(e))?;
         state
             .search_index
             .delete_document(&writer, &did.to_string());
@@ -234,7 +248,10 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn load_user_metadata(state: &AppState, doc_numeric_id: u64) -> Option<serde_json::Value> {
+fn load_user_metadata(
+    state: &AppState,
+    doc_numeric_id: u64,
+) -> Option<serde_json::Value> {
     let meta_key = format!("doc_meta:{doc_numeric_id}");
     state
         .config_db

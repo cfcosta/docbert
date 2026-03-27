@@ -13,7 +13,10 @@ pub struct Inner {
 
 pub type AppState = Arc<Inner>;
 
-pub fn init(data_dir: DataDir, model_id: Option<String>) -> Result<AppState, docbert_core::Error> {
+pub fn init(
+    data_dir: DataDir,
+    model_id: Option<String>,
+) -> Result<AppState, docbert_core::Error> {
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;

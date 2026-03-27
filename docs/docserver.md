@@ -12,13 +12,13 @@ Document ingestion accepts Markdown files for now. The API includes a `content_t
 
 All configuration is through environment variables.
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `DOCSERVER_DATA_DIR` | yes | — | Root storage path for config.db, embeddings.db, and tantivy/ |
-| `DOCSERVER_HOST` | no | `127.0.0.1` | Bind address |
-| `DOCSERVER_PORT` | no | `3030` | Bind port |
-| `DOCSERVER_MODEL` | no | `lightonai/ColBERT-Zero` | ColBERT model ID or local path |
-| `DOCSERVER_LOG` | no | `warn` | Log level filter (`trace`, `debug`, `info`, `warn`, `error`) |
+| Variable             | Required | Default                  | Description                                                  |
+| -------------------- | -------- | ------------------------ | ------------------------------------------------------------ |
+| `DOCSERVER_DATA_DIR` | yes      | —                        | Root storage path for config.db, embeddings.db, and tantivy/ |
+| `DOCSERVER_HOST`     | no       | `127.0.0.1`              | Bind address                                                 |
+| `DOCSERVER_PORT`     | no       | `3030`                   | Bind port                                                    |
+| `DOCSERVER_MODEL`    | no       | `lightonai/ColBERT-Zero` | ColBERT model ID or local path                               |
+| `DOCSERVER_LOG`      | no       | `warn`                   | Log level filter (`trace`, `debug`, `info`, `warn`, `error`) |
 
 The server creates `DOCSERVER_DATA_DIR` and its subdirectories on startup if they do not exist.
 
@@ -55,10 +55,7 @@ GET /v1/collections
 Returns `200 OK`:
 
 ```json
-[
-  { "name": "notes" },
-  { "name": "docs" }
-]
+[{ "name": "notes" }, { "name": "docs" }]
 ```
 
 #### Delete a collection
@@ -249,12 +246,12 @@ All errors return JSON with a human-readable message and a machine-readable code
 }
 ```
 
-| HTTP status | Code | When |
-| --- | --- | --- |
-| 400 | `BAD_REQUEST` | Missing required fields, unsupported content type |
-| 404 | `NOT_FOUND` | Collection or document does not exist |
-| 409 | `CONFLICT` | Collection already exists |
-| 500 | `INTERNAL_ERROR` | Unexpected failure (index error, model error, etc.) |
+| HTTP status | Code             | When                                                |
+| ----------- | ---------------- | --------------------------------------------------- |
+| 400         | `BAD_REQUEST`    | Missing required fields, unsupported content type   |
+| 404         | `NOT_FOUND`      | Collection or document does not exist               |
+| 409         | `CONFLICT`       | Collection already exists                           |
+| 500         | `INTERNAL_ERROR` | Unexpected failure (index error, model error, etc.) |
 
 ## Architecture
 

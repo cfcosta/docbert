@@ -78,7 +78,8 @@ impl DataDir {
     /// ```
     pub fn tantivy_dir(&self) -> Result<PathBuf> {
         let path = self.root.join("tantivy");
-        std::fs::create_dir_all(&path).map_err(|_| Error::DataDir(path.clone()))?;
+        std::fs::create_dir_all(&path)
+            .map_err(|_| Error::DataDir(path.clone()))?;
         Ok(path)
     }
 }

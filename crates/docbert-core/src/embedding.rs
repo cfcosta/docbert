@@ -55,7 +55,13 @@ pub fn embed_and_store_in_batches<F>(
 where
     F: FnMut(usize),
 {
-    embed_and_store_in_batches_with(model, db, documents, submission_batch_size, on_progress)
+    embed_and_store_in_batches_with(
+        model,
+        db,
+        documents,
+        submission_batch_size,
+        on_progress,
+    )
 }
 
 fn embed_and_store_with<E: DocumentEncoder>(
@@ -68,13 +74,14 @@ fn embed_and_store_with<E: DocumentEncoder>(
     }
 
     // Unzip to avoid cloning - we take ownership of the strings
-    let (doc_ids, texts): (Vec<u64>, Vec<String>) = documents.into_iter().unzip();
+    let (doc_ids, texts): (Vec<u64>, Vec<String>) =
+        documents.into_iter().unzip();
     let embeddings = model.encode_documents(&texts)?;
 
     // embeddings shape: [batch_size, num_tokens, dimension]
-    let dims = embeddings
-        .dims3()
-        .map_err(|e| Error::Config(format!("unexpected embedding tensor shape: {e}")))?;
+    let dims = embeddings.dims3().map_err(|e| {
+        Error::Config(format!("unexpected embedding tensor shape: {e}"))
+    })?;
     let (batch_size, padded_tokens, dimension) = dims;
 
     let flat_embeddings = tensor_to_flat_f32(&embeddings)?;
@@ -84,9 +91,12 @@ fn embed_and_store_with<E: DocumentEncoder>(
     for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
         let start = i * doc_stride;
         let end = start + doc_stride;
-        let doc_embedding = flat_embeddings.get(start..end).ok_or_else(|| {
-            Error::Config(format!("failed to slice embedding batch for doc index {i}"))
-        })?;
+        let doc_embedding =
+            flat_embeddings.get(start..end).ok_or_else(|| {
+                Error::Config(format!(
+                    "failed to slice embedding batch for doc index {i}"
+                ))
+            })?;
         let trimmed = trim_trailing_padding_rows(doc_embedding, dimension);
         let num_tokens = trimmed.len() / dimension;
 
@@ -115,7 +125,8 @@ where
 {
     if submission_batch_size == 0 {
         return Err(Error::Config(
-            "embedding submission batch size must be greater than zero".to_string(),
+            "embedding submission batch size must be greater than zero"
+                .to_string(),
         ));
     }
 
@@ -123,7 +134,8 @@ where
     let mut documents = documents.into_iter();
 
     loop {
-        let batch: Vec<(u64, String)> = documents.by_ref().take(submission_batch_size).collect();
+        let batch: Vec<(u64, String)> =
+            documents.by_ref().take(submission_batch_size).collect();
         if batch.is_empty() {
             break;
         }
@@ -141,7 +153,9 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
         .flatten_all()
         .map_err(|e| Error::Config(format!("failed to flatten tensor: {e}")))?
         .to_vec1::<f32>()
-        .map_err(|e| Error::Config(format!("failed to convert tensor to f32: {e}")))?;
+        .map_err(|e| {
+            Error::Config(format!("failed to convert tensor to f32: {e}"))
+        })?;
     Ok(flat)
 }
 
@@ -190,7 +204,9 @@ pub fn batch_load_embedding_tensors(
 }
 
 /// Convert an EmbeddingMatrix to a Tensor.
-fn matrix_to_tensor(matrix: crate::embedding_db::EmbeddingMatrix) -> Result<Tensor> {
+fn matrix_to_tensor(
+    matrix: crate::embedding_db::EmbeddingMatrix,
+) -> Result<Tensor> {
     let num_tokens = matrix.num_tokens as usize;
     let dimension = matrix.dimension as usize;
 
@@ -199,7 +215,11 @@ fn matrix_to_tensor(matrix: crate::embedding_db::EmbeddingMatrix) -> Result<Tens
         (num_tokens, dimension),
         &candle_core::Device::Cpu,
     )
-    .map_err(|e| Error::Config(format!("failed to create tensor from embedding data: {e}")))
+    .map_err(|e| {
+        Error::Config(format!(
+            "failed to create tensor from embedding data: {e}"
+        ))
+    })
 }
 
 /// Load one document embedding from the database and convert it to a tensor.
@@ -220,7 +240,10 @@ fn matrix_to_tensor(matrix: crate::embedding_db::EmbeddingMatrix) -> Result<Tens
 ///
 /// assert!(embedding::load_embedding_tensor(&db, 999).unwrap().is_none());
 /// ```
-pub fn load_embedding_tensor(db: &EmbeddingDb, doc_id: u64) -> Result<Option<Tensor>> {
+pub fn load_embedding_tensor(
+    db: &EmbeddingDb,
+    doc_id: u64,
+) -> Result<Option<Tensor>> {
     let matrix = match db.load(doc_id)? {
         Some(m) => m,
         None => return Ok(None),
@@ -233,7 +256,11 @@ pub fn load_embedding_tensor(db: &EmbeddingDb, doc_id: u64) -> Result<Option<Ten
         (num_tokens, dimension),
         &candle_core::Device::Cpu,
     )
-    .map_err(|e| Error::Config(format!("failed to create tensor from embedding data: {e}")))?;
+    .map_err(|e| {
+        Error::Config(format!(
+            "failed to create tensor from embedding data: {e}"
+        ))
+    })?;
 
     Ok(Some(tensor))
 }
@@ -273,7 +300,8 @@ mod tests {
             // Two documents, padded to 3 token rows. The first document only
             // has 2 real token embeddings; the last row is padding.
             let data = vec![
-                1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, // doc 1: 2 real rows + padding
+                1.0f32, 2.0, 3.0, 4.0, 0.0,
+                0.0, // doc 1: 2 real rows + padding
                 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, // doc 2: 3 real rows
             ];
             Ok(Tensor::from_vec(
@@ -357,7 +385,8 @@ mod tests {
         assert_eq!(embedded, doc_count);
         assert_eq!(db.list_ids().unwrap().len(), doc_count);
         assert!(
-            encoder.call_sizes.len() < doc_count.div_ceil(PYLATE_INTERNAL_BATCH_SIZE),
+            encoder.call_sizes.len()
+                < doc_count.div_ceil(PYLATE_INTERNAL_BATCH_SIZE),
             "expected outer submission batching to coalesce work, got {:?}",
             encoder.call_sizes
         );
@@ -376,13 +405,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut encoder = RecordingEncoder::new();
-        let docs: Vec<(u64, String)> = (0..85).map(|i| (i as u64, format!("doc {i}"))).collect();
+        let docs: Vec<(u64, String)> =
+            (0..85).map(|i| (i as u64, format!("doc {i}"))).collect();
         let mut progress_updates = Vec::new();
 
-        let embedded = embed_and_store_in_batches_with(&mut encoder, &db, docs, 40, |n| {
-            progress_updates.push(n)
-        })
-        .unwrap();
+        let embedded =
+            embed_and_store_in_batches_with(&mut encoder, &db, docs, 40, |n| {
+                progress_updates.push(n)
+            })
+            .unwrap();
 
         assert_eq!(embedded, 85);
         assert_eq!(encoder.call_sizes, vec![40, 40, 5]);
@@ -404,9 +435,8 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("embedding submission batch size must be greater than zero")
-        );
+        assert!(err.to_string().contains(
+            "embedding submission batch size must be greater than zero"
+        ));
     }
 }

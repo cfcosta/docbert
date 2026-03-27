@@ -124,7 +124,11 @@ pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
 /// assert!(result.starts_with("line1\nline2"));
 /// assert!(result.contains("truncated"));
 /// ```
-pub fn apply_line_limits(text: &str, start_line: usize, max_lines: Option<usize>) -> String {
+pub fn apply_line_limits(
+    text: &str,
+    start_line: usize,
+    max_lines: Option<usize>,
+) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return String::new();

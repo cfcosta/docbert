@@ -9,7 +9,8 @@ mod routes;
 mod state;
 
 fn main() {
-    let log_filter = std::env::var("DOCSERVER_LOG").unwrap_or_else(|_| "warn".into());
+    let log_filter =
+        std::env::var("DOCSERVER_LOG").unwrap_or_else(|_| "warn".into());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(log_filter))
         .with_writer(std::io::stderr)
@@ -20,8 +21,10 @@ fn main() {
         eprintln!("error: DOCSERVER_DATA_DIR is required");
         std::process::exit(1);
     });
-    let host = std::env::var("DOCSERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port = std::env::var("DOCSERVER_PORT").unwrap_or_else(|_| "3030".into());
+    let host =
+        std::env::var("DOCSERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let port =
+        std::env::var("DOCSERVER_PORT").unwrap_or_else(|_| "3030".into());
     let model_id = std::env::var("DOCSERVER_MODEL").ok();
 
     let root = PathBuf::from(&data_path);

@@ -4,7 +4,8 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::error::Result;
 
-const EMBEDDINGS: TableDefinition<u64, &[u8]> = TableDefinition::new("embeddings");
+const EMBEDDINGS: TableDefinition<u64, &[u8]> =
+    TableDefinition::new("embeddings");
 
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
@@ -16,7 +17,8 @@ fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
 
     let num_tokens = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
     let dimension = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let expected_len = HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
+    let expected_len =
+        HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
     if bytes.len() != expected_len {
         return None;
     }
@@ -80,7 +82,13 @@ impl EmbeddingDb {
     /// db.store(42, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
     /// assert!(db.load(42).unwrap().is_some());
     /// ```
-    pub fn store(&self, doc_id: u64, num_tokens: u32, dimension: u32, data: &[f32]) -> Result<()> {
+    pub fn store(
+        &self,
+        doc_id: u64,
+        num_tokens: u32,
+        dimension: u32,
+        data: &[f32],
+    ) -> Result<()> {
         assert_eq!(
             data.len(),
             (num_tokens as usize) * (dimension as usize),
@@ -211,7 +219,10 @@ impl EmbeddingDb {
     /// ]).unwrap();
     /// assert_eq!(db.list_ids().unwrap().len(), 2);
     /// ```
-    pub fn batch_store(&self, entries: &[(u64, u32, u32, Vec<f32>)]) -> Result<()> {
+    pub fn batch_store(
+        &self,
+        entries: &[(u64, u32, u32, Vec<f32>)],
+    ) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -225,7 +236,8 @@ impl EmbeddingDb {
                     "data length must equal num_tokens * dimension"
                 );
 
-                let byte_len = HEADER_SIZE + std::mem::size_of_val(data.as_slice());
+                let byte_len =
+                    HEADER_SIZE + std::mem::size_of_val(data.as_slice());
                 let mut guard = table.insert_reserve(*doc_id, byte_len)?;
                 let dest = guard.as_mut();
 
@@ -258,7 +270,10 @@ impl EmbeddingDb {
     /// assert!(results[1].1.is_none());  // doc 999 missing
     /// assert!(results[2].1.is_some());  // doc 10
     /// ```
-    pub fn batch_load(&self, doc_ids: &[u64]) -> Result<Vec<(u64, Option<EmbeddingMatrix>)>> {
+    pub fn batch_load(
+        &self,
+        doc_ids: &[u64],
+    ) -> Result<Vec<(u64, Option<EmbeddingMatrix>)>> {
         if doc_ids.is_empty() {
             return Ok(Vec::new());
         }

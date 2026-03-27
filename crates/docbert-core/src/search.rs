@@ -144,13 +144,21 @@ pub fn execute_search(
     let bm25_results = if args.no_fuzzy {
         // Pure BM25 without fuzzy
         if let Some(ref collection) = args.collection {
-            search_index.search_in_collection(&args.query, collection, bm25_limit)?
+            search_index.search_in_collection(
+                &args.query,
+                collection,
+                bm25_limit,
+            )?
         } else {
             search_index.search(&args.query, bm25_limit)?
         }
     } else {
         // BM25 + fuzzy matching
-        search_index.search_fuzzy(&args.query, args.collection.as_deref(), bm25_limit)?
+        search_index.search_fuzzy(
+            &args.query,
+            args.collection.as_deref(),
+            bm25_limit,
+        )?
     };
 
     if bm25_results.is_empty() {
@@ -209,7 +217,11 @@ pub fn execute_semantic_search(
 
     for (doc_id, bytes) in metadata_entries {
         if let Some(meta) = DocumentMetadata::deserialize(&bytes)
-            && document_has_semantic_body(config_db, &mut collection_paths, &meta)
+            && document_has_semantic_body(
+                config_db,
+                &mut collection_paths,
+                &meta,
+            )
         {
             doc_ids.push(doc_id);
             metadata.insert(doc_id, meta);
@@ -226,8 +238,10 @@ pub fn execute_semantic_search(
     let mut scored: Vec<(u64, f32)> = Vec::new();
 
     for batch in doc_ids.chunks(SEMANTIC_SEARCH_BATCH_SIZE) {
-        let embeddings = embedding::batch_load_embedding_tensors(embedding_db, batch)?;
-        let batch_scores = reranker::score_loaded_embeddings(&query_3d, embeddings, model)?;
+        let embeddings =
+            embedding::batch_load_embedding_tensors(embedding_db, batch)?;
+        let batch_scores =
+            reranker::score_loaded_embeddings(&query_3d, embeddings, model)?;
         scored.extend(
             batch_scores
                 .into_iter()
@@ -292,11 +306,17 @@ pub fn execute_semantic_search(
 /// assert_eq!(coll, "notes");
 /// assert_eq!(path, "hello.md");
 /// ```
-pub fn resolve_by_doc_id(config_db: &ConfigDb, short_id: &str) -> Option<(String, String)> {
+pub fn resolve_by_doc_id(
+    config_db: &ConfigDb,
+    short_id: &str,
+) -> Option<(String, String)> {
     let entries = config_db.list_all_document_metadata().ok()?;
     for (_doc_id, bytes) in entries {
         let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
-        let did = crate::doc_id::DocumentId::new(&meta.collection, &meta.relative_path);
+        let did = crate::doc_id::DocumentId::new(
+            &meta.collection,
+            &meta.relative_path,
+        );
         if did.short == short_id || did.to_string().contains(short_id) {
             return Some((meta.collection, meta.relative_path));
         }
@@ -329,7 +349,10 @@ pub fn resolve_by_doc_id(config_db: &ConfigDb, short_id: &str) -> Option<(String
 /// assert_eq!(coll, "notes");
 /// assert!(resolve_by_path(&db, "nonexistent.md").is_none());
 /// ```
-pub fn resolve_by_path(config_db: &ConfigDb, path: &str) -> Option<(String, String)> {
+pub fn resolve_by_path(
+    config_db: &ConfigDb,
+    path: &str,
+) -> Option<(String, String)> {
     let entries = config_db.list_all_document_metadata().ok()?;
     for (_doc_id, bytes) in entries {
         let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
@@ -380,7 +403,9 @@ fn document_has_semantic_body(
 ) -> bool {
     let collection_path = collection_paths
         .entry(meta.collection.clone())
-        .or_insert_with(|| config_db.get_collection(&meta.collection).ok().flatten());
+        .or_insert_with(|| {
+            config_db.get_collection(&meta.collection).ok().flatten()
+        });
     let Some(collection_path) = collection_path.as_deref() else {
         return false;
     };
@@ -396,14 +421,18 @@ fn document_has_semantic_body(
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
-    let mut collection_paths: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+    let mut collection_paths: std::collections::HashMap<
+        String,
+        Option<String>,
+    > = std::collections::HashMap::new();
 
     for r in results {
         let fallback = ingestion::extract_title("", Path::new(&r.path));
         let collection_path = collection_paths
             .entry(r.collection.clone())
-            .or_insert_with(|| config_db.get_collection(&r.collection).ok().flatten());
+            .or_insert_with(|| {
+                config_db.get_collection(&r.collection).ok().flatten()
+            });
         let Some(collection_path) = collection_path.as_deref() else {
             r.title = fallback;
             continue;
@@ -428,8 +457,14 @@ fn rerank_results(
 ) -> Result<Vec<FinalResult>> {
     let query_embedding = model.encode_query(query)?;
 
-    let candidate_ids: Vec<u64> = bm25_results.iter().map(|r| r.doc_num_id).collect();
-    let ranked = reranker::rerank(&query_embedding, &candidate_ids, embedding_db, model)?;
+    let candidate_ids: Vec<u64> =
+        bm25_results.iter().map(|r| r.doc_num_id).collect();
+    let ranked = reranker::rerank(
+        &query_embedding,
+        &candidate_ids,
+        embedding_db,
+        model,
+    )?;
 
     // Build a lookup from doc_num_id to BM25 result for metadata.
     let bm25_lookup: std::collections::HashMap<u64, &SearchResult> =
@@ -515,17 +550,25 @@ pub fn format_json(results: &[FinalResult], query: &str) {
 ///
 /// Relative paths are resolved against each collection root, which makes the
 /// output easy to pipe into other tools.
-pub fn format_files(results: &[FinalResult], config_db: &crate::config_db::ConfigDb) {
-    let mut collection_paths: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+pub fn format_files(
+    results: &[FinalResult],
+    config_db: &crate::config_db::ConfigDb,
+) {
+    let mut collection_paths: std::collections::HashMap<
+        String,
+        Option<String>,
+    > = std::collections::HashMap::new();
 
     for r in results {
         let collection_path = collection_paths
             .entry(r.collection.clone())
-            .or_insert_with(|| config_db.get_collection(&r.collection).ok().flatten());
+            .or_insert_with(|| {
+                config_db.get_collection(&r.collection).ok().flatten()
+            });
 
         if let Some(collection_path) = collection_path {
-            let full_path = std::path::Path::new(&collection_path).join(&r.path);
+            let full_path =
+                std::path::Path::new(&collection_path).join(&r.path);
             println!("{}", full_path.display());
         }
     }
@@ -566,7 +609,11 @@ pub fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config_db::ConfigDb, doc_id::DocumentId, incremental::DocumentMetadata};
+    use crate::{
+        config_db::ConfigDb,
+        doc_id::DocumentId,
+        incremental::DocumentMetadata,
+    };
 
     fn make_semantic_args(query: &str) -> SemanticSearchParams {
         SemanticSearchParams {
@@ -648,10 +695,12 @@ mod tests {
     }
 
     /// Set up a search index with sample documents and commit them.
-    fn setup_index_with_docs() -> (SearchIndex, EmbeddingDb, tempfile::TempDir) {
+    fn setup_index_with_docs() -> (SearchIndex, EmbeddingDb, tempfile::TempDir)
+    {
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 
         let mut writer = idx.writer(15_000_000).unwrap();
 
@@ -743,7 +792,11 @@ mod tests {
 
         assert!(results.len() >= 2, "should find multiple programming docs");
         for (i, r) in results.iter().enumerate() {
-            assert_eq!(r.rank, i + 1, "ranks should be 1-indexed and sequential");
+            assert_eq!(
+                r.rank,
+                i + 1,
+                "ranks should be 1-indexed and sequential"
+            );
         }
     }
 
@@ -887,12 +940,14 @@ mod tests {
     ///
     /// Creates documents, indexes them in tantivy, computes ColBERT
     /// embeddings, and returns everything needed for search.
-    fn setup_e2e() -> (SearchIndex, EmbeddingDb, ModelManager, tempfile::TempDir) {
+    fn setup_e2e() -> (SearchIndex, EmbeddingDb, ModelManager, tempfile::TempDir)
+    {
         use crate::embedding::embed_and_store;
 
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut model = ModelManager::new();
 
         let mut writer = idx.writer(15_000_000).unwrap();
@@ -965,18 +1020,21 @@ mod tests {
         writer.commit().unwrap();
 
         // Compute and store ColBERT embeddings
-        let count = embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
+        let count =
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
         (idx, embedding_db, model, tmp)
     }
 
-    fn setup_semantic_e2e() -> (ConfigDb, EmbeddingDb, ModelManager, tempfile::TempDir) {
+    fn setup_semantic_e2e()
+    -> (ConfigDb, EmbeddingDb, ModelManager, tempfile::TempDir) {
         use crate::embedding::embed_and_store;
 
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut model = ModelManager::new();
 
         let docs: Vec<(&str, &str, &str, &str)> = vec![
@@ -1023,7 +1081,8 @@ mod tests {
             embed_docs.push((doc_id.numeric, format!("{title}\n{body}")));
         }
 
-        let count = embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
+        let count =
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
         (config_db, embedding_db, model, tmp)
@@ -1033,11 +1092,18 @@ mod tests {
     fn semantic_search_empty_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut model = ModelManager::new();
         let args = make_semantic_args("anything");
 
-        let results = execute_semantic_search(&args, &config_db, &embedding_db, &mut model).unwrap();
+        let results = execute_semantic_search(
+            &args,
+            &config_db,
+            &embedding_db,
+            &mut model,
+        )
+        .unwrap();
 
         assert!(results.is_empty());
     }
@@ -1066,7 +1132,13 @@ mod tests {
         let (config_db, embedding_db, mut model, _tmp) = setup_semantic_e2e();
         let args = make_semantic_args("rust programming language");
 
-        let results = execute_semantic_search(&args, &config_db, &embedding_db, &mut model).unwrap();
+        let results = execute_semantic_search(
+            &args,
+            &config_db,
+            &embedding_db,
+            &mut model,
+        )
+        .unwrap();
 
         assert!(!results.is_empty(), "semantic search should return results");
         assert_eq!(
@@ -1124,7 +1196,8 @@ mod tests {
         args.bm25_only = false;
         args.all = true;
 
-        let all_results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let all_results =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
         assert!(!all_results.is_empty());
 
         // Use the median score as threshold - should filter out ~half
@@ -1132,7 +1205,8 @@ mod tests {
         let threshold = all_results[mid].score;
 
         args.min_score = threshold;
-        let filtered = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let filtered =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
 
         assert!(
             filtered.len() <= all_results.len(),
@@ -1227,7 +1301,8 @@ mod tests {
         args.bm25_only = false;
         args.all = true;
 
-        let all_results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let all_results =
+            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
         assert!(
             all_results.len() >= 2,
             "should have multiple results to test filtering"
@@ -1253,13 +1328,15 @@ mod tests {
         let mut bm25_args = make_search_args("rust safety");
         bm25_args.bm25_only = true;
         bm25_args.all = true;
-        let bm25_results = execute_search(&bm25_args, &idx, &emb_db, &mut model).unwrap();
+        let bm25_results =
+            execute_search(&bm25_args, &idx, &emb_db, &mut model).unwrap();
 
         // With reranking
         let mut rerank_args = make_search_args("rust safety");
         rerank_args.bm25_only = false;
         rerank_args.all = true;
-        let reranked_results = execute_search(&rerank_args, &idx, &emb_db, &mut model).unwrap();
+        let reranked_results =
+            execute_search(&rerank_args, &idx, &emb_db, &mut model).unwrap();
 
         // Both should find results
         assert!(!bm25_results.is_empty());

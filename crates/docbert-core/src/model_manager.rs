@@ -142,7 +142,10 @@ fn probe_metal_backend() -> BackendDoctorReport {
     }
 }
 
-fn summarize_doctor_report(cuda: BackendDoctorReport, metal: BackendDoctorReport) -> DoctorReport {
+fn summarize_doctor_report(
+    cuda: BackendDoctorReport,
+    metal: BackendDoctorReport,
+) -> DoctorReport {
     let selected_device = if cuda.usable {
         ComputeDeviceKind::Cuda
     } else if metal.usable {
@@ -200,7 +203,9 @@ fn default_device() -> SelectedDevice {
                     fallback_note: None,
                 };
             }
-            Err(err) => failed_backends.push(format!("cuda unavailable: {err}")),
+            Err(err) => {
+                failed_backends.push(format!("cuda unavailable: {err}"))
+            }
         }
     }
 
@@ -214,7 +219,9 @@ fn default_device() -> SelectedDevice {
                     fallback_note: None,
                 };
             }
-            Err(err) => failed_backends.push(format!("metal unavailable: {err}")),
+            Err(err) => {
+                failed_backends.push(format!("metal unavailable: {err}"))
+            }
         }
     }
 
@@ -326,7 +333,8 @@ impl ModelManager {
     /// Document encoding defaults to 519 tokens unless you override it with
     /// [`with_document_length`](Self::with_document_length).
     pub fn new() -> Self {
-        let model_id = std::env::var(MODEL_ENV_VAR).unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
+        let model_id = std::env::var(MODEL_ENV_VAR)
+            .unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
         Self::unloaded(model_id)
     }
 
@@ -381,12 +389,14 @@ impl ModelManager {
     fn ensure_loaded(&mut self) -> Result<&mut ColBERT> {
         if self.model.is_none() {
             // Resolve prompts from model config before loading
-            let (query_prompt, document_prompt) = resolve_prompts(&self.model_id);
+            let (query_prompt, document_prompt) =
+                resolve_prompts(&self.model_id);
             self.query_prompt = query_prompt;
             self.document_prompt = document_prompt;
 
             let selected_device = default_device();
-            let env_batch_size = std::env::var(EMBEDDING_BATCH_SIZE_ENV_VAR).ok();
+            let env_batch_size =
+                std::env::var(EMBEDDING_BATCH_SIZE_ENV_VAR).ok();
             let embedding_batch_size = resolve_embedding_batch_size(
                 self.embedding_batch_size,
                 env_batch_size.as_deref(),
@@ -423,7 +433,8 @@ impl ModelManager {
         if prompt.is_empty() {
             Ok(model.encode(texts, false)?)
         } else {
-            let prompted: Vec<String> = texts.iter().map(|t| format!("{prompt}{t}")).collect();
+            let prompted: Vec<String> =
+                texts.iter().map(|t| format!("{prompt}{t}")).collect();
             Ok(model.encode(&prompted, false)?)
         }
     }
@@ -460,10 +471,9 @@ impl ModelManager {
         query_embeddings: &Tensor,
         document_embeddings: &Tensor,
     ) -> Result<Similarities> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or_else(|| crate::error::Error::Config("model not loaded".to_string()))?;
+        let model = self.model.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("model not loaded".to_string())
+        })?;
         Ok(model.similarity(query_embeddings, document_embeddings)?)
     }
 }
@@ -761,31 +771,44 @@ mod tests {
 
     #[test]
     fn resolve_embedding_batch_size_prefers_explicit_value() {
-        let resolved =
-            resolve_embedding_batch_size(Some(96), Some("128"), ComputeDeviceKind::Cuda).unwrap();
+        let resolved = resolve_embedding_batch_size(
+            Some(96),
+            Some("128"),
+            ComputeDeviceKind::Cuda,
+        )
+        .unwrap();
         assert_eq!(resolved, 96);
     }
 
     #[test]
     fn resolve_embedding_batch_size_uses_env_override() {
-        let resolved =
-            resolve_embedding_batch_size(None, Some("128"), ComputeDeviceKind::Cpu).unwrap();
+        let resolved = resolve_embedding_batch_size(
+            None,
+            Some("128"),
+            ComputeDeviceKind::Cpu,
+        )
+        .unwrap();
         assert_eq!(resolved, 128);
     }
 
     #[test]
     fn resolve_embedding_batch_size_rejects_invalid_env() {
-        let err =
-            resolve_embedding_batch_size(None, Some("nope"), ComputeDeviceKind::Cpu).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("DOCBERT_EMBEDDING_BATCH_SIZE must be a positive integer")
-        );
+        let err = resolve_embedding_batch_size(
+            None,
+            Some("nope"),
+            ComputeDeviceKind::Cpu,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(
+            "DOCBERT_EMBEDDING_BATCH_SIZE must be a positive integer"
+        ));
     }
 
     #[test]
     fn resolve_embedding_batch_size_rejects_zero() {
-        let err = resolve_embedding_batch_size(Some(0), None, ComputeDeviceKind::Cpu).unwrap_err();
+        let err =
+            resolve_embedding_batch_size(Some(0), None, ComputeDeviceKind::Cpu)
+                .unwrap_err();
         assert!(
             err.to_string()
                 .contains("embedding batch size must be greater than zero")
@@ -794,14 +817,18 @@ mod tests {
 
     #[test]
     fn resolve_embedding_batch_size_falls_back_to_device_default() {
-        let resolved = resolve_embedding_batch_size(None, None, ComputeDeviceKind::Cuda).unwrap();
+        let resolved =
+            resolve_embedding_batch_size(None, None, ComputeDeviceKind::Cuda)
+                .unwrap();
         assert_eq!(resolved, DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE);
     }
 
     #[test]
     fn resolve_model_cli_overrides_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = crate::config_db::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
         config_db.set_setting("model_name", "config/model").unwrap();
         let resolution = resolve_model(&config_db, Some("cli/model")).unwrap();
         assert_eq!(resolution.model_id, "cli/model");
@@ -813,7 +840,9 @@ mod tests {
     #[test]
     fn resolve_model_config_used_when_no_cli() {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = crate::config_db::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
         config_db.set_setting("model_name", "config/model").unwrap();
         let resolution = resolve_model(&config_db, None).unwrap();
         // Config should be used (unless env var is also set, which we
@@ -831,7 +860,9 @@ mod tests {
     #[test]
     fn resolve_model_no_config_no_cli() {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = crate::config_db::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let config_db =
+            crate::config_db::ConfigDb::open(&tmp.path().join("config.db"))
+                .unwrap();
         let resolution = resolve_model(&config_db, None).unwrap();
         assert!(resolution.config_model.is_none());
         assert!(resolution.cli_model.is_none());

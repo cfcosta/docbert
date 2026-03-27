@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use crate::{config_db::ConfigDb, doc_id::DocumentId, error::Result, walker::DiscoveredFile};
+use crate::{
+    config_db::ConfigDb,
+    doc_id::DocumentId,
+    error::Result,
+    walker::DiscoveredFile,
+};
 
 /// Metadata docbert stores for each indexed document in `config.db`.
 ///
@@ -151,7 +156,11 @@ pub fn diff_collection(
 ///
 /// This recomputes the [`DocumentId`] from the collection name and relative
 /// path, then serializes and stores the metadata.
-pub fn store_metadata(config_db: &ConfigDb, collection: &str, file: &DiscoveredFile) -> Result<()> {
+pub fn store_metadata(
+    config_db: &ConfigDb,
+    collection: &str,
+    file: &DiscoveredFile,
+) -> Result<()> {
     let rel_path = file.relative_path.to_string_lossy().to_string();
     let doc_id = DocumentId::new(collection, &rel_path);
     let meta = DocumentMetadata {

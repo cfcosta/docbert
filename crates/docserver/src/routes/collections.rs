@@ -40,7 +40,9 @@ pub async fn create(
     ))
 }
 
-pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<CollectionItem>>, ApiError> {
+pub async fn list(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CollectionItem>>, ApiError> {
     let collections = state.config_db.list_collections()?;
     let items = collections
         .into_iter()
@@ -55,12 +57,15 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, ApiError> {
     let existing = state.config_db.get_collection(&name)?;
     if existing.is_none() {
-        return Err(ApiError::NotFound(format!("collection not found: {name}")));
+        return Err(ApiError::NotFound(format!(
+            "collection not found: {name}"
+        )));
     }
 
     // Delete Tantivy entries for this collection.
     {
-        let mut writer = state.writer.lock().map_err(|e| ApiError::internal(e))?;
+        let mut writer =
+            state.writer.lock().map_err(|e| ApiError::internal(e))?;
         state.search_index.delete_collection(&writer, &name);
         writer.commit().map_err(ApiError::internal)?;
     }
@@ -69,7 +74,9 @@ pub async fn delete(
     let all_meta = state.config_db.list_all_document_metadata()?;
     let mut ids_to_remove = Vec::new();
     for (doc_id, bytes) in &all_meta {
-        if let Some(meta) = docbert_core::incremental::DocumentMetadata::deserialize(bytes) {
+        if let Some(meta) =
+            docbert_core::incremental::DocumentMetadata::deserialize(bytes)
+        {
             if meta.collection == name {
                 ids_to_remove.push(*doc_id);
             }

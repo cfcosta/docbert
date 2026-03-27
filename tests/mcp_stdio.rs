@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 use docbert_core::{ConfigDb, SearchIndex};
 use rmcp::{
     ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams, ResourceContents},
+    model::{
+        CallToolRequestParams,
+        ReadResourceRequestParams,
+        ResourceContents,
+    },
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::json;
@@ -48,14 +52,17 @@ fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
+{
     let tempdir = tempfile::tempdir()?;
     setup_fixture(tempdir.path())?;
 
     let bin = docbert_bin()?;
-    let transport = TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-        cmd.arg("mcp").env("DOCBERT_DATA_DIR", tempdir.path());
-    }))?;
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(bin).configure(|cmd| {
+            cmd.arg("mcp").env("DOCBERT_DATA_DIR", tempdir.path());
+        }),
+    )?;
 
     let client = ().serve(transport).await?;
 

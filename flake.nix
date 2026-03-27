@@ -175,9 +175,10 @@
               rust
               formatter
 
-              cargo-nextest
-              cargo-mutants
               bacon
+              bun
+              cargo-mutants
+              cargo-nextest
             ];
           };
         }

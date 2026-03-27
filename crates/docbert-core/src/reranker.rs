@@ -42,7 +42,11 @@ pub(crate) fn score_loaded_embeddings(
             .first()
             .and_then(|row| row.first())
             .copied()
-            .ok_or_else(|| Error::Config(format!("missing similarity score for doc {doc_id}")))?;
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "missing similarity score for doc {doc_id}"
+                ))
+            })?;
 
         ranked.push(RankedDocument {
             doc_num_id: doc_id,
@@ -92,7 +96,8 @@ mod tests {
     #[test]
     fn rerank_empty_candidates() {
         let tmp = tempfile::tempdir().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let model = ModelManager::new();
 
         // Create a dummy 2D query tensor [2, 128]
@@ -110,7 +115,8 @@ mod tests {
     #[test]
     fn rerank_missing_embeddings_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let model = ModelManager::new();
 
         // Create a dummy query tensor
@@ -130,7 +136,8 @@ mod tests {
     #[test]
     fn rerank_propagates_similarity_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let model = ModelManager::new();
 
         let query = Tensor::zeros(

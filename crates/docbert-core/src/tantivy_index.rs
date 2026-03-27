@@ -9,7 +9,13 @@ use tantivy::{
     doc,
     query::QueryParser,
     schema::*,
-    tokenizer::{LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer},
+    tokenizer::{
+        LowerCaser,
+        RemoveLongFilter,
+        SimpleTokenizer,
+        Stemmer,
+        TextAnalyzer,
+    },
 };
 
 use crate::error::Result;
@@ -111,7 +117,8 @@ fn build_schema() -> (Schema, SchemaFields) {
 
     let doc_id = builder.add_text_field(fields::DOC_ID, STRING | STORED);
     let doc_num_id = builder.add_u64_field(fields::DOC_NUM_ID, STORED | FAST);
-    let collection = builder.add_text_field(fields::COLLECTION, STRING | STORED | FAST);
+    let collection =
+        builder.add_text_field(fields::COLLECTION, STRING | STORED | FAST);
     let path = builder.add_text_field(fields::PATH, STRING | STORED);
 
     let title_opts = TextOptions::default()
@@ -167,7 +174,10 @@ fn register_tokenizers(index: &Index) {
         .register("en_stem", stemmed_text_analyzer());
 }
 
-fn normalize_query_tokens(query: &str, mut analyzer: TextAnalyzer) -> Vec<String> {
+fn normalize_query_tokens(
+    query: &str,
+    mut analyzer: TextAnalyzer,
+) -> Vec<String> {
     let mut stream = analyzer.token_stream(query);
     let mut tokens = Vec::new();
     while let Some(token) = stream.next() {
@@ -186,7 +196,8 @@ fn normalize_query_for_fuzzy(query: &str) -> Vec<String> {
 }
 
 fn create_query_parser(index: &Index, fields: SchemaFields) -> QueryParser {
-    let mut parser = QueryParser::for_index(index, vec![fields.title, fields.body]);
+    let mut parser =
+        QueryParser::for_index(index, vec![fields.title, fields.body]);
     parser.set_field_boost(fields.title, 2.0);
     parser
 }
@@ -237,7 +248,11 @@ impl SearchIndex {
         {
             Index::open(mmap_dir)?
         } else {
-            Index::create(mmap_dir, schema.clone(), tantivy::IndexSettings::default())?
+            Index::create(
+                mmap_dir,
+                schema.clone(),
+                tantivy::IndexSettings::default(),
+            )?
         };
 
         register_tokenizers(&index);
@@ -366,8 +381,13 @@ impl SearchIndex {
     /// Search the index with BM25 scoring.
     ///
     /// Returns the top `limit` results. The `title` field is boosted 2x.
-    pub fn search(&self, query_str: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let Some(normalized_query) = normalize_query_for_parser(query_str) else {
+    pub fn search(
+        &self,
+        query_str: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
             return Ok(vec![]);
         };
 
@@ -387,18 +407,23 @@ impl SearchIndex {
         collection: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let Some(normalized_query) = normalize_query_for_parser(query_str) else {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
             return Ok(vec![]);
         };
 
         let fields = self.fields();
         let parser = create_query_parser(&self.index, fields);
-        let (user_query, _errors) = parser.parse_query_lenient(&normalized_query);
+        let (user_query, _errors) =
+            parser.parse_query_lenient(&normalized_query);
 
         // Combine with collection filter.
-        let collection_term = tantivy::Term::from_field_text(fields.collection, collection);
-        let collection_query =
-            tantivy::query::TermQuery::new(collection_term, IndexRecordOption::Basic);
+        let collection_term =
+            tantivy::Term::from_field_text(fields.collection, collection);
+        let collection_query = tantivy::query::TermQuery::new(
+            collection_term,
+            IndexRecordOption::Basic,
+        );
         let combined = tantivy::query::BooleanQuery::new(vec![
             (tantivy::query::Occur::Must, user_query),
             (tantivy::query::Occur::Must, Box::new(collection_query)),
@@ -418,7 +443,8 @@ impl SearchIndex {
         collection: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let Some(normalized_query) = normalize_query_for_parser(query_str) else {
+        let Some(normalized_query) = normalize_query_for_parser(query_str)
+        else {
             return Ok(vec![]);
         };
         let fuzzy_terms = normalize_query_for_fuzzy(query_str);
@@ -427,17 +453,22 @@ impl SearchIndex {
 
         // BM25 query
         let parser = create_query_parser(&self.index, fields);
-        let (bm25_query, _errors) = parser.parse_query_lenient(&normalized_query);
+        let (bm25_query, _errors) =
+            parser.parse_query_lenient(&normalized_query);
 
         // Build fuzzy queries for each significant term
-        let mut should_clauses: Vec<(tantivy::query::Occur, Box<dyn tantivy::query::Query>)> =
-            vec![(tantivy::query::Occur::Should, bm25_query)];
+        let mut should_clauses: Vec<(
+            tantivy::query::Occur,
+            Box<dyn tantivy::query::Query>,
+        )> = vec![(tantivy::query::Occur::Should, bm25_query)];
 
         for term_str in &fuzzy_terms {
             if term_str.len() >= 3 {
-                let term = tantivy::Term::from_field_text(fields.body, term_str);
+                let term =
+                    tantivy::Term::from_field_text(fields.body, term_str);
                 let fuzzy = tantivy::query::FuzzyTermQuery::new(term, 1, true);
-                should_clauses.push((tantivy::query::Occur::Should, Box::new(fuzzy)));
+                should_clauses
+                    .push((tantivy::query::Occur::Should, Box::new(fuzzy)));
             }
         }
 
@@ -445,16 +476,21 @@ impl SearchIndex {
             Box::new(tantivy::query::BooleanQuery::new(should_clauses));
 
         // Optionally filter by collection
-        let final_query: Box<dyn tantivy::query::Query> = if let Some(coll) = collection {
-            let coll_term = tantivy::Term::from_field_text(fields.collection, coll);
-            let coll_query = tantivy::query::TermQuery::new(coll_term, IndexRecordOption::Basic);
-            Box::new(tantivy::query::BooleanQuery::new(vec![
-                (tantivy::query::Occur::Must, combined_query),
-                (tantivy::query::Occur::Must, Box::new(coll_query)),
-            ]))
-        } else {
-            combined_query
-        };
+        let final_query: Box<dyn tantivy::query::Query> =
+            if let Some(coll) = collection {
+                let coll_term =
+                    tantivy::Term::from_field_text(fields.collection, coll);
+                let coll_query = tantivy::query::TermQuery::new(
+                    coll_term,
+                    IndexRecordOption::Basic,
+                );
+                Box::new(tantivy::query::BooleanQuery::new(vec![
+                    (tantivy::query::Occur::Must, combined_query),
+                    (tantivy::query::Occur::Must, Box::new(coll_query)),
+                ]))
+            } else {
+                combined_query
+            };
 
         let results = self.execute_query(&*final_query, limit)?;
 
@@ -563,7 +599,8 @@ mod tests {
         let all = idx.search("hello", 10).unwrap();
         assert_eq!(all.len(), 2);
 
-        let notes_only = idx.search_in_collection("hello", "notes", 10).unwrap();
+        let notes_only =
+            idx.search_in_collection("hello", "notes", 10).unwrap();
         assert_eq!(notes_only.len(), 1);
         assert_eq!(notes_only[0].collection, "notes");
     }
@@ -657,7 +694,8 @@ mod tests {
         // Searching for a unique term from the old doc should find at most
         // one result (the replacement), not two copies.
         let all_results = idx.search("content", 10).unwrap();
-        let abc_count = all_results.iter().filter(|r| r.doc_id == "abc").count();
+        let abc_count =
+            all_results.iter().filter(|r| r.doc_id == "abc").count();
         assert_eq!(abc_count, 1, "should have exactly one doc with id 'abc'");
     }
 
