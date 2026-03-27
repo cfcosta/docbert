@@ -354,16 +354,8 @@
   margin: 0.6em 0;
 }
 
-.chat-tool-calls {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
 .chat-tool-call {
+  margin: 6px 0;
   border-radius: 6px;
   overflow: hidden;
 }

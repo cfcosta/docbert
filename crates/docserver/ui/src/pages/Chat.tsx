@@ -15,7 +15,7 @@ import "./Chat.css";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return uuid();
+    return crypto.randomUUID();
   }
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -30,12 +30,14 @@ interface ToolCallInfo {
   isError?: boolean;
 }
 
+type ContentPart = { type: "text"; text: string } | { type: "tool_call"; call: ToolCallInfo };
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  parts?: ContentPart[];
   sources?: SearchResult[];
-  toolCalls?: ToolCallInfo[];
 }
 
 // ── Tool definitions for pi-ai ──
@@ -131,44 +133,58 @@ If no relevant documents are found, say so and suggest what the user might want 
 const MAX_TOOL_ROUNDS = 10;
 
 function messagesToApi(messages: Message[]): ConversationFull["messages"] {
-  return messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    sources: m.sources?.map((s) => ({
-      collection: s.collection,
-      path: s.path,
-      title: s.title,
-    })),
-    tool_calls: m.toolCalls?.map((tc) => ({
-      name: tc.name,
-      args: tc.args,
-      result: tc.result,
-      is_error: tc.isError,
-    })),
-  }));
+  return messages.map((m) => {
+    const toolCalls = m.parts
+      ?.filter((p): p is Extract<ContentPart, { type: "tool_call" }> => p.type === "tool_call")
+      .map((p) => ({
+        name: p.call.name,
+        args: p.call.args,
+        result: p.call.result,
+        is_error: p.call.isError,
+      }));
+    return {
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      sources: m.sources?.map((s) => ({
+        collection: s.collection,
+        path: s.path,
+        title: s.title,
+      })),
+      tool_calls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+    };
+  });
 }
 
 function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
-  return msgs.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    sources: m.sources?.map((s) => ({
-      rank: 0,
-      score: 0,
-      doc_id: "",
-      collection: s.collection,
-      path: s.path,
-      title: s.title,
-    })),
-    toolCalls: m.tool_calls?.map((tc) => ({
-      name: tc.name,
-      args: tc.args,
-      result: tc.result,
-      isError: tc.is_error,
-    })),
-  }));
+  return msgs.map((m) => {
+    const parts: ContentPart[] = [];
+    if (m.tool_calls && m.tool_calls.length > 0) {
+      for (const tc of m.tool_calls) {
+        parts.push({
+          type: "tool_call",
+          call: { name: tc.name, args: tc.args, result: tc.result, isError: tc.is_error },
+        });
+      }
+    }
+    if (m.content) {
+      parts.push({ type: "text", text: m.content });
+    }
+    return {
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      parts: parts.length > 0 ? parts : undefined,
+      sources: m.sources?.map((s) => ({
+        rank: 0,
+        score: 0,
+        doc_id: "",
+        collection: s.collection,
+        path: s.path,
+        title: s.title,
+      })),
+    };
+  });
 }
 
 function formatRelativeTime(ms: number): string {
@@ -328,13 +344,24 @@ export default function Chat() {
 
       const assistantId = uuid();
       const allSources: SearchResult[] = [];
-      const allToolCalls: ToolCallInfo[] = [];
+
+      // Helper to update the assistant message in-place.
+      const updateMsg = (fn: (m: Message) => Message) =>
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
 
       // Add empty assistant message to stream into.
-      setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content: "" }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant", content: "", parts: [] },
+      ]);
+
+      // Track the current streaming text so we can finalize it as a part.
+      let streamedText = "";
 
       // Agentic tool loop: stream, handle tool calls, continue.
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        streamedText = "";
+
         const s = stream(model, piContext, {
           apiKey: settings.api_key,
           abortSignal: controller.signal,
@@ -342,23 +369,25 @@ export default function Chat() {
 
         for await (const event of s) {
           if (event.type === "text_delta") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId ? { ...m, content: m.content + event.delta } : m,
-              ),
-            );
+            streamedText += event.delta;
+            const captured = streamedText;
+            updateMsg((m) => {
+              // Update or append the trailing text part.
+              const parts = [...(m.parts ?? [])];
+              const last = parts[parts.length - 1];
+              if (last && last.type === "text") {
+                parts[parts.length - 1] = { type: "text", text: captured };
+              } else {
+                parts.push({ type: "text", text: captured });
+              }
+              return { ...m, content: m.content + event.delta, parts };
+            });
           }
           if (event.type === "error") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? {
-                      ...m,
-                      content: m.content || `Error from ${settings.provider}: ${event.error}`,
-                    }
-                  : m,
-              ),
-            );
+            updateMsg((m) => ({
+              ...m,
+              content: m.content || `Error from ${settings.provider}: ${event.error}`,
+            }));
           }
         }
 
@@ -374,10 +403,16 @@ export default function Chat() {
           break;
         }
 
-        // Execute tool calls and add results.
+        // Execute tool calls and append each inline as a part.
         for (const call of toolCalls) {
           const callArgs = call.arguments as Record<string, unknown>;
           const callInfo: ToolCallInfo = { name: call.name, args: callArgs };
+
+          // Show tool call immediately (before result).
+          updateMsg((m) => ({
+            ...m,
+            parts: [...(m.parts ?? []), { type: "tool_call" as const, call: { ...callInfo } }],
+          }));
 
           try {
             const toolResult = await executeTool(call.name, callArgs);
@@ -413,22 +448,25 @@ export default function Chat() {
             piContext.messages.push(resultMsg as PiMessage);
           }
 
-          allToolCalls.push(callInfo);
+          // Update the tool call part with the result.
+          updateMsg((m) => {
+            const parts = [...(m.parts ?? [])];
+            // Find the last tool_call part matching this call name.
+            for (let i = parts.length - 1; i >= 0; i--) {
+              const p = parts[i];
+              if (p.type === "tool_call" && p.call.name === call.name && !p.call.result) {
+                parts[i] = { type: "tool_call", call: { ...callInfo } };
+                break;
+              }
+            }
+            const uniqueSources = deduplicateSources(allSources);
+            return {
+              ...m,
+              parts,
+              sources: uniqueSources.length > 0 ? uniqueSources : m.sources,
+            };
+          });
         }
-
-        // Update sources and tool calls on the message after each round.
-        const uniqueSources = deduplicateSources(allSources);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId
-              ? {
-                  ...m,
-                  sources: uniqueSources.length > 0 ? uniqueSources : m.sources,
-                  toolCalls: [...allToolCalls],
-                }
-              : m,
-          ),
-        );
 
         // Continue to next round — the model will see tool results and respond.
       }
@@ -548,11 +586,22 @@ export default function Chat() {
           {messages.map((msg) => (
             <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
               <div className="chat-msg-bubble">
-                <div className="chat-msg-content">
-                  <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-                </div>
-                {msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <ToolCallsDisplay calls={msg.toolCalls} />
+                {msg.parts && msg.parts.length > 0 ? (
+                  <>
+                    {msg.parts.map((part, i) =>
+                      part.type === "text" ? (
+                        <div key={i} className="chat-msg-content">
+                          <Markdown remarkPlugins={[remarkGfm]}>{part.text}</Markdown>
+                        </div>
+                      ) : (
+                        <ToolCallInline key={i} call={part.call} />
+                      ),
+                    )}
+                  </>
+                ) : (
+                  <div className="chat-msg-content">
+                    <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+                  </div>
                 )}
                 {msg.sources && msg.sources.length > 0 && (
                   <div className="chat-sources">
@@ -627,38 +676,28 @@ export default function Chat() {
   );
 }
 
-function ToolCallsDisplay({ calls }: { calls: ToolCallInfo[] }) {
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+function ToolCallInline({ call }: { call: ToolCallInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const argsStr = Object.entries(call.args)
+    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(", ");
 
   return (
-    <div className="chat-tool-calls">
-      {calls.map((call, i) => {
-        const isExpanded = expandedIdx === i;
-        const argsStr = Object.entries(call.args)
-          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-          .join(", ");
-
-        return (
-          <div key={i} className={`chat-tool-call${call.isError ? " error" : ""}`}>
-            <button
-              type="button"
-              className="chat-tool-call-header"
-              onClick={() => setExpandedIdx(isExpanded ? null : i)}
-              aria-expanded={isExpanded}
-            >
-              <span className="chat-tool-call-icon">{call.isError ? "!" : "\u2713"}</span>
-              <span className="chat-tool-call-name">{call.name}</span>
-              <span className="chat-tool-call-args">{argsStr}</span>
-              <span className={`chat-tool-call-chevron${isExpanded ? " open" : ""}`}>
-                {"\u25B8"}
-              </span>
-            </button>
-            {isExpanded && call.result && (
-              <pre className="chat-tool-call-result">{call.result}</pre>
-            )}
-          </div>
-        );
-      })}
+    <div className={`chat-tool-call${call.isError ? " error" : ""}`}>
+      <button
+        type="button"
+        className="chat-tool-call-header"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
+        <span className="chat-tool-call-icon">
+          {call.result == null ? "\u2026" : call.isError ? "!" : "\u2713"}
+        </span>
+        <span className="chat-tool-call-name">{call.name}</span>
+        <span className="chat-tool-call-args">{argsStr}</span>
+        <span className={`chat-tool-call-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
+      </button>
+      {expanded && call.result && <pre className="chat-tool-call-result">{call.result}</pre>}
     </div>
   );
 }
