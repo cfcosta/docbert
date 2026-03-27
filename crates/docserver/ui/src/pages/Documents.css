@@ -369,6 +369,15 @@
   width: 100%;
 }
 
+.preview-kicker {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
 .preview-title {
   margin-bottom: 4px;
 }
