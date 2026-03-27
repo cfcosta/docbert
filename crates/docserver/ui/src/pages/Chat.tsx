@@ -17,6 +17,7 @@ import { api } from "../lib/api";
 import type {
   ChatActor,
   ChatPart,
+  LlmSettings,
   SearchResult,
   ConversationSummary,
   ConversationFull,
@@ -53,6 +54,14 @@ interface Message {
   actor?: ChatActor;
   sources?: SearchResult[];
 }
+
+interface ReadyLlmSettings {
+  provider: string;
+  model: string;
+  api_key: string;
+}
+
+type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
 
 // ── Tool definitions for pi-ai ──
 
@@ -252,6 +261,246 @@ function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
   });
 }
 
+function resolveReadyLlmSettings(settings: LlmSettings): ReadyLlmSettings | null {
+  if (!settings.provider || !settings.model || !settings.api_key) {
+    return null;
+  }
+
+  return {
+    provider: settings.provider,
+    model: settings.model,
+    api_key: settings.api_key,
+  };
+}
+
+function createUserMessage(text: string): Message {
+  return {
+    id: uuid(),
+    role: "user",
+    content: text,
+  };
+}
+
+function createAssistantPlaceholder(id: string): Message {
+  return { id, role: "assistant", content: "", parts: [] };
+}
+
+function createMissingConfigMessage(): Message {
+  return {
+    id: uuid(),
+    role: "assistant",
+    content:
+      "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
+  };
+}
+
+function createRuntimeErrorMessage(error: unknown): Message {
+  return {
+    id: uuid(),
+    role: "assistant",
+    content: `Something went wrong: ${error instanceof Error ? error.message : "unknown error"}`,
+  };
+}
+
+function createConversationTitle(text: string): string {
+  return text.length > 80 ? text.slice(0, 80) + "..." : text;
+}
+
+function createPiContext(text: string): Context {
+  const userPiMsg: UserMessage = {
+    role: "user",
+    content: text,
+    timestamp: Date.now(),
+  };
+
+  return {
+    systemPrompt: SYSTEM_PROMPT,
+    messages: [userPiMsg],
+    tools,
+  };
+}
+
+function updateMessageById(
+  messages: Message[],
+  id: string,
+  updater: (message: Message) => Message,
+): Message[] {
+  return messages.map((message) => (message.id === id ? updater(message) : message));
+}
+
+function applyTextDelta(message: Message, captured: string, delta: string): Message {
+  const parts = [...(message.parts ?? [])];
+  const last = parts[parts.length - 1];
+  if (last && last.type === "text") {
+    parts[parts.length - 1] = { type: "text", text: captured };
+  } else {
+    parts.push({ type: "text", text: captured });
+  }
+
+  return { ...message, content: message.content + delta, parts };
+}
+
+function applyThinkingDelta(message: Message, captured: string): Message {
+  const parts = [...(message.parts ?? [])];
+  const last = parts[parts.length - 1];
+  if (last && last.type === "thinking") {
+    parts[parts.length - 1] = { type: "thinking", text: captured };
+  } else {
+    parts.push({ type: "thinking", text: captured });
+  }
+
+  return { ...message, parts };
+}
+
+function applyStreamError(message: Message, provider: string, error: unknown): Message {
+  const rendered = typeof error === "string" ? error : JSON.stringify(error);
+  return {
+    ...message,
+    content: message.content || `Error from ${provider}: ${rendered}`,
+  };
+}
+
+function appendPendingToolCall(message: Message, callInfo: ToolCallInfo): Message {
+  return {
+    ...message,
+    parts: [...(message.parts ?? []), { type: "tool_call", call: { ...callInfo } }],
+  };
+}
+
+function applyToolCallResult(
+  message: Message,
+  callInfo: ToolCallInfo,
+  allSources: SearchResult[],
+): Message {
+  const parts = [...(message.parts ?? [])];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i];
+    if (part.type === "tool_call" && part.call.name === callInfo.name && !part.call.result) {
+      parts[i] = { type: "tool_call", call: { ...callInfo } };
+      break;
+    }
+  }
+
+  const uniqueSources = deduplicateSources(allSources);
+  return {
+    ...message,
+    parts,
+    sources: uniqueSources.length > 0 ? uniqueSources : message.sources,
+  };
+}
+
+function createToolResultMessage(
+  callId: string,
+  toolName: string,
+  text: string,
+  isError: boolean,
+): ToolResultMessage {
+  return {
+    role: "toolResult",
+    toolCallId: callId,
+    toolName,
+    content: [{ type: "text", text }],
+    isError,
+    timestamp: Date.now(),
+  };
+}
+
+async function executeToolCallAndRecord(
+  call: { id: string; name: string; arguments: Record<string, unknown> },
+  piContext: Context,
+  allSources: SearchResult[],
+): Promise<ToolCallInfo> {
+  const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
+
+  try {
+    const toolResult = await executeTool(call.name, call.arguments);
+
+    if (toolResult.sources) {
+      allSources.push(...toolResult.sources);
+    }
+
+    callInfo.result = toolResult.text;
+    piContext.messages.push(
+      createToolResultMessage(call.id, call.name, toolResult.text, false) as PiMessage,
+    );
+  } catch (error) {
+    const errText = error instanceof Error ? error.message : "unknown error";
+    callInfo.result = `Error: ${errText}`;
+    callInfo.isError = true;
+    piContext.messages.push(
+      createToolResultMessage(call.id, call.name, `Error: ${errText}`, true) as PiMessage,
+    );
+  }
+
+  return callInfo;
+}
+
+async function runParentAgentRound({
+  model,
+  settings,
+  controller,
+  piContext,
+  updateAssistantMessage,
+  allSources,
+}: {
+  model: ReturnType<typeof getModel>;
+  settings: ReadyLlmSettings;
+  controller: AbortController;
+  piContext: Context;
+  updateAssistantMessage: UpdateAssistantMessage;
+  allSources: SearchResult[];
+}): Promise<boolean> {
+  let streamedText = "";
+  let streamedThinking = "";
+
+  const stream = streamSimple(model, piContext, {
+    apiKey: settings.api_key,
+    signal: controller.signal,
+    reasoning: model.reasoning ? "medium" : undefined,
+  });
+
+  for await (const event of stream) {
+    if (event.type === "text_delta") {
+      streamedText += event.delta;
+      const captured = streamedText;
+      updateAssistantMessage((message) => applyTextDelta(message, captured, event.delta));
+    }
+    if (event.type === "thinking_delta") {
+      streamedThinking += event.delta;
+      const captured = streamedThinking;
+      updateAssistantMessage((message) => applyThinkingDelta(message, captured));
+    }
+    if (event.type === "error") {
+      updateAssistantMessage((message) => applyStreamError(message, settings.provider, event.error));
+    }
+  }
+
+  const result = await stream.result();
+  piContext.messages.push(result);
+
+  const toolCalls = result.content.filter((block) => block.type === "toolCall");
+  if (toolCalls.length === 0) {
+    return false;
+  }
+
+  for (const call of toolCalls) {
+    const callArgs = call.arguments as Record<string, unknown>;
+    const pendingCallInfo: ToolCallInfo = { name: call.name, args: callArgs };
+
+    updateAssistantMessage((message) => appendPendingToolCall(message, pendingCallInfo));
+
+    const resolvedCallInfo = await executeToolCallAndRecord(
+      { id: call.id, name: call.name, arguments: callArgs },
+      piContext,
+      allSources,
+    );
+
+    updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
+  }
+
+  return true;
+}
+
 function formatRelativeTime(ms: number): string {
   const diff = Date.now() - ms;
   const minutes = Math.floor(diff / 60_000);
@@ -371,24 +620,18 @@ export default function Chat() {
     const text = input.trim();
     if (!text || loading) return;
 
-    const userMsg: Message = {
-      id: uuid(),
-      role: "user",
-      content: text,
-    };
+    const userMsg = createUserMessage(text);
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     setInput("");
     setLoading(true);
 
-    // Create conversation on first message if needed.
     let convId = activeId;
     let conv = activeConv;
     if (!convId) {
       const id = uuid();
-      const title = text.length > 80 ? text.slice(0, 80) + "..." : text;
       try {
-        conv = await api.createConversation(id, title);
+        conv = await api.createConversation(id, createConversationTitle(text));
         convId = id;
         setActiveId(id);
         setActiveConv(conv);
@@ -399,18 +642,12 @@ export default function Chat() {
     }
 
     try {
-      const settings = await api.getLlmSettings();
+      const maybeReadySettings = resolveReadyLlmSettings(
+        await api.getLlmSettings(),
+      );
 
-      if (!settings.provider || !settings.model || !settings.api_key) {
-        const errMsgs = [
-          ...nextMessages,
-          {
-            id: uuid(),
-            role: "assistant" as const,
-            content:
-              "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
-          },
-        ];
+      if (!maybeReadySettings) {
+        const errMsgs = [...nextMessages, createMissingConfigMessage()];
         setMessages(errMsgs);
         if (convId && conv) {
           void saveConversation(convId, conv, errMsgs);
@@ -418,186 +655,41 @@ export default function Chat() {
         return;
       }
 
+      const settings = maybeReadySettings;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const model = getModel(settings.provider as any, settings.model as any);
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const userPiMsg: UserMessage = {
-        role: "user",
-        content: text,
-        timestamp: Date.now(),
-      };
-
-      const piContext: Context = {
-        systemPrompt: SYSTEM_PROMPT,
-        messages: [userPiMsg],
-        tools,
-      };
-
+      const piContext = createPiContext(text);
       const assistantId = uuid();
       const allSources: SearchResult[] = [];
+      const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
+        setMessages((prev) => updateMessageById(prev, assistantId, fn));
 
-      // Helper to update the assistant message in-place.
-      const updateMsg = (fn: (m: Message) => Message) =>
-        setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
+      setMessages((prev) => [...prev, createAssistantPlaceholder(assistantId)]);
 
-      // Add empty assistant message to stream into.
-      setMessages((prev) => [
-        ...prev,
-        { id: assistantId, role: "assistant", content: "", parts: [] },
-      ]);
-
-      // Track the current streaming text so we can finalize it as a part.
-      let streamedText = "";
-      let streamedThinking = "";
-
-      // Agentic tool loop: stream, handle tool calls, continue.
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        streamedText = "";
-        streamedThinking = "";
-
-        const s = streamSimple(model, piContext, {
-          apiKey: settings.api_key,
-          signal: controller.signal,
-          reasoning: model.reasoning ? "medium" : undefined,
+        const shouldContinue = await runParentAgentRound({
+          model,
+          settings,
+          controller,
+          piContext,
+          updateAssistantMessage,
+          allSources,
         });
-
-        for await (const event of s) {
-          if (event.type === "text_delta") {
-            streamedText += event.delta;
-            const captured = streamedText;
-            updateMsg((m) => {
-              // Update or append the trailing text part.
-              const parts = [...(m.parts ?? [])];
-              const last = parts[parts.length - 1];
-              if (last && last.type === "text") {
-                parts[parts.length - 1] = { type: "text", text: captured };
-              } else {
-                parts.push({ type: "text", text: captured });
-              }
-              return { ...m, content: m.content + event.delta, parts };
-            });
-          }
-          if (event.type === "thinking_delta") {
-            streamedThinking += event.delta;
-            const captured = streamedThinking;
-            updateMsg((m) => {
-              const parts = [...(m.parts ?? [])];
-              const last = parts[parts.length - 1];
-              if (last && last.type === "thinking") {
-                parts[parts.length - 1] = { type: "thinking", text: captured };
-              } else {
-                parts.push({ type: "thinking", text: captured });
-              }
-              return { ...m, parts };
-            });
-          }
-          if (event.type === "error") {
-            updateMsg((m) => ({
-              ...m,
-              content: m.content || `Error from ${settings.provider}: ${event.error}`,
-            }));
-          }
-        }
-
-        // Get the final assistant message.
-        const result = await s.result();
-        piContext.messages.push(result);
-
-        // Check for tool calls.
-        const toolCalls = result.content.filter((b) => b.type === "toolCall");
-
-        if (toolCalls.length === 0) {
-          // No tool calls — done.
+        if (!shouldContinue) {
           break;
         }
-
-        // Execute tool calls and append each inline as a part.
-        for (const call of toolCalls) {
-          const callArgs = call.arguments as Record<string, unknown>;
-          const callInfo: ToolCallInfo = { name: call.name, args: callArgs };
-
-          // Show tool call immediately (before result).
-          updateMsg((m) => ({
-            ...m,
-            parts: [...(m.parts ?? []), { type: "tool_call" as const, call: { ...callInfo } }],
-          }));
-
-          try {
-            const toolResult = await executeTool(call.name, callArgs);
-
-            if (toolResult.sources) {
-              allSources.push(...toolResult.sources);
-            }
-
-            callInfo.result = toolResult.text;
-
-            const resultMsg: ToolResultMessage = {
-              role: "toolResult",
-              toolCallId: call.id,
-              toolName: call.name,
-              content: [{ type: "text", text: toolResult.text }],
-              isError: false,
-              timestamp: Date.now(),
-            };
-            piContext.messages.push(resultMsg as PiMessage);
-          } catch (err) {
-            const errText = err instanceof Error ? err.message : "unknown error";
-            callInfo.result = `Error: ${errText}`;
-            callInfo.isError = true;
-
-            const resultMsg: ToolResultMessage = {
-              role: "toolResult",
-              toolCallId: call.id,
-              toolName: call.name,
-              content: [{ type: "text", text: `Error: ${errText}` }],
-              isError: true,
-              timestamp: Date.now(),
-            };
-            piContext.messages.push(resultMsg as PiMessage);
-          }
-
-          // Update the tool call part with the result.
-          updateMsg((m) => {
-            const parts = [...(m.parts ?? [])];
-            // Find the last tool_call part matching this call name.
-            for (let i = parts.length - 1; i >= 0; i--) {
-              const p = parts[i];
-              if (p.type === "tool_call" && p.call.name === call.name && !p.call.result) {
-                parts[i] = { type: "tool_call", call: { ...callInfo } };
-                break;
-              }
-            }
-            const uniqueSources = deduplicateSources(allSources);
-            return {
-              ...m,
-              parts,
-              sources: uniqueSources.length > 0 ? uniqueSources : m.sources,
-            };
-          });
-        }
-
-        // Continue to next round — the model will see tool results and respond.
       }
 
       abortRef.current = null;
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uuid(),
-          role: "assistant",
-          content: `Something went wrong: ${err instanceof Error ? err.message : "unknown error"}`,
-        },
-      ]);
+      setMessages((prev) => [...prev, createRuntimeErrorMessage(err)]);
     } finally {
       setLoading(false);
 
-      // Persist conversation after the response completes.
       if (convId && conv) {
-        // We need the latest messages from state, so use a small trick:
-        // read from the setter callback.
         setMessages((latest) => {
           void saveConversation(convId, conv, latest);
           return latest;
