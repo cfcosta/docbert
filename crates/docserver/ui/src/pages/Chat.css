@@ -58,10 +58,18 @@
 .chat-conv-item {
   display: flex;
   align-items: center;
+  transition: background 0.15s;
+}
+
+.chat-conv-item:hover {
+  background: var(--accent-bg);
+}
+
+.chat-conv-item.active {
+  background: var(--accent-bg);
 }
 
 .chat-conv-item.active .chat-conv-btn {
-  background: var(--accent-bg);
   color: var(--accent);
 }
 
@@ -79,11 +87,6 @@
   font-size: 0.85rem;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s;
-}
-
-.chat-conv-btn:hover {
-  background: var(--accent-bg);
 }
 
 .chat-conv-title {
