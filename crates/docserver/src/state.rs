@@ -4,7 +4,6 @@ use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
 use tantivy::IndexWriter;
 
 pub struct Inner {
-    pub data_dir: DataDir,
     pub config_db: ConfigDb,
     pub search_index: SearchIndex,
     pub embedding_db: EmbeddingDb,
@@ -27,7 +26,6 @@ pub fn init(data_dir: DataDir, model_id: Option<String>) -> Result<AppState, doc
     let writer = search_index.writer(50_000_000)?;
 
     Ok(Arc::new(Inner {
-        data_dir,
         config_db,
         search_index,
         embedding_db,
