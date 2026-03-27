@@ -391,8 +391,8 @@
   background: var(--bg-tertiary);
   border-radius: 6px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .preview-fm-field {

@@ -621,12 +621,14 @@ function PreviewContent({
         </div>
         {parsed?.frontmatter && (
           <dl className="preview-frontmatter">
-            {Object.entries(parsed.frontmatter).map(([key, value]) => (
-              <div key={key} className="preview-fm-field">
-                <dt>{key}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
+            {Object.entries(parsed.frontmatter)
+              .filter(([, value]) => value.length > 0)
+              .map(([key, value]) => (
+                <div key={key} className="preview-fm-field">
+                  <dt>{key}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
           </dl>
         )}
       </div>
