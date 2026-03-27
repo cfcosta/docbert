@@ -12,6 +12,16 @@ import { api } from "../lib/api";
 import type { SearchResult, ConversationSummary, ConversationFull } from "../lib/api";
 import "./Chat.css";
 
+function uuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return uuid();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 interface ToolCallInfo {
   name: string;
   args: Record<string, unknown>;
@@ -253,7 +263,7 @@ export default function Chat() {
     if (!text || loading) return;
 
     const userMsg: Message = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       role: "user",
       content: text,
     };
@@ -266,7 +276,7 @@ export default function Chat() {
     let convId = activeId;
     let conv = activeConv;
     if (!convId) {
-      const id = crypto.randomUUID();
+      const id = uuid();
       const title = text.length > 80 ? text.slice(0, 80) + "..." : text;
       try {
         conv = await api.createConversation(id, title);
@@ -285,7 +295,7 @@ export default function Chat() {
         const errMsgs = [
           ...nextMessages,
           {
-            id: crypto.randomUUID(),
+            id: uuid(),
             role: "assistant" as const,
             content:
               "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
@@ -315,7 +325,7 @@ export default function Chat() {
         tools,
       };
 
-      const assistantId = crypto.randomUUID();
+      const assistantId = uuid();
       const allSources: SearchResult[] = [];
       const allToolCalls: ToolCallInfo[] = [];
 
@@ -427,7 +437,7 @@ export default function Chat() {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: "assistant",
           content: `Something went wrong: ${err instanceof Error ? err.message : "unknown error"}`,
         },
