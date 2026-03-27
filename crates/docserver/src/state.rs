@@ -41,7 +41,9 @@ pub fn init(
                 tracing::warn!("{note}");
             }
         }
-        Err(e) => tracing::warn!("failed to preload model (will retry on first use): {e}"),
+        Err(e) => tracing::warn!(
+            "failed to preload model (will retry on first use): {e}"
+        ),
     }
 
     let writer = search_index.writer(50_000_000)?;

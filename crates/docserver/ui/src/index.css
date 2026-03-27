@@ -163,7 +163,9 @@ code {
 
 :where(a, button, input, textarea, select, [tabindex]):focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus-ring);
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--focus-ring);
 }
 
 ::selection {

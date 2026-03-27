@@ -55,7 +55,10 @@
   text-decoration: none;
   font-size: 0.92rem;
   font-weight: 550;
-  transition: background 0.15s ease-out, color 0.15s ease-out, transform 0.15s ease-out;
+  transition:
+    background 0.15s ease-out,
+    color 0.15s ease-out,
+    transform 0.15s ease-out;
 }
 
 .sidebar-link:hover {

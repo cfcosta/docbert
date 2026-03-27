@@ -16,7 +16,10 @@ pub struct LlmSettings {
 
 /// Resolve the API key: stored value first, then fall back to env var
 /// based on provider.
-fn resolve_api_key(stored: Option<String>, provider: Option<&str>) -> Option<String> {
+fn resolve_api_key(
+    stored: Option<String>,
+    provider: Option<&str>,
+) -> Option<String> {
     if stored.is_some() {
         return stored;
     }
@@ -30,7 +33,9 @@ fn resolve_api_key(stored: Option<String>, provider: Option<&str>) -> Option<Str
     std::env::var(env_var).ok()
 }
 
-pub async fn get(State(state): State<AppState>) -> Result<Json<LlmSettings>, ApiError> {
+pub async fn get(
+    State(state): State<AppState>,
+) -> Result<Json<LlmSettings>, ApiError> {
     let provider = state.config_db.get_setting(KEY_LLM_PROVIDER)?;
     let model = state.config_db.get_setting(KEY_LLM_MODEL)?;
     let stored_key = state.config_db.get_setting(KEY_LLM_API_KEY)?;
@@ -60,7 +65,9 @@ pub async fn update(
         }
     }
     match &body.api_key {
-        Some(k) if !k.is_empty() => state.config_db.set_setting(KEY_LLM_API_KEY, k)?,
+        Some(k) if !k.is_empty() => {
+            state.config_db.set_setting(KEY_LLM_API_KEY, k)?
+        }
         _ => {
             let _ = state.config_db.remove_setting(KEY_LLM_API_KEY);
         }

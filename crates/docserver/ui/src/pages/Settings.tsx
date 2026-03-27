@@ -94,10 +94,7 @@ export default function Settings() {
     }
   };
 
-  const models = useMemo(
-    () => (provider ? PROVIDERS[provider]?.models ?? [] : []),
-    [provider],
-  );
+  const models = useMemo(() => (provider ? (PROVIDERS[provider]?.models ?? []) : []), [provider]);
 
   const providerEntries = useMemo(() => Object.entries(PROVIDERS), []);
 
@@ -135,9 +132,7 @@ export default function Settings() {
               className="settings-select"
               value={provider ?? ""}
               onChange={(e) =>
-                e.target.value
-                  ? handleProviderChange(e.target.value)
-                  : setProvider(null)
+                e.target.value ? handleProviderChange(e.target.value) : setProvider(null)
               }
             >
               <option value="">Select a provider...</option>
@@ -185,9 +180,7 @@ export default function Settings() {
                   setSaved(false);
                 }}
               />
-              <p className="settings-hint">
-                Falls back to environment variable if not set.
-              </p>
+              <p className="settings-hint">Falls back to environment variable if not set.</p>
             </div>
           )}
 

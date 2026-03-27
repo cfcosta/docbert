@@ -167,7 +167,8 @@ pub async fn ingest(
 
         if let Some(ref user_meta) = p.metadata {
             let meta_key = format!("doc_meta:{}", p.did.numeric);
-            let meta_val = serde_json::to_string(user_meta).map_err(|e| ApiError::internal(e))?;
+            let meta_val = serde_json::to_string(user_meta)
+                .map_err(|e| ApiError::internal(e))?;
             state.config_db.set_setting(&meta_key, &meta_val)?;
         }
 
@@ -194,7 +195,11 @@ pub async fn ingest(
             "computing embeddings",
         );
         if let Ok(mut model) = state.model.lock() {
-            match embedding::embed_and_store(&mut model, &state.embedding_db, docs_to_embed) {
+            match embedding::embed_and_store(
+                &mut model,
+                &state.embedding_db,
+                docs_to_embed,
+            ) {
                 Ok(stored) => tracing::info!(
                     collection = %body.collection,
                     stored,
