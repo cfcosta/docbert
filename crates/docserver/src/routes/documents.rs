@@ -86,6 +86,24 @@ pub async fn ingest(
     }
     let mut prepared: Vec<Prepared> = Vec::with_capacity(doc_count);
 
+    // Phase 1a: Delete any existing entries for documents being re-ingested.
+    // We must commit deletes before adding new versions because Tantivy's
+    // delete_term applies to all documents matching the term in the same
+    // commit, including freshly added ones with the same doc_id.
+    {
+        let mut has_deletes = false;
+        for doc in &body.documents {
+            let did = DocumentId::new(&body.collection, &doc.path);
+            state
+                .search_index
+                .delete_document(&writer, &did.to_string());
+            has_deletes = true;
+        }
+        if has_deletes {
+            writer.commit().map_err(ApiError::internal)?;
+        }
+    }
+
     for doc in &body.documents {
         let processed =
             content::process(&doc.content_type, &doc.path, &doc.content);
@@ -98,11 +116,6 @@ pub async fn ingest(
             body_len = processed.body.len(),
             "indexing document into tantivy",
         );
-
-        // Delete any existing entry for this document.
-        state
-            .search_index
-            .delete_document(&writer, &did.to_string());
 
         // Add to Tantivy.
         state.search_index.add_document(
