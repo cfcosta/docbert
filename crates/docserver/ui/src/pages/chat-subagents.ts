@@ -1,4 +1,4 @@
-import type { ChatActor, SearchResult } from "../lib/api";
+import type { ChatActor, ChatSubagentStatus, SearchResult } from "../lib/api";
 
 export interface AnalyzeFilesRequestItem {
   collection: string;
@@ -33,11 +33,17 @@ export interface ChatToolRuntimeState {
   queuedAnalysisFiles: QueuedAnalysisFile[];
 }
 
-export interface SubagentTranscriptMessage {
+export interface SubagentTranscriptPart {
+  type: "text" | "thinking";
+  text: string;
+}
+
+export interface SubagentTranscriptMessage<TPart = unknown> {
   id: string;
   role: "user" | "assistant";
   content: string;
   actor?: ChatActor;
+  parts?: TPart[];
 }
 
 const MAX_ANALYZE_FILES = 3;
@@ -161,6 +167,47 @@ export function insertOrUpdateSubagentMessage<T extends SubagentTranscriptMessag
   const updated = [...messages];
   updated[index] = nextMessage;
   return updated;
+}
+
+export function setSubagentStatus<T extends SubagentTranscriptMessage>(
+  message: T,
+  status: ChatSubagentStatus,
+): T {
+  if (message.actor?.type !== "subagent") {
+    return message;
+  }
+
+  return {
+    ...message,
+    actor: {
+      ...message.actor,
+      status,
+    },
+  };
+}
+
+export function upsertSubagentPart<T extends SubagentTranscriptMessage>(
+  message: T,
+  part: SubagentTranscriptPart,
+): T {
+  const parts = [...((message.parts ?? []) as SubagentTranscriptPart[])];
+  const last = parts[parts.length - 1];
+  if (last && last.type === part.type) {
+    parts[parts.length - 1] = part;
+  } else {
+    parts.push(part);
+  }
+
+  const content = parts
+    .filter((entry) => entry.type === "text")
+    .map((entry) => entry.text)
+    .join("");
+
+  return {
+    ...message,
+    content,
+    parts: parts as T["parts"],
+  };
 }
 
 export function queueAcceptedSubagentMessages<T extends SubagentTranscriptMessage>({

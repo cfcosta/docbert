@@ -27,8 +27,11 @@ import {
   formatAnalyzeFilesAcknowledgement,
   mergeCurrentTurnSearchResults,
   queueAcceptedSubagentMessages,
+  setSubagentStatus,
+  upsertSubagentPart,
   type AnalyzeFilesAcceptedItem,
   type ChatToolRuntimeState,
+  type QueuedAnalysisFile,
 } from "./chat-subagents";
 import "./Chat.css";
 
@@ -379,6 +382,27 @@ function createPiContext(text: string): Context {
   };
 }
 
+function createSubagentContext(userQuestion: string, fileContent: string, file: QueuedAnalysisFile): Context {
+  const userPiMsg: UserMessage = {
+    role: "user",
+    content: [
+      `User question: ${userQuestion}`,
+      `Analyze exactly this file: ${file.collection}/${file.path}`,
+      "Focus on the most relevant facts, note uncertainty, and do not answer beyond this file.",
+      "",
+      fileContent,
+    ].join("\n"),
+    timestamp: Date.now(),
+  };
+
+  return {
+    systemPrompt:
+      "You are a file-analysis subagent. Read one file and report the important findings relevant to the user question. Do not call tools. Do not synthesize across files.",
+    messages: [userPiMsg],
+    tools: [],
+  };
+}
+
 function updateMessageById(
   messages: Message[],
   id: string,
@@ -417,6 +441,39 @@ function applyStreamError(message: Message, provider: string, error: unknown): M
     ...message,
     content: message.content || `Error from ${provider}: ${rendered}`,
   };
+}
+
+function startSubagentMessage(message: Message): Message {
+  return {
+    ...setSubagentStatus(message, "running"),
+    content: "",
+    parts: [],
+  };
+}
+
+function applySubagentTextDelta(message: Message, captured: string): Message {
+  return upsertSubagentPart(startSubagentMessageIfQueued(message), {
+    type: "text",
+    text: captured,
+  });
+}
+
+function applySubagentThinkingDelta(message: Message, captured: string): Message {
+  return upsertSubagentPart(startSubagentMessageIfQueued(message), {
+    type: "thinking",
+    text: captured,
+  });
+}
+
+function startSubagentMessageIfQueued(message: Message): Message {
+  if (message.actor?.type === "subagent" && message.actor.status === "queued") {
+    return startSubagentMessage(message);
+  }
+  return message;
+}
+
+function finalizeSubagentMessage(message: Message, status: "done" | "error"): Message {
+  return setSubagentStatus(message, status);
 }
 
 function appendPendingToolCall(message: Message, callInfo: ToolCallInfo): Message {
@@ -493,6 +550,64 @@ async function executeToolCallAndRecord(
   }
 
   return callInfo;
+}
+
+async function runFileSubagent({
+  model,
+  settings,
+  controller,
+  file,
+  userQuestion,
+  updateMessage,
+}: {
+  model: ReturnType<typeof getModel>;
+  settings: ReadyLlmSettings;
+  controller: AbortController;
+  file: QueuedAnalysisFile;
+  userQuestion: string;
+  updateMessage: (updater: (message: Message) => Message) => void;
+}): Promise<void> {
+  try {
+    const document = await api.getDocument(file.collection, file.path);
+    const context = createSubagentContext(userQuestion, document.content, file);
+    let streamedText = "";
+    let streamedThinking = "";
+
+    updateMessage((message) => startSubagentMessage(message));
+
+    const stream = streamSimple(model, context, {
+      apiKey: settings.api_key,
+      signal: controller.signal,
+      reasoning: model.reasoning ? "medium" : undefined,
+    });
+
+    for await (const event of stream) {
+      if (event.type === "text_delta") {
+        streamedText += event.delta;
+        const captured = streamedText;
+        updateMessage((message) => applySubagentTextDelta(message, captured));
+      }
+      if (event.type === "thinking_delta") {
+        streamedThinking += event.delta;
+        const captured = streamedThinking;
+        updateMessage((message) => applySubagentThinkingDelta(message, captured));
+      }
+      if (event.type === "error") {
+        updateMessage((message) => {
+          const next = applyStreamError(message, settings.provider, event.error);
+          return finalizeSubagentMessage(next, "error");
+        });
+      }
+    }
+
+    await stream.result();
+    updateMessage((message) => finalizeSubagentMessage(message, "done"));
+  } catch (error) {
+    updateMessage((message) => {
+      const next = applyStreamError(message, settings.provider, error);
+      return finalizeSubagentMessage(next, "error");
+    });
+  }
 }
 
 async function runParentAgentRound({
@@ -780,6 +895,19 @@ export default function Chat() {
         if (!shouldContinue) {
           break;
         }
+      }
+
+      for (const queuedFile of runtimeState.queuedAnalysisFiles) {
+        await runFileSubagent({
+          model,
+          settings,
+          controller,
+          file: queuedFile,
+          userQuestion: text,
+          updateMessage: (updater) => {
+            setMessages((prev) => updateMessageById(prev, queuedFile.messageId, updater));
+          },
+        });
       }
 
       abortRef.current = null;

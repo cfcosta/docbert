@@ -7,6 +7,8 @@ import {
   insertOrUpdateSubagentMessage,
   mergeCurrentTurnSearchResults,
   queueAcceptedSubagentMessages,
+  setSubagentStatus,
+  upsertSubagentPart,
 } from "./chat-subagents";
 
 function result(
@@ -253,6 +255,103 @@ describe("queueAcceptedSubagentMessages", () => {
     expect(queued.queuedFiles.map((file) => `${file.messageId}:${file.path}`)).toEqual([
       "sub-1:a.md",
       "sub-2:b.md",
+    ]);
+  });
+});
+
+describe("setSubagentStatus", () => {
+  test("updates queued to running", () => {
+    const updated = setSubagentStatus(
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "Queued",
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "queued",
+        },
+      },
+      "running",
+    );
+
+    expect(updated.actor?.type).toBe("subagent");
+    if (updated.actor?.type !== "subagent") throw new Error("expected subagent actor");
+    expect(updated.actor.status).toBe("running");
+  });
+
+  test("updates running to done", () => {
+    const updated = setSubagentStatus(
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "Running",
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "running",
+        },
+      },
+      "done",
+    );
+
+    if (updated.actor?.type !== "subagent") throw new Error("expected subagent actor");
+    expect(updated.actor.status).toBe("done");
+  });
+
+  test("updates running to error", () => {
+    const updated = setSubagentStatus(
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "Running",
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "running",
+        },
+      },
+      "error",
+    );
+
+    if (updated.actor?.type !== "subagent") throw new Error("expected subagent actor");
+    expect(updated.actor.status).toBe("error");
+  });
+});
+
+describe("upsertSubagentPart", () => {
+  test("appends text and thinking parts while keeping text-derived content", () => {
+    const withText = upsertSubagentPart(
+      {
+        id: "sub-1",
+        role: "assistant",
+        content: "",
+        parts: [],
+        actor: {
+          type: "subagent",
+          id: "sub-1",
+          collection: "notes",
+          path: "a.md",
+          status: "running",
+        },
+      },
+      { type: "text", text: "Hello" },
+    );
+    const withThinking = upsertSubagentPart(withText, {
+      type: "thinking",
+      text: "Considering",
+    });
+
+    expect(withThinking.content).toBe("Hello");
+    expect(withThinking.parts).toEqual([
+      { type: "text", text: "Hello" },
+      { type: "thinking", text: "Considering" },
     ]);
   });
 });
