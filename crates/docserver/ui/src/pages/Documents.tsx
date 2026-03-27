@@ -118,8 +118,10 @@ export default function Documents() {
   const [newCollName, setNewCollName] = useState("");
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
+  const [deletingDoc, setDeletingDoc] = useState(false);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [uploadCollection, setUploadCollection] = useState<string | null>(null);
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
   const loadCollections = useCallback(async () => {
@@ -205,6 +207,7 @@ export default function Documents() {
       title: doc.title,
       doc_id: doc.doc_id,
     });
+    setConfirmDeleteDoc(null);
     setPreview(null);
 
     try {
@@ -340,6 +343,35 @@ export default function Documents() {
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  const handleDeleteDocument = useCallback(
+    async (collection: string, doc: DocumentListItem) => {
+      setDeletingDoc(true);
+
+      try {
+        await api.deleteDocument(collection, doc.path);
+        setConfirmDeleteDoc(null);
+        setDocs((prev) => ({
+          ...prev,
+          [collection]: (prev[collection] ?? []).filter((item) => item.path !== doc.path),
+        }));
+        if (selectedDoc?.collection === collection && selectedDoc.path === doc.path) {
+          setSelectedDoc(null);
+          setPreview(null);
+        }
+        setStatus({ tone: "success", text: `Deleted ${doc.title}.` });
+        await loadDocs(collection);
+      } catch (error) {
+        setStatus({
+          tone: "error",
+          text: error instanceof Error ? error.message : "Could not delete document.",
+        });
+      } finally {
+        setDeletingDoc(false);
+      }
+    },
+    [loadDocs, selectedDoc],
+  );
+
   const handleDeleteCollection = async (name: string) => {
     try {
       await api.deleteCollection(name);
@@ -359,6 +391,7 @@ export default function Documents() {
       if (selectedDoc?.collection === name) {
         setSelectedDoc(null);
         setPreview(null);
+        setConfirmDeleteDoc(null);
       }
 
       setStatus({ tone: "success", text: `Deleted collection ${name}.` });
@@ -406,19 +439,61 @@ export default function Documents() {
         {files.map((node) => {
           const isSelected =
             selectedDoc?.collection === collection && selectedDoc.path === node.path;
+          const deleteKey = `${collection}/${node.path}`;
+          const isConfirmingDelete = confirmDeleteDoc === deleteKey;
 
           return (
-            <button
-              type="button"
+            <div
               key={`${collection}/${node.path}`}
-              className={`tree-item tree-file${isSelected ? " selected" : ""}`}
-              style={{ paddingLeft: `${12 + depth * 16}px` }}
-              onClick={() => node.doc && void selectFile(collection, node.doc)}
-              title={node.path}
+              className={`tree-file-row${isSelected ? " selected" : ""}`}
             >
-              <FileIcon />
-              <span className="tree-name">{node.name}</span>
-            </button>
+              <button
+                type="button"
+                className={`tree-item tree-file${isSelected ? " selected" : ""}`}
+                style={{ paddingLeft: `${12 + depth * 16}px` }}
+                onClick={() => node.doc && void selectFile(collection, node.doc)}
+                title={node.path}
+              >
+                <FileIcon />
+                <span className="tree-name">{node.name}</span>
+              </button>
+
+              {isConfirmingDelete ? (
+                <div className="tree-file-confirm">
+                  <button
+                    type="button"
+                    className="tree-confirm-yes"
+                    onClick={() => node.doc && void handleDeleteDocument(collection, node.doc)}
+                    disabled={deletingDoc}
+                    title="Confirm delete"
+                  >
+                    {deletingDoc ? "Deleting…" : "Delete"}
+                  </button>
+                  <button
+                    type="button"
+                    className="tree-confirm-no"
+                    onClick={() => setConfirmDeleteDoc(null)}
+                    disabled={deletingDoc}
+                    title="Cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="tree-file-delete-btn"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setConfirmDeleteDoc(deleteKey);
+                  }}
+                  aria-label={`Delete ${node.name}`}
+                  title="Delete file"
+                >
+                  <TrashIcon />
+                </button>
+              )}
+            </div>
           );
         })}
       </>

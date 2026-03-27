@@ -1,5 +1,12 @@
 const BASE = "/v1";
 
+function encodeDocumentPath(path: string) {
+  return path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -142,10 +149,14 @@ export const api = {
     }),
 
   getDocument: (collection: string, path: string) =>
-    request<DocumentResponse>(`/documents/${encodeURIComponent(collection)}/${path}`),
+    request<DocumentResponse>(
+      `/documents/${encodeURIComponent(collection)}/${encodeDocumentPath(path)}`,
+    ),
 
   deleteDocument: (collection: string, path: string) =>
-    request<void>(`/documents/${encodeURIComponent(collection)}/${path}`, { method: "DELETE" }),
+    request<void>(`/documents/${encodeURIComponent(collection)}/${encodeDocumentPath(path)}`, {
+      method: "DELETE",
+    }),
 
   listConversations: () => request<ConversationSummary[]>("/conversations"),
 

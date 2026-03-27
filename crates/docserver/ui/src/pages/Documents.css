@@ -164,6 +164,24 @@
   color: var(--accent);
 }
 
+.tree-file-row {
+  display: flex;
+  align-items: center;
+}
+
+.tree-file-row:hover {
+  background: var(--accent-bg);
+}
+
+.tree-file-row.selected {
+  background: var(--accent-bg);
+}
+
+.tree-file-row .tree-file {
+  flex: 1;
+  min-width: 0;
+}
+
 .tree-collection-head {
   display: flex;
   align-items: center;
@@ -257,6 +275,7 @@
 
 /* ── Collection actions ── */
 
+.tree-file-delete-btn,
 .tree-delete-btn {
   width: 32px;
   height: 32px;
@@ -276,17 +295,21 @@
     background 0.15s;
 }
 
+.tree-file-row:hover .tree-file-delete-btn,
+.tree-file-delete-btn:focus-visible,
 .tree-collection-head:hover .tree-delete-btn,
 .tree-delete-btn:focus-visible {
   opacity: 1;
 }
 
+.tree-file-delete-btn:hover,
 .tree-delete-btn:hover {
   color: var(--error, #b91c1c);
   background: var(--error-bg, rgba(185, 28, 28, 0.1));
 }
 
-.tree-confirm-delete {
+.tree-confirm-delete,
+.tree-file-confirm {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
