@@ -9,10 +9,15 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    bun2nix = {
+      url = "github:nix-community/bun2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
+      bun2nix,
       nixpkgs,
       rust-overlay,
       treefmt-nix,
@@ -72,23 +77,36 @@
                   };
                 }).config.build.wrapper;
 
-              mkDocbert =
+              mkRustWorkspacePackage =
                 {
-                  name ? "docbert",
+                  name,
+                  cargoPackage,
+                  mainProgram ? cargoPackage,
                   buildFeatures ? [ ],
                   buildInputs ? [ ],
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
+                  uiDist ? null,
+                  postInstall ? "",
                 }:
                 rustPlatform.buildRustPackage (
                   {
                     inherit
                       name
                       buildInputs
-                      nativeBuildInputs
                       buildFeatures
+                      postInstall
                       ;
+                    nativeBuildInputs = nativeBuildInputs;
                     src = ./.;
+                    cargoBuildFlags = [
+                      "-p"
+                      cargoPackage
+                    ];
+                    cargoTestFlags = [
+                      "-p"
+                      cargoPackage
+                    ];
                     cargoLock = {
                       lockFile = ./Cargo.lock;
                       outputHashes = {
@@ -96,19 +114,13 @@
                       };
                     };
                     RUSTFLAGS = "-C target-cpu=native";
-
-                    postInstall = ''
-                      # Generate shell completions
-                      mkdir -p $out/share/bash-completion/completions
-                      mkdir -p $out/share/zsh/site-functions
-                      mkdir -p $out/share/fish/vendor_completions.d
-
-                      $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-                      $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-                      $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+                    preBuild = pkgs.lib.optionalString (uiDist != null) ''
+                      rm -rf crates/docserver/ui/dist
+                      mkdir -p crates/docserver/ui
+                      cp -r ${uiDist}/dist crates/docserver/ui/dist
                     '';
 
-                    meta.mainProgram = "docbert";
+                    meta.mainProgram = mainProgram;
                   }
                   // extraEnv
                 );
@@ -119,7 +131,7 @@
                 pkgs
                 rust
                 formatter
-                mkDocbert
+                mkRustWorkspacePackage
                 ;
             }
           )
@@ -127,33 +139,127 @@
     in
     {
       packages = forEachSupportedSystem (
-        { mkDocbert, pkgs, ... }:
         {
-          default = mkDocbert { };
-          docbert = mkDocbert { };
-          docbert-cuda = mkDocbert {
-            name = "docbert-cuda";
-            buildFeatures = [ "cuda" ];
-
-            nativeBuildInputs = with pkgs; [
-              cudaPackages.cuda_nvcc
-              autoAddDriverRunpath
-            ];
-
-            buildInputs = with pkgs.cudaPackages; [
-              cuda_nvcc
-              cudatoolkit
-              cudnn
-            ];
-
-            extraEnv = {
-              CUDA_COMPUTE_CAP = "80";
-              CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
-            };
+          mkRustWorkspacePackage,
+          pkgs,
+          system,
+          ...
+        }:
+        let
+          bun2nixPackage = bun2nix.packages.${system}.default;
+          mkDocserverUi = pkgs.stdenv.mkDerivation {
+            pname = "docserver-ui";
+            version = "0.2.1";
+            src = ./crates/docserver/ui;
+            nativeBuildInputs = [ bun2nixPackage.hook ];
+            bunDeps = bun2nixPackage.fetchBunDeps { bunNix = ./crates/docserver/ui/bun.nix; };
+            buildPhase = ''
+              runHook preBuild
+              bun run build
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              cp -R dist $out/dist
+              runHook postInstall
+            '';
           };
-          docbert-metal = mkDocbert {
+          cudaNativeBuildInputs = with pkgs; [
+            cudaPackages.cuda_nvcc
+            autoAddDriverRunpath
+          ];
+          cudaBuildInputs = with pkgs.cudaPackages; [
+            cuda_nvcc
+            cudatoolkit
+            cudnn
+          ];
+          cudaEnv = {
+            CUDA_COMPUTE_CAP = "80";
+            CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
+          };
+        in
+        {
+          default = mkRustWorkspacePackage {
+            name = "docbert";
+            cargoPackage = "docbert";
+            postInstall = ''
+              # Generate shell completions
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+            '';
+          };
+          docbert = mkRustWorkspacePackage {
+            name = "docbert";
+            cargoPackage = "docbert";
+            postInstall = ''
+              # Generate shell completions
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+            '';
+          };
+          docbert-cuda = mkRustWorkspacePackage {
+            name = "docbert-cuda";
+            cargoPackage = "docbert";
+            buildFeatures = [ "cuda" ];
+            nativeBuildInputs = cudaNativeBuildInputs;
+            buildInputs = cudaBuildInputs;
+            extraEnv = cudaEnv;
+            postInstall = ''
+              # Generate shell completions
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+            '';
+          };
+          docbert-metal = mkRustWorkspacePackage {
             name = "docbert-metal";
+            cargoPackage = "docbert";
             buildFeatures = [ "metal" ];
+            postInstall = ''
+              # Generate shell completions
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+            '';
+          };
+          docserver = mkRustWorkspacePackage {
+            name = "docserver";
+            cargoPackage = "docserver";
+            uiDist = mkDocserverUi;
+          };
+          docserver-cuda = mkRustWorkspacePackage {
+            name = "docserver-cuda";
+            cargoPackage = "docserver";
+            buildFeatures = [ "cuda" ];
+            uiDist = mkDocserverUi;
+            nativeBuildInputs = cudaNativeBuildInputs;
+            buildInputs = cudaBuildInputs;
+            extraEnv = cudaEnv;
+          };
+          docserver-metal = mkRustWorkspacePackage {
+            name = "docserver-metal";
+            cargoPackage = "docserver";
+            buildFeatures = [ "metal" ];
+            uiDist = mkDocserverUi;
           };
         }
       );
