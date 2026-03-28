@@ -76,6 +76,12 @@ interface ReadyLlmSettings {
 }
 
 type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
+type SubagentMessage = Message & { actor: Extract<ChatActor, { type: "subagent" }> };
+
+type DisplayMessageGroup = {
+  message: Message;
+  nestedSubagents: SubagentMessage[];
+};
 
 // ── Tool definitions for pi-ai ──
 
@@ -797,62 +803,70 @@ function formatRelativeTime(ms: number): string {
   return `${days}d ago`;
 }
 
+function renderMessageContent(message: Message) {
+  return message.parts && message.parts.length > 0 ? (
+    <>
+      {message.parts.map((part, i) => {
+        if (part.type === "text") {
+          return (
+            <div key={i} className="chat-msg-content">
+              <Markdown
+                remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+                rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+              >
+                {part.text}
+              </Markdown>
+            </div>
+          );
+        }
+
+        if (part.type === "thinking") {
+          return <ThinkingInline key={i} text={part.text} />;
+        }
+
+        return <ToolCallInline key={i} call={part.call} />;
+      })}
+    </>
+  ) : (
+    <div className="chat-msg-content">
+      <Markdown
+        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+      >
+        {message.content}
+      </Markdown>
+    </div>
+  );
+}
+
+function renderMessageSources(message: Message) {
+  if (!message.sources || message.sources.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="chat-sources">
+      <span className="chat-sources-label">Sources:</span>
+      {message.sources.map((s) => (
+        <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
+          {s.collection}/{s.path}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function renderMessageBody(message: Message) {
   return (
     <>
-      {message.parts && message.parts.length > 0 ? (
-        <>
-          {message.parts.map((part, i) => {
-            if (part.type === "text") {
-              return (
-                <div key={i} className="chat-msg-content">
-                  <Markdown
-                    remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-                    rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-                  >
-                    {part.text}
-                  </Markdown>
-                </div>
-              );
-            }
-
-            if (part.type === "thinking") {
-              return <ThinkingInline key={i} text={part.text} />;
-            }
-
-            return <ToolCallInline key={i} call={part.call} />;
-          })}
-        </>
-      ) : (
-        <div className="chat-msg-content">
-          <Markdown
-            remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-            rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-          >
-            {message.content}
-          </Markdown>
-        </div>
-      )}
-      {message.sources && message.sources.length > 0 && (
-        <div className="chat-sources">
-          <span className="chat-sources-label">Sources:</span>
-          {message.sources.map((s) => (
-            <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
-              {s.collection}/{s.path}
-            </span>
-          ))}
-        </div>
-      )}
+      {renderMessageContent(message)}
+      {renderMessageSources(message)}
     </>
   );
 }
 
-function SubagentInline({
-  message,
-}: {
-  message: Message & { actor: Extract<ChatActor, { type: "subagent" }> };
-}) {
-  const [expanded, setExpanded] = useState(true);
+function SubagentInline({ message }: { message: SubagentMessage }) {
+  const [expanded, setExpanded] = useState(false);
   const actor = message.actor;
 
   return (
@@ -863,7 +877,8 @@ function SubagentInline({
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
       >
-        <span className="chat-subagent-label">Subagent</span>
+        <span className="chat-subagent-icon">◎</span>
+        <span className="chat-subagent-label">File analysis</span>
         <code className="chat-subagent-path">
           {actor.collection}/{actor.path}
         </code>
@@ -875,6 +890,36 @@ function SubagentInline({
       {expanded && <div className="chat-subagent-body">{renderMessageBody(message)}</div>}
     </div>
   );
+}
+
+function groupMessagesForDisplay(messages: Message[]): DisplayMessageGroup[] {
+  const groups: DisplayMessageGroup[] = [];
+  let lastParentAssistantGroup: DisplayMessageGroup | null = null;
+
+  for (const message of messages) {
+    if (message.actor?.type === "subagent") {
+      const subagentMessage = message as SubagentMessage;
+      if (lastParentAssistantGroup) {
+        lastParentAssistantGroup.nestedSubagents.push(subagentMessage);
+        continue;
+      }
+
+      groups.push({ message: subagentMessage, nestedSubagents: [] });
+      lastParentAssistantGroup = null;
+      continue;
+    }
+
+    const group: DisplayMessageGroup = { message, nestedSubagents: [] };
+    groups.push(group);
+
+    if (message.role === "assistant" && (!message.actor || message.actor.type === "parent")) {
+      lastParentAssistantGroup = group;
+    } else {
+      lastParentAssistantGroup = null;
+    }
+  }
+
+  return groups;
 }
 
 export default function Chat() {
@@ -1142,6 +1187,8 @@ export default function Chat() {
     }
   }, [input, loading, messages, activeId, activeConv, saveConversation, navigate]);
 
+  const displayMessageGroups = groupMessagesForDisplay(messages);
+
   return (
     <div className="chat-page">
       <aside className="chat-sidebar">
@@ -1229,20 +1276,28 @@ export default function Chat() {
             </div>
           )}
 
-          {messages.map((msg) => {
-            const isSubagent = msg.actor?.type === "subagent";
+          {displayMessageGroups.map(({ message, nestedSubagents }) => {
+            const isSubagent = message.actor?.type === "subagent";
             return (
               <div
-                key={msg.id}
-                className={`chat-msg chat-msg-${msg.role}${isSubagent ? " chat-msg-subagent" : ""}`}
+                key={message.id}
+                className={`chat-msg chat-msg-${message.role}${isSubagent ? " chat-msg-subagent" : ""}`}
               >
                 <div className="chat-msg-bubble">
-                  {msg.actor?.type === "subagent" ? (
-                    <SubagentInline
-                      message={msg as Message & { actor: Extract<ChatActor, { type: "subagent" }> }}
-                    />
+                  {isSubagent ? (
+                    <SubagentInline message={message as SubagentMessage} />
                   ) : (
-                    renderMessageBody(msg)
+                    <>
+                      {renderMessageContent(message)}
+                      {nestedSubagents.length > 0 && (
+                        <div className="chat-subagent-list">
+                          {nestedSubagents.map((subagent) => (
+                            <SubagentInline key={subagent.id} message={subagent} />
+                          ))}
+                        </div>
+                      )}
+                      {renderMessageSources(message)}
+                    </>
                   )}
                 </div>
               </div>
