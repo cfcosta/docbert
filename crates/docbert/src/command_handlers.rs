@@ -272,6 +272,13 @@ pub(crate) fn collection_add(
     Ok(())
 }
 
+fn remove_document_artifacts_for_ids(
+    config_db: &ConfigDb,
+    doc_ids: &[u64],
+) -> error::Result<()> {
+    config_db.batch_remove_document_artifacts(doc_ids)
+}
+
 pub(crate) fn collection_remove(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -301,7 +308,7 @@ pub(crate) fn collection_remove(
         })
         .collect();
     embedding_db.batch_remove(&doc_ids)?;
-    config_db.batch_remove_document_metadata(&doc_ids)?;
+    remove_document_artifacts_for_ids(config_db, &doc_ids)?;
 
     // Remove collection definition
     config_db.remove_collection(name)?;
@@ -875,7 +882,7 @@ pub(crate) fn cmd_rebuild(
         if !args.index_only {
             runtime.embedding_db.batch_remove(&old_doc_ids)?;
         }
-        config_db.batch_remove_document_metadata(&old_doc_ids)?;
+        remove_document_artifacts_for_ids(config_db, &old_doc_ids)?;
 
         // Discover files
         let files = walker::discover_files(root)?;
@@ -982,7 +989,7 @@ pub(crate) fn cmd_sync(
             writer.commit()?;
 
             runtime.embedding_db.batch_remove(&diff.deleted_ids)?;
-            config_db.batch_remove_document_metadata(&diff.deleted_ids)?;
+            remove_document_artifacts_for_ids(config_db, &diff.deleted_ids)?;
             eprintln!("  Removed {} documents", diff.deleted_ids.len());
         }
 
@@ -1019,9 +1026,43 @@ pub(crate) fn cmd_sync(
 
 #[cfg(test)]
 mod tests {
-    use docbert_core::model_manager::ModelSource;
+    use docbert_core::{
+        ConfigDb,
+        DocumentId,
+        incremental,
+        model_manager::ModelSource,
+    };
 
     use super::*;
+
+    fn test_data_dir() -> (tempfile::TempDir, DataDir, ConfigDb) {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
+        (tmp, data_dir, config_db)
+    }
+
+    fn seed_document_artifacts(
+        config_db: &ConfigDb,
+        collection: &str,
+        path: &str,
+    ) -> DocumentId {
+        let doc_id = DocumentId::new(collection, path);
+        let metadata = incremental::DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: 0,
+        };
+        config_db
+            .put_document_artifacts(
+                doc_id.numeric,
+                &metadata,
+                "# Hello\nBody",
+                Some(&serde_json::json!({ "topic": "rust" })),
+            )
+            .unwrap();
+        doc_id
+    }
 
     #[test]
     fn collection_list_json_snapshot() {
@@ -1089,6 +1130,100 @@ mod tests {
             json,
             "[{\"collection\":\"notes\",\"path\":\"hello.md\",\"file\":\"/tmp/notes/hello.md\",\"content\":\"Hello\\n\"},{\"collection\":\"docs\",\"path\":\"missing.md\"}]"
         );
+    }
+
+    #[test]
+    fn cli_collection_remove_removes_document_artifacts() {
+        let (_tmp, data_dir, config_db) = test_data_dir();
+        config_db.set_collection("notes", "/tmp/notes").unwrap();
+        let doc_id = seed_document_artifacts(&config_db, "notes", "hello.md");
+
+        collection_remove(&config_db, &data_dir, "notes").unwrap();
+
+        assert!(config_db.get_collection("notes").unwrap().is_none());
+        assert!(
+            config_db
+                .get_document_metadata_typed(doc_id.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            config_db
+                .get_document_content(doc_id.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            config_db
+                .get_document_user_metadata(doc_id.numeric)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cli_sync_deleted_ids_remove_document_artifacts() {
+        let (_tmp, _data_dir, config_db) = test_data_dir();
+        let deleted =
+            seed_document_artifacts(&config_db, "notes", "deleted.md");
+        let retained = seed_document_artifacts(&config_db, "notes", "kept.md");
+
+        remove_document_artifacts_for_ids(&config_db, &[deleted.numeric])
+            .unwrap();
+
+        assert!(
+            config_db
+                .get_document_metadata_typed(deleted.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            config_db
+                .get_document_content(deleted.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            config_db
+                .get_document_user_metadata(deleted.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            config_db
+                .get_document_metadata_typed(retained.numeric)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn cli_rebuild_collection_cleanup_removes_prior_document_artifacts() {
+        let (_tmp, _data_dir, config_db) = test_data_dir();
+        let first = seed_document_artifacts(&config_db, "notes", "a.md");
+        let second = seed_document_artifacts(&config_db, "notes", "b.md");
+
+        remove_document_artifacts_for_ids(
+            &config_db,
+            &[first.numeric, second.numeric],
+        )
+        .unwrap();
+
+        for doc_id in [first.numeric, second.numeric] {
+            assert!(
+                config_db
+                    .get_document_metadata_typed(doc_id)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(config_db.get_document_content(doc_id).unwrap().is_none());
+            assert!(
+                config_db
+                    .get_document_user_metadata(doc_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]

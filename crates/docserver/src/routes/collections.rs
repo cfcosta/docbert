@@ -80,10 +80,105 @@ pub async fn delete(
         state.embedding_db.batch_remove(&ids_to_remove)?;
         state
             .config_db
-            .batch_remove_document_metadata(&ids_to_remove)?;
+            .batch_remove_document_artifacts(&ids_to_remove)?;
     }
 
     state.config_db.remove_collection(&name)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use docbert_core::{
+        ConfigDb,
+        DocumentId,
+        EmbeddingDb,
+        SearchIndex,
+        incremental,
+    };
+
+    use super::*;
+    use crate::state::Inner;
+
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let writer = search_index.writer(15_000_000).unwrap();
+        let state = Arc::new(Inner {
+            config_db,
+            search_index,
+            embedding_db,
+            model: Mutex::new(docbert_core::ModelManager::new()),
+            writer: Mutex::new(writer),
+        });
+
+        (tmp, state)
+    }
+
+    fn seed_collection_document(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+    ) -> u64 {
+        state.config_db.set_managed_collection(collection).unwrap();
+        let did = DocumentId::new(collection, path);
+        let metadata = incremental::DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: 0,
+        };
+        state
+            .config_db
+            .put_document_artifacts(
+                did.numeric,
+                &metadata,
+                "# Hello\nBody",
+                Some(&serde_json::json!({ "topic": "rust" })),
+            )
+            .unwrap();
+
+        did.numeric
+    }
+
+    #[tokio::test]
+    async fn collection_delete_removes_document_artifacts_for_collection_docs()
+    {
+        let (_tmp, state) = test_state();
+        let doc_id = seed_collection_document(&state, "notes", "hello.md");
+
+        let status = delete(State(state.clone()), Path("notes".to_string()))
+            .await
+            .unwrap()
+            .into_response()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(state.config_db.get_collection("notes").unwrap().is_none());
+        assert!(
+            state
+                .config_db
+                .get_document_metadata_typed(doc_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .config_db
+                .get_document_content(doc_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .config_db
+                .get_document_user_metadata(doc_id)
+                .unwrap()
+                .is_none()
+        );
+    }
 }

@@ -757,6 +757,36 @@ impl ConfigDb {
         Ok(metadata_removed || content_removed || user_metadata_removed)
     }
 
+    /// Remove multiple documents' metadata, raw content, and optional user
+    /// metadata in a single write transaction.
+    pub fn batch_remove_document_artifacts(
+        &self,
+        doc_ids: &[u64],
+    ) -> Result<()> {
+        if doc_ids.is_empty() {
+            return Ok(());
+        }
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut metadata_table = txn.open_table(DOCUMENT_METADATA)?;
+            for &doc_id in doc_ids {
+                metadata_table.remove(doc_id)?;
+            }
+        }
+        {
+            let mut settings_table = txn.open_table(SETTINGS)?;
+            for &doc_id in doc_ids {
+                let content_key = document_content_key(doc_id);
+                let user_metadata_key = document_user_metadata_key(doc_id);
+                settings_table.remove(content_key.as_str())?;
+                settings_table.remove(user_metadata_key.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Store raw document content in the shared settings table.
     pub fn set_document_content(
         &self,
