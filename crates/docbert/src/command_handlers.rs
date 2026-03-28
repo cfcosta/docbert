@@ -294,10 +294,9 @@ pub(crate) fn collection_remove(
     // Delete embeddings and metadata for all documents in this collection
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let doc_ids: Vec<u64> = config_db
-        .list_all_document_metadata()?
+        .list_all_document_metadata_typed()?
         .into_iter()
-        .filter_map(|(doc_id, bytes)| {
-            let meta = incremental::DocumentMetadata::deserialize(&bytes)?;
+        .filter_map(|(doc_id, meta)| {
             (meta.collection == name).then_some(doc_id)
         })
         .collect();
@@ -440,18 +439,14 @@ pub(crate) fn cmd_multi_get(
     // Collect matching documents
     let mut matches: Vec<(String, String)> = Vec::new(); // (collection, relative_path)
 
-    for (_doc_id, bytes) in config_db.list_all_document_metadata()? {
-        if let Some(meta) = incremental::DocumentMetadata::deserialize(&bytes) {
-            // Filter by collection if specified
-            if let Some(ref coll) = args.collection
-                && meta.collection != *coll
-            {
-                continue;
-            }
+    for (_doc_id, meta) in config_db.list_all_document_metadata_typed()? {
+        // Filter by collection if specified
+        if let Some(ref coll) = args.collection && meta.collection != *coll {
+            continue;
+        }
 
-            if glob.is_match(&meta.relative_path) {
-                matches.push((meta.collection, meta.relative_path));
-            }
+        if glob.is_match(&meta.relative_path) {
+            matches.push((meta.collection, meta.relative_path));
         }
     }
 
@@ -869,10 +864,9 @@ pub(crate) fn cmd_rebuild(
 
         // Delete existing embeddings and metadata for this collection
         let old_doc_ids: Vec<u64> = config_db
-            .list_all_document_metadata()?
+            .list_all_document_metadata_typed()?
             .into_iter()
-            .filter_map(|(doc_id, bytes)| {
-                let meta = incremental::DocumentMetadata::deserialize(&bytes)?;
+            .filter_map(|(doc_id, meta)| {
                 (meta.collection == *name).then_some(doc_id)
             })
             .collect();

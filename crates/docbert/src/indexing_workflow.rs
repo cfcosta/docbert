@@ -134,13 +134,13 @@ mod tests {
         let b_id = DocumentId::new("notes", "b.md");
         assert!(
             config_db
-                .get_document_metadata(a_id.numeric)
+                .get_document_metadata_typed(a_id.numeric)
                 .unwrap()
                 .is_some()
         );
         assert!(
             config_db
-                .get_document_metadata(b_id.numeric)
+                .get_document_metadata_typed(b_id.numeric)
                 .unwrap()
                 .is_some()
         );
@@ -193,24 +193,20 @@ mod tests {
             .unwrap();
 
         let updated_a = config_db
-            .get_document_metadata(DocumentId::new("notes", "a.md").numeric)
+            .get_document_metadata_typed(DocumentId::new("notes", "a.md").numeric)
             .unwrap()
             .unwrap();
-        let updated_a =
-            incremental::DocumentMetadata::deserialize(&updated_a).unwrap();
         assert_eq!(updated_a.mtime, 99);
 
         let unchanged_b = config_db
-            .get_document_metadata(DocumentId::new("notes", "b.md").numeric)
+            .get_document_metadata_typed(DocumentId::new("notes", "b.md").numeric)
             .unwrap()
             .unwrap();
-        let unchanged_b =
-            incremental::DocumentMetadata::deserialize(&unchanged_b).unwrap();
         assert_eq!(unchanged_b.mtime, 15);
 
         assert!(
             config_db
-                .get_document_metadata(deleted_id.numeric)
+                .get_document_metadata_typed(deleted_id.numeric)
                 .unwrap()
                 .is_none()
         );
