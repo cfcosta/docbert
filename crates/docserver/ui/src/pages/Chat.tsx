@@ -1332,6 +1332,10 @@ export default function Chat() {
 function ThinkingInline({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
 
+  if (text.trim().length === 0) {
+    return null;
+  }
+
   return (
     <div className="chat-thinking">
       <button
