@@ -126,11 +126,9 @@ fn load_user_metadata(
     state: &AppState,
     doc_numeric_id: u64,
 ) -> Option<serde_json::Value> {
-    let meta_key = format!("doc_meta:{doc_numeric_id}");
     state
         .config_db
-        .get_setting(&meta_key)
+        .get_document_user_metadata(doc_numeric_id)
         .ok()
         .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
 }

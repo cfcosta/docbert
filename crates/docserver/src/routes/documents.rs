@@ -129,13 +129,11 @@ fn cleanup_persisted_documents(
             tracing::warn!(error = %e, doc_id, %context, "failed to cleanup document metadata");
         }
 
-        let content_key = format!("doc_content:{doc_id}");
-        if let Err(e) = state.config_db.remove_setting(&content_key) {
+        if let Err(e) = state.config_db.remove_document_content(doc_id) {
             tracing::warn!(error = %e, doc_id, %context, "failed to cleanup stored content");
         }
 
-        let meta_key = format!("doc_meta:{doc_id}");
-        if let Err(e) = state.config_db.remove_setting(&meta_key) {
+        if let Err(e) = state.config_db.remove_document_user_metadata(doc_id) {
             tracing::warn!(error = %e, doc_id, %context, "failed to cleanup stored metadata");
         }
     }
@@ -253,23 +251,24 @@ pub async fn ingest(
                 relative_path: doc.path.clone(),
                 mtime: 0,
             };
-            state.config_db.set_document_metadata(
-                doc.did.numeric,
-                &doc_meta.serialize(),
-            )?;
+            state
+                .config_db
+                .set_document_metadata_typed(doc.did.numeric, &doc_meta)?;
 
-            let content_key = format!("doc_content:{}", doc.did.numeric);
-            state.config_db.set_setting(&content_key, &doc.content)?;
+            state
+                .config_db
+                .set_document_content(doc.did.numeric, &doc.content)?;
 
-            let meta_key = format!("doc_meta:{}", doc.did.numeric);
             match &doc.metadata {
                 Some(user_meta) => {
-                    let meta_val = serde_json::to_string(user_meta)
-                        .map_err(ApiError::internal)?;
-                    state.config_db.set_setting(&meta_key, &meta_val)?;
+                    state
+                        .config_db
+                        .set_document_user_metadata(doc.did.numeric, user_meta)?;
                 }
                 None => {
-                    let _ = state.config_db.remove_setting(&meta_key);
+                    let _ = state
+                        .config_db
+                        .remove_document_user_metadata(doc.did.numeric);
                 }
             }
 
@@ -352,12 +351,10 @@ pub async fn list_by_collection(
         )));
     }
 
-    let all_meta = state.config_db.list_all_document_metadata()?;
+    let all_meta = state.config_db.list_all_document_metadata_typed()?;
     let mut items = Vec::new();
-    for (doc_id, bytes) in &all_meta {
-        if let Some(meta) = incremental::DocumentMetadata::deserialize(bytes)
-            && meta.collection == collection
-        {
+    for (doc_id, meta) in &all_meta {
+        if meta.collection == collection {
             let short_id = docbert_core::search::short_doc_id(*doc_id);
             // Try to get title from Tantivy search results.
             let title = state
@@ -369,7 +366,7 @@ pub async fn list_by_collection(
                 .unwrap_or_else(|| meta.relative_path.clone());
             items.push(DocumentListItem {
                 doc_id: short_id,
-                path: meta.relative_path,
+                path: meta.relative_path.clone(),
                 title,
             });
         }
@@ -396,18 +393,13 @@ pub async fn get(
     let did = DocumentId::new(&collection, &path);
 
     // Check that the document metadata exists.
-    let meta_bytes = state
+    let meta = state
         .config_db
-        .get_document_metadata(did.numeric)?
+        .get_document_metadata_typed(did.numeric)?
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "document not found: {collection}:{path}"
             ))
-        })?;
-
-    let meta = incremental::DocumentMetadata::deserialize(&meta_bytes)
-        .ok_or_else(|| {
-            ApiError::internal("failed to deserialize document metadata")
         })?;
 
     // Retrieve the document content from Tantivy.
@@ -426,10 +418,9 @@ pub async fn get(
     };
 
     // Load stored content.
-    let content_key = format!("doc_content:{}", did.numeric);
     let content = state
         .config_db
-        .get_setting(&content_key)?
+        .get_document_content(did.numeric)?
         .unwrap_or_default();
 
     // Load user metadata from settings.
@@ -453,7 +444,7 @@ pub async fn delete(
 
     let exists = state
         .config_db
-        .get_document_metadata(did.numeric)?
+        .get_document_metadata_typed(did.numeric)?
         .is_some();
     if !exists {
         return Err(ApiError::NotFound(format!(
@@ -477,10 +468,8 @@ pub async fn delete(
     state.config_db.remove_document_metadata(did.numeric)?;
 
     // Delete stored content and user metadata.
-    let content_key = format!("doc_content:{}", did.numeric);
-    let _ = state.config_db.remove_setting(&content_key);
-    let meta_key = format!("doc_meta:{}", did.numeric);
-    let _ = state.config_db.remove_setting(&meta_key);
+    let _ = state.config_db.remove_document_content(did.numeric);
+    let _ = state.config_db.remove_document_user_metadata(did.numeric);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -489,13 +478,11 @@ fn load_user_metadata(
     state: &AppState,
     doc_numeric_id: u64,
 ) -> Option<serde_json::Value> {
-    let meta_key = format!("doc_meta:{doc_numeric_id}");
     state
         .config_db
-        .get_setting(&meta_key)
+        .get_document_user_metadata(doc_numeric_id)
         .ok()
         .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 #[cfg(test)]
