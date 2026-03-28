@@ -3,7 +3,7 @@ use std::path::Path;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::{
-    Error,
+    Conversation, Error,
     error::Result,
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
@@ -307,6 +307,22 @@ impl ConfigDb {
         Ok(table.get(id)?.map(|v| v.value().to_vec()))
     }
 
+    /// Store a typed conversation keyed by its ID.
+    pub fn set_conversation_typed(&self, conversation: &Conversation) -> Result<()> {
+        let data = conversation.serialize()?;
+        self.set_conversation(&conversation.id, &data)
+    }
+
+    /// Retrieve a typed conversation by ID. Returns `None` if not found.
+    pub fn get_conversation_typed(
+        &self,
+        id: &str,
+    ) -> Result<Option<Conversation>> {
+        self.get_conversation(id)?
+            .map(|bytes| Conversation::deserialize(&bytes))
+            .transpose()
+    }
+
     /// Remove a conversation by ID. Returns `true` if it existed.
     pub fn remove_conversation(&self, id: &str) -> Result<bool> {
         let txn = self.db.begin_write()?;
@@ -328,6 +344,14 @@ impl ConfigDb {
             result.push((k.value().to_string(), v.value().to_vec()));
         }
         Ok(result)
+    }
+
+    /// List all conversations as typed records.
+    pub fn list_conversations_typed(&self) -> Result<Vec<Conversation>> {
+        self.list_conversations()?
+            .into_iter()
+            .map(|(_id, bytes)| Conversation::deserialize(&bytes))
+            .collect()
     }
 
     // -- Document Metadata --
@@ -923,5 +947,60 @@ mod tests {
         assert_eq!(db.get_document_user_metadata(7).unwrap(), Some(value));
         assert!(db.remove_document_user_metadata(7).unwrap());
         assert!(db.get_document_user_metadata(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_conversation_crud() {
+        let (_tmp, db) = test_db();
+        let conversation = Conversation {
+            id: "conv-1".to_string(),
+            title: "Chat".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            messages: vec![crate::conversation::ChatMessage {
+                id: "msg-1".to_string(),
+                role: crate::conversation::ChatRole::Assistant,
+                actor: Some(crate::conversation::ChatActor::Parent),
+                parts: vec![crate::conversation::ChatPart::ToolCall {
+                    name: "search_hybrid".to_string(),
+                    args: serde_json::json!({
+                        "query": "rust",
+                        "top_k": 5,
+                        "filters": { "collection": "notes" }
+                    }),
+                    result: Some("[]".to_string()),
+                    is_error: false,
+                }],
+                sources: Some(vec![crate::conversation::ChatSource {
+                    collection: "notes".to_string(),
+                    path: "rust.md".to_string(),
+                    title: "Rust".to_string(),
+                }]),
+            }],
+        };
+
+        db.set_conversation_typed(&conversation).unwrap();
+
+        let loaded = db
+            .get_conversation_typed("conv-1")
+            .unwrap()
+            .expect("conversation should exist");
+        assert_eq!(loaded.id, conversation.id);
+        assert_eq!(loaded.title, conversation.title);
+        assert_eq!(loaded.messages.len(), conversation.messages.len());
+        assert_eq!(loaded.messages[0].id, conversation.messages[0].id);
+        assert_eq!(loaded.messages[0].role, conversation.messages[0].role);
+        assert_eq!(loaded.messages[0].actor, conversation.messages[0].actor);
+        assert_eq!(loaded.messages[0].parts, conversation.messages[0].parts);
+        assert_eq!(loaded.messages[0].sources, conversation.messages[0].sources);
+
+        let listed = db.list_conversations_typed().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, conversation.id);
+        assert_eq!(listed[0].messages.len(), conversation.messages.len());
+        assert_eq!(listed[0].messages[0].parts, conversation.messages[0].parts);
+
+        assert!(db.remove_conversation("conv-1").unwrap());
+        assert!(db.get_conversation_typed("conv-1").unwrap().is_none());
     }
 }
