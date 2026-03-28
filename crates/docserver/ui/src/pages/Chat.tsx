@@ -4,7 +4,7 @@ import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
 import "katex/dist/katex.min.css";
 import type { Context, Tool, UserMessage, Message as PiMessage } from "@mariozechner/pi-ai";
 import { api } from "../lib/api";
-import type { ConversationFull, ConversationSummary, LlmSettings, SearchResult } from "../lib/api";
+import type { ConversationFull, ConversationSummary, LlmSettings } from "../lib/api";
 import {
   apiToMessages,
   messagesToApi,
@@ -18,7 +18,6 @@ import {
 } from "./chat-context";
 import {
   insertOrUpdateSubagentMessage,
-  mergeCurrentTurnSearchResults,
   setSubagentStatus,
   updateSubagentMessageById,
   upsertSubagentPart,
@@ -33,6 +32,7 @@ import {
   isInterruptedAssistantResult,
   shouldContinueAssistantToolRound,
 } from "./chat-stream";
+import { executeSearchToolCall, searchChatTools } from "./chat-tools";
 import { groupMessagesForDisplay } from "./chat-message-groups";
 import ChatTranscript from "./ChatTranscript";
 import "./Chat.css";
@@ -57,93 +57,24 @@ type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
 
 // ── Tool definitions for pi-ai ──
 
-const tools: Tool[] = [
-  {
-    name: "search_semantic",
-    description:
-      "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents. Searches all collections by default.",
-    parameters: Type.Object({
-      query: Type.String({ description: "The search query" }),
-      collection: Type.Optional(
-        Type.String({
-          description: "Restrict search to this collection. Omit to search all collections.",
-        }),
-      ),
-      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+const analyzeDocumentTool: Tool = {
+  name: "analyze_document",
+  description:
+    "Run a focused file analysis subagent for one document and return a concise summary relevant to the user question.",
+  parameters: Type.Object({
+    collection: Type.String({ description: "The collection name" }),
+    path: Type.String({
+      description: "The document path within the collection",
     }),
-  },
-  {
-    name: "search_hybrid",
-    description:
-      "Search the document store using hybrid BM25 + semantic search. Best when the query shares keywords with the target documents. Faster on large collections.",
-    parameters: Type.Object({
-      query: Type.String({ description: "The search query" }),
-      collection: Type.Optional(Type.String({ description: "Restrict search to this collection" })),
-      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
-    }),
-  },
-  {
-    name: "analyze_document",
-    description:
-      "Run a focused file analysis subagent for one document and return a concise summary relevant to the user question.",
-    parameters: Type.Object({
-      collection: Type.String({ description: "The collection name" }),
-      path: Type.String({
-        description: "The document path within the collection",
+    focus: Type.Optional(
+      Type.String({
+        description: "Optional extra focus for this file analysis.",
       }),
-      focus: Type.Optional(
-        Type.String({
-          description: "Optional extra focus for this file analysis.",
-        }),
-      ),
-    }),
-  },
-];
+    ),
+  }),
+};
 
-// ── Tool execution ──
-
-async function executeTool(
-  name: string,
-  args: Record<string, unknown>,
-  runtimeState: ChatToolRuntimeState,
-): Promise<{ text: string; sources?: SearchResult[] }> {
-  switch (name) {
-    case "search_semantic": {
-      const res = await api.search({
-        query: args.query as string,
-        mode: "semantic",
-        collection: args.collection as string | undefined,
-        count: (args.count as number) ?? 5,
-      });
-      runtimeState.currentTurnSearchResults = mergeCurrentTurnSearchResults(
-        runtimeState.currentTurnSearchResults,
-        res.results,
-      );
-      return {
-        text: JSON.stringify(res.results, null, 2),
-        sources: res.results,
-      };
-    }
-    case "search_hybrid": {
-      const res = await api.search({
-        query: args.query as string,
-        mode: "hybrid",
-        collection: args.collection as string | undefined,
-        count: (args.count as number) ?? 5,
-      });
-      runtimeState.currentTurnSearchResults = mergeCurrentTurnSearchResults(
-        runtimeState.currentTurnSearchResults,
-        res.results,
-      );
-      return {
-        text: JSON.stringify(res.results, null, 2),
-        sources: res.results,
-      };
-    }
-    default:
-      return { text: `Unknown tool: ${name}` };
-  }
-}
+const tools: Tool[] = [...searchChatTools, analyzeDocumentTool];
 
 const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store.
 
@@ -343,32 +274,6 @@ function applyToolCallResult(message: Message, callInfo: ToolCallInfo): Message 
     ...message,
     parts,
   };
-}
-
-async function executeToolCallAndRecord(
-  call: { id: string; name: string; arguments: Record<string, unknown> },
-  piContext: Context,
-  runtimeState: ChatToolRuntimeState,
-): Promise<ToolCallInfo> {
-  const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
-
-  try {
-    const toolResult = await executeTool(call.name, call.arguments, runtimeState);
-
-    callInfo.result = toolResult.text;
-    piContext.messages.push(
-      createToolResultMessage(call.id, call.name, toolResult.text, false) as PiMessage,
-    );
-  } catch (error) {
-    const errText = error instanceof Error ? error.message : "unknown error";
-    callInfo.result = `Error: ${errText}`;
-    callInfo.isError = true;
-    piContext.messages.push(
-      createToolResultMessage(call.id, call.name, `Error: ${errText}`, true) as PiMessage,
-    );
-  }
-
-  return callInfo;
 }
 
 async function runFileSubagent({
@@ -612,11 +517,11 @@ async function runParentAgentRound({
             queueSubagentMessage,
             updateSubagentMessage,
           })
-        : await executeToolCallAndRecord(
-            { id: call.id, name: call.name, arguments: callArgs },
+        : await executeSearchToolCall({
+            call: { id: call.id, name: call.name, arguments: callArgs },
             piContext,
             runtimeState,
-          );
+          });
 
     updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo));
   }
