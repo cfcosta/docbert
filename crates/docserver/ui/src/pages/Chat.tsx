@@ -476,7 +476,7 @@ function appendPendingToolCall(message: Message, callInfo: ToolCallInfo): Messag
 function applyToolCallResult(
   message: Message,
   callInfo: ToolCallInfo,
-  allSources: SearchResult[],
+  _allSources: SearchResult[],
 ): Message {
   const parts = [...(message.parts ?? [])];
   for (let i = parts.length - 1; i >= 0; i--) {
@@ -487,11 +487,9 @@ function applyToolCallResult(
     }
   }
 
-  const uniqueSources = deduplicateSources(allSources);
   return {
     ...message,
     parts,
-    sources: uniqueSources.length > 0 ? uniqueSources : message.sources,
   };
 }
 
@@ -879,30 +877,8 @@ function renderMessageContent(message: Message, nestedSubagents: SubagentMessage
   );
 }
 
-function renderMessageSources(message: Message) {
-  if (!message.sources || message.sources.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="chat-sources">
-      <span className="chat-sources-label">Sources:</span>
-      {message.sources.map((s) => (
-        <span key={`${s.collection}:${s.path}`} className="chat-source-tag">
-          {s.collection}/{s.path}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function renderMessageBody(message: Message, nestedSubagents: SubagentMessage[] = []) {
-  return (
-    <>
-      {renderMessageContent(message, nestedSubagents)}
-      {renderMessageSources(message)}
-    </>
-  );
+  return <>{renderMessageContent(message, nestedSubagents)}</>;
 }
 
 function SubagentInline({ message }: { message: SubagentMessage }) {
@@ -1421,19 +1397,16 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
               <div key={`${result.collection}:${result.path}`} className="chat-tool-search-result">
                 <div className="chat-tool-search-result-top">
                   <div>
-                    <div className="chat-tool-search-result-title">
+                    <Link
+                      className="chat-tool-search-result-title chat-tool-search-result-title-link"
+                      to={buildDocumentTabHref(result.collection, result.path)}
+                    >
                       {result.title || result.path}
-                    </div>
+                    </Link>
                     <div className="chat-tool-search-result-path">
                       {result.collection}/{result.path}
                     </div>
                   </div>
-                  <Link
-                    className="chat-tool-search-result-link"
-                    to={buildDocumentTabHref(result.collection, result.path)}
-                  >
-                    Open
-                  </Link>
                 </div>
                 <div className="chat-tool-search-result-meta">
                   <span>#{result.rank}</span>
@@ -1468,14 +1441,4 @@ function TrashIcon() {
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
   );
-}
-
-function deduplicateSources(sources: SearchResult[]): SearchResult[] {
-  const seen = new Set<string>();
-  return sources.filter((s) => {
-    const key = `${s.collection}:${s.path}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
