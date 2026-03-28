@@ -42,9 +42,9 @@ impl From<serde_json::Value> for StoredJsonValue {
                     ))
                 } else {
                     Self::Number(StoredJsonNumber::F64(
-                        value
-                            .as_f64()
-                            .expect("serde_json numbers are representable as f64"),
+                        value.as_f64().expect(
+                            "serde_json numbers are representable as f64",
+                        ),
                     ))
                 }
             }
@@ -131,7 +131,10 @@ mod tests {
         assert_eq!(float, StoredJsonValue::Number(StoredJsonNumber::F64(5.5)));
 
         assert_eq!(serde_json::Value::from(signed), serde_json::json!(-5));
-        assert_eq!(serde_json::Value::from(unsigned), serde_json::json!(u64::MAX));
+        assert_eq!(
+            serde_json::Value::from(unsigned),
+            serde_json::json!(u64::MAX)
+        );
         assert_eq!(serde_json::Value::from(float), serde_json::json!(5.5));
     }
 }

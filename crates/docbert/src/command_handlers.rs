@@ -441,7 +441,9 @@ pub(crate) fn cmd_multi_get(
 
     for (_doc_id, meta) in config_db.list_all_document_metadata_typed()? {
         // Filter by collection if specified
-        if let Some(ref coll) = args.collection && meta.collection != *coll {
+        if let Some(ref coll) = args.collection
+            && meta.collection != *coll
+        {
             continue;
         }
 

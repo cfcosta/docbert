@@ -261,9 +261,10 @@ pub async fn ingest(
 
             match &doc.metadata {
                 Some(user_meta) => {
-                    state
-                        .config_db
-                        .set_document_user_metadata(doc.did.numeric, user_meta)?;
+                    state.config_db.set_document_user_metadata(
+                        doc.did.numeric,
+                        user_meta,
+                    )?;
                 }
                 None => {
                     let _ = state

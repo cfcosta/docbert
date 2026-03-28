@@ -1,17 +1,21 @@
 use rkyv::{
+    Archive,
+    Deserialize,
+    Serialize,
     api::high::{HighSerializer, HighValidator, to_bytes},
     bytecheck::CheckBytes,
     rancor::Error as RkyvError,
     ser::allocator::ArenaHandle,
     util::AlignedVec,
-    Archive, Deserialize, Serialize,
 };
 
 use crate::Result;
 
 /// Encode a value to rkyv bytes using the high-level checked serializer.
 pub fn encode_bytes(
-    value: &impl for<'a> Serialize<HighSerializer<AlignedVec, ArenaHandle<'a>, RkyvError>>,
+    value: &impl for<'a> Serialize<
+        HighSerializer<AlignedVec, ArenaHandle<'a>, RkyvError>,
+    >,
 ) -> Result<Vec<u8>> {
     Ok(to_bytes::<RkyvError>(value)?.into_vec())
 }
@@ -28,9 +32,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::stored_json::StoredJsonValue;
-
     use super::{decode_bytes, encode_bytes};
+    use crate::stored_json::StoredJsonValue;
 
     #[test]
     fn storage_codec_roundtrips_string() {

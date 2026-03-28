@@ -116,7 +116,9 @@ struct RawChatMessage {
     content_parts: Option<Vec<LegacyChatContentPart>>,
 }
 
-#[derive(Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct StoredConversation {
     id: String,
     title: String,
@@ -125,7 +127,9 @@ struct StoredConversation {
     messages: Vec<StoredChatMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct StoredChatMessage {
     id: String,
     role: StoredChatRole,
@@ -134,13 +138,29 @@ struct StoredChatMessage {
     sources: Option<Vec<StoredChatSource>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 enum StoredChatRole {
     User,
     Assistant,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 enum StoredChatActor {
     Parent,
     Subagent {
@@ -151,7 +171,15 @@ enum StoredChatActor {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 enum StoredChatSubagentStatus {
     Queued,
     Running,
@@ -159,7 +187,9 @@ enum StoredChatSubagentStatus {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 enum StoredChatPart {
     Text {
         text: String,
@@ -175,7 +205,15 @@ enum StoredChatPart {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 struct StoredChatSource {
     collection: String,
     path: String,
@@ -255,7 +293,11 @@ impl From<&Conversation> for StoredConversation {
             title: value.title.clone(),
             created_at: value.created_at,
             updated_at: value.updated_at,
-            messages: value.messages.iter().map(StoredChatMessage::from).collect(),
+            messages: value
+                .messages
+                .iter()
+                .map(StoredChatMessage::from)
+                .collect(),
         }
     }
 }
@@ -267,7 +309,11 @@ impl From<StoredConversation> for Conversation {
             title: value.title,
             created_at: value.created_at,
             updated_at: value.updated_at,
-            messages: value.messages.into_iter().map(ChatMessage::from).collect(),
+            messages: value
+                .messages
+                .into_iter()
+                .map(ChatMessage::from)
+                .collect(),
         }
     }
 }
@@ -279,10 +325,9 @@ impl From<&ChatMessage> for StoredChatMessage {
             role: StoredChatRole::from(&value.role),
             actor: value.actor.as_ref().map(StoredChatActor::from),
             parts: value.parts.iter().map(StoredChatPart::from).collect(),
-            sources: value
-                .sources
-                .as_ref()
-                .map(|sources| sources.iter().map(StoredChatSource::from).collect()),
+            sources: value.sources.as_ref().map(|sources| {
+                sources.iter().map(StoredChatSource::from).collect()
+            }),
         }
     }
 }
@@ -294,9 +339,9 @@ impl From<StoredChatMessage> for ChatMessage {
             role: ChatRole::from(value.role),
             actor: value.actor.map(ChatActor::from),
             parts: value.parts.into_iter().map(ChatPart::from).collect(),
-            sources: value
-                .sources
-                .map(|sources| sources.into_iter().map(ChatSource::from).collect()),
+            sources: value.sources.map(|sources| {
+                sources.into_iter().map(ChatSource::from).collect()
+            }),
         }
     }
 }
@@ -383,7 +428,9 @@ impl From<&ChatPart> for StoredChatPart {
     fn from(value: &ChatPart) -> Self {
         match value {
             ChatPart::Text { text } => Self::Text { text: text.clone() },
-            ChatPart::Thinking { text } => Self::Thinking { text: text.clone() },
+            ChatPart::Thinking { text } => {
+                Self::Thinking { text: text.clone() }
+            }
             ChatPart::ToolCall {
                 name,
                 args,

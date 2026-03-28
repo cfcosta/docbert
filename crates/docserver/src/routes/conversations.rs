@@ -65,10 +65,13 @@ pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Conversation>, ApiError> {
-    let conv = state
-        .config_db
-        .get_conversation_typed(&id)?
-        .ok_or_else(|| ApiError::NotFound(format!("conversation not found: {id}")))?;
+    let conv =
+        state
+            .config_db
+            .get_conversation_typed(&id)?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("conversation not found: {id}"))
+            })?;
     Ok(Json(conv))
 }
 
@@ -77,9 +80,12 @@ pub async fn update(
     Path(id): Path<String>,
     Json(mut body): Json<Conversation>,
 ) -> Result<Json<Conversation>, ApiError> {
-    state.config_db.get_conversation_typed(&id)?.ok_or_else(|| {
-        ApiError::NotFound(format!("conversation not found: {id}"))
-    })?;
+    state
+        .config_db
+        .get_conversation_typed(&id)?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("conversation not found: {id}"))
+        })?;
 
     body.id = id;
     body.updated_at = now_millis();

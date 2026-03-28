@@ -3,7 +3,8 @@ use std::path::Path;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::{
-    Conversation, Error,
+    Conversation,
+    Error,
     error::Result,
     incremental::DocumentMetadata,
     storage_codec::{decode_bytes, encode_bytes},
@@ -12,8 +13,7 @@ use crate::{
 
 const COLLECTIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("collections");
-const CONTEXTS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("contexts");
+const CONTEXTS: TableDefinition<&str, &[u8]> = TableDefinition::new("contexts");
 const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
     TableDefinition::new("document_metadata");
 const CONVERSATIONS: TableDefinition<&str, &[u8]> =
@@ -59,7 +59,10 @@ where
     T: rkyv::Archive,
     T::Archived: for<'a> rkyv::bytecheck::CheckBytes<
             rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>,
-        > + rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
+        > + rkyv::Deserialize<
+            T,
+            rkyv::api::high::HighDeserializer<rkyv::rancor::Error>,
+        >,
 {
     let mut aligned = rkyv::util::AlignedVec::<16>::new();
     aligned.extend_from_slice(bytes);
@@ -291,7 +294,10 @@ impl ConfigDb {
     // -- Conversations --
 
     /// Store a typed conversation keyed by its ID.
-    pub fn set_conversation_typed(&self, conversation: &Conversation) -> Result<()> {
+    pub fn set_conversation_typed(
+        &self,
+        conversation: &Conversation,
+    ) -> Result<()> {
         let data = conversation.serialize()?;
         let txn = self.db.begin_write()?;
         {
@@ -622,7 +628,9 @@ impl ConfigDb {
         let table = txn.open_table(SETTINGS)?;
         table
             .get(key)?
-            .map(|v| decode_aligned::<StoredJsonValue>(v.value()).map(Into::into))
+            .map(|v| {
+                decode_aligned::<StoredJsonValue>(v.value()).map(Into::into)
+            })
             .transpose()
     }
 
@@ -861,7 +869,8 @@ mod tests {
     fn document_content_roundtrips() {
         let (_tmp, db) = test_db();
 
-        db.set_document_content(42, "# Hello\nThis is content").unwrap();
+        db.set_document_content(42, "# Hello\nThis is content")
+            .unwrap();
         assert_eq!(
             db.get_document_content(42).unwrap(),
             Some("# Hello\nThis is content".to_string())
@@ -982,7 +991,10 @@ mod tests {
         assert_eq!(loaded.messages[0].role, conversation.messages[0].role);
         assert_eq!(loaded.messages[0].actor, conversation.messages[0].actor);
         assert_eq!(loaded.messages[0].parts, conversation.messages[0].parts);
-        assert_eq!(loaded.messages[0].sources, conversation.messages[0].sources);
+        assert_eq!(
+            loaded.messages[0].sources,
+            conversation.messages[0].sources
+        );
 
         let listed = db.list_conversations_typed().unwrap();
         assert_eq!(listed.len(), 1);

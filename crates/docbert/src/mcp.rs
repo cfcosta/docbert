@@ -923,7 +923,7 @@ pub fn run_mcp(
 
 #[cfg(test)]
 mod tests {
-    use docbert_core::doc_id::DocumentId;
+    use docbert_core::{doc_id::DocumentId, incremental::DocumentMetadata};
 
     use super::*;
 

@@ -193,13 +193,17 @@ mod tests {
             .unwrap();
 
         let updated_a = config_db
-            .get_document_metadata_typed(DocumentId::new("notes", "a.md").numeric)
+            .get_document_metadata_typed(
+                DocumentId::new("notes", "a.md").numeric,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(updated_a.mtime, 99);
 
         let unchanged_b = config_db
-            .get_document_metadata_typed(DocumentId::new("notes", "b.md").numeric)
+            .get_document_metadata_typed(
+                DocumentId::new("notes", "b.md").numeric,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(unchanged_b.mtime, 15);

@@ -47,7 +47,8 @@ impl DocumentMetadata {
     /// The format is a checked `rkyv` archive. Use [`deserialize`](Self::deserialize)
     /// to recover the struct.
     pub fn serialize(&self) -> Vec<u8> {
-        encode_bytes(self).expect("DocumentMetadata serialization should succeed")
+        encode_bytes(self)
+            .expect("DocumentMetadata serialization should succeed")
     }
 
     /// Deserialize from bytes. Returns `None` if the archive is invalid.
