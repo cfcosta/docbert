@@ -8,7 +8,6 @@ use docbert_core::{
     data_dir::DataDir,
     embedding_db::EmbeddingDb,
     error,
-    incremental::DocumentMetadata,
     model_manager::{DEFAULT_MODEL_ID, ModelManager},
     search,
     tantivy_index::SearchIndex,
@@ -374,20 +373,18 @@ impl DocbertMcpServer {
         let metadata = self
             .state
             .config_db
-            .list_all_document_metadata()
+            .list_all_document_metadata_typed()
             .map_err(|e| mcp_error("failed to load document metadata", e))?;
 
-        for (_doc_id, bytes) in metadata {
-            if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
-                if let Some(ref collection) = params.collection
-                    && meta.collection != *collection
-                {
-                    continue;
-                }
+        for (_doc_id, meta) in metadata {
+            if let Some(ref collection) = params.collection
+                && meta.collection != *collection
+            {
+                continue;
+            }
 
-                if matcher.is_match(&meta.relative_path) {
-                    matches.push((meta.collection, meta.relative_path));
-                }
+            if matcher.is_match(&meta.relative_path) {
+                matches.push((meta.collection, meta.relative_path));
             }
         }
 
@@ -480,15 +477,13 @@ impl DocbertMcpServer {
             .map_err(|e| mcp_error("failed to read model setting", e))?;
 
         let mut counts = std::collections::HashMap::new();
-        for (_doc_id, bytes) in self
+        for (_doc_id, meta) in self
             .state
             .config_db
-            .list_all_document_metadata()
+            .list_all_document_metadata_typed()
             .map_err(|e| mcp_error("failed to load document metadata", e))?
         {
-            if let Some(meta) = DocumentMetadata::deserialize(&bytes) {
-                *counts.entry(meta.collection).or_insert(0usize) += 1;
-            }
+            *counts.entry(meta.collection).or_insert(0usize) += 1;
         }
 
         let mut collection_status = Vec::with_capacity(collections.len());
@@ -976,14 +971,13 @@ mod tests {
                 )
                 .unwrap();
             config_db
-                .set_document_metadata(
+                .set_document_metadata_typed(
                     doc_id.numeric,
                     &DocumentMetadata {
                         collection: "notes".to_string(),
                         relative_path: path.to_string(),
                         mtime: 1,
-                    }
-                    .serialize(),
+                    },
                 )
                 .unwrap();
             doc_ids.push(doc_id);
