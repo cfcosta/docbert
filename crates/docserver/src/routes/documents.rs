@@ -125,16 +125,8 @@ fn cleanup_persisted_documents(
     context: &str,
 ) {
     for &doc_id in doc_ids {
-        if let Err(e) = state.config_db.remove_document_metadata(doc_id) {
-            tracing::warn!(error = %e, doc_id, %context, "failed to cleanup document metadata");
-        }
-
-        if let Err(e) = state.config_db.remove_document_content(doc_id) {
-            tracing::warn!(error = %e, doc_id, %context, "failed to cleanup stored content");
-        }
-
-        if let Err(e) = state.config_db.remove_document_user_metadata(doc_id) {
-            tracing::warn!(error = %e, doc_id, %context, "failed to cleanup stored metadata");
+        if let Err(e) = state.config_db.remove_document_artifacts(doc_id) {
+            tracing::warn!(error = %e, doc_id, %context, "failed to cleanup document artifacts");
         }
     }
 }
@@ -251,27 +243,12 @@ pub async fn ingest(
                 relative_path: doc.path.clone(),
                 mtime: 0,
             };
-            state
-                .config_db
-                .set_document_metadata_typed(doc.did.numeric, &doc_meta)?;
-
-            state
-                .config_db
-                .set_document_content(doc.did.numeric, &doc.content)?;
-
-            match &doc.metadata {
-                Some(user_meta) => {
-                    state.config_db.set_document_user_metadata(
-                        doc.did.numeric,
-                        user_meta,
-                    )?;
-                }
-                None => {
-                    let _ = state
-                        .config_db
-                        .remove_document_user_metadata(doc.did.numeric);
-                }
-            }
+            state.config_db.put_document_artifacts(
+                doc.did.numeric,
+                &doc_meta,
+                &doc.content,
+                doc.metadata.as_ref(),
+            )?;
 
             Ok(())
         })();
@@ -465,12 +442,8 @@ pub async fn delete(
     // Delete embeddings (base + chunks).
     let _ = state.embedding_db.remove(did.numeric);
 
-    // Delete metadata.
-    state.config_db.remove_document_metadata(did.numeric)?;
-
-    // Delete stored content and user metadata.
-    let _ = state.config_db.remove_document_content(did.numeric);
-    let _ = state.config_db.remove_document_user_metadata(did.numeric);
+    // Delete stored metadata and document artifacts.
+    let _ = state.config_db.remove_document_artifacts(did.numeric)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -488,7 +461,73 @@ fn load_user_metadata(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+
     use super::*;
+    use crate::state::Inner;
+
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let writer = search_index.writer(15_000_000).unwrap();
+        let state = Arc::new(Inner {
+            config_db,
+            search_index,
+            embedding_db,
+            model: Mutex::new(ModelManager::new()),
+            writer: Mutex::new(writer),
+        });
+
+        (tmp, state)
+    }
+
+    fn seed_document(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> DocumentId {
+        state.config_db.set_managed_collection(collection).unwrap();
+        let did = DocumentId::new(collection, path);
+        let stored_metadata = incremental::DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: 0,
+        };
+        state
+            .config_db
+            .put_document_artifacts(
+                did.numeric,
+                &stored_metadata,
+                content,
+                metadata.as_ref(),
+            )
+            .unwrap();
+        {
+            let mut writer = state.writer.lock().unwrap();
+            state
+                .search_index
+                .add_document(
+                    &writer,
+                    &did.to_string(),
+                    did.numeric,
+                    collection,
+                    path,
+                    "Hello",
+                    content,
+                    0,
+                )
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        did
+    }
 
     #[test]
     fn prepare_documents_rejects_empty_body() {
@@ -543,5 +582,133 @@ mod tests {
         assert_eq!(prepared[0].embedding_chunks.len(), 1);
         assert_eq!(prepared[0].embedding_chunks[0].0, prepared[0].did.numeric);
         assert!(prepared[0].embedding_chunks[0].1.contains("ownership"));
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_missing_collection_before_embedding() {
+        let (_tmp, state) = test_state();
+
+        let result = ingest(
+            State(state),
+            Json(IngestRequest {
+                collection: "notes".to_string(),
+                documents: vec![IngestDocument {
+                    path: "hello.md".to_string(),
+                    content: "# Hello\nBody".to_string(),
+                    content_type: "text/markdown".to_string(),
+                    metadata: None,
+                }],
+            }),
+        )
+        .await;
+
+        match result {
+            Err(ApiError::BadRequest(message)) => {
+                assert!(message.contains("collection not found"));
+            }
+            Err(other) => panic!("expected bad request, got {other:?}"),
+            Ok(_) => panic!("expected ingest to fail for a missing collection"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_unsupported_content_type_before_embedding() {
+        let (_tmp, state) = test_state();
+        state.config_db.set_managed_collection("notes").unwrap();
+
+        let result = ingest(
+            State(state),
+            Json(IngestRequest {
+                collection: "notes".to_string(),
+                documents: vec![IngestDocument {
+                    path: "hello.bin".to_string(),
+                    content: "not markdown".to_string(),
+                    content_type: "application/octet-stream".to_string(),
+                    metadata: None,
+                }],
+            }),
+        )
+        .await;
+
+        match result {
+            Err(ApiError::BadRequest(message)) => {
+                assert!(message.contains("unsupported content type"));
+            }
+            Err(other) => panic!("expected bad request, got {other:?}"),
+            Ok(_) => panic!(
+                "expected ingest to fail for an unsupported content type"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn documents_route_delete_removes_atomic_artifacts() {
+        let (_tmp, state) = test_state();
+        let did = seed_document(
+            &state,
+            "notes",
+            "hello.md",
+            "# Hello\nBody",
+            Some(serde_json::json!({ "topic": "rust" })),
+        );
+
+        let document = get(
+            State(state.clone()),
+            Path(("notes".to_string(), "hello.md".to_string())),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(document.doc_id, did.to_string());
+        assert_eq!(document.content, "# Hello\nBody");
+        assert_eq!(
+            document.metadata,
+            Some(serde_json::json!({ "topic": "rust" }))
+        );
+
+        let status = delete(
+            State(state.clone()),
+            Path(("notes".to_string(), "hello.md".to_string())),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        assert!(
+            state
+                .config_db
+                .get_document_metadata_typed(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .config_db
+                .get_document_content(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .config_db
+                .get_document_user_metadata(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+
+        match get(
+            State(state),
+            Path(("notes".to_string(), "hello.md".to_string())),
+        )
+        .await
+        {
+            Err(ApiError::NotFound(message)) => {
+                assert!(message.contains("document not found"));
+            }
+            Err(other) => panic!("expected not found, got {other:?}"),
+            Ok(_) => panic!("expected get to fail after document deletion"),
+        }
     }
 }

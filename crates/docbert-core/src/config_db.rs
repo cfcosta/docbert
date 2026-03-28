@@ -96,6 +96,14 @@ fn decode_string(bytes: &[u8]) -> Result<String> {
     decode_aligned(bytes)
 }
 
+fn document_content_key(doc_id: u64) -> String {
+    format!("doc_content:{doc_id}")
+}
+
+fn document_user_metadata_key(doc_id: u64) -> String {
+    format!("doc_meta:{doc_id}")
+}
+
 fn map_schema_error(err: redb::TableError) -> Error {
     match err {
         redb::TableError::TableTypeMismatch { .. }
@@ -686,25 +694,88 @@ impl ConfigDb {
         self.remove_setting(key)
     }
 
+    /// Store a document's metadata, raw content, and optional user metadata
+    /// in a single write transaction.
+    pub fn put_document_artifacts(
+        &self,
+        doc_id: u64,
+        metadata: &DocumentMetadata,
+        content: &str,
+        user_metadata: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let metadata_bytes = metadata.serialize();
+        let content_bytes = encode_string(content)?;
+        let user_metadata_bytes = user_metadata
+            .map(|value| encode_bytes(&StoredJsonValue::from(value.clone())))
+            .transpose()?;
+        let content_key = document_content_key(doc_id);
+        let user_metadata_key = document_user_metadata_key(doc_id);
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut metadata_table = txn.open_table(DOCUMENT_METADATA)?;
+            metadata_table.insert(doc_id, metadata_bytes.as_slice())?;
+        }
+        {
+            let mut settings_table = txn.open_table(SETTINGS)?;
+            settings_table
+                .insert(content_key.as_str(), content_bytes.as_slice())?;
+            match user_metadata_bytes.as_ref() {
+                Some(bytes) => {
+                    settings_table
+                        .insert(user_metadata_key.as_str(), bytes.as_slice())?;
+                }
+                None => {
+                    settings_table.remove(user_metadata_key.as_str())?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Remove a document's metadata, raw content, and optional user metadata
+    /// in a single write transaction.
+    pub fn remove_document_artifacts(&self, doc_id: u64) -> Result<bool> {
+        let content_key = document_content_key(doc_id);
+        let user_metadata_key = document_user_metadata_key(doc_id);
+
+        let txn = self.db.begin_write()?;
+        let metadata_removed = {
+            let mut metadata_table = txn.open_table(DOCUMENT_METADATA)?;
+            metadata_table.remove(doc_id)?.is_some()
+        };
+        let (content_removed, user_metadata_removed) = {
+            let mut settings_table = txn.open_table(SETTINGS)?;
+            let content_removed =
+                settings_table.remove(content_key.as_str())?.is_some();
+            let user_metadata_removed =
+                settings_table.remove(user_metadata_key.as_str())?.is_some();
+            (content_removed, user_metadata_removed)
+        };
+        txn.commit()?;
+        Ok(metadata_removed || content_removed || user_metadata_removed)
+    }
+
     /// Store raw document content in the shared settings table.
     pub fn set_document_content(
         &self,
         doc_id: u64,
         content: &str,
     ) -> Result<()> {
-        let key = format!("doc_content:{doc_id}");
+        let key = document_content_key(doc_id);
         self.set_setting(&key, content)
     }
 
     /// Load raw document content from the shared settings table.
     pub fn get_document_content(&self, doc_id: u64) -> Result<Option<String>> {
-        let key = format!("doc_content:{doc_id}");
+        let key = document_content_key(doc_id);
         self.get_setting(&key)
     }
 
     /// Remove raw document content from the shared settings table.
     pub fn remove_document_content(&self, doc_id: u64) -> Result<bool> {
-        let key = format!("doc_content:{doc_id}");
+        let key = document_content_key(doc_id);
         self.remove_setting(&key)
     }
 
@@ -714,7 +785,7 @@ impl ConfigDb {
         doc_id: u64,
         value: &serde_json::Value,
     ) -> Result<()> {
-        let key = format!("doc_meta:{doc_id}");
+        let key = document_user_metadata_key(doc_id);
         self.set_json_setting(&key, value)
     }
 
@@ -723,13 +794,13 @@ impl ConfigDb {
         &self,
         doc_id: u64,
     ) -> Result<Option<serde_json::Value>> {
-        let key = format!("doc_meta:{doc_id}");
+        let key = document_user_metadata_key(doc_id);
         self.get_json_setting(&key)
     }
 
     /// Remove user-provided document metadata from the shared settings table.
     pub fn remove_document_user_metadata(&self, doc_id: u64) -> Result<bool> {
-        let key = format!("doc_meta:{doc_id}");
+        let key = document_user_metadata_key(doc_id);
         self.remove_json_setting(&key)
     }
 }
@@ -974,6 +1045,89 @@ mod tests {
         assert_eq!(db.get_document_user_metadata(7).unwrap(), Some(value));
         assert!(db.remove_document_user_metadata(7).unwrap());
         assert!(db.get_document_user_metadata(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn put_document_artifacts_roundtrips_all_fields() {
+        let (_tmp, db) = test_db();
+        let metadata = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 12345,
+        };
+        let user_metadata = serde_json::json!({
+            "title": "Hello",
+            "priority": 2,
+        });
+
+        db.put_document_artifacts(
+            42,
+            &metadata,
+            "# Hello\nBody",
+            Some(&user_metadata),
+        )
+        .unwrap();
+
+        assert_eq!(db.get_document_metadata_typed(42).unwrap(), Some(metadata));
+        assert_eq!(
+            db.get_document_content(42).unwrap(),
+            Some("# Hello\nBody".to_string())
+        );
+        assert_eq!(
+            db.get_document_user_metadata(42).unwrap(),
+            Some(user_metadata)
+        );
+    }
+
+    #[test]
+    fn put_document_artifacts_without_user_metadata_clears_existing_user_metadata()
+     {
+        let (_tmp, db) = test_db();
+        let metadata = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 12345,
+        };
+
+        db.put_document_artifacts(
+            42,
+            &metadata,
+            "# Hello\nBody",
+            Some(&serde_json::json!({ "priority": 2 })),
+        )
+        .unwrap();
+        db.put_document_artifacts(42, &metadata, "# Hello\nUpdated", None)
+            .unwrap();
+
+        assert_eq!(
+            db.get_document_content(42).unwrap(),
+            Some("# Hello\nUpdated".to_string())
+        );
+        assert!(db.get_document_user_metadata(42).unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_document_artifacts_removes_metadata_content_and_user_metadata() {
+        let (_tmp, db) = test_db();
+        let metadata = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 12345,
+        };
+        let user_metadata = serde_json::json!({ "title": "Hello" });
+
+        db.put_document_artifacts(
+            42,
+            &metadata,
+            "# Hello\nBody",
+            Some(&user_metadata),
+        )
+        .unwrap();
+
+        assert!(db.remove_document_artifacts(42).unwrap());
+        assert!(db.get_document_metadata_typed(42).unwrap().is_none());
+        assert!(db.get_document_content(42).unwrap().is_none());
+        assert!(db.get_document_user_metadata(42).unwrap().is_none());
     }
 
     #[test]
