@@ -511,11 +511,7 @@ function createToolResultMessage(
   };
 }
 
-function createSearchResultSource(
-  collection: string,
-  path: string,
-  title?: string,
-): SearchResult {
+function createSearchResultSource(collection: string, path: string, title?: string): SearchResult {
   return {
     rank: 0,
     score: 0,
@@ -666,10 +662,7 @@ async function runAnalyzeDocumentTool({
   allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
   queueSubagentMessage: (file: QueuedAnalysisFile) => void;
-  updateSubagentMessage: (
-    messageId: string,
-    updater: (message: Message) => Message,
-  ) => void;
+  updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
 }): Promise<ToolCallInfo> {
   const collection = String(call.arguments.collection ?? "").trim();
   const path = String(call.arguments.path ?? "").trim();
@@ -745,10 +738,7 @@ async function runParentAgentRound({
   allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
   queueSubagentMessage: (file: QueuedAnalysisFile) => void;
-  updateSubagentMessage: (
-    messageId: string,
-    updater: (message: Message) => Message,
-  ) => void;
+  updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
 }): Promise<boolean> {
   let streamedText = "";
   let streamedThinking = "";
@@ -869,6 +859,10 @@ function renderMessageContent(message: Message, nestedSubagents: SubagentMessage
           part.call.name === "analyze_document" ? nestedSubagents[nextSubagentIndex] : undefined;
         if (subagent) {
           nextSubagentIndex += 1;
+        }
+
+        if (part.call.name === "analyze_document" && subagent) {
+          return <SubagentInline key={subagent.id} message={subagent} />;
         }
 
         return (
