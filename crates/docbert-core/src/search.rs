@@ -209,7 +209,7 @@ pub fn execute_semantic_search(
     embedding_db: &EmbeddingDb,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
-    let metadata_entries = config_db.list_all_document_metadata()?;
+    let metadata_entries = config_db.list_all_document_metadata_typed()?;
     if metadata_entries.is_empty() {
         return Ok(vec![]);
     }
@@ -218,12 +218,11 @@ pub fn execute_semantic_search(
     let mut doc_ids = Vec::with_capacity(metadata_entries.len());
     let mut collection_paths = HashMap::new();
 
-    for (doc_id, bytes) in metadata_entries {
-        if let Some(meta) = DocumentMetadata::deserialize(&bytes)
-            && args
-                .collection
-                .as_ref()
-                .is_none_or(|c| c == &meta.collection)
+    for (doc_id, meta) in metadata_entries {
+        if args
+            .collection
+            .as_ref()
+            .is_none_or(|c| c == &meta.collection)
             && document_has_semantic_body(
                 config_db,
                 &mut collection_paths,
@@ -307,7 +306,7 @@ pub fn execute_semantic_search(
 ///     relative_path: "hello.md".to_string(),
 ///     mtime: 1000,
 /// };
-/// db.set_document_metadata(id.numeric, &meta.serialize()).unwrap();
+/// db.set_document_metadata_typed(id.numeric, &meta).unwrap();
 ///
 /// let (coll, path) = resolve_by_doc_id(&db, &id.short).unwrap();
 /// assert_eq!(coll, "notes");
@@ -317,9 +316,8 @@ pub fn resolve_by_doc_id(
     config_db: &ConfigDb,
     short_id: &str,
 ) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata().ok()?;
-    for (_doc_id, bytes) in entries {
-        let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
+    let entries = config_db.list_all_document_metadata_typed().ok()?;
+    for (_doc_id, meta) in entries {
         let did = crate::doc_id::DocumentId::new(
             &meta.collection,
             &meta.relative_path,
@@ -350,7 +348,7 @@ pub fn resolve_by_doc_id(
 ///     relative_path: "hello.md".to_string(),
 ///     mtime: 1000,
 /// };
-/// db.set_document_metadata(id.numeric, &meta.serialize()).unwrap();
+/// db.set_document_metadata_typed(id.numeric, &meta).unwrap();
 ///
 /// let (coll, path) = resolve_by_path(&db, "hello.md").unwrap();
 /// assert_eq!(coll, "notes");
@@ -360,9 +358,8 @@ pub fn resolve_by_path(
     config_db: &ConfigDb,
     path: &str,
 ) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata().ok()?;
-    for (_doc_id, bytes) in entries {
-        let meta = crate::incremental::DocumentMetadata::deserialize(&bytes)?;
+    let entries = config_db.list_all_document_metadata_typed().ok()?;
+    for (_doc_id, meta) in entries {
         if meta.relative_path == path {
             return Some((meta.collection, meta.relative_path));
         }
@@ -707,6 +704,29 @@ mod tests {
             &mut collection_paths,
             &with_body,
         ));
+    }
+
+    #[test]
+    fn resolve_helpers_work_with_typed_document_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let id = DocumentId::new("notes", "hello.md");
+        let meta = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 1000,
+        };
+
+        db.set_document_metadata_typed(id.numeric, &meta).unwrap();
+
+        assert_eq!(
+            resolve_by_doc_id(&db, &id.short),
+            Some(("notes".to_string(), "hello.md".to_string()))
+        );
+        assert_eq!(
+            resolve_by_path(&db, "hello.md"),
+            Some(("notes".to_string(), "hello.md".to_string()))
+        );
     }
 
     /// Set up a search index with sample documents and commit them.
@@ -1091,7 +1111,7 @@ mod tests {
                 mtime: 1,
             };
             config_db
-                .set_document_metadata(doc_id.numeric, &meta.serialize())
+                .set_document_metadata_typed(doc_id.numeric, &meta)
                 .unwrap();
             embed_docs.push((doc_id.numeric, format!("{title}\n{body}")));
         }
