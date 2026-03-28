@@ -6,6 +6,7 @@ use crate::{
     Error,
     error::Result,
     storage_codec::{decode_bytes, encode_bytes},
+    stored_json::StoredJsonValue,
 };
 
 const COLLECTIONS: TableDefinition<&str, &[u8]> =
@@ -52,10 +53,20 @@ fn encode_string(value: &str) -> Result<Vec<u8>> {
     encode_bytes(&value.to_string())
 }
 
-fn decode_string(bytes: &[u8]) -> Result<String> {
+fn decode_aligned<T>(bytes: &[u8]) -> Result<T>
+where
+    T: rkyv::Archive,
+    T::Archived: for<'a> rkyv::bytecheck::CheckBytes<
+            rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>,
+        > + rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
+{
     let mut aligned = rkyv::util::AlignedVec::<16>::new();
     aligned.extend_from_slice(bytes);
     decode_bytes(&aligned)
+}
+
+fn decode_string(bytes: &[u8]) -> Result<String> {
+    decode_aligned(bytes)
 }
 
 fn map_schema_error(err: redb::TableError) -> Error {
@@ -585,6 +596,87 @@ impl ConfigDb {
             .get_setting(key)?
             .unwrap_or_else(|| default.to_string()))
     }
+
+    /// Store a structured JSON value under a settings key.
+    pub fn set_json_setting(
+        &self,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        let encoded = encode_bytes(&StoredJsonValue::from(value.clone()))?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(SETTINGS)?;
+            table.insert(key, encoded.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Load a structured JSON value from a settings key.
+    pub fn get_json_setting(
+        &self,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(SETTINGS)?;
+        table
+            .get(key)?
+            .map(|v| decode_aligned::<StoredJsonValue>(v.value()).map(Into::into))
+            .transpose()
+    }
+
+    /// Remove a structured JSON setting by key. Returns `true` if it existed.
+    pub fn remove_json_setting(&self, key: &str) -> Result<bool> {
+        self.remove_setting(key)
+    }
+
+    /// Store raw document content in the shared settings table.
+    pub fn set_document_content(
+        &self,
+        doc_id: u64,
+        content: &str,
+    ) -> Result<()> {
+        let key = format!("doc_content:{doc_id}");
+        self.set_setting(&key, content)
+    }
+
+    /// Load raw document content from the shared settings table.
+    pub fn get_document_content(&self, doc_id: u64) -> Result<Option<String>> {
+        let key = format!("doc_content:{doc_id}");
+        self.get_setting(&key)
+    }
+
+    /// Remove raw document content from the shared settings table.
+    pub fn remove_document_content(&self, doc_id: u64) -> Result<bool> {
+        let key = format!("doc_content:{doc_id}");
+        self.remove_setting(&key)
+    }
+
+    /// Store user-provided document metadata in the shared settings table.
+    pub fn set_document_user_metadata(
+        &self,
+        doc_id: u64,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        let key = format!("doc_meta:{doc_id}");
+        self.set_json_setting(&key, value)
+    }
+
+    /// Load user-provided document metadata from the shared settings table.
+    pub fn get_document_user_metadata(
+        &self,
+        doc_id: u64,
+    ) -> Result<Option<serde_json::Value>> {
+        let key = format!("doc_meta:{doc_id}");
+        self.get_json_setting(&key)
+    }
+
+    /// Remove user-provided document metadata from the shared settings table.
+    pub fn remove_document_user_metadata(&self, doc_id: u64) -> Result<bool> {
+        let key = format!("doc_meta:{doc_id}");
+        self.remove_json_setting(&key)
+    }
 }
 
 impl std::fmt::Debug for ConfigDb {
@@ -785,5 +877,51 @@ mod tests {
             err.to_string().contains("remove or reset config.db"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn json_setting_roundtrips() {
+        let (_tmp, db) = test_db();
+        let value = serde_json::json!({
+            "enabled": true,
+            "score": 0.75,
+            "tags": ["rust", "storage"],
+            "limits": { "top_k": u64::MAX },
+            "note": null,
+        });
+
+        db.set_json_setting("search_config", &value).unwrap();
+        assert_eq!(db.get_json_setting("search_config").unwrap(), Some(value));
+        assert!(db.remove_json_setting("search_config").unwrap());
+        assert!(db.get_json_setting("search_config").unwrap().is_none());
+    }
+
+    #[test]
+    fn document_content_roundtrips() {
+        let (_tmp, db) = test_db();
+
+        db.set_document_content(42, "# Hello\nThis is content").unwrap();
+        assert_eq!(
+            db.get_document_content(42).unwrap(),
+            Some("# Hello\nThis is content".to_string())
+        );
+        assert!(db.remove_document_content(42).unwrap());
+        assert!(db.get_document_content(42).unwrap().is_none());
+    }
+
+    #[test]
+    fn document_user_metadata_roundtrips() {
+        let (_tmp, db) = test_db();
+        let value = serde_json::json!({
+            "title": "Hello",
+            "priority": 3,
+            "archived": false,
+            "attrs": { "lang": "en" },
+        });
+
+        db.set_document_user_metadata(7, &value).unwrap();
+        assert_eq!(db.get_document_user_metadata(7).unwrap(), Some(value));
+        assert!(db.remove_document_user_metadata(7).unwrap());
+        assert!(db.get_document_user_metadata(7).unwrap().is_none());
     }
 }
