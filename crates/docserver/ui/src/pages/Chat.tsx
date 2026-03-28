@@ -323,11 +323,7 @@ function appendPendingToolCall(message: Message, callInfo: ToolCallInfo): Messag
   };
 }
 
-function applyToolCallResult(
-  message: Message,
-  callInfo: ToolCallInfo,
-  _allSources: SearchResult[],
-): Message {
+function applyToolCallResult(message: Message, callInfo: ToolCallInfo): Message {
   const parts = [...(message.parts ?? [])];
   for (let i = parts.length - 1; i >= 0; i--) {
     const part = parts[i];
@@ -343,31 +339,15 @@ function applyToolCallResult(
   };
 }
 
-function createSearchResultSource(collection: string, path: string, title?: string): SearchResult {
-  return {
-    rank: 0,
-    score: 0,
-    doc_id: `${collection}:${path}`,
-    collection,
-    path,
-    title: title ?? path,
-  };
-}
-
 async function executeToolCallAndRecord(
   call: { id: string; name: string; arguments: Record<string, unknown> },
   piContext: Context,
-  allSources: SearchResult[],
   runtimeState: ChatToolRuntimeState,
 ): Promise<ToolCallInfo> {
   const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
 
   try {
     const toolResult = await executeTool(call.name, call.arguments, runtimeState);
-
-    if (toolResult.sources) {
-      allSources.push(...toolResult.sources);
-    }
 
     callInfo.result = toolResult.text;
     piContext.messages.push(
@@ -480,7 +460,6 @@ async function runAnalyzeDocumentTool({
   controller,
   userQuestion,
   piContext,
-  allSources,
   runtimeState,
   queueSubagentMessage,
   updateSubagentMessage,
@@ -491,7 +470,6 @@ async function runAnalyzeDocumentTool({
   controller: AbortController;
   userQuestion: string;
   piContext: Context;
-  allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
   queueSubagentMessage: (file: QueuedAnalysisFile) => void;
   updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
@@ -544,7 +522,6 @@ async function runAnalyzeDocumentTool({
   piContext.messages.push(
     createToolResultMessage(call.id, call.name, toolText, false) as PiMessage,
   );
-  allSources.push(createSearchResultSource(collection, path, file.title));
 
   return callInfo;
 }
@@ -556,7 +533,6 @@ async function runParentAgentRound({
   userQuestion,
   piContext,
   updateAssistantMessage,
-  allSources,
   runtimeState,
   queueSubagentMessage,
   updateSubagentMessage,
@@ -567,7 +543,6 @@ async function runParentAgentRound({
   userQuestion: string;
   piContext: Context;
   updateAssistantMessage: UpdateAssistantMessage;
-  allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
   queueSubagentMessage: (file: QueuedAnalysisFile) => void;
   updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
@@ -630,7 +605,6 @@ async function runParentAgentRound({
             controller,
             userQuestion,
             piContext,
-            allSources,
             runtimeState,
             queueSubagentMessage,
             updateSubagentMessage,
@@ -638,11 +612,10 @@ async function runParentAgentRound({
         : await executeToolCallAndRecord(
             { id: call.id, name: call.name, arguments: callArgs },
             piContext,
-            allSources,
             runtimeState,
           );
 
-    updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
+    updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo));
   }
 
   return true;
@@ -808,10 +781,8 @@ export default function Chat() {
 
       const piContext = createPiContext(nextMessages, SYSTEM_PROMPT, tools);
       const assistantId = uuid();
-      const allSources: SearchResult[] = [];
       const runtimeState: ChatToolRuntimeState = {
         currentTurnSearchResults: [],
-        acceptedAnalysisFiles: [],
         queuedAnalysisFiles: [],
       };
       const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
@@ -835,7 +806,6 @@ export default function Chat() {
           userQuestion: text,
           piContext,
           updateAssistantMessage,
-          allSources,
           runtimeState,
           queueSubagentMessage,
           updateSubagentMessage,

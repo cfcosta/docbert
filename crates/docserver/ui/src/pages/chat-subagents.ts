@@ -50,7 +50,6 @@ export interface SynthesisPayload {
 
 export interface ChatToolRuntimeState {
   currentTurnSearchResults: SearchResult[];
-  acceptedAnalysisFiles: AnalyzeFilesAcceptedItem[];
   queuedAnalysisFiles: QueuedAnalysisFile[];
 }
 
