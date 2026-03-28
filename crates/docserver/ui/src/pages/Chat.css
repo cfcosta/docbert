@@ -370,14 +370,6 @@
   margin-bottom: 0;
 }
 
-.chat-subagent-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-  min-width: 0;
-}
-
 .chat-msg-content > :first-child {
   margin-top: 0;
 }

@@ -23,10 +23,8 @@ import type {
   ConversationFull,
 } from "../lib/api";
 import {
-  buildSynthesisPayload,
   insertOrUpdateSubagentMessage,
   mergeCurrentTurnSearchResults,
-  selectTopSearchResultsForAnalysis,
   setSubagentStatus,
   updateSubagentMessageById,
   upsertSubagentPart,
@@ -34,7 +32,6 @@ import {
   type ChatToolRuntimeState,
   type QueuedAnalysisFile,
   type SubagentAnalysisResult,
-  type SynthesisPayload,
 } from "./chat-subagents";
 import "./Chat.css";
 
@@ -111,13 +108,19 @@ const tools: Tool[] = [
     }),
   },
   {
-    name: "document_get",
-    description: "Retrieve the full content of a specific document by collection and path.",
+    name: "analyze_document",
+    description:
+      "Run a focused file analysis subagent for one document and return a concise summary relevant to the user question.",
     parameters: Type.Object({
       collection: Type.String({ description: "The collection name" }),
       path: Type.String({
         description: "The document path within the collection",
       }),
+      focus: Type.Optional(
+        Type.String({
+          description: "Optional extra focus for this file analysis.",
+        }),
+      ),
     }),
   },
 ];
@@ -162,29 +165,22 @@ async function executeTool(
         sources: res.results,
       };
     }
-    case "document_get": {
-      const doc = await api.getDocument(args.collection as string, args.path as string);
-      return {
-        text: `# ${doc.title}\n\nCollection: ${doc.collection}\nPath: ${doc.path}\nDoc ID: ${doc.doc_id}\n\n${doc.content}`,
-      };
-    }
     default:
       return { text: `Unknown tool: ${name}` };
   }
 }
 
-const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store. You can search for documents and retrieve their content using the provided tools.
+const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store.
 
 When the user asks a question:
 1. Use search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once — this is usually the best default.
-2. Focus on finding the best search results. The host will automatically run per-file analysis on the top search results after your tool phase.
-3. Retrieve relevant documents with document_get when you need their full contents.
-4. Give a concise answer grounded in the documents you inspected, and leave room for the later synthesized answer if deeper file analysis is still pending.
+2. When a specific document looks relevant, call analyze_document for that file. You may call analyze_document multiple times for different files.
+3. Use the tool results from those file analyses to answer the user.
+4. Prefer focused per-document analysis over making unsupported claims from titles or snippets alone.
 
 If no relevant documents are found, say so and suggest what the user might want to ingest.`;
 
 const MAX_TOOL_ROUNDS = 10;
-const AUTO_SUBAGENT_TOP_K = 5;
 const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
@@ -371,41 +367,27 @@ function createSubagentContext(
   userQuestion: string,
   fileContent: string,
   file: QueuedAnalysisFile,
+  focus?: string,
 ): Context {
   const userPiMsg: UserMessage = {
     role: "user",
     content: [
       `User question: ${userQuestion}`,
       `Analyze exactly this file: ${file.collection}/${file.path}`,
+      focus ? `Extra focus: ${focus}` : null,
       "Focus on the most relevant facts, note uncertainty, and do not answer beyond this file.",
+      "Return a concise summary that the parent agent can use as tool output.",
       "",
       fileContent,
-    ].join("\n"),
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join("\n"),
     timestamp: Date.now(),
   };
 
   return {
     systemPrompt:
       "You are a file-analysis subagent. Read one file and report the important findings relevant to the user question. Do not call tools. Do not synthesize across files.",
-    messages: [userPiMsg],
-    tools: [],
-  };
-}
-
-function createSynthesisContext(payload: SynthesisPayload): Context {
-  const userPiMsg: UserMessage = {
-    role: "user",
-    content: [
-      "Synthesize a final answer for the user using only the provided file analyses.",
-      "If some file analyses failed, mention the uncertainty instead of inventing details.",
-      JSON.stringify(payload, null, 2),
-    ].join("\n\n"),
-    timestamp: Date.now(),
-  };
-
-  return {
-    systemPrompt:
-      "You are the parent synthesis agent. Combine the file analyses into one direct answer. Do not call tools.",
     messages: [userPiMsg],
     tools: [],
   };
@@ -529,36 +511,19 @@ function createToolResultMessage(
   };
 }
 
-function buildFinalSources(
-  payload: SynthesisPayload,
-  availableResults: SearchResult[],
-): SearchResult[] {
-  const lookup = new Map(
-    availableResults.map((result) => [`${result.collection}:${result.path}`, result]),
-  );
-
-  return payload.sourceFiles
-    .map((file) => {
-      const matched = lookup.get(`${file.collection}:${file.path}`);
-      if (matched) {
-        return matched;
-      }
-      return {
-        rank: 0,
-        score: 0,
-        doc_id: `${file.collection}:${file.path}`,
-        collection: file.collection,
-        path: file.path,
-        title: file.title ?? file.path,
-      };
-    })
-    .filter(
-      (result, index, array) =>
-        index ===
-        array.findIndex(
-          (item) => item.collection === result.collection && item.path === result.path,
-        ),
-    );
+function createSearchResultSource(
+  collection: string,
+  path: string,
+  title?: string,
+): SearchResult {
+  return {
+    rank: 0,
+    score: 0,
+    doc_id: `${collection}:${path}`,
+    collection,
+    path,
+    title: title ?? path,
+  };
 }
 
 async function executeToolCallAndRecord(
@@ -598,6 +563,7 @@ async function runFileSubagent({
   controller,
   file,
   userQuestion,
+  focus,
   updateMessage,
 }: {
   model: ReturnType<typeof getModel>;
@@ -605,11 +571,12 @@ async function runFileSubagent({
   controller: AbortController;
   file: QueuedAnalysisFile;
   userQuestion: string;
+  focus?: string;
   updateMessage: (updater: (message: Message) => Message) => void;
 }): Promise<SubagentAnalysisResult> {
   try {
     const document = await api.getDocument(file.collection, file.path);
-    const context = createSubagentContext(userQuestion, document.content, file);
+    const context = createSubagentContext(userQuestion, document.content, file, focus);
     let streamedText = "";
     let streamedThinking = "";
     let streamError: string | undefined;
@@ -678,22 +645,110 @@ async function runFileSubagent({
   }
 }
 
+async function runAnalyzeDocumentTool({
+  call,
+  model,
+  settings,
+  controller,
+  userQuestion,
+  piContext,
+  allSources,
+  runtimeState,
+  queueSubagentMessage,
+  updateSubagentMessage,
+}: {
+  call: { id: string; name: string; arguments: Record<string, unknown> };
+  model: ReturnType<typeof getModel>;
+  settings: ReadyLlmSettings;
+  controller: AbortController;
+  userQuestion: string;
+  piContext: Context;
+  allSources: SearchResult[];
+  runtimeState: ChatToolRuntimeState;
+  queueSubagentMessage: (file: QueuedAnalysisFile) => void;
+  updateSubagentMessage: (
+    messageId: string,
+    updater: (message: Message) => Message,
+  ) => void;
+}): Promise<ToolCallInfo> {
+  const collection = String(call.arguments.collection ?? "").trim();
+  const path = String(call.arguments.path ?? "").trim();
+  const focus =
+    typeof call.arguments.focus === "string" && call.arguments.focus.trim().length > 0
+      ? call.arguments.focus.trim()
+      : undefined;
+  const messageId = uuid();
+  const matchedResult = runtimeState.currentTurnSearchResults.find(
+    (result) => result.collection === collection && result.path === path,
+  );
+  const file: QueuedAnalysisFile = {
+    collection,
+    path,
+    reason: focus ?? userQuestion,
+    title: matchedResult?.title,
+    messageId,
+  };
+
+  queueSubagentMessage(file);
+
+  const result = await runFileSubagent({
+    model,
+    settings,
+    controller,
+    file,
+    userQuestion,
+    focus,
+    updateMessage: (updater) => {
+      updateSubagentMessage(messageId, updater);
+    },
+  });
+
+  const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
+
+  if (result.error) {
+    callInfo.result = `Error: ${result.error}`;
+    callInfo.isError = true;
+    piContext.messages.push(
+      createToolResultMessage(call.id, call.name, `Error: ${result.error}`, true) as PiMessage,
+    );
+    return callInfo;
+  }
+
+  const toolText = result.text?.trim() || "No relevant findings from this file.";
+  callInfo.result = toolText;
+  piContext.messages.push(
+    createToolResultMessage(call.id, call.name, toolText, false) as PiMessage,
+  );
+  allSources.push(createSearchResultSource(collection, path, file.title));
+
+  return callInfo;
+}
+
 async function runParentAgentRound({
   model,
   settings,
   controller,
+  userQuestion,
   piContext,
   updateAssistantMessage,
   allSources,
   runtimeState,
+  queueSubagentMessage,
+  updateSubagentMessage,
 }: {
   model: ReturnType<typeof getModel>;
   settings: ReadyLlmSettings;
   controller: AbortController;
+  userQuestion: string;
   piContext: Context;
   updateAssistantMessage: UpdateAssistantMessage;
   allSources: SearchResult[];
   runtimeState: ChatToolRuntimeState;
+  queueSubagentMessage: (file: QueuedAnalysisFile) => void;
+  updateSubagentMessage: (
+    messageId: string,
+    updater: (message: Message) => Message,
+  ) => void;
 }): Promise<boolean> {
   let streamedText = "";
   let streamedThinking = "";
@@ -736,60 +791,31 @@ async function runParentAgentRound({
 
     updateAssistantMessage((message) => appendPendingToolCall(message, pendingCallInfo));
 
-    const resolvedCallInfo = await executeToolCallAndRecord(
-      { id: call.id, name: call.name, arguments: callArgs },
-      piContext,
-      allSources,
-      runtimeState,
-    );
+    const resolvedCallInfo =
+      call.name === "analyze_document"
+        ? await runAnalyzeDocumentTool({
+            call: { id: call.id, name: call.name, arguments: callArgs },
+            model,
+            settings,
+            controller,
+            userQuestion,
+            piContext,
+            allSources,
+            runtimeState,
+            queueSubagentMessage,
+            updateSubagentMessage,
+          })
+        : await executeToolCallAndRecord(
+            { id: call.id, name: call.name, arguments: callArgs },
+            piContext,
+            allSources,
+            runtimeState,
+          );
 
     updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo, allSources));
   }
 
   return true;
-}
-
-async function runParentSynthesis({
-  model,
-  settings,
-  controller,
-  payload,
-  updateAssistantMessage,
-}: {
-  model: ReturnType<typeof getModel>;
-  settings: ReadyLlmSettings;
-  controller: AbortController;
-  payload: SynthesisPayload;
-  updateAssistantMessage: UpdateAssistantMessage;
-}): Promise<void> {
-  let streamedText = "";
-  let streamedThinking = "";
-
-  const stream = streamSimple(model, createSynthesisContext(payload), {
-    apiKey: settings.api_key,
-    signal: controller.signal,
-    reasoning: model.reasoning ? "medium" : undefined,
-  });
-
-  for await (const event of stream) {
-    if (event.type === "text_delta") {
-      streamedText += event.delta;
-      const captured = streamedText;
-      updateAssistantMessage((message) => applyTextDelta(message, captured, event.delta));
-    }
-    if (event.type === "thinking_delta") {
-      streamedThinking += event.delta;
-      const captured = streamedThinking;
-      updateAssistantMessage((message) => applyThinkingDelta(message, captured));
-    }
-    if (event.type === "error") {
-      updateAssistantMessage((message) =>
-        applyStreamError(message, settings.provider, event.error),
-      );
-    }
-  }
-
-  await stream.result();
 }
 
 function formatRelativeTime(ms: number): string {
@@ -803,13 +829,28 @@ function formatRelativeTime(ms: number): string {
   return `${days}d ago`;
 }
 
-function renderMessageContent(message: Message) {
-  return message.parts && message.parts.length > 0 ? (
+function renderMessageContent(message: Message, nestedSubagents: SubagentMessage[] = []) {
+  if (!message.parts || message.parts.length === 0) {
+    return (
+      <div className="chat-msg-content">
+        <Markdown
+          remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+          rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+        >
+          {message.content}
+        </Markdown>
+      </div>
+    );
+  }
+
+  let nextSubagentIndex = 0;
+
+  return (
     <>
       {message.parts.map((part, i) => {
         if (part.type === "text") {
           return (
-            <div key={i} className="chat-msg-content">
+            <div key={`text-${i}`} className="chat-msg-content">
               <Markdown
                 remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
                 rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
@@ -821,21 +862,26 @@ function renderMessageContent(message: Message) {
         }
 
         if (part.type === "thinking") {
-          return <ThinkingInline key={i} text={part.text} />;
+          return <ThinkingInline key={`thinking-${i}`} text={part.text} />;
         }
 
-        return <ToolCallInline key={i} call={part.call} />;
+        const subagent =
+          part.call.name === "analyze_document" ? nestedSubagents[nextSubagentIndex] : undefined;
+        if (subagent) {
+          nextSubagentIndex += 1;
+        }
+
+        return (
+          <div key={`tool-group-${i}`}>
+            <ToolCallInline call={part.call} />
+            {subagent ? <SubagentInline message={subagent} /> : null}
+          </div>
+        );
       })}
+      {nestedSubagents.slice(nextSubagentIndex).map((subagent) => (
+        <SubagentInline key={subagent.id} message={subagent} />
+      ))}
     </>
-  ) : (
-    <div className="chat-msg-content">
-      <Markdown
-        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-      >
-        {message.content}
-      </Markdown>
-    </div>
   );
 }
 
@@ -856,10 +902,10 @@ function renderMessageSources(message: Message) {
   );
 }
 
-function renderMessageBody(message: Message) {
+function renderMessageBody(message: Message, nestedSubagents: SubagentMessage[] = []) {
   return (
     <>
-      {renderMessageContent(message)}
+      {renderMessageContent(message, nestedSubagents)}
       {renderMessageSources(message)}
     </>
   );
@@ -1079,6 +1125,14 @@ export default function Chat() {
       };
       const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
         setMessages((prev) => updateMessageById(prev, assistantId, fn));
+      const updateSubagentMessage = (messageId: string, updater: (message: Message) => Message) =>
+        setMessages((prev) => updateSubagentMessageById(prev, messageId, updater));
+      const queueSubagentMessage = (file: QueuedAnalysisFile) => {
+        runtimeState.queuedAnalysisFiles = [...runtimeState.queuedAnalysisFiles, file];
+        setMessages((prev) =>
+          insertOrUpdateSubagentMessage(prev, createQueuedSubagentMessage(file.messageId, file)),
+        );
+      };
 
       setMessages((prev) => [...prev, createAssistantPlaceholder(assistantId)]);
 
@@ -1087,89 +1141,17 @@ export default function Chat() {
           model,
           settings,
           controller,
+          userQuestion: text,
           piContext,
           updateAssistantMessage,
           allSources,
           runtimeState,
+          queueSubagentMessage,
+          updateSubagentMessage,
         });
         if (!shouldContinue) {
           break;
         }
-      }
-
-      const autoAnalyzeDecision = selectTopSearchResultsForAnalysis(
-        runtimeState.currentTurnSearchResults,
-        AUTO_SUBAGENT_TOP_K,
-      );
-      runtimeState.acceptedAnalysisFiles = autoAnalyzeDecision.accepted;
-
-      if (runtimeState.acceptedAnalysisFiles.length > 0) {
-        const newQueuedFiles: QueuedAnalysisFile[] = runtimeState.acceptedAnalysisFiles.map(
-          (file) => ({
-            ...file,
-            messageId: uuid(),
-          }),
-        );
-        runtimeState.queuedAnalysisFiles = newQueuedFiles;
-        setMessages((prev) =>
-          newQueuedFiles.reduce(
-            (nextMessages, file) =>
-              insertOrUpdateSubagentMessage(
-                nextMessages,
-                createQueuedSubagentMessage(file.messageId, file),
-              ),
-            prev,
-          ),
-        );
-      }
-
-      const subagentRuns = await Promise.allSettled(
-        runtimeState.queuedAnalysisFiles.map((queuedFile) =>
-          runFileSubagent({
-            model,
-            settings,
-            controller,
-            file: queuedFile,
-            userQuestion: text,
-            updateMessage: (updater) => {
-              setMessages((prev) => updateSubagentMessageById(prev, queuedFile.messageId, updater));
-            },
-          }),
-        ),
-      );
-
-      if (runtimeState.acceptedAnalysisFiles.length > 0) {
-        const subagentResults = subagentRuns.flatMap((result) =>
-          result.status === "fulfilled" ? [result.value] : [],
-        );
-        const synthesisPayload = buildSynthesisPayload({
-          userQuestion: text,
-          acceptedFiles: runtimeState.acceptedAnalysisFiles,
-          subagentResults,
-        });
-        const synthesisMessageId = uuid();
-        const synthesisSources = buildFinalSources(
-          synthesisPayload,
-          runtimeState.currentTurnSearchResults,
-        );
-        const updateSynthesisMessage: UpdateAssistantMessage = (fn) =>
-          setMessages((prev) => updateMessageById(prev, synthesisMessageId, fn));
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            ...createAssistantPlaceholder(synthesisMessageId),
-            sources: synthesisSources,
-          },
-        ]);
-
-        await runParentSynthesis({
-          model,
-          settings,
-          controller,
-          payload: synthesisPayload,
-          updateAssistantMessage: updateSynthesisMessage,
-        });
       }
 
       abortRef.current = null;
@@ -1287,17 +1269,7 @@ export default function Chat() {
                   {isSubagent ? (
                     <SubagentInline message={message as SubagentMessage} />
                   ) : (
-                    <>
-                      {renderMessageContent(message)}
-                      {nestedSubagents.length > 0 && (
-                        <div className="chat-subagent-list">
-                          {nestedSubagents.map((subagent) => (
-                            <SubagentInline key={subagent.id} message={subagent} />
-                          ))}
-                        </div>
-                      )}
-                      {renderMessageSources(message)}
-                    </>
+                    renderMessageBody(message, nestedSubagents)
                   )}
                 </div>
               </div>
