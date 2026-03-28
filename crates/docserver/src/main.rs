@@ -4,6 +4,7 @@ use docbert_core::DataDir;
 use tracing_subscriber::EnvFilter;
 
 mod content;
+mod document_ingest;
 mod error;
 mod routes;
 mod state;
