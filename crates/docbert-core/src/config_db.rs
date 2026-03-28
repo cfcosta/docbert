@@ -2,16 +2,21 @@ use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::error::Result;
+use crate::{
+    Error,
+    error::Result,
+    storage_codec::{decode_bytes, encode_bytes},
+};
 
-const COLLECTIONS: TableDefinition<&str, &str> =
+const COLLECTIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("collections");
-const CONTEXTS: TableDefinition<&str, &str> = TableDefinition::new("contexts");
+const CONTEXTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("contexts");
 const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
     TableDefinition::new("document_metadata");
 const CONVERSATIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("conversations");
-const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
+const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 
 /// redb-backed store for collections, settings, and document metadata.
 ///
@@ -43,6 +48,26 @@ pub struct ConfigDb {
     db: Database,
 }
 
+fn encode_string(value: &str) -> Result<Vec<u8>> {
+    encode_bytes(&value.to_string())
+}
+
+fn decode_string(bytes: &[u8]) -> Result<String> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::new();
+    aligned.extend_from_slice(bytes);
+    decode_bytes(&aligned)
+}
+
+fn map_schema_error(err: redb::TableError) -> Error {
+    match err {
+        redb::TableError::TableTypeMismatch { .. }
+        | redb::TableError::TypeDefinitionChanged { .. } => Error::Config(
+            "config.db uses an older incompatible schema; back up the file and remove or reset config.db before restarting".to_string(),
+        ),
+        other => other.into(),
+    }
+}
+
 impl ConfigDb {
     /// Open or create a config database at the given path.
     ///
@@ -60,11 +85,12 @@ impl ConfigDb {
 
         // Ensure all tables exist by opening them in a write transaction.
         let txn = db.begin_write()?;
-        txn.open_table(COLLECTIONS)?;
-        txn.open_table(CONTEXTS)?;
-        txn.open_table(CONVERSATIONS)?;
-        txn.open_table(DOCUMENT_METADATA)?;
-        txn.open_table(SETTINGS)?;
+        txn.open_table(COLLECTIONS).map_err(map_schema_error)?;
+        txn.open_table(CONTEXTS).map_err(map_schema_error)?;
+        txn.open_table(CONVERSATIONS).map_err(map_schema_error)?;
+        txn.open_table(DOCUMENT_METADATA)
+            .map_err(map_schema_error)?;
+        txn.open_table(SETTINGS).map_err(map_schema_error)?;
         txn.commit()?;
 
         Ok(Self { db })
@@ -82,10 +108,11 @@ impl ConfigDb {
     /// db.set_collection("notes", "/home/user/notes").unwrap();
     /// ```
     pub fn set_collection(&self, name: &str, path: &str) -> Result<()> {
+        let encoded = encode_string(path)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(COLLECTIONS)?;
-            table.insert(name, path)?;
+            table.insert(name, encoded.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -107,7 +134,10 @@ impl ConfigDb {
     pub fn get_collection(&self, name: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(COLLECTIONS)?;
-        Ok(table.get(name)?.map(|v| v.value().to_string()))
+        table
+            .get(name)?
+            .map(|v| decode_string(v.value()))
+            .transpose()
     }
 
     /// Remove a collection by name. Returns `true` if it existed.
@@ -149,7 +179,7 @@ impl ConfigDb {
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (k, v) = entry?;
-            result.push((k.value().to_string(), v.value().to_string()));
+            result.push((k.value().to_string(), decode_string(v.value())?));
         }
         Ok(result)
     }
@@ -169,10 +199,11 @@ impl ConfigDb {
     /// db.set_context("bert://notes", "Personal research notes").unwrap();
     /// ```
     pub fn set_context(&self, uri: &str, description: &str) -> Result<()> {
+        let encoded = encode_string(description)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(CONTEXTS)?;
-            table.insert(uri, description)?;
+            table.insert(uri, encoded.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -195,7 +226,10 @@ impl ConfigDb {
     pub fn get_context(&self, uri: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONTEXTS)?;
-        Ok(table.get(uri)?.map(|v| v.value().to_string()))
+        table
+            .get(uri)?
+            .map(|v| decode_string(v.value()))
+            .transpose()
     }
 
     /// Remove a context by URI. Returns `true` if it existed.
@@ -237,7 +271,7 @@ impl ConfigDb {
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (k, v) = entry?;
-            result.push((k.value().to_string(), v.value().to_string()));
+            result.push((k.value().to_string(), decode_string(v.value())?));
         }
         Ok(result)
     }
@@ -484,10 +518,11 @@ impl ConfigDb {
     /// db.set_setting("model_name", "lightonai/ColBERT-Zero").unwrap();
     /// ```
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let encoded = encode_string(value)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(SETTINGS)?;
-            table.insert(key, value)?;
+            table.insert(key, encoded.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -507,7 +542,10 @@ impl ConfigDb {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(SETTINGS)?;
-        Ok(table.get(key)?.map(|v| v.value().to_string()))
+        table
+            .get(key)?
+            .map(|v| decode_string(v.value()))
+            .transpose()
     }
 
     /// Remove a setting by key. Returns `true` if it existed.
@@ -712,5 +750,40 @@ mod tests {
     fn collection_not_found_returns_none() {
         let (_tmp, db) = test_db();
         assert!(db.get_collection("ghost").unwrap().is_none());
+    }
+
+    #[test]
+    fn open_rejects_legacy_string_tables_with_reset_message() {
+        const LEGACY_COLLECTIONS: TableDefinition<&str, &str> =
+            TableDefinition::new("collections");
+        const LEGACY_CONTEXTS: TableDefinition<&str, &str> =
+            TableDefinition::new("contexts");
+        const LEGACY_SETTINGS: TableDefinition<&str, &str> =
+            TableDefinition::new("settings");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.db");
+        let db = Database::create(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut collections = txn.open_table(LEGACY_COLLECTIONS).unwrap();
+            collections.insert("notes", "/tmp/notes").unwrap();
+        }
+        {
+            let mut contexts = txn.open_table(LEGACY_CONTEXTS).unwrap();
+            contexts.insert("bert://notes", "legacy context").unwrap();
+        }
+        {
+            let mut settings = txn.open_table(LEGACY_SETTINGS).unwrap();
+            settings.insert("model_name", "legacy-model").unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+
+        let err = ConfigDb::open(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("remove or reset config.db"),
+            "unexpected error: {err}"
+        );
     }
 }
