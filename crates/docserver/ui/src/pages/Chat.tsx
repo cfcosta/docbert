@@ -8,13 +8,7 @@ import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
 import "katex/dist/katex.min.css";
 import type { Context, Tool, UserMessage, Message as PiMessage } from "@mariozechner/pi-ai";
 import { api, buildDocumentTabHref } from "../lib/api";
-import type {
-  ChatActor,
-  ConversationFull,
-  ConversationSummary,
-  LlmSettings,
-  SearchResult,
-} from "../lib/api";
+import type { ConversationFull, ConversationSummary, LlmSettings, SearchResult } from "../lib/api";
 import {
   apiToMessages,
   messagesToApi,
@@ -37,6 +31,7 @@ import {
   type QueuedAnalysisFile,
   type SubagentAnalysisResult,
 } from "./chat-subagents";
+import { groupMessagesForDisplay, type SubagentMessage } from "./chat-message-groups";
 import "./Chat.css";
 
 function uuid(): string {
@@ -56,12 +51,6 @@ interface ReadyLlmSettings {
 }
 
 type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
-type SubagentMessage = Message & { actor: Extract<ChatActor, { type: "subagent" }> };
-
-type DisplayMessageGroup = {
-  message: Message;
-  nestedSubagents: SubagentMessage[];
-};
 
 // ── Tool definitions for pi-ai ──
 
@@ -764,36 +753,6 @@ function SubagentInline({ message }: { message: SubagentMessage }) {
       {expanded && <div className="chat-subagent-body">{renderMessageBody(message)}</div>}
     </div>
   );
-}
-
-function groupMessagesForDisplay(messages: Message[]): DisplayMessageGroup[] {
-  const groups: DisplayMessageGroup[] = [];
-  let lastParentAssistantGroup: DisplayMessageGroup | null = null;
-
-  for (const message of messages) {
-    if (message.actor?.type === "subagent") {
-      const subagentMessage = message as SubagentMessage;
-      if (lastParentAssistantGroup) {
-        lastParentAssistantGroup.nestedSubagents.push(subagentMessage);
-        continue;
-      }
-
-      groups.push({ message: subagentMessage, nestedSubagents: [] });
-      lastParentAssistantGroup = null;
-      continue;
-    }
-
-    const group: DisplayMessageGroup = { message, nestedSubagents: [] };
-    groups.push(group);
-
-    if (message.role === "assistant" && (!message.actor || message.actor.type === "parent")) {
-      lastParentAssistantGroup = group;
-    } else {
-      lastParentAssistantGroup = null;
-    }
-  }
-
-  return groups;
 }
 
 export default function Chat() {
