@@ -70,13 +70,10 @@ pub async fn delete(
     }
 
     // Delete embeddings for documents in this collection.
-    let all_meta = state.config_db.list_all_document_metadata()?;
+    let all_meta = state.config_db.list_all_document_metadata_typed()?;
     let mut ids_to_remove = Vec::new();
-    for (doc_id, bytes) in &all_meta {
-        if let Some(meta) =
-            docbert_core::incremental::DocumentMetadata::deserialize(bytes)
-            && meta.collection == name
-        {
+    for (doc_id, meta) in &all_meta {
+        if meta.collection == name {
             ids_to_remove.push(*doc_id);
         }
     }
