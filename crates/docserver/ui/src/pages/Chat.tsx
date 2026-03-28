@@ -529,6 +529,38 @@ function applyStreamError(message: Message, provider: string, error: unknown): M
   };
 }
 
+function applyInterruptedStopReason(
+  message: Message,
+  stopReason: "aborted" | "error",
+  errorMessage?: string,
+): Message {
+  const note =
+    stopReason === "aborted"
+      ? "Response interrupted before completion."
+      : `Response interrupted due to an error${errorMessage ? `: ${errorMessage}` : "."}`;
+
+  if ((message.content || "").includes(note)) {
+    return message;
+  }
+
+  const parts = [...(message.parts ?? [])];
+  const last = parts[parts.length - 1];
+  if (last && last.type === "text") {
+    parts[parts.length - 1] = {
+      type: "text",
+      text: `${last.text}${last.text ? "\n\n" : ""}${note}`,
+    };
+  } else {
+    parts.push({ type: "text", text: note });
+  }
+
+  return {
+    ...message,
+    content: `${message.content}${message.content ? "\n\n" : ""}${note}`,
+    parts,
+  };
+}
+
 function startSubagentMessage(message: Message): Message {
   return {
     ...setSubagentStatus(message, "running"),
@@ -863,6 +895,14 @@ async function runParentAgentRound({
 
   const result = await stream.result();
   piContext.messages.push(result);
+
+  const stopReason = result.stopReason;
+  if (stopReason === "aborted" || stopReason === "error") {
+    updateAssistantMessage((message) =>
+      applyInterruptedStopReason(message, stopReason, result.errorMessage),
+    );
+    return false;
+  }
 
   const toolCalls = result.content.filter((block) => block.type === "toolCall");
   if (toolCalls.length === 0) {
