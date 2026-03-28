@@ -1329,6 +1329,34 @@ export default function Chat() {
   );
 }
 
+function parseToolSearchResults(call: ToolCallInfo): SearchResult[] | null {
+  if (call.name !== "search_hybrid" && call.name !== "search_semantic") {
+    return null;
+  }
+
+  if (!call.result) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(call.result);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed.filter(
+      (item): item is SearchResult =>
+        item &&
+        typeof item === "object" &&
+        typeof item.collection === "string" &&
+        typeof item.path === "string" &&
+        typeof item.title === "string",
+    );
+  } catch {
+    return null;
+  }
+}
+
 function ThinkingInline({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -1367,6 +1395,7 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
   const argsStr = Object.entries(call.args)
     .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(", ");
+  const searchResults = parseToolSearchResults(call);
 
   return (
     <div className={`chat-tool-call${call.isError ? " error" : ""}`}>
@@ -1383,7 +1412,29 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
         <span className="chat-tool-call-args">{argsStr}</span>
         <span className={`chat-tool-call-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
       </button>
-      {expanded && call.result && <pre className="chat-tool-call-result">{call.result}</pre>}
+      {expanded && call.result && searchResults && (
+        <div className="chat-tool-search-results">
+          {searchResults.length === 0 ? (
+            <div className="chat-tool-search-empty">No results</div>
+          ) : (
+            searchResults.map((result) => (
+              <div key={`${result.collection}:${result.path}`} className="chat-tool-search-result">
+                <div className="chat-tool-search-result-title">{result.title || result.path}</div>
+                <div className="chat-tool-search-result-path">
+                  {result.collection}/{result.path}
+                </div>
+                <div className="chat-tool-search-result-meta">
+                  <span>#{result.rank}</span>
+                  <span>{result.score.toFixed(3)}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+      {expanded && call.result && !searchResults && (
+        <pre className="chat-tool-call-result">{call.result}</pre>
+      )}
     </div>
   );
 }
