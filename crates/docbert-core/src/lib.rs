@@ -90,6 +90,8 @@ pub mod ingestion;
 pub mod model_manager;
 pub mod reranker;
 pub mod search;
+pub mod storage_codec;
+pub mod stored_json;
 pub mod tantivy_index;
 pub mod text_util;
 pub mod walker;
