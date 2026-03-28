@@ -5,6 +5,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use crate::{
     Conversation, Error,
     error::Result,
+    incremental::DocumentMetadata,
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
 };
@@ -483,6 +484,42 @@ impl ConfigDb {
         Ok(())
     }
 
+    /// Store typed metadata for a document by its numeric ID.
+    pub fn set_document_metadata_typed(
+        &self,
+        doc_id: u64,
+        metadata: &DocumentMetadata,
+    ) -> Result<()> {
+        let data = metadata.serialize();
+        self.set_document_metadata(doc_id, &data)
+    }
+
+    /// Retrieve typed metadata for a document. Returns `None` if not found.
+    pub fn get_document_metadata_typed(
+        &self,
+        doc_id: u64,
+    ) -> Result<Option<DocumentMetadata>> {
+        self.get_document_metadata(doc_id)?
+            .map(|bytes| decode_aligned::<DocumentMetadata>(&bytes))
+            .transpose()
+    }
+
+    /// Set multiple typed document metadata entries in a single transaction.
+    pub fn batch_set_document_metadata_typed(
+        &self,
+        entries: &[(u64, DocumentMetadata)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let encoded: Vec<(u64, Vec<u8>)> = entries
+            .iter()
+            .map(|(doc_id, metadata)| (*doc_id, metadata.serialize()))
+            .collect();
+        self.batch_set_document_metadata(&encoded)
+    }
+
     /// List all stored document numeric IDs.
     ///
     /// # Examples
@@ -528,6 +565,18 @@ impl ConfigDb {
             result.push((k.value(), v.value().to_vec()));
         }
         Ok(result)
+    }
+
+    /// Return all `(doc_id, metadata)` pairs in a single read transaction.
+    pub fn list_all_document_metadata_typed(
+        &self,
+    ) -> Result<Vec<(u64, DocumentMetadata)>> {
+        self.list_all_document_metadata()?
+            .into_iter()
+            .map(|(doc_id, bytes)| {
+                Ok((doc_id, decode_aligned::<DocumentMetadata>(&bytes)?))
+            })
+            .collect()
     }
 
     // -- Settings --
@@ -914,6 +963,59 @@ mod tests {
         assert_eq!(db.get_document_user_metadata(7).unwrap(), Some(value));
         assert!(db.remove_document_user_metadata(7).unwrap());
         assert!(db.get_document_user_metadata(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_document_metadata_crud() {
+        let (_tmp, db) = test_db();
+        let metadata = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 12345,
+        };
+
+        db.set_document_metadata_typed(42, &metadata).unwrap();
+
+        let loaded = db
+            .get_document_metadata_typed(42)
+            .unwrap()
+            .expect("document metadata should exist");
+        assert_eq!(loaded, metadata);
+
+        let listed = db.list_all_document_metadata_typed().unwrap();
+        assert_eq!(listed, vec![(42, metadata.clone())]);
+
+        assert!(db.remove_document_metadata(42).unwrap());
+        assert!(db.get_document_metadata_typed(42).unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_document_metadata_batch_set_roundtrips() {
+        let (_tmp, db) = test_db();
+        let entries = vec![
+            (
+                1,
+                DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "a.md".to_string(),
+                    mtime: 100,
+                },
+            ),
+            (
+                2,
+                DocumentMetadata {
+                    collection: "docs".to_string(),
+                    relative_path: "b.md".to_string(),
+                    mtime: 200,
+                },
+            ),
+        ];
+
+        db.batch_set_document_metadata_typed(&entries).unwrap();
+
+        let mut listed = db.list_all_document_metadata_typed().unwrap();
+        listed.sort_by_key(|(doc_id, _)| *doc_id);
+        assert_eq!(listed, entries);
     }
 
     #[test]
