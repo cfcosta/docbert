@@ -31,8 +31,7 @@ pub async fn create(
     }
 
     // Server-managed collections don't map to a filesystem directory.
-    // Store an empty path to mark it as existing.
-    state.config_db.set_collection(&body.name, "")?;
+    state.config_db.set_managed_collection(&body.name)?;
 
     Ok((
         StatusCode::CREATED,
