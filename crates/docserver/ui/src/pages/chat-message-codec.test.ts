@@ -1,9 +1,26 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ConversationFull } from "../lib/api";
-import { apiToMessages, messagesToApi, type Message } from "./chat-message-codec";
+import { apiToMessages, contentFromParts, messagesToApi, type Message } from "./chat-message-codec";
 
 describe("chat-message-codec", () => {
+  test("content_from_parts_joins_only_text_parts", () => {
+    expect(
+      contentFromParts([
+        { type: "thinking", text: "plan" },
+        { type: "text", text: "A" },
+        {
+          type: "tool_call",
+          call: {
+            name: "search_hybrid",
+            args: { query: "rust" },
+          },
+        },
+        { type: "text", text: "B" },
+      ]),
+    ).toBe("AB");
+  });
+
   test("messagesToApi_uses_parts_text_or_content_fallback", () => {
     const messages: Message[] = [
       {

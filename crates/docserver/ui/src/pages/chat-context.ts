@@ -6,7 +6,7 @@ import type {
   UserMessage,
 } from "@mariozechner/pi-ai";
 
-import type { ContentPart, Message } from "./chat-message-codec";
+import { contentFromParts, type ContentPart, type Message } from "./chat-message-codec";
 
 export function messageTextContent(message: Message): string {
   return contentFromParts(message.parts ?? []) || message.content;
@@ -163,11 +163,4 @@ export function applyInterruptedStopReason(
     content: `${message.content}${message.content ? "\n\n" : ""}${note}`,
     parts,
   };
-}
-
-function contentFromParts(parts: ContentPart[]): string {
-  return parts
-    .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("");
 }
