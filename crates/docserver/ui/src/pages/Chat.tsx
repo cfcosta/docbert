@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router";
+import { Link, useParams, useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -13,7 +13,7 @@ import type {
   ToolResultMessage,
   Message as PiMessage,
 } from "@mariozechner/pi-ai";
-import { api } from "../lib/api";
+import { api, buildDocumentTabHref } from "../lib/api";
 import type {
   ChatActor,
   ChatPart,
@@ -1419,9 +1419,21 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
           ) : (
             searchResults.map((result) => (
               <div key={`${result.collection}:${result.path}`} className="chat-tool-search-result">
-                <div className="chat-tool-search-result-title">{result.title || result.path}</div>
-                <div className="chat-tool-search-result-path">
-                  {result.collection}/{result.path}
+                <div className="chat-tool-search-result-top">
+                  <div>
+                    <div className="chat-tool-search-result-title">
+                      {result.title || result.path}
+                    </div>
+                    <div className="chat-tool-search-result-path">
+                      {result.collection}/{result.path}
+                    </div>
+                  </div>
+                  <Link
+                    className="chat-tool-search-result-link"
+                    to={buildDocumentTabHref(result.collection, result.path)}
+                  >
+                    Open
+                  </Link>
                 </div>
                 <div className="chat-tool-search-result-meta">
                   <span>#{result.rank}</span>

@@ -146,6 +146,14 @@ export interface LlmSettings {
   api_key: string | null;
 }
 
+export function buildDocumentTabHref(collection: string, path: string): string {
+  const encodedPath = path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `/documents/${encodeURIComponent(collection)}/${encodedPath}`;
+}
+
 export const api = {
   getLlmSettings: () => request<LlmSettings>("/settings/llm"),
 

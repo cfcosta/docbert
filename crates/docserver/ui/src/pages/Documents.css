@@ -397,6 +397,13 @@
   width: 100%;
 }
 
+.preview-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .preview-kicker {
   font-size: 0.75rem;
   font-weight: 600;
@@ -408,6 +415,29 @@
 
 .preview-title {
   margin-bottom: 4px;
+}
+
+.preview-permalink {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.8rem;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.preview-permalink:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .preview-meta {

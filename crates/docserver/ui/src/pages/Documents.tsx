@@ -7,6 +7,7 @@ import {
   type DragEvent,
   type ComponentProps,
 } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -14,7 +15,7 @@ import remarkMath from "remark-math";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
-import { api } from "../lib/api";
+import { api, buildDocumentTabHref } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import "./Documents.css";
 
@@ -109,6 +110,8 @@ function isMarkdownFile(file: File) {
 }
 
 export default function Documents() {
+  const navigate = useNavigate();
+  const params = useParams<{ collection?: string; "*"?: string }>();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [docs, setDocs] = useState<Record<string, DocumentListItem[]>>({});
   const [loadingColls, setLoadingColls] = useState<Set<string>>(new Set());
@@ -205,27 +208,69 @@ export default function Documents() {
     });
   };
 
-  const selectFile = useCallback(async (collection: string, doc: DocumentListItem) => {
-    setSelectedDoc({
-      collection,
-      path: doc.path,
-      title: doc.title,
-      doc_id: doc.doc_id,
-    });
-    setConfirmDeleteDoc(null);
-    setPreview(null);
+  const openDocument = useCallback(
+    async (
+      collection: string,
+      path: string,
+      fallback?: Pick<DocumentListItem, "title" | "doc_id">,
+    ) => {
+      setSelectedDoc({
+        collection,
+        path,
+        title: fallback?.title ?? path,
+        doc_id: fallback?.doc_id ?? "Loading…",
+      });
+      setConfirmDeleteDoc(null);
+      setPreview(null);
+      navigate(buildDocumentTabHref(collection, path), { replace: true });
 
-    try {
-      const full = await api.getDocument(collection, doc.path);
-      setPreview(full.content || "_No content stored._");
-    } catch (error) {
-      setPreview(
-        error instanceof Error
-          ? `_Failed to load document: ${error.message}_`
-          : "_Failed to load document._",
-      );
+      try {
+        const full = await api.getDocument(collection, path);
+        setSelectedDoc({
+          collection: full.collection,
+          path: full.path,
+          title: full.title,
+          doc_id: full.doc_id,
+        });
+        setPreview(full.content || "_No content stored._");
+      } catch (error) {
+        setPreview(
+          error instanceof Error
+            ? `_Failed to load document: ${error.message}_`
+            : "_Failed to load document._",
+        );
+      }
+    },
+    [navigate],
+  );
+
+  const selectFile = useCallback(
+    async (collection: string, doc: DocumentListItem) => {
+      await openDocument(collection, doc.path, doc);
+    },
+    [openDocument],
+  );
+
+  useEffect(() => {
+    const collection = params.collection?.trim();
+    const path = params["*"]?.trim();
+
+    if (!collection || !path) {
+      return;
     }
-  }, []);
+
+    setExpanded((prev) => new Set(prev).add(collection));
+    if (!docs[collection]) {
+      void loadDocs(collection);
+    }
+
+    if (selectedDoc?.collection === collection && selectedDoc.path === path) {
+      return;
+    }
+
+    const listedDoc = docs[collection]?.find((doc) => doc.path === path);
+    void openDocument(collection, path, listedDoc);
+  }, [docs, loadDocs, openDocument, params, selectedDoc]);
 
   const ingestFiles = useCallback(
     async (collection: string, files: File[]) => {
@@ -687,13 +732,21 @@ function PreviewContent({
   selectedDoc: { collection: string; path: string; title: string; doc_id: string };
   preview: string | null;
 }) {
+  const permalink = buildDocumentTabHref(selectedDoc.collection, selectedDoc.path);
   const parsed = useMemo(() => (preview ? parseFrontmatter(preview) : null), [preview]);
 
   return (
     <>
       <div className="preview-header">
-        <p className="preview-kicker">{selectedDoc.collection}</p>
-        <h2 className="preview-title">{selectedDoc.title}</h2>
+        <div className="preview-title-row">
+          <div>
+            <p className="preview-kicker">{selectedDoc.collection}</p>
+            <h2 className="preview-title">{selectedDoc.title}</h2>
+          </div>
+          <Link className="preview-permalink" to={permalink}>
+            Permalink
+          </Link>
+        </div>
         <div className="preview-meta">
           <code>{selectedDoc.doc_id}</code>
           <span className="preview-path" title={selectedDoc.path}>

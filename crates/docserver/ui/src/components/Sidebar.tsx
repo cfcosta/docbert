@@ -2,7 +2,7 @@ import { NavLink } from "react-router";
 import "./Sidebar.css";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Documents", icon: DocIcon },
+  { to: "/documents", label: "Documents", icon: DocIcon },
   { to: "/chat", label: "Chat", icon: ChatIcon },
 ] as const;
 
@@ -10,7 +10,7 @@ export default function Sidebar() {
   return (
     <nav className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-header">
-        <NavLink to="/" className="sidebar-title-link">
+        <NavLink to="/documents" className="sidebar-title-link">
           <h1 className="sidebar-title">docserver</h1>
         </NavLink>
       </div>
@@ -21,7 +21,7 @@ export default function Sidebar() {
             <NavLink
               to={item.to}
               className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
-              end={item.to === "/"}
+              end={item.to === "/documents"}
             >
               <item.icon />
               <span>{item.label}</span>
