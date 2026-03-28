@@ -346,54 +346,6 @@ impl ConfigDb {
 
     // -- Document Metadata --
 
-    /// Store serialized metadata for a document by its numeric ID.
-    ///
-    /// The bytes are opaque to `ConfigDb`; callers typically use
-    /// [`DocumentMetadata::serialize`](crate::incremental::DocumentMetadata::serialize).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # let tmp = tempfile::tempdir().unwrap();
-    /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_document_metadata(42, b"collection\0path\01000").unwrap();
-    /// let bytes = db.get_document_metadata(42).unwrap().unwrap();
-    /// assert_eq!(bytes, b"collection\0path\01000");
-    /// ```
-    pub fn set_document_metadata(
-        &self,
-        doc_id: u64,
-        data: &[u8],
-    ) -> Result<()> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            table.insert(doc_id, data)?;
-        }
-        txn.commit()?;
-        Ok(())
-    }
-
-    /// Retrieve serialized metadata for a document. Returns `None` if not found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # let tmp = tempfile::tempdir().unwrap();
-    /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// assert!(db.get_document_metadata(999).unwrap().is_none());
-    /// db.set_document_metadata(42, b"data").unwrap();
-    /// assert_eq!(db.get_document_metadata(42).unwrap().unwrap(), b"data");
-    /// ```
-    pub fn get_document_metadata(
-        &self,
-        doc_id: u64,
-    ) -> Result<Option<Vec<u8>>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(DOCUMENT_METADATA)?;
-        Ok(table.get(doc_id)?.map(|v| v.value().to_vec()))
-    }
-
     /// Remove a document's metadata. Returns `true` if it existed.
     ///
     /// # Examples
@@ -401,7 +353,12 @@ impl ConfigDb {
     /// ```
     /// # let tmp = tempfile::tempdir().unwrap();
     /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_document_metadata(42, b"data").unwrap();
+    /// let meta = docbert_core::incremental::DocumentMetadata {
+    ///     collection: "notes".to_string(),
+    ///     relative_path: "a.md".to_string(),
+    ///     mtime: 1,
+    /// };
+    /// db.set_document_metadata_typed(42, &meta).unwrap();
     /// assert!(db.remove_document_metadata(42).unwrap());
     /// assert!(!db.remove_document_metadata(42).unwrap());
     /// ```
@@ -425,11 +382,21 @@ impl ConfigDb {
     /// ```
     /// # let tmp = tempfile::tempdir().unwrap();
     /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_document_metadata(1, b"a").unwrap();
-    /// db.set_document_metadata(2, b"b").unwrap();
+    /// let first = docbert_core::incremental::DocumentMetadata {
+    ///     collection: "notes".to_string(),
+    ///     relative_path: "a.md".to_string(),
+    ///     mtime: 1,
+    /// };
+    /// let second = docbert_core::incremental::DocumentMetadata {
+    ///     collection: "notes".to_string(),
+    ///     relative_path: "b.md".to_string(),
+    ///     mtime: 2,
+    /// };
+    /// db.set_document_metadata_typed(1, &first).unwrap();
+    /// db.set_document_metadata_typed(2, &second).unwrap();
     /// db.batch_remove_document_metadata(&[1, 2]).unwrap();
-    /// assert!(db.get_document_metadata(1).unwrap().is_none());
-    /// assert!(db.get_document_metadata(2).unwrap().is_none());
+    /// assert!(db.get_document_metadata_typed(1).unwrap().is_none());
+    /// assert!(db.get_document_metadata_typed(2).unwrap().is_none());
     /// ```
     pub fn batch_remove_document_metadata(
         &self,
@@ -449,41 +416,6 @@ impl ConfigDb {
         Ok(())
     }
 
-    /// Set multiple document metadata entries in a single transaction.
-    ///
-    /// More efficient than calling [`set_document_metadata`](Self::set_document_metadata)
-    /// in a loop because all writes share one transaction.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # let tmp = tempfile::tempdir().unwrap();
-    /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.batch_set_document_metadata(&[
-    ///     (1, b"meta_a".to_vec()),
-    ///     (2, b"meta_b".to_vec()),
-    /// ]).unwrap();
-    /// assert_eq!(db.get_document_metadata(1).unwrap().unwrap(), b"meta_a");
-    /// assert_eq!(db.get_document_metadata(2).unwrap().unwrap(), b"meta_b");
-    /// ```
-    pub fn batch_set_document_metadata(
-        &self,
-        entries: &[(u64, Vec<u8>)],
-    ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            for (doc_id, data) in entries {
-                table.insert(*doc_id, data.as_slice())?;
-            }
-        }
-        txn.commit()?;
-        Ok(())
-    }
-
     /// Store typed metadata for a document by its numeric ID.
     pub fn set_document_metadata_typed(
         &self,
@@ -491,7 +423,13 @@ impl ConfigDb {
         metadata: &DocumentMetadata,
     ) -> Result<()> {
         let data = metadata.serialize();
-        self.set_document_metadata(doc_id, &data)
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(DOCUMENT_METADATA)?;
+            table.insert(doc_id, data.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// Retrieve typed metadata for a document. Returns `None` if not found.
@@ -499,8 +437,11 @@ impl ConfigDb {
         &self,
         doc_id: u64,
     ) -> Result<Option<DocumentMetadata>> {
-        self.get_document_metadata(doc_id)?
-            .map(|bytes| decode_aligned::<DocumentMetadata>(&bytes))
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(DOCUMENT_METADATA)?;
+        table
+            .get(doc_id)?
+            .map(|bytes| decode_aligned::<DocumentMetadata>(bytes.value()))
             .transpose()
     }
 
@@ -513,11 +454,16 @@ impl ConfigDb {
             return Ok(());
         }
 
-        let encoded: Vec<(u64, Vec<u8>)> = entries
-            .iter()
-            .map(|(doc_id, metadata)| (*doc_id, metadata.serialize()))
-            .collect();
-        self.batch_set_document_metadata(&encoded)
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(DOCUMENT_METADATA)?;
+            for (doc_id, metadata) in entries {
+                let data = metadata.serialize();
+                table.insert(*doc_id, data.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// List all stored document numeric IDs.
@@ -527,8 +473,18 @@ impl ConfigDb {
     /// ```
     /// # let tmp = tempfile::tempdir().unwrap();
     /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_document_metadata(10, b"a").unwrap();
-    /// db.set_document_metadata(20, b"b").unwrap();
+    /// let first = docbert_core::incremental::DocumentMetadata {
+    ///     collection: "notes".to_string(),
+    ///     relative_path: "a.md".to_string(),
+    ///     mtime: 1,
+    /// };
+    /// let second = docbert_core::incremental::DocumentMetadata {
+    ///     collection: "notes".to_string(),
+    ///     relative_path: "b.md".to_string(),
+    ///     mtime: 2,
+    /// };
+    /// db.set_document_metadata_typed(10, &first).unwrap();
+    /// db.set_document_metadata_typed(20, &second).unwrap();
     /// let mut ids = db.list_document_ids().unwrap();
     /// ids.sort();
     /// assert_eq!(ids, vec![10, 20]);
@@ -544,39 +500,21 @@ impl ConfigDb {
         Ok(result)
     }
 
-    /// Return all `(doc_id, metadata_bytes)` pairs in a single read transaction.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # let tmp = tempfile::tempdir().unwrap();
-    /// # let db = docbert_core::ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-    /// db.set_document_metadata(1, b"a").unwrap();
-    /// db.set_document_metadata(2, b"b").unwrap();
-    /// let all = db.list_all_document_metadata().unwrap();
-    /// assert_eq!(all.len(), 2);
-    /// ```
-    pub fn list_all_document_metadata(&self) -> Result<Vec<(u64, Vec<u8>)>> {
+    /// Return all `(doc_id, metadata)` pairs in a single read transaction.
+    pub fn list_all_document_metadata_typed(
+        &self,
+    ) -> Result<Vec<(u64, DocumentMetadata)>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DOCUMENT_METADATA)?;
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (k, v) = entry?;
-            result.push((k.value(), v.value().to_vec()));
+            result.push((
+                k.value(),
+                decode_aligned::<DocumentMetadata>(v.value())?,
+            ));
         }
         Ok(result)
-    }
-
-    /// Return all `(doc_id, metadata)` pairs in a single read transaction.
-    pub fn list_all_document_metadata_typed(
-        &self,
-    ) -> Result<Vec<(u64, DocumentMetadata)>> {
-        self.list_all_document_metadata()?
-            .into_iter()
-            .map(|(doc_id, bytes)| {
-                Ok((doc_id, decode_aligned::<DocumentMetadata>(&bytes)?))
-            })
-            .collect()
     }
 
     // -- Settings --
@@ -804,23 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn document_metadata_crud() {
-        let (_tmp, db) = test_db();
-
-        let data = b"test metadata bytes";
-        db.set_document_metadata(42, data).unwrap();
-
-        let retrieved = db.get_document_metadata(42).unwrap().unwrap();
-        assert_eq!(retrieved, data);
-
-        let ids = db.list_document_ids().unwrap();
-        assert_eq!(ids, vec![42]);
-
-        assert!(db.remove_document_metadata(42).unwrap());
-        assert_eq!(db.get_document_metadata(42).unwrap(), None);
-    }
-
-    #[test]
     fn settings_crud() {
         let (_tmp, db) = test_db();
 
@@ -850,7 +771,7 @@ mod tests {
 
         assert_eq!(db.get_collection("nonexistent").unwrap(), None);
         assert_eq!(db.get_context("nonexistent").unwrap(), None);
-        assert_eq!(db.get_document_metadata(999).unwrap(), None);
+        assert_eq!(db.get_document_metadata_typed(999).unwrap(), None);
         assert_eq!(db.get_setting("nonexistent").unwrap(), None);
     }
 

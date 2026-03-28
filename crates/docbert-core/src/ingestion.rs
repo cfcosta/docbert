@@ -390,12 +390,10 @@ mod tests {
         .unwrap();
 
         let doc_id = DocumentId::new("notes", "note.md");
-        let stored = config_db
-            .get_document_metadata(doc_id.numeric)
+        let metadata = config_db
+            .get_document_metadata_typed(doc_id.numeric)
             .unwrap()
             .unwrap();
-        let metadata =
-            incremental::DocumentMetadata::deserialize(&stored).unwrap();
         assert_eq!(metadata.mtime, 10);
     }
 
@@ -425,7 +423,7 @@ mod tests {
         let doc_id = DocumentId::new("notes", "note.md");
         assert!(
             config_db
-                .get_document_metadata(doc_id.numeric)
+                .get_document_metadata_typed(doc_id.numeric)
                 .unwrap()
                 .is_none()
         );

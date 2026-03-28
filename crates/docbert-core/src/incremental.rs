@@ -108,10 +108,8 @@ pub fn diff_collection(
     // Build a map of all known documents for this collection.
     let mut known: HashMap<String, (u64, u64)> = HashMap::new(); // path -> (doc_id, mtime)
 
-    for (doc_id, bytes) in config_db.list_all_document_metadata()? {
-        if let Some(meta) = DocumentMetadata::deserialize(&bytes)
-            && meta.collection == collection
-        {
+    for (doc_id, meta) in config_db.list_all_document_metadata_typed()? {
+        if meta.collection == collection {
             known.insert(meta.relative_path.clone(), (doc_id, meta.mtime));
         }
     }
@@ -164,7 +162,7 @@ pub fn store_metadata(
         relative_path: rel_path,
         mtime: file.mtime,
     };
-    config_db.set_document_metadata(doc_id.numeric, &meta.serialize())?;
+    config_db.set_document_metadata_typed(doc_id.numeric, &meta)?;
     Ok(())
 }
 
@@ -177,7 +175,7 @@ pub fn batch_store_metadata(
     collection: &str,
     files: &[DiscoveredFile],
 ) -> Result<()> {
-    let entries: Vec<(u64, Vec<u8>)> = files
+    let entries: Vec<(u64, DocumentMetadata)> = files
         .iter()
         .map(|file| {
             let rel_path = file.relative_path.to_string_lossy().to_string();
@@ -187,10 +185,10 @@ pub fn batch_store_metadata(
                 relative_path: rel_path,
                 mtime: file.mtime,
             };
-            (doc_id.numeric, meta.serialize())
+            (doc_id.numeric, meta)
         })
         .collect();
-    config_db.batch_set_document_metadata(&entries)
+    config_db.batch_set_document_metadata_typed(&entries)
 }
 
 #[cfg(test)]
