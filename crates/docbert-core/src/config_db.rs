@@ -289,28 +289,16 @@ impl ConfigDb {
 
     // -- Conversations --
 
-    /// Store a conversation as serialized bytes, keyed by its ID.
-    pub fn set_conversation(&self, id: &str, data: &[u8]) -> Result<()> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CONVERSATIONS)?;
-            table.insert(id, data)?;
-        }
-        txn.commit()?;
-        Ok(())
-    }
-
-    /// Retrieve a conversation by ID. Returns `None` if not found.
-    pub fn get_conversation(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CONVERSATIONS)?;
-        Ok(table.get(id)?.map(|v| v.value().to_vec()))
-    }
-
     /// Store a typed conversation keyed by its ID.
     pub fn set_conversation_typed(&self, conversation: &Conversation) -> Result<()> {
         let data = conversation.serialize()?;
-        self.set_conversation(&conversation.id, &data)
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(CONVERSATIONS)?;
+            table.insert(conversation.id.as_str(), data.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// Retrieve a typed conversation by ID. Returns `None` if not found.
@@ -318,8 +306,15 @@ impl ConfigDb {
         &self,
         id: &str,
     ) -> Result<Option<Conversation>> {
-        self.get_conversation(id)?
-            .map(|bytes| Conversation::deserialize(&bytes))
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(CONVERSATIONS)?;
+        table
+            .get(id)?
+            .map(|bytes| {
+                let mut aligned = rkyv::util::AlignedVec::<16>::new();
+                aligned.extend_from_slice(bytes.value());
+                Conversation::deserialize(&aligned)
+            })
             .transpose()
     }
 
@@ -334,24 +329,18 @@ impl ConfigDb {
         Ok(removed)
     }
 
-    /// List all conversations as `(id, data)` pairs.
-    pub fn list_conversations(&self) -> Result<Vec<(String, Vec<u8>)>> {
+    /// List all conversations as typed records.
+    pub fn list_conversations_typed(&self) -> Result<Vec<Conversation>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CONVERSATIONS)?;
         let mut result = Vec::new();
         for entry in table.iter()? {
-            let (k, v) = entry?;
-            result.push((k.value().to_string(), v.value().to_vec()));
+            let (_id, bytes) = entry?;
+            let mut aligned = rkyv::util::AlignedVec::<16>::new();
+            aligned.extend_from_slice(bytes.value());
+            result.push(Conversation::deserialize(&aligned)?);
         }
         Ok(result)
-    }
-
-    /// List all conversations as typed records.
-    pub fn list_conversations_typed(&self) -> Result<Vec<Conversation>> {
-        self.list_conversations()?
-            .into_iter()
-            .map(|(_id, bytes)| Conversation::deserialize(&bytes))
-            .collect()
     }
 
     // -- Document Metadata --
@@ -763,28 +752,6 @@ mod tests {
 
         assert!(db.remove_context("bert://notes").unwrap());
         assert_eq!(db.list_contexts().unwrap(), vec![]);
-    }
-
-    #[test]
-    fn conversations_crud() {
-        let (_tmp, db) = test_db();
-
-        assert_eq!(db.list_conversations().unwrap(), vec![]);
-        assert_eq!(db.get_conversation("abc").unwrap(), None);
-
-        let data = b"{\"id\":\"abc\",\"title\":\"test\"}";
-        db.set_conversation("abc", data).unwrap();
-
-        let retrieved = db.get_conversation("abc").unwrap().unwrap();
-        assert_eq!(retrieved, data);
-
-        let all = db.list_conversations().unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].0, "abc");
-
-        assert!(db.remove_conversation("abc").unwrap());
-        assert!(!db.remove_conversation("abc").unwrap());
-        assert_eq!(db.get_conversation("abc").unwrap(), None);
     }
 
     #[test]
