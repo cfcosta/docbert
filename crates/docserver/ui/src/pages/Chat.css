@@ -269,13 +269,31 @@
   border-left: 3px solid var(--accent);
 }
 
+.chat-subagent-inline {
+  display: flex;
+  flex-direction: column;
+}
+
 .chat-subagent-header {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
   font-size: 0.75rem;
+}
+
+.chat-subagent-toggle {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-subagent-toggle:hover {
+  opacity: 0.9;
 }
 
 .chat-subagent-label {
@@ -314,6 +332,20 @@
 
 .chat-subagent-status-error {
   color: var(--error, #b91c1c);
+}
+
+.chat-subagent-chevron {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  transition: transform 0.15s ease-out;
+}
+
+.chat-subagent-chevron.open {
+  transform: rotate(90deg);
+}
+
+.chat-subagent-body {
+  margin-top: 8px;
 }
 
 .chat-msg-content > :first-child {
