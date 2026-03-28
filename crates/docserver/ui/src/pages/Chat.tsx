@@ -27,6 +27,7 @@ import {
   type QueuedAnalysisFile,
   type SubagentAnalysisResult,
 } from "./chat-subagents";
+import { consumeAssistantStream } from "./chat-stream";
 import { groupMessagesForDisplay } from "./chat-message-groups";
 import ChatTranscript from "./ChatTranscript";
 import "./Chat.css";
@@ -385,8 +386,6 @@ async function runFileSubagent({
   try {
     const document = await api.getDocument(file.collection, file.path);
     const context = createSubagentContext(userQuestion, document.content, file, focus);
-    let streamedText = "";
-    let streamedThinking = "";
     let streamError: string | undefined;
 
     updateMessage((message) => startSubagentMessage(message));
@@ -397,27 +396,22 @@ async function runFileSubagent({
       reasoning: model.reasoning ? "medium" : undefined,
     });
 
-    for await (const event of stream) {
-      if (event.type === "text_delta") {
-        streamedText += event.delta;
-        const captured = streamedText;
-        updateMessage((message) => applySubagentTextDelta(message, captured));
-      }
-      if (event.type === "thinking_delta") {
-        streamedThinking += event.delta;
-        const captured = streamedThinking;
-        updateMessage((message) => applySubagentThinkingDelta(message, captured));
-      }
-      if (event.type === "error") {
-        streamError = typeof event.error === "string" ? event.error : JSON.stringify(event.error);
+    const consumed = await consumeAssistantStream(stream, {
+      onTextDelta: (text) => {
+        updateMessage((message) => applySubagentTextDelta(message, text));
+      },
+      onThinkingDelta: (thinking) => {
+        updateMessage((message) => applySubagentThinkingDelta(message, thinking));
+      },
+      onError: (error) => {
+        streamError = typeof error === "string" ? error : JSON.stringify(error);
         updateMessage((message) => {
-          const next = applyStreamError(message, settings.provider, event.error);
+          const next = applyStreamError(message, settings.provider, error);
           return finalizeSubagentMessage(next, "error");
         });
-      }
-    }
+      },
+    });
 
-    await stream.result();
     if (streamError) {
       updateMessage((message) => finalizeSubagentMessage(message, "error"));
       return {
@@ -429,13 +423,26 @@ async function runFileSubagent({
       };
     }
 
+    if (consumed.interrupted) {
+      const interruptedError =
+        consumed.result.errorMessage ?? "Response interrupted before completion.";
+      updateMessage((message) => finalizeSubagentMessage(message, "error"));
+      return {
+        collection: file.collection,
+        path: file.path,
+        reason: file.reason,
+        title: file.title,
+        error: interruptedError,
+      };
+    }
+
     updateMessage((message) => finalizeSubagentMessage(message, "done"));
     return {
       collection: file.collection,
       path: file.path,
       reason: file.reason,
       title: file.title,
-      text: streamedText,
+      text: consumed.text,
     };
   } catch (error) {
     const rendered = error instanceof Error ? error.message : "unknown error";

@@ -1,0 +1,55 @@
+import type { AssistantMessage, AssistantMessageEventStream } from "@mariozechner/pi-ai";
+
+export interface AssistantStreamCallbacks {
+  onTextDelta?: (text: string, delta: string) => void;
+  onThinkingDelta?: (thinking: string, delta: string) => void;
+  onError?: (error: unknown) => void;
+}
+
+export interface ConsumedAssistantStream {
+  text: string;
+  thinking: string;
+  result: AssistantMessage;
+  interrupted: boolean;
+  lastError?: unknown;
+}
+
+export function isInterruptedAssistantResult(result: AssistantMessage): boolean {
+  return result.stopReason === "aborted" || result.stopReason === "error";
+}
+
+export async function consumeAssistantStream(
+  stream: AssistantMessageEventStream,
+  callbacks: AssistantStreamCallbacks = {},
+): Promise<ConsumedAssistantStream> {
+  let text = "";
+  let thinking = "";
+  let lastError: unknown;
+
+  for await (const event of stream) {
+    if (event.type === "text_delta") {
+      text += event.delta;
+      callbacks.onTextDelta?.(text, event.delta);
+    }
+
+    if (event.type === "thinking_delta") {
+      thinking += event.delta;
+      callbacks.onThinkingDelta?.(thinking, event.delta);
+    }
+
+    if (event.type === "error") {
+      lastError = event.error;
+      callbacks.onError?.(event.error);
+    }
+  }
+
+  const result = await stream.result();
+
+  return {
+    text,
+    thinking,
+    result,
+    interrupted: isInterruptedAssistantResult(result),
+    lastError,
+  };
+}
