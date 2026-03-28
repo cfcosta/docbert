@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, AssistantMessageEventStream } from "@mariozechner/pi-ai";
 
-import { consumeAssistantStream } from "./chat-stream";
+import {
+  assistantToolCalls,
+  consumeAssistantStream,
+  shouldContinueAssistantToolRound,
+} from "./chat-stream";
 
-function assistantMessage(stopReason: AssistantMessage["stopReason"]): AssistantMessage {
+function assistantMessage(
+  stopReason: AssistantMessage["stopReason"],
+  content: AssistantMessage["content"] = [],
+): AssistantMessage {
   return {
     role: "assistant",
     api: "openai-responses",
     provider: "openai",
     model: "gpt-4.1",
-    content: [],
+    content,
     usage: {
       input: 0,
       output: 0,
@@ -76,7 +83,27 @@ describe("chat-stream", () => {
 
     expect(aborted.interrupted).toBe(true);
     expect(aborted.result.stopReason).toBe("aborted");
+    expect(shouldContinueAssistantToolRound(aborted.result)).toBe(false);
     expect(failed.interrupted).toBe(true);
     expect(failed.result.stopReason).toBe("error");
+    expect(shouldContinueAssistantToolRound(failed.result)).toBe(false);
+  });
+
+  test("assistantToolCalls_and_shouldContinueAssistantToolRound_follow_final_tool_calls", () => {
+    const withToolCall = assistantMessage("toolUse", [
+      { type: "text", text: "Let me check." },
+      {
+        type: "toolCall",
+        id: "tool-1",
+        name: "search_hybrid",
+        arguments: { query: "rust" },
+      },
+    ]);
+    const withoutToolCall = assistantMessage("stop", [{ type: "text", text: "Done." }]);
+
+    expect(assistantToolCalls(withToolCall).map((call) => call.name)).toEqual(["search_hybrid"]);
+    expect(shouldContinueAssistantToolRound(withToolCall)).toBe(true);
+    expect(assistantToolCalls(withoutToolCall)).toEqual([]);
+    expect(shouldContinueAssistantToolRound(withoutToolCall)).toBe(false);
   });
 });

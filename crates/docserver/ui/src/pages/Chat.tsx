@@ -27,7 +27,12 @@ import {
   type QueuedAnalysisFile,
   type SubagentAnalysisResult,
 } from "./chat-subagents";
-import { consumeAssistantStream } from "./chat-stream";
+import {
+  assistantToolCalls,
+  consumeAssistantStream,
+  isInterruptedAssistantResult,
+  shouldContinueAssistantToolRound,
+} from "./chat-stream";
 import { groupMessagesForDisplay } from "./chat-message-groups";
 import ChatTranscript from "./ChatTranscript";
 import "./Chat.css";
@@ -554,48 +559,39 @@ async function runParentAgentRound({
   queueSubagentMessage: (file: QueuedAnalysisFile) => void;
   updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
 }): Promise<boolean> {
-  let streamedText = "";
-  let streamedThinking = "";
-
   const stream = streamSimple(model, piContext, {
     apiKey: settings.api_key,
     signal: controller.signal,
     reasoning: model.reasoning ? "medium" : undefined,
   });
 
-  for await (const event of stream) {
-    if (event.type === "text_delta") {
-      streamedText += event.delta;
-      const captured = streamedText;
-      updateAssistantMessage((message) => applyTextDelta(message, captured, event.delta));
-    }
-    if (event.type === "thinking_delta") {
-      streamedThinking += event.delta;
-      const captured = streamedThinking;
-      updateAssistantMessage((message) => applyThinkingDelta(message, captured));
-    }
-    if (event.type === "error") {
-      updateAssistantMessage((message) =>
-        applyStreamError(message, settings.provider, event.error),
-      );
-    }
-  }
+  const consumed = await consumeAssistantStream(stream, {
+    onTextDelta: (text, delta) => {
+      updateAssistantMessage((message) => applyTextDelta(message, text, delta));
+    },
+    onThinkingDelta: (thinking) => {
+      updateAssistantMessage((message) => applyThinkingDelta(message, thinking));
+    },
+    onError: (error) => {
+      updateAssistantMessage((message) => applyStreamError(message, settings.provider, error));
+    },
+  });
 
-  const result = await stream.result();
+  const result = consumed.result;
   piContext.messages.push(result);
 
-  const stopReason = result.stopReason;
-  if (stopReason === "aborted" || stopReason === "error") {
+  if (isInterruptedAssistantResult(result)) {
     updateAssistantMessage((message) =>
-      applyInterruptedStopReason(message, stopReason, result.errorMessage),
+      applyInterruptedStopReason(message, result.stopReason, result.errorMessage),
     );
     return false;
   }
 
-  const toolCalls = result.content.filter((block) => block.type === "toolCall");
-  if (toolCalls.length === 0) {
+  if (!shouldContinueAssistantToolRound(result)) {
     return false;
   }
+
+  const toolCalls = assistantToolCalls(result);
 
   for (const call of toolCalls) {
     const callArgs = call.arguments as Record<string, unknown>;

@@ -14,8 +14,21 @@ export interface ConsumedAssistantStream {
   lastError?: unknown;
 }
 
-export function isInterruptedAssistantResult(result: AssistantMessage): boolean {
+export function isInterruptedAssistantResult(
+  result: AssistantMessage,
+): result is AssistantMessage & { stopReason: "aborted" | "error" } {
   return result.stopReason === "aborted" || result.stopReason === "error";
+}
+
+export function assistantToolCalls(result: AssistantMessage) {
+  return result.content.filter(
+    (block): block is Extract<AssistantMessage["content"][number], { type: "toolCall" }> =>
+      block.type === "toolCall",
+  );
+}
+
+export function shouldContinueAssistantToolRound(result: AssistantMessage): boolean {
+  return !isInterruptedAssistantResult(result) && assistantToolCalls(result).length > 0;
 }
 
 export async function consumeAssistantStream(
