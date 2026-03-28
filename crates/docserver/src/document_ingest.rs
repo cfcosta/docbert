@@ -1,8 +1,9 @@
-#![cfg_attr(not(test), allow(dead_code))]
+use std::sync::MutexGuard;
 
 use docbert_core::{DocumentId, incremental};
+use tantivy::IndexWriter;
 
-use crate::error::ApiError;
+use crate::{error::ApiError, state::AppState};
 
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
@@ -14,6 +15,7 @@ pub(crate) struct PreparedIngestDocument {
     pub(crate) body: String,
     pub(crate) content: String,
     pub(crate) metadata: Option<serde_json::Value>,
+    pub(crate) embedding_chunks: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +56,110 @@ pub(crate) trait IngestionBackend {
     fn remove_persisted_documents(&mut self, doc_ids: &[u64], context: &str);
 
     fn commit_documents(&mut self) -> Result<(), ApiError>;
+}
+
+pub(crate) struct AppStateIngestionBackend<'a> {
+    state: &'a AppState,
+    writer: MutexGuard<'a, IndexWriter>,
+}
+
+impl<'a> AppStateIngestionBackend<'a> {
+    pub(crate) fn new(state: &'a AppState) -> Result<Self, ApiError> {
+        let writer = state.writer.lock().map_err(ApiError::internal)?;
+        Ok(Self { state, writer })
+    }
+}
+
+impl IngestionBackend for AppStateIngestionBackend<'_> {
+    fn delete_existing_documents(
+        &mut self,
+        documents: &[PreparedIngestDocument],
+    ) -> Result<(), ApiError> {
+        if documents.is_empty() {
+            return Ok(());
+        }
+
+        for document in documents {
+            self.state
+                .search_index
+                .delete_document(&self.writer, &document.did.to_string());
+        }
+        self.writer.commit().map_err(ApiError::internal)?;
+        Ok(())
+    }
+
+    fn stage_document(
+        &mut self,
+        collection: &str,
+        document: &PreparedIngestDocument,
+    ) -> Result<(), ApiError> {
+        self.state.search_index.add_document(
+            &self.writer,
+            &document.did.to_string(),
+            document.did.numeric,
+            collection,
+            &document.path,
+            &document.title,
+            &document.body,
+            0,
+        )?;
+        Ok(())
+    }
+
+    fn rollback_staged_documents(&mut self) {
+        if let Err(error) = self.writer.rollback() {
+            tracing::warn!(error = %error, "failed to rollback tantivy writer");
+        }
+    }
+
+    fn store_embeddings(
+        &mut self,
+        entries: &[EmbeddingEntry],
+    ) -> Result<(), ApiError> {
+        self.state
+            .embedding_db
+            .batch_store(entries)
+            .map_err(ApiError::internal)
+    }
+
+    fn remove_embeddings(&mut self, doc_ids: &[u64], context: &str) {
+        if doc_ids.is_empty() {
+            return;
+        }
+
+        if let Err(error) = self.state.embedding_db.batch_remove(doc_ids) {
+            tracing::warn!(error = %error, ids = doc_ids.len(), %context, "failed to cleanup embeddings");
+        }
+    }
+
+    fn persist_document_artifacts(
+        &mut self,
+        collection: &str,
+        document: &PreparedIngestDocument,
+    ) -> Result<(), ApiError> {
+        let metadata = document_metadata(collection, document);
+        self.state.config_db.put_document_artifacts(
+            document.did.numeric,
+            &metadata,
+            &document.content,
+            document.metadata.as_ref(),
+        )?;
+        Ok(())
+    }
+
+    fn remove_persisted_documents(&mut self, doc_ids: &[u64], context: &str) {
+        for &doc_id in doc_ids {
+            if let Err(error) =
+                self.state.config_db.remove_document_artifacts(doc_id)
+            {
+                tracing::warn!(error = %error, doc_id, %context, "failed to cleanup document artifacts");
+            }
+        }
+    }
+
+    fn commit_documents(&mut self) -> Result<(), ApiError> {
+        self.writer.commit().map(|_| ()).map_err(ApiError::internal)
+    }
 }
 
 pub(crate) struct DocumentIngestCommand<'a, B> {
@@ -270,13 +376,19 @@ mod tests {
         collection: &str,
         path: &str,
     ) -> PreparedIngestDocument {
+        let did = DocumentId::new(collection, path);
+        let doc_numeric_id = did.numeric;
         PreparedIngestDocument {
-            did: DocumentId::new(collection, path),
+            did,
             path: path.to_string(),
             title: format!("title for {path}"),
             body: format!("body for {path}"),
             content: format!("# {path}\nbody"),
             metadata: Some(serde_json::json!({ "path": path })),
+            embedding_chunks: vec![(
+                doc_numeric_id,
+                format!("body for {path}"),
+            )],
         }
     }
 

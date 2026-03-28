@@ -4,10 +4,21 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use docbert_core::{DocumentId, chunking, embedding, incremental};
+use docbert_core::{DocumentId, chunking, embedding};
 use serde::{Deserialize, Serialize};
 
-use crate::{content, error::ApiError, state::AppState};
+use crate::{
+    content,
+    document_ingest::{
+        AppStateIngestionBackend,
+        DocumentIngestCommand,
+        EmbeddingEntry,
+        PersistedIngestDocument,
+        PreparedIngestDocument,
+    },
+    error::ApiError,
+    state::AppState,
+};
 
 #[derive(Deserialize)]
 pub struct IngestRequest {
@@ -39,21 +50,10 @@ pub struct IngestedDoc {
     metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug)]
-struct PreparedDocument {
-    did: DocumentId,
-    path: String,
-    title: String,
-    body: String,
-    content: String,
-    metadata: Option<serde_json::Value>,
-    embedding_chunks: Vec<(u64, String)>,
-}
-
 fn prepare_documents(
     collection: &str,
     documents: &[IngestDocument],
-) -> Result<Vec<PreparedDocument>, ApiError> {
+) -> Result<Vec<PreparedIngestDocument>, ApiError> {
     let mut prepared = Vec::with_capacity(documents.len());
 
     for doc in documents {
@@ -89,7 +89,7 @@ fn prepare_documents(
             })
             .collect();
 
-        prepared.push(PreparedDocument {
+        prepared.push(PreparedIngestDocument {
             did,
             path: doc.path.clone(),
             title: processed.title,
@@ -101,34 +101,6 @@ fn prepare_documents(
     }
 
     Ok(prepared)
-}
-
-fn rollback_writer(writer: &mut tantivy::IndexWriter) {
-    if let Err(e) = writer.rollback() {
-        tracing::warn!(error = %e, "failed to rollback tantivy writer");
-    }
-}
-
-fn cleanup_embeddings(state: &AppState, embedding_ids: &[u64], context: &str) {
-    if embedding_ids.is_empty() {
-        return;
-    }
-
-    if let Err(e) = state.embedding_db.batch_remove(embedding_ids) {
-        tracing::warn!(error = %e, ids = embedding_ids.len(), %context, "failed to cleanup embeddings");
-    }
-}
-
-fn cleanup_persisted_documents(
-    state: &AppState,
-    doc_ids: &[u64],
-    context: &str,
-) {
-    for &doc_id in doc_ids {
-        if let Err(e) = state.config_db.remove_document_artifacts(doc_id) {
-            tracing::warn!(error = %e, doc_id, %context, "failed to cleanup document artifacts");
-        }
-    }
 }
 
 pub async fn ingest(
@@ -172,142 +144,42 @@ pub async fn ingest(
         chunks = docs_to_embed.len(),
         "computing embeddings",
     );
-    let embedding_entries = {
+    let embedding_entries: Vec<EmbeddingEntry> = {
         let mut model = state.model.lock().map_err(ApiError::internal)?;
         embedding::embed_documents(&mut model, docs_to_embed)
             .map_err(ApiError::internal)?
     };
-    let embedding_ids: Vec<u64> = embedding_entries
-        .iter()
-        .map(|(doc_id, _, _, _)| *doc_id)
-        .collect();
     tracing::info!(
         collection = %body.collection,
         stored = embedding_entries.len(),
         "embeddings computed",
     );
 
-    // Acquire the Tantivy writer for the duration of this ingestion.
-    let mut writer = state.writer.lock().map_err(ApiError::internal)?;
-
-    // Phase 1: Delete any existing entries for documents being re-ingested.
-    // We must commit deletes before adding new versions because Tantivy's
-    // delete_term applies to all documents matching the term in the same
-    // commit, including freshly added ones with the same doc_id.
-    if !prepared.is_empty() {
-        for doc in &prepared {
-            state
-                .search_index
-                .delete_document(&writer, &doc.did.to_string());
-        }
-        writer.commit().map_err(ApiError::internal)?;
+    let mut backend = AppStateIngestionBackend::new(&state)?;
+    let ingested_documents = DocumentIngestCommand {
+        backend: &mut backend,
+        collection: &body.collection,
+        documents: &prepared,
+        embedding_entries: &embedding_entries,
     }
-
-    // Phase 2: Stage all documents in Tantivy. Nothing is visible until commit.
-    for doc in &prepared {
-        if let Err(e) = state.search_index.add_document(
-            &writer,
-            &doc.did.to_string(),
-            doc.did.numeric,
-            &body.collection,
-            &doc.path,
-            &doc.title,
-            &doc.body,
-            0, // mtime not meaningful for API-ingested documents
-        ) {
-            rollback_writer(&mut writer);
-            return Err(ApiError::from(e));
-        }
-    }
-
-    // Phase 3: Persist embeddings. Ingestion must fail if embeddings cannot be
-    // stored, so we do this before committing Tantivy.
-    if let Err(e) = state.embedding_db.batch_store(&embedding_entries) {
-        rollback_writer(&mut writer);
-        return Err(ApiError::internal(e));
-    }
-    tracing::info!(
-        collection = %body.collection,
-        stored = embedding_entries.len(),
-        "embeddings stored",
-    );
-
-    // Phase 4: Persist metadata and raw content. If this fails, remove the
-    // freshly stored embeddings and discard staged Tantivy changes.
-    let mut persisted_doc_ids = Vec::with_capacity(prepared.len());
-    let mut ingested_docs = Vec::with_capacity(prepared.len());
-    for doc in &prepared {
-        let persist_result: Result<(), ApiError> = (|| {
-            let doc_meta = incremental::DocumentMetadata {
-                collection: body.collection.clone(),
-                relative_path: doc.path.clone(),
-                mtime: 0,
-            };
-            state.config_db.put_document_artifacts(
-                doc.did.numeric,
-                &doc_meta,
-                &doc.content,
-                doc.metadata.as_ref(),
-            )?;
-
-            Ok(())
-        })();
-
-        if let Err(e) = persist_result {
-            rollback_writer(&mut writer);
-            cleanup_embeddings(
-                &state,
-                &embedding_ids,
-                "metadata persistence failed",
-            );
-            cleanup_persisted_documents(
-                &state,
-                &persisted_doc_ids,
-                "metadata persistence failed",
-            );
-            return Err(e);
-        }
-
-        persisted_doc_ids.push(doc.did.numeric);
-        ingested_docs.push(IngestedDoc {
-            doc_id: doc.did.to_string(),
-            path: doc.path.clone(),
-            title: doc.title.clone(),
-            metadata: doc.metadata.clone(),
-        });
-    }
-    tracing::debug!(
-        collection = %body.collection,
-        documents = persisted_doc_ids.len(),
-        "metadata and content persisted",
-    );
-
-    // Phase 5: Make Tantivy changes visible. If this fails, clean up the other
-    // persisted state so the request is rejected rather than partially accepted.
-    if let Err(e) = writer.commit() {
-        cleanup_embeddings(&state, &embedding_ids, "tantivy commit failed");
-        cleanup_persisted_documents(
-            &state,
-            &persisted_doc_ids,
-            "tantivy commit failed",
-        );
-        return Err(ApiError::internal(e));
-    }
+    .execute()?;
     tracing::info!(
         collection = %body.collection,
         documents = prepared.len(),
-        "tantivy index committed",
-    );
-
-    tracing::info!(
-        collection = %body.collection,
-        ingested = ingested_docs.len(),
         "ingestion complete",
     );
 
     Ok(Json(IngestResponse {
-        ingested: ingested_docs.len(),
-        documents: ingested_docs,
+        ingested: ingested_documents.len(),
+        documents: ingested_documents
+            .into_iter()
+            .map(|document: PersistedIngestDocument| IngestedDoc {
+                doc_id: document.doc_id,
+                path: document.path,
+                title: document.title,
+                metadata: document.metadata,
+            })
+            .collect(),
     }))
 }
 
@@ -463,7 +335,13 @@ fn load_user_metadata(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+    use docbert_core::{
+        ConfigDb,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
+        incremental,
+    };
 
     use super::*;
     use crate::state::Inner;
