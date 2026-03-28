@@ -7,6 +7,8 @@ use crate::{error::ApiError, state::AppState};
 
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
+const API_INGEST_MTIME: u64 = 0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedIngestDocument {
     pub(crate) did: DocumentId,
@@ -101,7 +103,7 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
             &document.path,
             &document.title,
             &document.body,
-            0,
+            API_INGEST_MTIME,
         )?;
         Ok(())
     }
@@ -251,7 +253,7 @@ pub(crate) fn document_metadata(
     incremental::DocumentMetadata {
         collection: collection.to_string(),
         relative_path: document.path.clone(),
-        mtime: 0,
+        mtime: API_INGEST_MTIME,
     }
 }
 
@@ -399,6 +401,15 @@ mod tests {
             .iter()
             .map(|document| (document.did.numeric, 1, 1, vec![1.0]))
             .collect()
+    }
+
+    #[test]
+    fn document_metadata_uses_api_ingest_mtime() {
+        let document = prepared_document("notes", "a.md");
+        let metadata = document_metadata("notes", &document);
+
+        assert_eq!(API_INGEST_MTIME, 0);
+        assert_eq!(metadata.mtime, API_INGEST_MTIME);
     }
 
     #[test]
