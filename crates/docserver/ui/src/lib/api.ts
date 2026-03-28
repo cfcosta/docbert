@@ -1,10 +1,14 @@
 const BASE = "/v1";
 
-function encodeDocumentPath(path: string) {
+function encodePathSegments(path: string): string {
   return path
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
+}
+
+export function encodeDocumentPath(path: string) {
+  return encodePathSegments(path);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -147,11 +151,7 @@ export interface LlmSettings {
 }
 
 export function buildDocumentTabHref(collection: string, path: string): string {
-  const encodedPath = path
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  return `/documents/${encodeURIComponent(collection)}/${encodedPath}`;
+  return `/documents/${encodeURIComponent(collection)}/${encodePathSegments(path)}`;
 }
 
 export const api = {
