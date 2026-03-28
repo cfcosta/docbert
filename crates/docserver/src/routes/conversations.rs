@@ -29,19 +29,16 @@ pub struct CreateRequest {
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConversationSummary>>, ApiError> {
-    let raw = state.config_db.list_conversations()?;
-    let mut summaries: Vec<ConversationSummary> = raw
+    let mut summaries: Vec<ConversationSummary> = state
+        .config_db
+        .list_conversations_typed()?
         .into_iter()
-        .filter_map(|(_, data)| {
-            Conversation::deserialize(&data)
-                .ok()
-                .map(|c| ConversationSummary {
-                    id: c.id,
-                    title: c.title,
-                    created_at: c.created_at,
-                    updated_at: c.updated_at,
-                    message_count: c.messages.len(),
-                })
+        .map(|c| ConversationSummary {
+            id: c.id,
+            title: c.title,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+            message_count: c.messages.len(),
         })
         .collect();
     summaries.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
@@ -60,8 +57,7 @@ pub async fn create(
         updated_at: now,
         messages: vec![],
     };
-    let data = conv.serialize().map_err(ApiError::internal)?;
-    state.config_db.set_conversation(&conv.id, &data)?;
+    state.config_db.set_conversation_typed(&conv)?;
     Ok((StatusCode::CREATED, Json(conv)))
 }
 
@@ -69,10 +65,10 @@ pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Conversation>, ApiError> {
-    let data = state.config_db.get_conversation(&id)?.ok_or_else(|| {
-        ApiError::NotFound(format!("conversation not found: {id}"))
-    })?;
-    let conv = Conversation::deserialize(&data).map_err(ApiError::internal)?;
+    let conv = state
+        .config_db
+        .get_conversation_typed(&id)?
+        .ok_or_else(|| ApiError::NotFound(format!("conversation not found: {id}")))?;
     Ok(Json(conv))
 }
 
@@ -81,15 +77,14 @@ pub async fn update(
     Path(id): Path<String>,
     Json(mut body): Json<Conversation>,
 ) -> Result<Json<Conversation>, ApiError> {
-    state.config_db.get_conversation(&id)?.ok_or_else(|| {
+    state.config_db.get_conversation_typed(&id)?.ok_or_else(|| {
         ApiError::NotFound(format!("conversation not found: {id}"))
     })?;
 
     body.id = id;
     body.updated_at = now_millis();
 
-    let data = body.serialize().map_err(ApiError::internal)?;
-    state.config_db.set_conversation(&body.id, &data)?;
+    state.config_db.set_conversation_typed(&body)?;
     Ok(Json(body))
 }
 
