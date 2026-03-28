@@ -74,4 +74,7 @@ pub enum Error {
 
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("archive serialization error: {0}")]
+    Rkyv(#[from] rkyv::rancor::Error),
 }
