@@ -4,12 +4,13 @@ use crate::{
     config_db::ConfigDb,
     doc_id::DocumentId,
     error::Result,
+    storage_codec::{decode_bytes, encode_bytes},
     walker::DiscoveredFile,
 };
 
 /// Metadata docbert stores for each indexed document in `config.db`.
 ///
-/// The serialized form is `"collection\0relative_path\0mtime"`.
+/// The serialized form is a `rkyv`-encoded binary payload.
 ///
 /// # Examples
 ///
@@ -25,7 +26,15 @@ use crate::{
 /// let restored = DocumentMetadata::deserialize(&bytes).unwrap();
 /// assert_eq!(meta, restored);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct DocumentMetadata {
     pub collection: String,
     pub relative_path: String,
@@ -35,28 +44,15 @@ pub struct DocumentMetadata {
 impl DocumentMetadata {
     /// Serialize to a byte vector for storage in the config database.
     ///
-    /// The format is `"collection\0relative_path\0mtime"` encoded as UTF-8.
-    /// Use [`deserialize`](Self::deserialize) to recover the struct.
+    /// The format is a checked `rkyv` archive. Use [`deserialize`](Self::deserialize)
+    /// to recover the struct.
     pub fn serialize(&self) -> Vec<u8> {
-        format!(
-            "{}\0{}\0{}",
-            self.collection, self.relative_path, self.mtime
-        )
-        .into_bytes()
+        encode_bytes(self).expect("DocumentMetadata serialization should succeed")
     }
 
-    /// Deserialize from bytes. Returns `None` if the format is invalid.
+    /// Deserialize from bytes. Returns `None` if the archive is invalid.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        let s = std::str::from_utf8(bytes).ok()?;
-        let mut parts = s.splitn(3, '\0');
-        let collection = parts.next()?.to_string();
-        let relative_path = parts.next()?.to_string();
-        let mtime = parts.next()?.parse().ok()?;
-        Some(Self {
-            collection,
-            relative_path,
-            mtime,
-        })
+        decode_bytes(bytes).ok()
     }
 }
 
@@ -218,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_roundtrip() {
+    fn document_metadata_rkyv_roundtrips() {
         let meta = DocumentMetadata {
             collection: "notes".to_string(),
             relative_path: "hello.md".to_string(),
@@ -227,6 +223,12 @@ mod tests {
         let bytes = meta.serialize();
         let restored = DocumentMetadata::deserialize(&bytes).unwrap();
         assert_eq!(meta, restored);
+    }
+
+    #[test]
+    fn document_metadata_invalid_bytes_return_none() {
+        let bytes = b"not a valid rkyv payload";
+        assert!(DocumentMetadata::deserialize(bytes).is_none());
     }
 
     #[test]
