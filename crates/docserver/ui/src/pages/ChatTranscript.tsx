@@ -8,6 +8,7 @@ import remarkMath from "remark-math";
 import { buildDocumentTabHref, type SearchResult } from "../lib/api";
 import type { ToolCallInfo, Message } from "./chat-message-codec";
 import type { DisplayMessageGroup, SubagentMessage } from "./chat-message-groups";
+import { buildTranscriptRenderItems } from "./chat-transcript-model";
 
 const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
@@ -139,61 +140,34 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
 }
 
 function renderMessageContent(message: Message, nestedSubagents: SubagentMessage[] = []) {
-  if (!message.parts || message.parts.length === 0) {
-    return (
-      <div className="chat-msg-content">
-        <Markdown
-          remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-          rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-        >
-          {message.content}
-        </Markdown>
-      </div>
-    );
-  }
-
-  let nextSubagentIndex = 0;
+  const items = buildTranscriptRenderItems(message, nestedSubagents);
 
   return (
     <>
-      {message.parts.map((part, index) => {
-        if (part.type === "text") {
+      {items.map((item) => {
+        if (item.kind === "text") {
           return (
-            <div key={`text-${index}`} className="chat-msg-content">
+            <div key={item.key} className="chat-msg-content">
               <Markdown
                 remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
                 rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
               >
-                {part.text}
+                {item.text}
               </Markdown>
             </div>
           );
         }
 
-        if (part.type === "thinking") {
-          return <ThinkingInline key={`thinking-${index}`} text={part.text} />;
+        if (item.kind === "thinking") {
+          return <ThinkingInline key={item.key} text={item.text} />;
         }
 
-        const subagent =
-          part.call.name === "analyze_document" ? nestedSubagents[nextSubagentIndex] : undefined;
-        if (subagent) {
-          nextSubagentIndex += 1;
+        if (item.kind === "subagent") {
+          return <SubagentInline key={item.key} message={item.message} />;
         }
 
-        if (part.call.name === "analyze_document" && subagent) {
-          return <SubagentInline key={subagent.id} message={subagent} />;
-        }
-
-        return (
-          <div key={`tool-group-${index}`}>
-            <ToolCallInline call={part.call} />
-            {subagent ? <SubagentInline message={subagent} /> : null}
-          </div>
-        );
+        return <ToolCallInline key={item.key} call={item.call.call} />;
       })}
-      {nestedSubagents.slice(nextSubagentIndex).map((subagent) => (
-        <SubagentInline key={subagent.id} message={subagent} />
-      ))}
     </>
   );
 }
