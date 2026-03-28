@@ -96,7 +96,7 @@ pub mod tantivy_index;
 pub mod text_util;
 pub mod walker;
 
-pub use config_db::ConfigDb;
+pub use config_db::{ConfigDb, PersistedLlmSettings};
 pub use conversation::{ChatMessage, Conversation};
 pub use data_dir::DataDir;
 pub use doc_id::DocumentId;

@@ -20,6 +20,10 @@ const CONVERSATIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("conversations");
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 
+const KEY_LLM_PROVIDER: &str = "llm_provider";
+const KEY_LLM_MODEL: &str = "llm_model";
+const KEY_LLM_API_KEY: &str = "llm_api_key";
+
 /// redb-backed store for collections, settings, and document metadata.
 ///
 /// It keeps four tables:
@@ -54,6 +58,13 @@ pub struct ConfigDb {
 pub(crate) enum CollectionLocation {
     Filesystem(String),
     Managed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersistedLlmSettings {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
 }
 
 impl CollectionLocation {
@@ -658,6 +669,61 @@ impl ConfigDb {
             .unwrap_or_else(|| default.to_string()))
     }
 
+    /// Load the persisted LLM settings stored in config.db.
+    pub fn get_persisted_llm_settings(&self) -> Result<PersistedLlmSettings> {
+        Ok(PersistedLlmSettings {
+            provider: self.get_setting(KEY_LLM_PROVIDER)?,
+            model: self.get_setting(KEY_LLM_MODEL)?,
+            api_key: self.get_setting(KEY_LLM_API_KEY)?,
+        })
+    }
+
+    /// Replace the persisted LLM settings in a single write transaction.
+    pub fn set_persisted_llm_settings(
+        &self,
+        settings: &PersistedLlmSettings,
+    ) -> Result<()> {
+        let provider = settings
+            .provider
+            .as_deref()
+            .map(encode_string)
+            .transpose()?;
+        let model = settings.model.as_deref().map(encode_string).transpose()?;
+        let api_key =
+            settings.api_key.as_deref().map(encode_string).transpose()?;
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(SETTINGS)?;
+            match provider.as_deref() {
+                Some(bytes) => {
+                    table.insert(KEY_LLM_PROVIDER, bytes)?;
+                }
+                None => {
+                    table.remove(KEY_LLM_PROVIDER)?;
+                }
+            }
+            match model.as_deref() {
+                Some(bytes) => {
+                    table.insert(KEY_LLM_MODEL, bytes)?;
+                }
+                None => {
+                    table.remove(KEY_LLM_MODEL)?;
+                }
+            }
+            match api_key.as_deref() {
+                Some(bytes) => {
+                    table.insert(KEY_LLM_API_KEY, bytes)?;
+                }
+                None => {
+                    table.remove(KEY_LLM_API_KEY)?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Store a structured JSON value under a settings key.
     pub fn set_json_setting(
         &self,
@@ -1045,6 +1111,43 @@ mod tests {
         assert_eq!(db.get_json_setting("search_config").unwrap(), Some(value));
         assert!(db.remove_json_setting("search_config").unwrap());
         assert!(db.get_json_setting("search_config").unwrap().is_none());
+    }
+
+    #[test]
+    fn persisted_llm_settings_roundtrip_all_fields() {
+        let (_tmp, db) = test_db();
+        let settings = PersistedLlmSettings {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4.1".to_string()),
+            api_key: Some("secret-key".to_string()),
+        };
+
+        db.set_persisted_llm_settings(&settings).unwrap();
+
+        assert_eq!(db.get_persisted_llm_settings().unwrap(), settings);
+    }
+
+    #[test]
+    fn persisted_llm_settings_clears_absent_fields() {
+        let (_tmp, db) = test_db();
+
+        db.set_persisted_llm_settings(&PersistedLlmSettings {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4.1".to_string()),
+            api_key: Some("secret-key".to_string()),
+        })
+        .unwrap();
+        db.set_persisted_llm_settings(&PersistedLlmSettings {
+            provider: None,
+            model: None,
+            api_key: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            db.get_persisted_llm_settings().unwrap(),
+            PersistedLlmSettings::default()
+        );
     }
 
     #[test]
