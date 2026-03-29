@@ -1,7 +1,7 @@
 use axum::{Json, extract::State};
 use docbert_core::{
     results,
-    search::{self, SearchMode, SearchRequestCore},
+    search::{self, SearchMode, SearchQuery},
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,7 @@ pub async fn search(
             body.mode
         ))
     })?;
-    let request = SearchRequestCore {
+    let request = SearchQuery {
         query: body.query.clone(),
         collection: body.collection.clone(),
         count: body.count,

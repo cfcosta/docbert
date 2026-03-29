@@ -39,7 +39,7 @@ impl SearchMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct SearchRequestCore {
+pub struct SearchQuery {
     pub query: String,
     pub collection: Option<String>,
     pub count: usize,
@@ -319,7 +319,7 @@ pub fn execute_semantic_search(
 
 pub fn execute_search_mode(
     mode: SearchMode,
-    request: &SearchRequestCore,
+    request: &SearchQuery,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
     embedding_db: &EmbeddingDb,

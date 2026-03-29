@@ -186,7 +186,7 @@ pub(crate) fn run_search(
             &mut model,
         )?
     } else {
-        let request = search::SearchRequestCore {
+        let request = search::SearchQuery {
             query: args.query.clone(),
             collection: args.collection.clone(),
             count: args.count,
