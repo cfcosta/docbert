@@ -8,6 +8,11 @@ use crate::{error::ApiError, state::AppState};
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
 const API_INGEST_MTIME: u64 = 0;
+const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
+
+fn document_family_key(doc_id: u64) -> u64 {
+    doc_id & CHUNK_FAMILY_MASK
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedIngestDocument {
@@ -29,10 +34,10 @@ pub(crate) struct PersistedIngestDocument {
 }
 
 pub(crate) trait IngestionBackend {
-    fn delete_existing_documents(
+    fn load_document_family_embeddings(
         &mut self,
-        documents: &[PreparedIngestDocument],
-    ) -> Result<(), ApiError>;
+        base_doc_ids: &[u64],
+    ) -> Result<Vec<EmbeddingEntry>, ApiError>;
 
     fn stage_document(
         &mut self,
@@ -73,21 +78,42 @@ impl<'a> AppStateIngestionBackend<'a> {
 }
 
 impl IngestionBackend for AppStateIngestionBackend<'_> {
-    fn delete_existing_documents(
+    fn load_document_family_embeddings(
         &mut self,
-        documents: &[PreparedIngestDocument],
-    ) -> Result<(), ApiError> {
-        if documents.is_empty() {
-            return Ok(());
+        base_doc_ids: &[u64],
+    ) -> Result<Vec<EmbeddingEntry>, ApiError> {
+        if base_doc_ids.is_empty() {
+            return Ok(Vec::new());
         }
 
-        for document in documents {
-            self.state
-                .search_index
-                .delete_document(&self.writer, &document.did.to_string());
+        let family_keys: std::collections::HashSet<u64> = base_doc_ids
+            .iter()
+            .map(|&doc_id| document_family_key(doc_id))
+            .collect();
+        let doc_ids: Vec<u64> = self
+            .state
+            .embedding_db
+            .list_ids()?
+            .into_iter()
+            .filter(|doc_id| {
+                family_keys.contains(&document_family_key(*doc_id))
+            })
+            .collect();
+
+        let loaded = self.state.embedding_db.batch_load(&doc_ids)?;
+        let mut entries = Vec::with_capacity(loaded.len());
+        for (doc_id, matrix) in loaded {
+            let Some(matrix) = matrix else {
+                continue;
+            };
+            entries.push((
+                doc_id,
+                matrix.num_tokens,
+                matrix.dimension,
+                matrix.data,
+            ));
         }
-        self.writer.commit().map_err(ApiError::internal)?;
-        Ok(())
+        Ok(entries)
     }
 
     fn stage_document(
@@ -178,13 +204,23 @@ where
     pub(crate) fn execute(
         self,
     ) -> Result<Vec<PersistedIngestDocument>, ApiError> {
-        let embedding_ids: Vec<u64> = self
+        let replacement_doc_ids: Vec<u64> = self
+            .documents
+            .iter()
+            .map(|document| document.did.numeric)
+            .collect();
+        let current_embedding_ids: Vec<u64> = self
             .embedding_entries
             .iter()
             .map(|(doc_id, _, _, _)| *doc_id)
             .collect();
-
-        self.backend.delete_existing_documents(self.documents)?;
+        let existing_embeddings = self
+            .backend
+            .load_document_family_embeddings(&replacement_doc_ids)?;
+        let existing_embedding_ids: Vec<u64> = existing_embeddings
+            .iter()
+            .map(|(doc_id, _, _, _)| *doc_id)
+            .collect();
 
         for document in self.documents {
             if let Err(error) =
@@ -202,6 +238,23 @@ where
             return Err(error);
         }
 
+        let restore_previous_embeddings = |backend: &mut B, context: &str| {
+            let previous_embedding_ids: std::collections::HashSet<u64> =
+                existing_embedding_ids.iter().copied().collect();
+            let stale_new_ids: Vec<u64> = current_embedding_ids
+                .iter()
+                .copied()
+                .filter(|doc_id| !previous_embedding_ids.contains(doc_id))
+                .collect();
+            backend.remove_embeddings(&stale_new_ids, context);
+            if !existing_embeddings.is_empty()
+                && let Err(error) =
+                    backend.store_embeddings(&existing_embeddings)
+            {
+                tracing::warn!(error = ?error, %context, "failed to restore previous embeddings");
+            }
+        };
+
         let mut persisted_doc_ids = Vec::with_capacity(self.documents.len());
         let mut ingested_documents = Vec::with_capacity(self.documents.len());
 
@@ -211,8 +264,8 @@ where
                 .persist_document_artifacts(self.collection, document)
             {
                 self.backend.rollback_staged_documents();
-                self.backend.remove_embeddings(
-                    &embedding_ids,
+                restore_previous_embeddings(
+                    self.backend,
                     "metadata persistence failed",
                 );
                 self.backend.remove_persisted_documents(
@@ -232,14 +285,22 @@ where
         }
 
         if let Err(error) = self.backend.commit_documents() {
-            self.backend
-                .remove_embeddings(&embedding_ids, "tantivy commit failed");
+            restore_previous_embeddings(self.backend, "tantivy commit failed");
             self.backend.remove_persisted_documents(
                 &persisted_doc_ids,
                 "tantivy commit failed",
             );
             return Err(error);
         }
+
+        let current_embedding_ids: std::collections::HashSet<u64> =
+            current_embedding_ids.iter().copied().collect();
+        let stale_previous_ids: Vec<u64> = existing_embedding_ids
+            .into_iter()
+            .filter(|doc_id| !current_embedding_ids.contains(doc_id))
+            .collect();
+        self.backend
+            .remove_embeddings(&stale_previous_ids, "replacement committed");
 
         Ok(ingested_documents)
     }
@@ -259,12 +320,25 @@ pub(crate) fn document_metadata(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use docbert_core::{
+        ConfigDb,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
+        chunking::chunk_doc_id,
+        incremental,
+    };
+
     use super::*;
+    use crate::state::Inner;
 
     struct FakeIngestionBackend {
-        deleted_doc_ids: Vec<String>,
+        loaded_embeddings: Vec<EmbeddingEntry>,
         staged_doc_ids: Vec<String>,
         stored_embedding_ids: Vec<u64>,
+        store_call_count: usize,
         removed_embedding_ids: Vec<u64>,
         removed_persisted_doc_ids: Vec<u64>,
         rollback_count: usize,
@@ -279,9 +353,10 @@ mod tests {
     impl FakeIngestionBackend {
         fn new() -> Self {
             Self {
-                deleted_doc_ids: Vec::new(),
+                loaded_embeddings: Vec::new(),
                 staged_doc_ids: Vec::new(),
                 stored_embedding_ids: Vec::new(),
+                store_call_count: 0,
                 removed_embedding_ids: Vec::new(),
                 removed_persisted_doc_ids: Vec::new(),
                 rollback_count: 0,
@@ -296,15 +371,11 @@ mod tests {
     }
 
     impl IngestionBackend for FakeIngestionBackend {
-        fn delete_existing_documents(
+        fn load_document_family_embeddings(
             &mut self,
-            documents: &[PreparedIngestDocument],
-        ) -> Result<(), ApiError> {
-            self.deleted_doc_ids = documents
-                .iter()
-                .map(|document| document.did.to_string())
-                .collect();
-            Ok(())
+            _base_doc_ids: &[u64],
+        ) -> Result<Vec<EmbeddingEntry>, ApiError> {
+            Ok(self.loaded_embeddings.clone())
         }
 
         fn stage_document(
@@ -331,6 +402,7 @@ mod tests {
             if self.fail_on_store_embeddings {
                 return Err(ApiError::internal("store_embeddings failed"));
             }
+            self.store_call_count += 1;
             self.stored_embedding_ids =
                 entries.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
             Ok(())
@@ -371,6 +443,131 @@ mod tests {
                 return Err(ApiError::internal("commit_documents failed"));
             }
             Ok(())
+        }
+    }
+
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let writer = search_index.writer(15_000_000).unwrap();
+        let state = Arc::new(Inner {
+            config_db,
+            search_index,
+            embedding_db,
+            model: Mutex::new(ModelManager::new()),
+            writer: Mutex::new(writer),
+        });
+
+        (tmp, state)
+    }
+
+    fn seed_existing_document(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+        title: &str,
+        body: &str,
+        chunk_count: usize,
+    ) -> DocumentId {
+        state.config_db.set_managed_collection(collection).unwrap();
+        let did = DocumentId::new(collection, path);
+        let metadata = incremental::DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: API_INGEST_MTIME,
+        };
+        state
+            .config_db
+            .put_document_artifacts(did.numeric, &metadata, body, None)
+            .unwrap();
+        {
+            let mut writer = state.writer.lock().unwrap();
+            state
+                .search_index
+                .add_document(
+                    &writer,
+                    &did.to_string(),
+                    did.numeric,
+                    collection,
+                    path,
+                    title,
+                    body,
+                    API_INGEST_MTIME,
+                )
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        state.embedding_db.store(did.numeric, 1, 1, &[1.0]).unwrap();
+        for chunk_index in 1..chunk_count {
+            state
+                .embedding_db
+                .store(
+                    chunk_doc_id(did.numeric, chunk_index),
+                    1,
+                    1,
+                    &[chunk_index as f32],
+                )
+                .unwrap();
+        }
+        did
+    }
+
+    struct FailPersistBackend<'a> {
+        inner: AppStateIngestionBackend<'a>,
+    }
+
+    impl IngestionBackend for FailPersistBackend<'_> {
+        fn load_document_family_embeddings(
+            &mut self,
+            base_doc_ids: &[u64],
+        ) -> Result<Vec<EmbeddingEntry>, ApiError> {
+            self.inner.load_document_family_embeddings(base_doc_ids)
+        }
+
+        fn stage_document(
+            &mut self,
+            collection: &str,
+            document: &PreparedIngestDocument,
+        ) -> Result<(), ApiError> {
+            self.inner.stage_document(collection, document)
+        }
+
+        fn rollback_staged_documents(&mut self) {
+            self.inner.rollback_staged_documents();
+        }
+
+        fn store_embeddings(
+            &mut self,
+            entries: &[EmbeddingEntry],
+        ) -> Result<(), ApiError> {
+            self.inner.store_embeddings(entries)
+        }
+
+        fn remove_embeddings(&mut self, doc_ids: &[u64], context: &str) {
+            self.inner.remove_embeddings(doc_ids, context);
+        }
+
+        fn persist_document_artifacts(
+            &mut self,
+            _collection: &str,
+            _document: &PreparedIngestDocument,
+        ) -> Result<(), ApiError> {
+            Err(ApiError::internal("persist_document_artifacts failed"))
+        }
+
+        fn remove_persisted_documents(
+            &mut self,
+            doc_ids: &[u64],
+            context: &str,
+        ) {
+            self.inner.remove_persisted_documents(doc_ids, context);
+        }
+
+        fn commit_documents(&mut self) -> Result<(), ApiError> {
+            self.inner.commit_documents()
         }
     }
 
@@ -514,6 +711,133 @@ mod tests {
     }
 
     #[test]
+    fn replacement_failure_restores_previous_searchable_document_state() {
+        let (_tmp, state) = test_state();
+        let did = seed_existing_document(
+            &state,
+            "notes",
+            "note.md",
+            "Legacy Title",
+            "legacy body",
+            2,
+        );
+        let replacement_document = PreparedIngestDocument {
+            did: did.clone(),
+            path: "note.md".to_string(),
+            title: "Replacement Title".to_string(),
+            body: "replacement body".to_string(),
+            content: "replacement body".to_string(),
+            metadata: None,
+            embedding_chunks: vec![],
+        };
+        let replacement_embeddings = vec![
+            (did.numeric, 1, 1, vec![9.0]),
+            (chunk_doc_id(did.numeric, 1), 1, 1, vec![8.0]),
+            (chunk_doc_id(did.numeric, 2), 1, 1, vec![7.0]),
+        ];
+        let mut backend = FailPersistBackend {
+            inner: AppStateIngestionBackend::new(&state).unwrap(),
+        };
+
+        let error = DocumentIngestCommand {
+            backend: &mut backend,
+            collection: "notes",
+            documents: &[replacement_document],
+            embedding_entries: &replacement_embeddings,
+        }
+        .execute()
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::Internal(_)));
+        assert_eq!(
+            state.config_db.get_document_content(did.numeric).unwrap(),
+            Some("legacy body".to_string())
+        );
+        assert_eq!(state.search_index.search("legacy", 10).unwrap().len(), 1);
+        assert!(
+            state
+                .search_index
+                .search("replacement", 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(state.embedding_db.load(did.numeric).unwrap().is_some());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(did.numeric, 1))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(did.numeric, 2))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn replacement_success_removes_stale_old_chunk_embeddings() {
+        let (_tmp, state) = test_state();
+        let did = seed_existing_document(
+            &state,
+            "notes",
+            "note.md",
+            "Legacy Title",
+            "legacy body",
+            3,
+        );
+        let replacement_document = PreparedIngestDocument {
+            did: did.clone(),
+            path: "note.md".to_string(),
+            title: "Replacement Title".to_string(),
+            body: "replacement body".to_string(),
+            content: "replacement body".to_string(),
+            metadata: None,
+            embedding_chunks: vec![],
+        };
+        let replacement_embeddings = vec![(did.numeric, 1, 1, vec![9.0])];
+        let mut backend = AppStateIngestionBackend::new(&state).unwrap();
+
+        let ingested = DocumentIngestCommand {
+            backend: &mut backend,
+            collection: "notes",
+            documents: &[replacement_document],
+            embedding_entries: &replacement_embeddings,
+        }
+        .execute()
+        .unwrap();
+
+        assert_eq!(ingested.len(), 1);
+        assert_eq!(
+            state.config_db.get_document_content(did.numeric).unwrap(),
+            Some("replacement body".to_string())
+        );
+        assert_eq!(
+            state.search_index.search("replacement", 10).unwrap().len(),
+            1
+        );
+        assert!(state.search_index.search("legacy", 10).unwrap().is_empty());
+        assert!(state.embedding_db.load(did.numeric).unwrap().is_some());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(did.numeric, 1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(did.numeric, 2))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn ingest_preserves_response_document_order_for_multi_document_success() {
         let documents = vec![
             prepared_document("notes", "b.md"),
@@ -538,8 +862,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["b.md", "a.md"]
         );
-        assert_eq!(backend.deleted_doc_ids.len(), 2);
         assert_eq!(backend.staged_doc_ids.len(), 2);
+        assert_eq!(backend.store_call_count, 1);
         assert_eq!(backend.commit_count, 1);
     }
 }
