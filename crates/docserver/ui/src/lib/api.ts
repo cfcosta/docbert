@@ -93,15 +93,6 @@ export interface ChatSource {
   title: string;
 }
 
-export interface ChatToolCall {
-  name: string;
-  args: Record<string, unknown>;
-  result?: string;
-  is_error?: boolean;
-}
-
-export type ChatContentPart = { type: "text"; text: string } | { type: "thinking"; text: string };
-
 export type ChatPart =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
@@ -132,8 +123,6 @@ export interface ChatMessage {
   actor?: ChatActor;
   content: string;
   sources?: ChatSource[];
-  tool_calls?: ChatToolCall[];
-  content_parts?: ChatContentPart[];
 }
 
 export interface ConversationFull {

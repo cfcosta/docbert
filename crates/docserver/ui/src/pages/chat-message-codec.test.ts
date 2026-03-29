@@ -46,18 +46,17 @@ describe("chat-message-codec", () => {
     expect(apiMessages[1].actor).toEqual({ type: "parent" });
   });
 
-  test("apiToMessages_rehydrates_legacy_messages_without_parts", () => {
-    const legacyMessages: ConversationFull["messages"] = [
+  test("apiToMessages_consumes_normalized_message_parts", () => {
+    const normalizedMessages: ConversationFull["messages"] = [
       {
-        id: "assistant-legacy",
+        id: "assistant-normalized",
         role: "assistant",
-        content: "",
-        content_parts: [
+        content: "Answer",
+        parts: [
           { type: "thinking", text: "Planning" },
           { type: "text", text: "Answer" },
-        ],
-        tool_calls: [
           {
+            type: "tool_call",
             name: "search_hybrid",
             args: { query: "rust" },
             result: "[]",
@@ -68,7 +67,7 @@ describe("chat-message-codec", () => {
       },
     ];
 
-    const messages = apiToMessages(legacyMessages);
+    const messages = apiToMessages(normalizedMessages);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe("Answer");

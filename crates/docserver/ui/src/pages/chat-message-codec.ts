@@ -69,33 +69,6 @@ export function contentFromParts(parts: ContentPart[]): string {
     .join("");
 }
 
-export function legacyParts(message: ConversationFull["messages"][number]): ContentPart[] {
-  const parts: ContentPart[] = [];
-  if (message.content_parts && message.content_parts.length > 0) {
-    for (const part of message.content_parts) {
-      parts.push({ type: part.type, text: part.text });
-    }
-  } else if (message.content) {
-    parts.push({ type: "text", text: message.content });
-  }
-
-  if (message.tool_calls && message.tool_calls.length > 0) {
-    for (const toolCall of message.tool_calls) {
-      parts.push({
-        type: "tool_call",
-        call: {
-          name: toolCall.name,
-          args: toolCall.args,
-          result: toolCall.result,
-          isError: toolCall.is_error,
-        },
-      });
-    }
-  }
-
-  return parts;
-}
-
 export function messagesToApi(messages: Message[]): ConversationFull["messages"] {
   return messages.map((message) => {
     const parts = (message.parts ?? []).map(toApiPart);
@@ -116,10 +89,7 @@ export function messagesToApi(messages: Message[]): ConversationFull["messages"]
 
 export function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
   return msgs.map((message) => {
-    const parts =
-      (message.parts && message.parts.length > 0
-        ? message.parts.map(fromApiPart)
-        : legacyParts(message)) || [];
+    const parts = (message.parts ?? []).map(fromApiPart);
 
     return {
       id: message.id,

@@ -667,4 +667,35 @@ mod tests {
 
         assert_eq!(decoded.messages[0].parts, conv.messages[0].parts);
     }
+
+    #[test]
+    fn normalized_conversation_json_omits_legacy_message_fields() {
+        let conv = Conversation {
+            id: "conv-1".to_string(),
+            title: "Chat".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            messages: vec![ChatMessage {
+                id: "msg-1".to_string(),
+                role: ChatRole::Assistant,
+                actor: Some(ChatActor::Parent),
+                parts: vec![
+                    ChatPart::Thinking {
+                        text: "Planning".to_string(),
+                    },
+                    ChatPart::Text {
+                        text: "Answer".to_string(),
+                    },
+                ],
+                sources: None,
+            }],
+        };
+
+        let json = serde_json::to_value(&conv).unwrap();
+        let message = &json["messages"][0];
+
+        assert!(message.get("parts").is_some());
+        assert!(message.get("tool_calls").is_none());
+        assert!(message.get("content_parts").is_none());
+    }
 }
