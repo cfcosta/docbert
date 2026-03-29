@@ -16,7 +16,7 @@ docbert-core = { path = "../docbert/crates/docbert-core" }
 ```rust,no_run
 use std::path::Path;
 use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
-use docbert_core::search::{SearchMode, SearchRequestCore, execute_search_mode};
+use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
 
 fn main() -> docbert_core::Result<()> {
     // The caller decides where docbert stores its state.
@@ -26,7 +26,7 @@ fn main() -> docbert_core::Result<()> {
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::new();
 
-    let request = SearchRequestCore {
+    let request = SearchQuery {
         query: "rust ownership".to_string(),
         collection: None,
         count: 10,
@@ -53,11 +53,11 @@ fn main() -> docbert_core::Result<()> {
 
 The most useful thing to know as an embedder is that `docbert` and `docserver` now use the same core contracts for the parts that matter most:
 
-- `document_preparation::prepare_markdown(...)` for markdown normalization and title derivation
-- `document_preparation::PreparedSearchDocument` for the shared searchable-document shape
-- `document_preparation::embedding_chunks(...)` and `collect_chunks(...)` for chunk-to-embedding inputs
-- `search::SearchMode`, `SearchRequestCore`, and `execute_search_mode(...)` for the common search entrypoint
-- `search_results::enrich(...)` for adding user metadata before rendering an API or CLI-specific response
+- `preparation::prepare_markdown(...)` for markdown normalization and title derivation
+- `preparation::SearchDocument` for the shared searchable-document shape
+- `preparation::embedding_chunks(...)` and `collect_chunks(...)` for chunk-to-embedding inputs
+- `search::SearchMode`, `SearchQuery`, and `execute_search_mode(...)` for the common search entrypoint
+- `results::enrich(...)` for adding user metadata before rendering an API or CLI-specific response
 
 The CLI and server still keep their own boundary behavior. For example, the CLI chooses chunk sizes from `ChunkingConfig`, while docserver keeps its default API chunking settings.
 
@@ -222,11 +222,11 @@ fn main() -> docbert_core::Result<()> {
 }
 ```
 
-### `PreparedSearchDocument` and `document_preparation`
+### `SearchDocument` and `preparation`
 
 If you are embedding docbert in another application, this is the main place where indexing-related behavior is shared now.
 
-`PreparedSearchDocument` is the common searchable-document shape used by both the CLI and docserver paths. It keeps:
+`SearchDocument` is the common searchable-document shape used by both the CLI and docserver paths. It keeps:
 
 - `did`: stable `DocumentId`
 - `relative_path`: path within the collection
@@ -238,8 +238,8 @@ If you are embedding docbert in another application, this is the main place wher
 
 ```rust,no_run
 use std::path::Path;
-use docbert_core::document_preparation::{
-    PreparedSearchDocument,
+use docbert_core::preparation::{
+    SearchDocument,
     prepare_markdown,
     prepare_filesystem,
     prepare_uploaded,
@@ -253,7 +253,7 @@ fn main() -> docbert_core::Result<()> {
     assert_eq!(prepared.title, "Guide");
     assert_eq!(prepared.searchable_body, "# Guide\n\nBody");
 
-    let uploaded: PreparedSearchDocument = prepare_uploaded(
+    let uploaded: SearchDocument = prepare_uploaded(
         "notes",
         "guide.md",
         "# Guide\n\nBody",
@@ -304,7 +304,7 @@ If you do not need CLI-only flags like `bm25_only`, `no_fuzzy`, or `all`, use th
 
 ```rust,no_run
 use docbert_core::{ConfigDb, SearchIndex, EmbeddingDb, ModelManager};
-use docbert_core::search::{SearchMode, SearchRequestCore, execute_search_mode};
+use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
 
 fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
@@ -312,7 +312,7 @@ fn main() -> docbert_core::Result<()> {
     let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
 
-    let request = SearchRequestCore {
+    let request = SearchQuery {
         query: "rust memory safety".to_string(),
         collection: Some("docs".to_string()),
         count: 10,
@@ -430,12 +430,12 @@ fn main() -> docbert_core::Result<()> {
 
 Long documents can be split into overlapping chunks before embedding.
 
-At the low level, `chunk_text(...)` and `chunk_doc_id(...)` are still available. If you are working with the shared prepared-document model, prefer the higher-level helpers in `document_preparation`.
+At the low level, `chunk_text(...)` and `chunk_doc_id(...)` are still available. If you are working with the shared prepared-document model, prefer the higher-level helpers in `preparation`.
 
 ```rust,ignore
 use std::path::Path;
 use docbert_core::chunking::{ChunkingConfig, chunk_doc_id, chunk_text};
-use docbert_core::document_preparation::{
+use docbert_core::preparation::{
     embedding_chunks,
     collect_chunks,
     prepare_filesystem,
@@ -474,8 +474,8 @@ let chunk1_id = chunk_doc_id(base_id, 1); // unique ID for chunk 1
 If you are building your own HTTP or TUI layer, core now exposes a small helper for attaching per-document metadata before rendering:
 
 ```rust,no_run
-use docbert_core::search::{SearchMode, SearchRequestCore, execute_search_mode};
-use docbert_core::search_results::enrich;
+use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+use docbert_core::results::enrich;
 use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
 
 fn main() -> docbert_core::Result<()> {
@@ -486,7 +486,7 @@ fn main() -> docbert_core::Result<()> {
 
     let results = execute_search_mode(
         SearchMode::Hybrid,
-        &SearchRequestCore {
+        &SearchQuery {
             query: "rust".to_string(),
             collection: None,
             count: 5,

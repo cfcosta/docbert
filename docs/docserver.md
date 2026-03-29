@@ -233,7 +233,7 @@ The `content_type` field on ingestion requests is the extension point for suppor
    - A document title
 3. The rest of the pipeline is format-agnostic
 
-For Markdown, the processor now reuses `docbert-core::document_preparation::prepare_markdown(...)`, so docserver and the CLI derive titles and searchable bodies from the same core logic.
+For Markdown, the processor now reuses `docbert-core::preparation::prepare_markdown(...)`, so docserver and the CLI derive titles and searchable bodies from the same core logic.
 
 ## Error responses
 

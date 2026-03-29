@@ -17,7 +17,7 @@ Actual discovery and change detection happen during `docbert sync` and `docbert 
 
 For each new or modified document:
 
-1. Prepare the document through the shared `docbert_core::document_preparation` path, which strips markdown frontmatter and derives the title from the first heading or the filename
+1. Prepare the document through the shared `docbert_core::preparation` path, which strips markdown frontmatter and derives the title from the first heading or the filename
 2. If the document is already in the Tantivy index, delete the old entry by document ID
 3. Add a new Tantivy document with `doc_id`, `collection`, `relative_path`, `title`, `body`, and `mtime`
 4. After the batch finishes, call `commit()` to flush changes to disk
