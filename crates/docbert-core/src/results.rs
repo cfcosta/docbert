@@ -1,7 +1,7 @@
 use crate::search::FinalResult;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EnrichedSearchResult {
+pub struct SearchHit {
     pub rank: usize,
     pub score: f32,
     pub doc_id: String,
@@ -14,13 +14,13 @@ pub struct EnrichedSearchResult {
 pub fn enrich<F>(
     results: Vec<FinalResult>,
     mut load_metadata: F,
-) -> Vec<EnrichedSearchResult>
+) -> Vec<SearchHit>
 where
     F: FnMut(u64) -> Option<serde_json::Value>,
 {
     results
         .into_iter()
-        .map(|r| EnrichedSearchResult {
+        .map(|r| SearchHit {
             rank: r.rank,
             score: r.score,
             doc_id: r.doc_id,

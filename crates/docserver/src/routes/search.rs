@@ -1,7 +1,7 @@
 use axum::{Json, extract::State};
 use docbert_core::{
+    results,
     search::{self, SearchMode, SearchRequestCore},
-    search_results,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,20 +73,19 @@ pub async fn search(
         &mut model,
     )?;
 
-    let items = search_results::enrich(results, |doc_id| {
-        load_user_metadata(&state, doc_id)
-    })
-    .into_iter()
-    .map(|r| SearchResultItem {
-        rank: r.rank,
-        score: r.score,
-        doc_id: r.doc_id,
-        collection: r.collection,
-        path: r.path,
-        title: r.title,
-        metadata: r.metadata,
-    })
-    .collect::<Vec<_>>();
+    let items =
+        results::enrich(results, |doc_id| load_user_metadata(&state, doc_id))
+            .into_iter()
+            .map(|r| SearchResultItem {
+                rank: r.rank,
+                score: r.score,
+                doc_id: r.doc_id,
+                collection: r.collection,
+                path: r.path,
+                title: r.title,
+                metadata: r.metadata,
+            })
+            .collect::<Vec<_>>();
 
     let result_count = items.len();
     Ok(Json(SearchResponse {
