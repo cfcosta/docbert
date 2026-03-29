@@ -14,6 +14,7 @@ use crate::model_manager::DEFAULT_DOCUMENT_LENGTH;
 
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
+const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
 
 /// Default chunk size in characters (roughly ~519 tokens / ~2K chars).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
@@ -272,6 +273,14 @@ pub fn parse_chunk_doc_id(chunk_id: u64) -> (u64, usize) {
     }
 }
 
+/// Return the document-family key shared by a base document ID and its chunks.
+///
+/// Chunk IDs encode the chunk index in the high 16 bits, so the low 48 bits
+/// identify the whole document family.
+pub fn document_family_key(doc_id: u64) -> u64 {
+    doc_id & CHUNK_FAMILY_MASK
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -329,6 +338,29 @@ mod tests {
         let (recovered, idx) = parse_chunk_doc_id(chunk1_id);
         assert_eq!(recovered, base);
         assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn document_family_key_groups_base_ids_and_chunk_ids() {
+        let base_doc_id = crate::DocumentId::new("notes", "hello.md").numeric;
+        let other_doc_id = crate::DocumentId::new("notes", "other.md").numeric;
+
+        assert_eq!(
+            document_family_key(base_doc_id),
+            base_doc_id & CHUNK_FAMILY_MASK
+        );
+        assert_eq!(
+            document_family_key(chunk_doc_id(base_doc_id, 1)),
+            document_family_key(base_doc_id)
+        );
+        assert_eq!(
+            document_family_key(chunk_doc_id(base_doc_id, 42)),
+            document_family_key(base_doc_id)
+        );
+        assert_ne!(
+            document_family_key(other_doc_id),
+            document_family_key(base_doc_id)
+        );
     }
 
     #[test]
