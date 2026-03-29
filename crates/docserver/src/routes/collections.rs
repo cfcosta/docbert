@@ -77,7 +77,9 @@ pub async fn delete(
         }
     }
     if !ids_to_remove.is_empty() {
-        state.embedding_db.batch_remove(&ids_to_remove)?;
+        state
+            .embedding_db
+            .batch_remove_document_families(&ids_to_remove)?;
         state
             .config_db
             .batch_remove_document_artifacts(&ids_to_remove)?;
@@ -97,6 +99,7 @@ mod tests {
         DocumentId,
         EmbeddingDb,
         SearchIndex,
+        chunking::chunk_doc_id,
         incremental,
     };
 
@@ -142,6 +145,14 @@ mod tests {
                 Some(&serde_json::json!({ "topic": "rust" })),
             )
             .unwrap();
+        state
+            .embedding_db
+            .store(did.numeric, 1, 2, &[1.0, 2.0])
+            .unwrap();
+        state
+            .embedding_db
+            .store(chunk_doc_id(did.numeric, 1), 1, 2, &[3.0, 4.0])
+            .unwrap();
 
         did.numeric
     }
@@ -179,6 +190,46 @@ mod tests {
                 .get_document_user_metadata(doc_id)
                 .unwrap()
                 .is_none()
+        );
+        assert!(state.embedding_db.load(doc_id).unwrap().is_none());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(doc_id, 1))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_delete_keeps_other_collection_chunk_families() {
+        let (_tmp, state) = test_state();
+        let notes_doc_id =
+            seed_collection_document(&state, "notes", "hello.md");
+        let docs_doc_id = seed_collection_document(&state, "docs", "guide.md");
+
+        let status = delete(State(state.clone()), Path("notes".to_string()))
+            .await
+            .unwrap()
+            .into_response()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        assert!(state.embedding_db.load(notes_doc_id).unwrap().is_none());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(notes_doc_id, 1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.embedding_db.load(docs_doc_id).unwrap().is_some());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(docs_doc_id, 1))
+                .unwrap()
+                .is_some()
         );
     }
 }

@@ -312,7 +312,7 @@ pub async fn delete(
     }
 
     // Delete embeddings (base + chunks).
-    let _ = state.embedding_db.remove(did.numeric);
+    let _ = state.embedding_db.remove_document_family(did.numeric)?;
 
     // Delete stored metadata and document artifacts.
     let _ = state.config_db.remove_document_artifacts(did.numeric)?;
@@ -340,6 +340,7 @@ mod tests {
         EmbeddingDb,
         ModelManager,
         SearchIndex,
+        chunking::chunk_doc_id,
         incremental,
     };
 
@@ -405,6 +406,28 @@ mod tests {
             writer.commit().unwrap();
         }
         did
+    }
+
+    fn seed_document_embeddings(
+        state: &AppState,
+        did: DocumentId,
+        chunk_indices: &[usize],
+    ) {
+        state
+            .embedding_db
+            .store(did.numeric, 1, 2, &[1.0, 2.0])
+            .unwrap();
+        for &chunk_index in chunk_indices {
+            state
+                .embedding_db
+                .store(
+                    chunk_doc_id(did.numeric, chunk_index),
+                    1,
+                    2,
+                    &[3.0, 4.0],
+                )
+                .unwrap();
+        }
     }
 
     #[test]
@@ -529,6 +552,7 @@ mod tests {
             "# Hello\nBody",
             Some(serde_json::json!({ "topic": "rust" })),
         );
+        seed_document_embeddings(&state, did.clone(), &[1]);
 
         let document = get(
             State(state.clone()),
@@ -572,6 +596,14 @@ mod tests {
             state
                 .config_db
                 .get_document_user_metadata(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.embedding_db.load(did.numeric).unwrap().is_none());
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(did.numeric, 1))
                 .unwrap()
                 .is_none()
         );

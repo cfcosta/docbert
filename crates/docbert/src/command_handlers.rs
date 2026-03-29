@@ -272,6 +272,15 @@ pub(crate) fn collection_add(
     Ok(())
 }
 
+fn remove_document_embeddings_for_ids(
+    embedding_db: &EmbeddingDb,
+    doc_ids: &[u64],
+) -> error::Result<()> {
+    embedding_db
+        .batch_remove_document_families(doc_ids)
+        .map(|_| ())
+}
+
 fn remove_document_artifacts_for_ids(
     config_db: &ConfigDb,
     doc_ids: &[u64],
@@ -307,7 +316,7 @@ pub(crate) fn collection_remove(
             (meta.collection == name).then_some(doc_id)
         })
         .collect();
-    embedding_db.batch_remove(&doc_ids)?;
+    remove_document_embeddings_for_ids(&embedding_db, &doc_ids)?;
     remove_document_artifacts_for_ids(config_db, &doc_ids)?;
 
     // Remove collection definition
@@ -880,7 +889,10 @@ pub(crate) fn cmd_rebuild(
             })
             .collect();
         if !args.index_only {
-            runtime.embedding_db.batch_remove(&old_doc_ids)?;
+            remove_document_embeddings_for_ids(
+                &runtime.embedding_db,
+                &old_doc_ids,
+            )?;
         }
         remove_document_artifacts_for_ids(config_db, &old_doc_ids)?;
 
@@ -988,7 +1000,10 @@ pub(crate) fn cmd_sync(
             }
             writer.commit()?;
 
-            runtime.embedding_db.batch_remove(&diff.deleted_ids)?;
+            remove_document_embeddings_for_ids(
+                &runtime.embedding_db,
+                &diff.deleted_ids,
+            )?;
             remove_document_artifacts_for_ids(config_db, &diff.deleted_ids)?;
             eprintln!("  Removed {} documents", diff.deleted_ids.len());
         }
@@ -1029,6 +1044,7 @@ mod tests {
     use docbert_core::{
         ConfigDb,
         DocumentId,
+        chunking::chunk_doc_id,
         incremental,
         model_manager::ModelSource,
     };
@@ -1062,6 +1078,28 @@ mod tests {
             )
             .unwrap();
         doc_id
+    }
+
+    fn seed_document_embeddings(
+        data_dir: &DataDir,
+        doc_id: &DocumentId,
+        chunk_indices: &[usize],
+    ) {
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        embedding_db
+            .store(doc_id.numeric, 1, 2, &[1.0, 2.0])
+            .unwrap();
+        for &chunk_index in chunk_indices {
+            embedding_db
+                .store(
+                    chunk_doc_id(doc_id.numeric, chunk_index),
+                    1,
+                    2,
+                    &[3.0, 4.0],
+                )
+                .unwrap();
+        }
     }
 
     #[test]
@@ -1137,6 +1175,7 @@ mod tests {
         let (_tmp, data_dir, config_db) = test_data_dir();
         config_db.set_collection("notes", "/tmp/notes").unwrap();
         let doc_id = seed_document_artifacts(&config_db, "notes", "hello.md");
+        seed_document_embeddings(&data_dir, &doc_id, &[1]);
 
         collection_remove(&config_db, &data_dir, "notes").unwrap();
 
@@ -1159,15 +1198,30 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        assert!(embedding_db.load(doc_id.numeric).unwrap().is_none());
+        assert!(
+            embedding_db
+                .load(chunk_doc_id(doc_id.numeric, 1))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn cli_sync_deleted_ids_remove_document_artifacts() {
-        let (_tmp, _data_dir, config_db) = test_data_dir();
+        let (_tmp, data_dir, config_db) = test_data_dir();
         let deleted =
             seed_document_artifacts(&config_db, "notes", "deleted.md");
         let retained = seed_document_artifacts(&config_db, "notes", "kept.md");
+        seed_document_embeddings(&data_dir, &deleted, &[1]);
+        seed_document_embeddings(&data_dir, &retained, &[1]);
 
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        remove_document_embeddings_for_ids(&embedding_db, &[deleted.numeric])
+            .unwrap();
         remove_document_artifacts_for_ids(&config_db, &[deleted.numeric])
             .unwrap();
 
@@ -1192,6 +1246,20 @@ mod tests {
         assert!(
             config_db
                 .get_document_metadata_typed(retained.numeric)
+                .unwrap()
+                .is_some()
+        );
+        assert!(embedding_db.load(deleted.numeric).unwrap().is_none());
+        assert!(
+            embedding_db
+                .load(chunk_doc_id(deleted.numeric, 1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(embedding_db.load(retained.numeric).unwrap().is_some());
+        assert!(
+            embedding_db
+                .load(chunk_doc_id(retained.numeric, 1))
                 .unwrap()
                 .is_some()
         );

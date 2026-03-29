@@ -2,13 +2,18 @@ use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::{chunking::parse_chunk_doc_id, error::Result};
+use crate::error::Result;
 
 const EMBEDDINGS: TableDefinition<u64, &[u8]> =
     TableDefinition::new("embeddings");
 
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
+const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
+
+fn document_family_key(doc_id: u64) -> u64 {
+    doc_id & CHUNK_FAMILY_MASK
+}
 
 fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
     if bytes.len() < HEADER_SIZE {
@@ -215,8 +220,10 @@ impl EmbeddingDb {
             return Ok(0);
         }
 
-        let base_doc_ids: std::collections::HashSet<u64> =
-            base_doc_ids.iter().copied().collect();
+        let family_keys: std::collections::HashSet<u64> = base_doc_ids
+            .iter()
+            .map(|&doc_id| document_family_key(doc_id))
+            .collect();
         let txn = self.db.begin_write()?;
         let removed = {
             let mut table = txn.open_table(EMBEDDINGS)?;
@@ -224,8 +231,7 @@ impl EmbeddingDb {
             for entry in table.iter()? {
                 let (key, _) = entry?;
                 let doc_id = key.value();
-                let (base_doc_id, _chunk_index) = parse_chunk_doc_id(doc_id);
-                if base_doc_ids.contains(&base_doc_id) {
+                if family_keys.contains(&document_family_key(doc_id)) {
                     doc_ids_to_remove.push(doc_id);
                 }
             }
@@ -416,7 +422,7 @@ impl EmbeddingMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunking::chunk_doc_id;
+    use crate::{DocumentId, chunking::chunk_doc_id};
 
     fn test_db() -> (tempfile::TempDir, EmbeddingDb) {
         let tmp = tempfile::tempdir().unwrap();
@@ -518,10 +524,10 @@ mod tests {
     #[test]
     fn remove_document_family_removes_base_and_chunk_embeddings_only() {
         let (_tmp, db) = test_db();
-        let base_doc_id = 42u64;
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
         let first_chunk_id = chunk_doc_id(base_doc_id, 1);
         let second_chunk_id = chunk_doc_id(base_doc_id, 2);
-        let unrelated_doc_id = 7u64;
+        let unrelated_doc_id = DocumentId::new("docs", "guide.md").numeric;
         let unrelated_chunk_id = chunk_doc_id(unrelated_doc_id, 1);
 
         db.store(base_doc_id, 1, 2, &[1.0, 2.0]).unwrap();
