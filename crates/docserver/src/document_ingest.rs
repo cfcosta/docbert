@@ -1,6 +1,6 @@
 use std::sync::MutexGuard;
 
-use docbert_core::{DocumentId, incremental};
+use docbert_core::{DocumentId, chunking::document_family_key, incremental};
 use tantivy::IndexWriter;
 
 use crate::{error::ApiError, state::AppState};
@@ -8,11 +8,6 @@ use crate::{error::ApiError, state::AppState};
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
 const API_INGEST_MTIME: u64 = 0;
-const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
-
-fn document_family_key(doc_id: u64) -> u64 {
-    doc_id & CHUNK_FAMILY_MASK
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedIngestDocument {

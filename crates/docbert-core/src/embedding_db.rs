@@ -2,18 +2,13 @@ use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::error::Result;
+use crate::{chunking::document_family_key, error::Result};
 
 const EMBEDDINGS: TableDefinition<u64, &[u8]> =
     TableDefinition::new("embeddings");
 
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
-const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
-
-fn document_family_key(doc_id: u64) -> u64 {
-    doc_id & CHUNK_FAMILY_MASK
-}
 
 fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
     if bytes.len() < HEADER_SIZE {
