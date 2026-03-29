@@ -233,7 +233,7 @@ The `content_type` field on ingestion requests is the extension point for suppor
    - A document title
 3. The rest of the pipeline is format-agnostic
 
-For Markdown, the processor reuses `docbert-core`'s existing logic: `text_util::strip_yaml_frontmatter` and `ingestion::extract_title`.
+For Markdown, the processor now reuses `docbert-core::document_preparation::prepare_markdown(...)`, so docserver and the CLI derive titles and searchable bodies from the same core logic.
 
 ## Error responses
 
@@ -270,7 +270,7 @@ docserver binary
     EmbeddingDb
     ModelManager (behind Mutex for lazy loading)
 
-  content.rs — content type validation and processing
+  content.rs — content type validation and non-markdown fallback processing
 
   depends on: docbert-core
 ```

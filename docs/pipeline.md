@@ -17,7 +17,7 @@ Actual discovery and change detection happen during `docbert sync` and `docbert 
 
 For each new or modified document:
 
-1. Parse the file and extract a title from the first heading or the filename
+1. Prepare the document through the shared `docbert_core::document_preparation` path, which strips markdown frontmatter and derives the title from the first heading or the filename
 2. If the document is already in the Tantivy index, delete the old entry by document ID
 3. Add a new Tantivy document with `doc_id`, `collection`, `relative_path`, `title`, `body`, and `mtime`
 4. After the batch finishes, call `commit()` to flush changes to disk
@@ -29,7 +29,7 @@ The Tantivy schema uses the `en_stem` tokenizer for the body field so English st
 For each new or modified document:
 
 1. Initialize the ColBERT model if it has not been loaded yet. The first load downloads model files from HuggingFace Hub.
-2. Split the document into chunks if it exceeds the model's document length. For local model directories, that length comes from `config_sentence_transformers.json`. Otherwise docbert falls back to the built-in chunk size of 519 tokens, or about 2K characters.
+2. Build chunk-to-embedding inputs from the shared prepared-document shape. The CLI uses its resolved `ChunkingConfig`, while docserver uses its API defaults.
 3. Encode each chunk with `model.encode(&chunks, false)`.
 4. Serialize the resulting `[num_tokens, 128]` `f32` matrix and store it in `embeddings.db`, keyed by the document's numeric ID.
 5. For chunked documents, store each chunk under a chunk-specific numeric ID derived from the base document ID.

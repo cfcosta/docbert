@@ -1,9 +1,4 @@
-import type {
-  ChatActor,
-  ChatPart as ApiChatPart,
-  ChatSource,
-  ConversationFull,
-} from "../lib/api";
+import type { ChatActor, ChatPart as ApiChatPart, ChatSource, ConversationFull } from "../lib/api";
 
 export interface ToolCallInfo {
   name: string;
