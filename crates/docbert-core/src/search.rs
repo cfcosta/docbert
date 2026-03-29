@@ -15,6 +15,37 @@ use crate::{
 
 const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Semantic,
+    Hybrid,
+}
+
+impl SearchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchMode::Semantic => "semantic",
+            SearchMode::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "semantic" => Some(SearchMode::Semantic),
+            "hybrid" => Some(SearchMode::Hybrid),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchRequestCore {
+    pub query: String,
+    pub collection: Option<String>,
+    pub count: usize,
+    pub min_score: f32,
+}
+
 /// Options for hybrid search: BM25 first, ColBERT reranking second.
 ///
 /// # Examples
@@ -284,6 +315,44 @@ pub fn execute_semantic_search(
     populate_titles(&mut results, config_db);
 
     Ok(results)
+}
+
+pub fn execute_search_mode(
+    mode: SearchMode,
+    request: &SearchRequestCore,
+    search_index: &SearchIndex,
+    config_db: &ConfigDb,
+    embedding_db: &EmbeddingDb,
+    model: &mut ModelManager,
+) -> Result<Vec<FinalResult>> {
+    match mode {
+        SearchMode::Semantic => execute_semantic_search(
+            &SemanticSearchParams {
+                query: request.query.clone(),
+                collection: request.collection.clone(),
+                count: request.count,
+                min_score: request.min_score,
+                all: false,
+            },
+            config_db,
+            embedding_db,
+            model,
+        ),
+        SearchMode::Hybrid => execute_search(
+            &SearchParams {
+                query: request.query.clone(),
+                count: request.count,
+                collection: request.collection.clone(),
+                min_score: request.min_score,
+                bm25_only: false,
+                no_fuzzy: false,
+                all: false,
+            },
+            search_index,
+            embedding_db,
+            model,
+        ),
+    }
 }
 
 /// Look up a document by its short ID, such as `"a1b2c3"` or `"#a1b2c3"`.
@@ -1443,6 +1512,23 @@ mod tests {
     }
 
     // -- Unit tests for helper functions --
+
+    #[test]
+    fn search_mode_parse_roundtrips_semantic() {
+        assert_eq!(SearchMode::parse("semantic"), Some(SearchMode::Semantic));
+        assert_eq!(SearchMode::Semantic.as_str(), "semantic");
+    }
+
+    #[test]
+    fn search_mode_parse_roundtrips_hybrid() {
+        assert_eq!(SearchMode::parse("hybrid"), Some(SearchMode::Hybrid));
+        assert_eq!(SearchMode::Hybrid.as_str(), "hybrid");
+    }
+
+    #[test]
+    fn search_mode_parse_rejects_unknown_value() {
+        assert_eq!(SearchMode::parse("bm25"), None);
+    }
 
     #[test]
     fn short_doc_id_format() {

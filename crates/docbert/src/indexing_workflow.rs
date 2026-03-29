@@ -1,8 +1,8 @@
 use docbert_core::{
     ConfigDb,
-    chunking::{self, ChunkingConfig},
+    document_preparation::PreparedSearchDocument,
     error,
-    ingestion::{self, LoadFailure, LoadedDocument},
+    ingestion::{self, LoadFailure},
     walker::DiscoveredFile,
 };
 
@@ -10,7 +10,7 @@ use crate::cli;
 
 #[derive(Debug, Default)]
 pub(crate) struct DocumentLoadBatch {
-    pub documents: Vec<LoadedDocument>,
+    pub documents: Vec<PreparedSearchDocument>,
     pub metadata_files: Vec<DiscoveredFile>,
     pub failures: Vec<LoadFailure>,
 }
@@ -62,33 +62,6 @@ pub(crate) fn load_sync_batch(
         metadata_files: result.loaded_files,
         failures: result.failures,
     }
-}
-
-pub(crate) fn chunk_documents_for_embedding<F>(
-    documents: &[LoadedDocument],
-    chunking_config: ChunkingConfig,
-    mut on_document_processed: F,
-) -> Vec<(u64, String)>
-where
-    F: FnMut(usize),
-{
-    let mut docs_to_embed = Vec::new();
-
-    for (i, document) in documents.iter().enumerate() {
-        let chunks = chunking::chunk_text(
-            &document.content,
-            chunking_config.chunk_size,
-            chunking_config.overlap,
-        );
-        for chunk in chunks {
-            let chunk_id =
-                chunking::chunk_doc_id(document.doc_num_id, chunk.index);
-            docs_to_embed.push((chunk_id, chunk.text));
-        }
-        on_document_processed(i + 1);
-    }
-
-    docs_to_embed
 }
 
 #[cfg(test)]
@@ -217,29 +190,67 @@ mod tests {
     }
 
     #[test]
-    fn chunk_documents_for_embedding_skips_frontmatter_only_docs() {
-        let docs = vec![LoadedDocument {
-            doc_id: "#abc123".to_string(),
-            doc_num_id: 123,
+    fn collect_embedding_chunks_skips_frontmatter_only_docs() {
+        let docs = vec![PreparedSearchDocument {
+            did: DocumentId::new("notes", "note.md"),
             relative_path: "note.md".to_string(),
             title: "note".to_string(),
-            content: String::new(),
+            searchable_body: String::new(),
+            raw_content: None,
+            metadata: None,
             mtime: 1,
         }];
 
-        let chunking_config = ChunkingConfig {
+        let chunking_config = docbert_core::chunking::ChunkingConfig {
             chunk_size: 100,
             overlap: 0,
             document_length: None,
         };
         let mut processed = 0;
         let chunks =
-            chunk_documents_for_embedding(&docs, chunking_config, |_| {
-                processed += 1;
-            });
+            docbert_core::document_preparation::collect_embedding_chunks(
+                &docs,
+                chunking_config,
+                |_| {
+                    processed += 1;
+                },
+            );
 
         assert!(chunks.is_empty());
         assert_eq!(processed, 1);
+    }
+
+    #[test]
+    fn load_rebuild_batch_returns_prepared_search_documents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Note\n\nBody").unwrap();
+        let files = docbert_core::walker::discover_files(&root).unwrap();
+
+        let batch =
+            load_rebuild_batch("notes", &files, &rebuild_args(false, false));
+
+        assert_eq!(batch.documents.len(), 1);
+        assert_eq!(batch.documents[0].relative_path, "note.md");
+        assert_eq!(batch.documents[0].title, "Note");
+        assert_eq!(batch.documents[0].searchable_body, "# Note\n\nBody");
+        assert!(batch.documents[0].raw_content.is_none());
+    }
+
+    #[test]
+    fn load_sync_batch_returns_prepared_search_documents() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("note.md"), "# Note\n\nBody").unwrap();
+        let files = docbert_core::walker::discover_files(tmp.path()).unwrap();
+
+        let batch = load_sync_batch("notes", &files);
+
+        assert_eq!(batch.documents.len(), 1);
+        assert_eq!(batch.documents[0].relative_path, "note.md");
+        assert_eq!(batch.documents[0].title, "Note");
+        assert_eq!(batch.documents[0].searchable_body, "# Note\n\nBody");
+        assert!(batch.documents[0].raw_content.is_none());
     }
 
     #[test]

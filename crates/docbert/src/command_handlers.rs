@@ -168,22 +168,39 @@ pub(crate) fn run_search(
         log_model_runtime(&mut model)?;
     }
 
-    let params = search::SearchParams {
-        query: args.query.clone(),
-        count: args.count,
-        collection: args.collection.clone(),
-        min_score: args.min_score,
-        bm25_only: args.bm25_only,
-        no_fuzzy: args.no_fuzzy,
-        all: args.all,
-    };
+    let results = if args.bm25_only || args.no_fuzzy || args.all {
+        let params = search::SearchParams {
+            query: args.query.clone(),
+            count: args.count,
+            collection: args.collection.clone(),
+            min_score: args.min_score,
+            bm25_only: args.bm25_only,
+            no_fuzzy: args.no_fuzzy,
+            all: args.all,
+        };
 
-    let results = search::execute_search(
-        &params,
-        &search_index,
-        &embedding_db,
-        &mut model,
-    )?;
+        search::execute_search(
+            &params,
+            &search_index,
+            &embedding_db,
+            &mut model,
+        )?
+    } else {
+        let request = search::SearchRequestCore {
+            query: args.query.clone(),
+            collection: args.collection.clone(),
+            count: args.count,
+            min_score: args.min_score,
+        };
+        search::execute_search_mode(
+            search::SearchMode::Hybrid,
+            &request,
+            &search_index,
+            config_db,
+            &embedding_db,
+            &mut model,
+        )?
+    };
 
     if args.json {
         search::format_json(&results, &args.query);
@@ -798,7 +815,7 @@ fn process_document_batch(
 
     if index_documents {
         let mut writer = runtime.search_index.writer(15_000_000)?;
-        let count = ingestion::ingest_loaded_documents(
+        let count = ingestion::ingest_prepared_documents(
             &runtime.search_index,
             &mut writer,
             collection,
@@ -810,13 +827,14 @@ fn process_document_batch(
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
-        let docs_to_embed = indexing_workflow::chunk_documents_for_embedding(
-            &document_batch.documents,
-            runtime.chunking_config,
-            |processed_count| {
-                let _ = pb.update_to(processed_count);
-            },
-        );
+        let docs_to_embed =
+            docbert_core::document_preparation::collect_embedding_chunks(
+                &document_batch.documents,
+                runtime.chunking_config,
+                |processed_count| {
+                    let _ = pb.update_to(processed_count);
+                },
+            );
         finish_progress_bar(&mut pb);
 
         if !docs_to_embed.is_empty() {

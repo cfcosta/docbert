@@ -1,9 +1,7 @@
 use axum::{Json, extract::State};
-use docbert_core::search::{
-    self,
-    FinalResult,
-    SearchParams,
-    SemanticSearchParams,
+use docbert_core::{
+    search::{self, SearchMode, SearchRequestCore},
+    search_results,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,14 +20,14 @@ pub struct SearchRequest {
 }
 
 fn default_mode() -> String {
-    "semantic".to_string()
+    SearchMode::Semantic.as_str().to_string()
 }
 
 fn default_count() -> usize {
     10
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct SearchResponse {
     query: String,
     mode: String,
@@ -37,7 +35,7 @@ pub struct SearchResponse {
     results: Vec<SearchResultItem>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct SearchResultItem {
     rank: usize,
     score: f32,
@@ -53,73 +51,51 @@ pub async fn search(
     State(state): State<AppState>,
     Json(body): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
-    let results = match body.mode.as_str() {
-        "semantic" => {
-            let params = SemanticSearchParams {
-                query: body.query.clone(),
-                collection: body.collection.clone(),
-                count: body.count,
-                min_score: body.min_score,
-                all: false,
-            };
-            let mut model = state.model.lock().map_err(ApiError::internal)?;
-            search::execute_semantic_search(
-                &params,
-                &state.config_db,
-                &state.embedding_db,
-                &mut model,
-            )?
-        }
-        "hybrid" => {
-            let params = SearchParams {
-                query: body.query.clone(),
-                count: body.count,
-                collection: body.collection.clone(),
-                min_score: body.min_score,
-                bm25_only: false,
-                no_fuzzy: false,
-                all: false,
-            };
-            let mut model = state.model.lock().map_err(ApiError::internal)?;
-            search::execute_search(
-                &params,
-                &state.search_index,
-                &state.embedding_db,
-                &mut model,
-            )?
-        }
-        other => {
-            return Err(ApiError::BadRequest(format!(
-                "unknown search mode: {other}; expected \"semantic\" or \"hybrid\""
-            )));
-        }
+    let mode = SearchMode::parse(&body.mode).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "unknown search mode: {}; expected \"semantic\" or \"hybrid\"",
+            body.mode
+        ))
+    })?;
+    let request = SearchRequestCore {
+        query: body.query.clone(),
+        collection: body.collection.clone(),
+        count: body.count,
+        min_score: body.min_score,
     };
+    let mut model = state.model.lock().map_err(ApiError::internal)?;
+    let results = search::execute_search_mode(
+        mode,
+        &request,
+        &state.search_index,
+        &state.config_db,
+        &state.embedding_db,
+        &mut model,
+    )?;
 
-    let items = results
+    let items =
+        search_results::enrich_results_with_metadata(results, |doc_id| {
+            load_user_metadata(&state, doc_id)
+        })
         .into_iter()
-        .map(|r| to_result_item(&state, r))
+        .map(|r| SearchResultItem {
+            rank: r.rank,
+            score: r.score,
+            doc_id: r.doc_id,
+            collection: r.collection,
+            path: r.path,
+            title: r.title,
+            metadata: r.metadata,
+        })
         .collect::<Vec<_>>();
 
     let result_count = items.len();
     Ok(Json(SearchResponse {
         query: body.query,
-        mode: body.mode,
+        mode: mode.as_str().to_string(),
         result_count,
         results: items,
     }))
-}
-
-fn to_result_item(state: &AppState, r: FinalResult) -> SearchResultItem {
-    let metadata = load_user_metadata(state, r.doc_num_id);
-    SearchResultItem {
-        rank: r.rank,
-        score: r.score,
-        doc_id: r.doc_id,
-        collection: r.collection,
-        path: r.path,
-        title: r.title,
-        metadata,
-    }
 }
 
 fn load_user_metadata(
@@ -131,4 +107,80 @@ fn load_user_metadata(
         .get_document_user_metadata(doc_numeric_id)
         .ok()
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+
+    use super::*;
+    use crate::state::Inner;
+
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let writer = search_index.writer(15_000_000).unwrap();
+        (
+            tmp,
+            Arc::new(Inner {
+                config_db,
+                search_index,
+                embedding_db,
+                model: Mutex::new(ModelManager::new()),
+                writer: Mutex::new(writer),
+            }),
+        )
+    }
+
+    #[test]
+    fn default_mode_is_semantic() {
+        assert_eq!(default_mode(), "semantic");
+    }
+
+    #[test]
+    fn load_user_metadata_returns_stored_metadata() {
+        let (_tmp, state) = test_state();
+        state
+            .config_db
+            .set_document_user_metadata(
+                7,
+                &serde_json::json!({"topic": "rust"}),
+            )
+            .unwrap();
+
+        assert_eq!(
+            load_user_metadata(&state, 7),
+            Some(serde_json::json!({"topic": "rust"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn search_rejects_unknown_mode() {
+        let (_tmp, state) = test_state();
+
+        let error = search(
+            State(state),
+            Json(SearchRequest {
+                query: "rust".to_string(),
+                mode: "bm25".to_string(),
+                collection: None,
+                count: 10,
+                min_score: 0.0,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("unknown search mode"));
+            }
+            other => panic!("expected bad request, got {other:?}"),
+        }
+    }
 }

@@ -47,6 +47,8 @@ export interface IngestResponse {
   documents: IngestedDoc[];
 }
 
+export type SearchMode = "semantic" | "hybrid";
+
 export interface SearchResult {
   rank: number;
   score: number;
@@ -59,7 +61,7 @@ export interface SearchResult {
 
 export interface SearchResponse {
   query: string;
-  mode: string;
+  mode: SearchMode;
   result_count: number;
   results: SearchResult[];
 }
@@ -207,7 +209,7 @@ export const api = {
 
   search: (params: {
     query: string;
-    mode?: string;
+    mode?: SearchMode;
     collection?: string;
     count?: number;
     min_score?: number;

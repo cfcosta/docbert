@@ -2,7 +2,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { Context, Message as PiMessage, Tool } from "@mariozechner/pi-ai";
 
 import { api } from "../lib/api";
-import type { SearchResult } from "../lib/api";
+import type { SearchMode, SearchResult } from "../lib/api";
 import { createToolResultMessage } from "./chat-context";
 import type { ToolCallInfo } from "./chat-message-codec";
 import { mergeCurrentTurnSearchResults, type ChatToolRuntimeState } from "./chat-subagents";
@@ -37,7 +37,7 @@ export const searchChatTools: Tool[] = [
 type ToolCall = { id: string; name: string; arguments: Record<string, unknown> };
 type SearchApi = typeof api.search;
 
-function searchModeForTool(name: string): "semantic" | "hybrid" | null {
+export function searchModeForTool(name: string): SearchMode | null {
   switch (name) {
     case "search_semantic":
       return "semantic";

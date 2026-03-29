@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Context } from "@mariozechner/pi-ai";
 
 import type { SearchResult } from "../lib/api";
-import { executeSearchToolCall, searchChatTools } from "./chat-tools";
+import { executeSearchToolCall, searchChatTools, searchModeForTool } from "./chat-tools";
 import type { ChatToolRuntimeState } from "./chat-subagents";
 
 function runtimeState(results: SearchResult[] = []): ChatToolRuntimeState {
@@ -116,6 +116,12 @@ describe("chat-tools", () => {
       isError: true,
       content: [{ type: "text", text: "Error: search failed" }],
     });
+  });
+
+  test("searchModeForTool_maps_search_tools", () => {
+    expect(searchModeForTool("search_semantic")).toBe("semantic");
+    expect(searchModeForTool("search_hybrid")).toBe("hybrid");
+    expect(searchModeForTool("unknown")).toBeNull();
   });
 
   test("searchChatTools_keeps_only_search_tool_definitions", () => {

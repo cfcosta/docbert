@@ -4,33 +4,11 @@ use rayon::prelude::*;
 use tantivy::IndexWriter;
 
 use crate::{
-    doc_id::DocumentId,
+    document_preparation::{self, PreparedSearchDocument},
     error::Result,
     tantivy_index::SearchIndex,
-    text_util,
     walker::DiscoveredFile,
 };
-
-/// Document that has already been read from disk and is ready for indexing.
-///
-/// Returned by [`load_documents`]. It keeps the derived metadata and file
-/// contents around so later stages do not need to read the file again.
-#[derive(Debug, Clone)]
-pub struct LoadedDocument {
-    /// Short display document ID (e.g. `#a1b2c3`).
-    pub doc_id: String,
-    /// Numeric document ID used as database key.
-    pub doc_num_id: u64,
-    /// Relative path within the collection.
-    pub relative_path: String,
-    /// Extracted title (first `# ` heading or filename fallback).
-    pub title: String,
-    /// Document content used for indexing and embedding, with leading YAML
-    /// frontmatter stripped when present.
-    pub content: String,
-    /// Last modification time (seconds since Unix epoch).
-    pub mtime: u64,
-}
 
 /// A file that could not be read during document loading.
 #[derive(Debug, Clone)]
@@ -45,7 +23,7 @@ pub struct LoadFailure {
 #[derive(Debug, Clone, Default)]
 pub struct LoadDocumentsResult {
     /// Successfully loaded documents in file order.
-    pub documents: Vec<LoadedDocument>,
+    pub documents: Vec<PreparedSearchDocument>,
     /// Discovered files that were loaded successfully.
     pub loaded_files: Vec<DiscoveredFile>,
     /// Files that could not be read.
@@ -87,7 +65,7 @@ pub fn load_documents(
     enum LoadOutcome {
         Loaded {
             file: DiscoveredFile,
-            document: LoadedDocument,
+            document: PreparedSearchDocument,
         },
         Failed(LoadFailure),
     }
@@ -95,25 +73,16 @@ pub fn load_documents(
     let outcomes: Vec<_> = files
         .par_iter()
         .map(|file| match std::fs::read_to_string(&file.absolute_path) {
-            Ok(raw_content) => {
-                let content =
-                    text_util::strip_yaml_frontmatter(&raw_content).to_string();
-                let title = extract_title(&content, &file.relative_path);
-                let relative_path =
-                    file.relative_path.to_string_lossy().to_string();
-                let did = DocumentId::new(collection, &relative_path);
-                LoadOutcome::Loaded {
-                    file: file.clone(),
-                    document: LoadedDocument {
-                        doc_id: did.to_string(),
-                        doc_num_id: did.numeric,
-                        relative_path,
-                        title,
-                        content,
-                        mtime: file.mtime,
-                    },
-                }
-            }
+            Ok(raw_content) => LoadOutcome::Loaded {
+                file: file.clone(),
+                document:
+                    document_preparation::prepare_filesystem_markdown_document(
+                        collection,
+                        &file.relative_path,
+                        &raw_content,
+                        file.mtime,
+                    ),
+            },
             Err(error) => LoadOutcome::Failed(LoadFailure {
                 file: file.clone(),
                 error: error.to_string(),
@@ -139,21 +108,21 @@ pub fn load_documents(
 ///
 /// Use this when you want to reuse the loaded content for another step, such as
 /// embedding, instead of reading every file twice.
-pub fn ingest_loaded_documents(
+pub fn ingest_prepared_documents(
     index: &SearchIndex,
     writer: &mut IndexWriter,
     collection: &str,
-    documents: &[LoadedDocument],
+    documents: &[PreparedSearchDocument],
 ) -> Result<usize> {
     for doc in documents {
         index.add_document(
             writer,
-            &doc.doc_id,
-            doc.doc_num_id,
+            &doc.did.to_string(),
+            doc.did.numeric,
             collection,
             &doc.relative_path,
             &doc.title,
-            &doc.content,
+            &doc.searchable_body,
             doc.mtime,
         )?;
     }
@@ -191,13 +160,13 @@ pub fn ingest_files(
     files: &[DiscoveredFile],
 ) -> Result<usize> {
     let loaded = load_documents(collection, files);
-    ingest_loaded_documents(index, writer, collection, &loaded.documents)
+    ingest_prepared_documents(index, writer, collection, &loaded.documents)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConfigDb, incremental};
+    use crate::{ConfigDb, DocumentId, incremental};
 
     #[test]
     fn extract_title_from_heading() {
@@ -301,9 +270,10 @@ mod tests {
         let doc = &loaded.documents[0];
         assert_eq!(doc.relative_path, "note.md");
         assert_eq!(doc.title, "Title");
-        assert!(doc.doc_id.starts_with('#'));
-        assert!(doc.doc_num_id > 0);
-        assert!(doc.content.contains("Body content"));
+        assert!(doc.did.to_string().starts_with('#'));
+        assert!(doc.did.numeric > 0);
+        assert!(doc.searchable_body.contains("Body content"));
+        assert!(doc.raw_content.is_none());
     }
 
     #[test]
@@ -320,7 +290,28 @@ mod tests {
 
         let doc = &loaded.documents[0];
         assert_eq!(doc.title, "Real Title");
-        assert_eq!(doc.content, "# Real Title\n\nBody content.");
+        assert_eq!(doc.searchable_body, "# Real Title\n\nBody content.");
+    }
+
+    #[test]
+    fn load_documents_matches_prepare_markdown_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("note.md"),
+            "---\ntitle: ignored\n---\n# Heading\n\nBody content.",
+        )
+        .unwrap();
+
+        let files = crate::walker::discover_files(tmp.path()).unwrap();
+        let loaded = load_documents("notes", &files);
+        let prepared = document_preparation::prepare_markdown_body(
+            Path::new("note.md"),
+            "---\ntitle: ignored\n---\n# Heading\n\nBody content.",
+        );
+
+        let doc = &loaded.documents[0];
+        assert_eq!(doc.title, prepared.title);
+        assert_eq!(doc.searchable_body, prepared.searchable_body);
     }
 
     #[test]
@@ -430,21 +421,22 @@ mod tests {
     }
 
     #[test]
-    fn ingest_loaded_documents_indexes_content() {
+    fn ingest_prepared_documents_indexes_content() {
         let index = SearchIndex::open_in_ram().unwrap();
         let mut writer = index.writer(15_000_000).unwrap();
 
-        let docs = vec![LoadedDocument {
-            doc_id: "#abc123".to_string(),
-            doc_num_id: 123,
+        let docs = vec![PreparedSearchDocument {
+            did: DocumentId::new("notes", "x.md"),
             relative_path: "x.md".to_string(),
             title: "Rust Guide".to_string(),
-            content: "Rust ownership and borrowing.".to_string(),
+            searchable_body: "Rust ownership and borrowing.".to_string(),
+            raw_content: None,
+            metadata: None,
             mtime: 1000,
         }];
 
         let count =
-            ingest_loaded_documents(&index, &mut writer, "notes", &docs)
+            ingest_prepared_documents(&index, &mut writer, "notes", &docs)
                 .unwrap();
         assert_eq!(count, 1);
 

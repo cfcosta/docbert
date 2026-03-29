@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use docbert_core::{DocumentId, chunking, embedding};
+use docbert_core::{DocumentId, chunking, document_preparation, embedding};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,7 +14,6 @@ use crate::{
         DocumentIngestCommand,
         EmbeddingEntry,
         PersistedIngestDocument,
-        PreparedIngestDocument,
     },
     error::ApiError,
     state::AppState,
@@ -50,23 +49,55 @@ pub struct IngestedDoc {
     metadata: Option<serde_json::Value>,
 }
 
+fn api_chunking_config() -> chunking::ChunkingConfig {
+    chunking::ChunkingConfig {
+        chunk_size: chunking::DEFAULT_CHUNK_SIZE,
+        overlap: chunking::DEFAULT_CHUNK_OVERLAP,
+        document_length: None,
+    }
+}
+
 fn prepare_documents(
     collection: &str,
     documents: &[IngestDocument],
-) -> Result<Vec<PreparedIngestDocument>, ApiError> {
+) -> Result<Vec<document_preparation::PreparedSearchDocument>, ApiError> {
     let mut prepared = Vec::with_capacity(documents.len());
 
     for doc in documents {
-        let processed =
-            content::process(&doc.content_type, &doc.path, &doc.content);
-        let did = DocumentId::new(collection, &doc.path);
-        let chunks = chunking::chunk_text(
-            &processed.body,
-            chunking::DEFAULT_CHUNK_SIZE,
-            chunking::DEFAULT_CHUNK_OVERLAP,
+        let prepared_doc = match doc.content_type.as_str() {
+            "text/markdown" => {
+                document_preparation::prepare_uploaded_markdown_document(
+                    collection,
+                    &doc.path,
+                    &doc.content,
+                    doc.metadata.clone(),
+                    0,
+                )
+            }
+            _ => {
+                let processed = content::process(
+                    &doc.content_type,
+                    &doc.path,
+                    &doc.content,
+                );
+                let did = DocumentId::new(collection, &doc.path);
+                document_preparation::PreparedSearchDocument {
+                    did,
+                    relative_path: doc.path.clone(),
+                    title: processed.title,
+                    searchable_body: processed.body,
+                    raw_content: Some(doc.content.clone()),
+                    metadata: doc.metadata.clone(),
+                    mtime: 0,
+                }
+            }
+        };
+        let embedding_chunks = document_preparation::build_embedding_chunks(
+            &prepared_doc,
+            api_chunking_config(),
         );
 
-        if chunks.is_empty() {
+        if embedding_chunks.is_empty() {
             return Err(ApiError::BadRequest(format!(
                 "document has no embeddable content after preprocessing: {}",
                 doc.path
@@ -74,30 +105,15 @@ fn prepare_documents(
         }
 
         tracing::debug!(
-            doc_id = %did,
+            doc_id = %prepared_doc.did,
             path = %doc.path,
-            title = %processed.title,
-            body_len = processed.body.len(),
-            chunks = chunks.len(),
+            title = %prepared_doc.title,
+            body_len = prepared_doc.searchable_body.len(),
+            chunks = embedding_chunks.len(),
             "prepared document for ingestion",
         );
 
-        let embedding_chunks = chunks
-            .into_iter()
-            .map(|chunk| {
-                (chunking::chunk_doc_id(did.numeric, chunk.index), chunk.text)
-            })
-            .collect();
-
-        prepared.push(PreparedIngestDocument {
-            did,
-            path: doc.path.clone(),
-            title: processed.title,
-            body: processed.body,
-            content: doc.content.clone(),
-            metadata: doc.metadata.clone(),
-            embedding_chunks,
-        });
+        prepared.push(prepared_doc);
     }
 
     Ok(prepared)
@@ -136,7 +152,12 @@ pub async fn ingest(
     let prepared = prepare_documents(&body.collection, &body.documents)?;
     let docs_to_embed: Vec<(u64, String)> = prepared
         .iter()
-        .flat_map(|doc| doc.embedding_chunks.iter().cloned())
+        .flat_map(|doc| {
+            document_preparation::build_embedding_chunks(
+                doc,
+                api_chunking_config(),
+            )
+        })
         .collect();
 
     tracing::info!(
@@ -480,9 +501,33 @@ mod tests {
         let prepared = prepare_documents("notes", &documents).unwrap();
         assert_eq!(prepared.len(), 1);
         assert_eq!(prepared[0].title, "Alpha");
-        assert_eq!(prepared[0].embedding_chunks.len(), 1);
-        assert_eq!(prepared[0].embedding_chunks[0].0, prepared[0].did.numeric);
-        assert!(prepared[0].embedding_chunks[0].1.contains("ownership"));
+        let embedding_chunks = document_preparation::build_embedding_chunks(
+            &prepared[0],
+            api_chunking_config(),
+        );
+        assert_eq!(embedding_chunks.len(), 1);
+        assert_eq!(embedding_chunks[0].0, prepared[0].did.numeric);
+        assert!(embedding_chunks[0].1.contains("ownership"));
+    }
+
+    #[test]
+    fn prepare_documents_uses_core_markdown_preparation() {
+        let documents = vec![IngestDocument {
+            path: "alpha.md".to_string(),
+            content: "---\ntitle: ignored\n---\n# Alpha\n\nRust ownership."
+                .to_string(),
+            content_type: "text/markdown".to_string(),
+            metadata: None,
+        }];
+
+        let prepared = prepare_documents("notes", &documents).unwrap();
+        let expected = document_preparation::prepare_markdown_body(
+            std::path::Path::new("alpha.md"),
+            &documents[0].content,
+        );
+
+        assert_eq!(prepared[0].title, expected.title);
+        assert_eq!(prepared[0].searchable_body, expected.searchable_body);
     }
 
     #[tokio::test]

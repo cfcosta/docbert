@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use docbert_core::{ingestion, text_util};
+use docbert_core::document_preparation;
 
 pub struct ProcessedContent {
     pub title: String,
@@ -16,9 +16,14 @@ pub fn is_supported(content_type: &str) -> bool {
 pub fn process(content_type: &str, path: &str, raw: &str) -> ProcessedContent {
     match content_type {
         "text/markdown" => {
-            let body = text_util::strip_yaml_frontmatter(raw).to_string();
-            let title = ingestion::extract_title(&body, Path::new(path));
-            ProcessedContent { title, body }
+            let prepared = document_preparation::prepare_markdown_body(
+                Path::new(path),
+                raw,
+            );
+            ProcessedContent {
+                title: prepared.title,
+                body: prepared.searchable_body,
+            }
         }
         _ => ProcessedContent {
             title: Path::new(path)

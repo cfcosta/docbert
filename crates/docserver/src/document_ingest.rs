@@ -1,6 +1,10 @@
 use std::sync::MutexGuard;
 
-use docbert_core::{DocumentId, chunking::document_family_key, incremental};
+use docbert_core::{
+    chunking::document_family_key,
+    document_preparation::PreparedSearchDocument,
+    incremental,
+};
 use tantivy::IndexWriter;
 
 use crate::{error::ApiError, state::AppState};
@@ -8,17 +12,6 @@ use crate::{error::ApiError, state::AppState};
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
 const API_INGEST_MTIME: u64 = 0;
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PreparedIngestDocument {
-    pub(crate) did: DocumentId,
-    pub(crate) path: String,
-    pub(crate) title: String,
-    pub(crate) body: String,
-    pub(crate) content: String,
-    pub(crate) metadata: Option<serde_json::Value>,
-    pub(crate) embedding_chunks: Vec<(u64, String)>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PersistedIngestDocument {
@@ -37,7 +30,7 @@ pub(crate) trait IngestionBackend {
     fn stage_document(
         &mut self,
         collection: &str,
-        document: &PreparedIngestDocument,
+        document: &PreparedSearchDocument,
     ) -> Result<(), ApiError>;
 
     fn rollback_staged_documents(&mut self);
@@ -52,7 +45,7 @@ pub(crate) trait IngestionBackend {
     fn persist_document_artifacts(
         &mut self,
         collection: &str,
-        document: &PreparedIngestDocument,
+        document: &PreparedSearchDocument,
     ) -> Result<(), ApiError>;
 
     fn remove_persisted_documents(&mut self, doc_ids: &[u64], context: &str);
@@ -114,16 +107,16 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
     fn stage_document(
         &mut self,
         collection: &str,
-        document: &PreparedIngestDocument,
+        document: &PreparedSearchDocument,
     ) -> Result<(), ApiError> {
         self.state.search_index.add_document(
             &self.writer,
             &document.did.to_string(),
             document.did.numeric,
             collection,
-            &document.path,
+            &document.relative_path,
             &document.title,
-            &document.body,
+            &document.searchable_body,
             API_INGEST_MTIME,
         )?;
         Ok(())
@@ -158,13 +151,17 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
     fn persist_document_artifacts(
         &mut self,
         collection: &str,
-        document: &PreparedIngestDocument,
+        document: &PreparedSearchDocument,
     ) -> Result<(), ApiError> {
         let metadata = document_metadata(collection, document);
+        let stored_content = document
+            .raw_content
+            .as_deref()
+            .unwrap_or(&document.searchable_body);
         self.state.config_db.put_document_artifacts(
             document.did.numeric,
             &metadata,
-            &document.content,
+            stored_content,
             document.metadata.as_ref(),
         )?;
         Ok(())
@@ -188,7 +185,7 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
 pub(crate) struct DocumentIngestCommand<'a, B> {
     pub(crate) backend: &'a mut B,
     pub(crate) collection: &'a str,
-    pub(crate) documents: &'a [PreparedIngestDocument],
+    pub(crate) documents: &'a [PreparedSearchDocument],
     pub(crate) embedding_entries: &'a [EmbeddingEntry],
 }
 
@@ -273,7 +270,7 @@ where
             persisted_doc_ids.push(document.did.numeric);
             ingested_documents.push(PersistedIngestDocument {
                 doc_id: document.did.to_string(),
-                path: document.path.clone(),
+                path: document.relative_path.clone(),
                 title: document.title.clone(),
                 metadata: document.metadata.clone(),
             });
@@ -304,11 +301,11 @@ where
 #[allow(dead_code)]
 pub(crate) fn document_metadata(
     collection: &str,
-    document: &PreparedIngestDocument,
+    document: &PreparedSearchDocument,
 ) -> incremental::DocumentMetadata {
     incremental::DocumentMetadata {
         collection: collection.to_string(),
-        relative_path: document.path.clone(),
+        relative_path: document.relative_path.clone(),
         mtime: API_INGEST_MTIME,
     }
 }
@@ -319,6 +316,7 @@ mod tests {
 
     use docbert_core::{
         ConfigDb,
+        DocumentId,
         EmbeddingDb,
         ModelManager,
         SearchIndex,
@@ -376,7 +374,7 @@ mod tests {
         fn stage_document(
             &mut self,
             _collection: &str,
-            document: &PreparedIngestDocument,
+            document: &PreparedSearchDocument,
         ) -> Result<(), ApiError> {
             let next_index = self.staged_doc_ids.len();
             if self.fail_on_stage_doc == Some(next_index) {
@@ -410,7 +408,7 @@ mod tests {
         fn persist_document_artifacts(
             &mut self,
             _collection: &str,
-            document: &PreparedIngestDocument,
+            document: &PreparedSearchDocument,
         ) -> Result<(), ApiError> {
             let next_index = self.persist_calls;
             self.persist_calls += 1;
@@ -525,7 +523,7 @@ mod tests {
         fn stage_document(
             &mut self,
             collection: &str,
-            document: &PreparedIngestDocument,
+            document: &PreparedSearchDocument,
         ) -> Result<(), ApiError> {
             self.inner.stage_document(collection, document)
         }
@@ -548,7 +546,7 @@ mod tests {
         fn persist_document_artifacts(
             &mut self,
             _collection: &str,
-            _document: &PreparedIngestDocument,
+            _document: &PreparedSearchDocument,
         ) -> Result<(), ApiError> {
             Err(ApiError::internal("persist_document_artifacts failed"))
         }
@@ -569,25 +567,21 @@ mod tests {
     fn prepared_document(
         collection: &str,
         path: &str,
-    ) -> PreparedIngestDocument {
+    ) -> PreparedSearchDocument {
         let did = DocumentId::new(collection, path);
-        let doc_numeric_id = did.numeric;
-        PreparedIngestDocument {
+        PreparedSearchDocument {
             did,
-            path: path.to_string(),
+            relative_path: path.to_string(),
             title: format!("title for {path}"),
-            body: format!("body for {path}"),
-            content: format!("# {path}\nbody"),
+            searchable_body: format!("body for {path}"),
+            raw_content: Some(format!("# {path}\nbody")),
             metadata: Some(serde_json::json!({ "path": path })),
-            embedding_chunks: vec![(
-                doc_numeric_id,
-                format!("body for {path}"),
-            )],
+            mtime: API_INGEST_MTIME,
         }
     }
 
     fn embedding_entries(
-        documents: &[PreparedIngestDocument],
+        documents: &[PreparedSearchDocument],
     ) -> Vec<EmbeddingEntry> {
         documents
             .iter()
@@ -602,6 +596,48 @@ mod tests {
 
         assert_eq!(API_INGEST_MTIME, 0);
         assert_eq!(metadata.mtime, API_INGEST_MTIME);
+    }
+
+    #[test]
+    fn persist_document_artifacts_uses_raw_content_when_present() {
+        let (_tmp, state) = test_state();
+        state.config_db.set_managed_collection("notes").unwrap();
+        let document = prepared_document("notes", "a.md");
+        let mut backend = AppStateIngestionBackend::new(&state).unwrap();
+
+        backend
+            .persist_document_artifacts("notes", &document)
+            .unwrap();
+
+        assert_eq!(
+            state
+                .config_db
+                .get_document_content(document.did.numeric)
+                .unwrap(),
+            document.raw_content.clone()
+        );
+    }
+
+    #[test]
+    fn persist_document_artifacts_falls_back_to_searchable_body_when_raw_content_missing()
+     {
+        let (_tmp, state) = test_state();
+        state.config_db.set_managed_collection("notes").unwrap();
+        let mut document = prepared_document("notes", "a.md");
+        document.raw_content = None;
+        let mut backend = AppStateIngestionBackend::new(&state).unwrap();
+
+        backend
+            .persist_document_artifacts("notes", &document)
+            .unwrap();
+
+        assert_eq!(
+            state
+                .config_db
+                .get_document_content(document.did.numeric)
+                .unwrap(),
+            Some(document.searchable_body.clone())
+        );
     }
 
     #[test]
@@ -716,14 +752,14 @@ mod tests {
             "legacy body",
             2,
         );
-        let replacement_document = PreparedIngestDocument {
+        let replacement_document = PreparedSearchDocument {
             did: did.clone(),
-            path: "note.md".to_string(),
+            relative_path: "note.md".to_string(),
             title: "Replacement Title".to_string(),
-            body: "replacement body".to_string(),
-            content: "replacement body".to_string(),
+            searchable_body: "replacement body".to_string(),
+            raw_content: Some("replacement body".to_string()),
             metadata: None,
-            embedding_chunks: vec![],
+            mtime: API_INGEST_MTIME,
         };
         let replacement_embeddings = vec![
             (did.numeric, 1, 1, vec![9.0]),
@@ -784,14 +820,14 @@ mod tests {
             "legacy body",
             3,
         );
-        let replacement_document = PreparedIngestDocument {
+        let replacement_document = PreparedSearchDocument {
             did: did.clone(),
-            path: "note.md".to_string(),
+            relative_path: "note.md".to_string(),
             title: "Replacement Title".to_string(),
-            body: "replacement body".to_string(),
-            content: "replacement body".to_string(),
+            searchable_body: "replacement body".to_string(),
+            raw_content: Some("replacement body".to_string()),
             metadata: None,
-            embedding_chunks: vec![],
+            mtime: API_INGEST_MTIME,
         };
         let replacement_embeddings = vec![(did.numeric, 1, 1, vec![9.0])];
         let mut backend = AppStateIngestionBackend::new(&state).unwrap();
