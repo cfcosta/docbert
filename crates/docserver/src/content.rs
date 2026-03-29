@@ -16,10 +16,8 @@ pub fn is_supported(content_type: &str) -> bool {
 pub fn process(content_type: &str, path: &str, raw: &str) -> ProcessedContent {
     match content_type {
         "text/markdown" => {
-            let prepared = document_preparation::prepare_markdown_body(
-                Path::new(path),
-                raw,
-            );
+            let prepared =
+                document_preparation::prepare_markdown(Path::new(path), raw);
             ProcessedContent {
                 title: prepared.title,
                 body: prepared.searchable_body,

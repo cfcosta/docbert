@@ -65,15 +65,13 @@ fn prepare_documents(
 
     for doc in documents {
         let prepared_doc = match doc.content_type.as_str() {
-            "text/markdown" => {
-                document_preparation::prepare_uploaded_markdown_document(
-                    collection,
-                    &doc.path,
-                    &doc.content,
-                    doc.metadata.clone(),
-                    0,
-                )
-            }
+            "text/markdown" => document_preparation::prepare_uploaded(
+                collection,
+                &doc.path,
+                &doc.content,
+                doc.metadata.clone(),
+                0,
+            ),
             _ => {
                 let processed = content::process(
                     &doc.content_type,
@@ -92,7 +90,7 @@ fn prepare_documents(
                 }
             }
         };
-        let embedding_chunks = document_preparation::build_embedding_chunks(
+        let embedding_chunks = document_preparation::embedding_chunks(
             &prepared_doc,
             api_chunking_config(),
         );
@@ -153,10 +151,7 @@ pub async fn ingest(
     let docs_to_embed: Vec<(u64, String)> = prepared
         .iter()
         .flat_map(|doc| {
-            document_preparation::build_embedding_chunks(
-                doc,
-                api_chunking_config(),
-            )
+            document_preparation::embedding_chunks(doc, api_chunking_config())
         })
         .collect();
 
@@ -501,7 +496,7 @@ mod tests {
         let prepared = prepare_documents("notes", &documents).unwrap();
         assert_eq!(prepared.len(), 1);
         assert_eq!(prepared[0].title, "Alpha");
-        let embedding_chunks = document_preparation::build_embedding_chunks(
+        let embedding_chunks = document_preparation::embedding_chunks(
             &prepared[0],
             api_chunking_config(),
         );
@@ -521,7 +516,7 @@ mod tests {
         }];
 
         let prepared = prepare_documents("notes", &documents).unwrap();
-        let expected = document_preparation::prepare_markdown_body(
+        let expected = document_preparation::prepare_markdown(
             std::path::Path::new("alpha.md"),
             &documents[0].content,
         );

@@ -75,13 +75,12 @@ pub fn load_documents(
         .map(|file| match std::fs::read_to_string(&file.absolute_path) {
             Ok(raw_content) => LoadOutcome::Loaded {
                 file: file.clone(),
-                document:
-                    document_preparation::prepare_filesystem_markdown_document(
-                        collection,
-                        &file.relative_path,
-                        &raw_content,
-                        file.mtime,
-                    ),
+                document: document_preparation::prepare_filesystem(
+                    collection,
+                    &file.relative_path,
+                    &raw_content,
+                    file.mtime,
+                ),
             },
             Err(error) => LoadOutcome::Failed(LoadFailure {
                 file: file.clone(),
@@ -294,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn load_documents_matches_prepare_markdown_body() {
+    fn load_documents_matches_prepare_markdown() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("note.md"),
@@ -304,7 +303,7 @@ mod tests {
 
         let files = crate::walker::discover_files(tmp.path()).unwrap();
         let loaded = load_documents("notes", &files);
-        let prepared = document_preparation::prepare_markdown_body(
+        let prepared = document_preparation::prepare_markdown(
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Heading\n\nBody content.",
         );

@@ -827,14 +827,13 @@ fn process_document_batch(
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
-        let docs_to_embed =
-            docbert_core::document_preparation::collect_embedding_chunks(
-                &document_batch.documents,
-                runtime.chunking_config,
-                |processed_count| {
-                    let _ = pb.update_to(processed_count);
-                },
-            );
+        let docs_to_embed = docbert_core::document_preparation::collect_chunks(
+            &document_batch.documents,
+            runtime.chunking_config,
+            |processed_count| {
+                let _ = pb.update_to(processed_count);
+            },
+        );
         finish_progress_bar(&mut pb);
 
         if !docs_to_embed.is_empty() {

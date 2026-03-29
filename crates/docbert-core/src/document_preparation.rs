@@ -24,7 +24,7 @@ pub struct PreparedSearchDocument {
     pub mtime: u64,
 }
 
-pub fn prepare_markdown_body(
+pub fn prepare_markdown(
     relative_path: &Path,
     raw_markdown: &str,
 ) -> PreparedMarkdownBody {
@@ -38,15 +38,14 @@ pub fn prepare_markdown_body(
     }
 }
 
-pub fn prepare_uploaded_markdown_document(
+pub fn prepare_uploaded(
     collection: &str,
     relative_path: &str,
     raw_markdown: &str,
     metadata: Option<serde_json::Value>,
     mtime: u64,
 ) -> PreparedSearchDocument {
-    let prepared =
-        prepare_markdown_body(Path::new(relative_path), raw_markdown);
+    let prepared = prepare_markdown(Path::new(relative_path), raw_markdown);
     let did = DocumentId::new(collection, relative_path);
 
     PreparedSearchDocument {
@@ -60,13 +59,13 @@ pub fn prepare_uploaded_markdown_document(
     }
 }
 
-pub fn prepare_filesystem_markdown_document(
+pub fn prepare_filesystem(
     collection: &str,
     relative_path: &Path,
     raw_markdown: &str,
     mtime: u64,
 ) -> PreparedSearchDocument {
-    let prepared = prepare_markdown_body(relative_path, raw_markdown);
+    let prepared = prepare_markdown(relative_path, raw_markdown);
     let relative_path = relative_path.to_string_lossy().to_string();
     let did = DocumentId::new(collection, &relative_path);
 
@@ -81,7 +80,7 @@ pub fn prepare_filesystem_markdown_document(
     }
 }
 
-pub fn build_embedding_chunks(
+pub fn embedding_chunks(
     document: &PreparedSearchDocument,
     chunking_config: ChunkingConfig,
 ) -> Vec<(u64, String)> {
@@ -100,7 +99,7 @@ pub fn build_embedding_chunks(
     .collect()
 }
 
-pub fn collect_embedding_chunks<F>(
+pub fn collect_chunks<F>(
     documents: &[PreparedSearchDocument],
     chunking_config: ChunkingConfig,
     mut on_document_processed: F,
@@ -111,7 +110,7 @@ where
     let mut docs_to_embed = Vec::new();
 
     for (i, document) in documents.iter().enumerate() {
-        docs_to_embed.extend(build_embedding_chunks(document, chunking_config));
+        docs_to_embed.extend(embedding_chunks(document, chunking_config));
         on_document_processed(i + 1);
     }
 
@@ -125,8 +124,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepare_markdown_body_strips_frontmatter() {
-        let prepared = prepare_markdown_body(
+    fn prepare_markdown_strips_frontmatter() {
+        let prepared = prepare_markdown(
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Real Title\n\nBody",
         );
@@ -136,36 +135,34 @@ mod tests {
     }
 
     #[test]
-    fn prepare_markdown_body_uses_first_h1_as_title() {
+    fn prepare_markdown_uses_first_h1_as_title() {
         let prepared =
-            prepare_markdown_body(Path::new("note.md"), "# Hello\n\n# Later");
+            prepare_markdown(Path::new("note.md"), "# Hello\n\n# Later");
 
         assert_eq!(prepared.title, "Hello");
     }
 
     #[test]
-    fn prepare_markdown_body_falls_back_to_filename() {
+    fn prepare_markdown_falls_back_to_filename() {
         let prepared =
-            prepare_markdown_body(Path::new("docs/note.md"), "plain body");
+            prepare_markdown(Path::new("docs/note.md"), "plain body");
 
         assert_eq!(prepared.title, "note");
         assert_eq!(prepared.searchable_body, "plain body");
     }
 
     #[test]
-    fn prepare_markdown_body_frontmatter_only_yields_empty_body() {
-        let prepared = prepare_markdown_body(
-            Path::new("note.md"),
-            "---\ntitle: Hidden\n---\n",
-        );
+    fn prepare_markdown_frontmatter_only_yields_empty_body() {
+        let prepared =
+            prepare_markdown(Path::new("note.md"), "---\ntitle: Hidden\n---\n");
 
         assert_eq!(prepared.title, "note");
         assert!(prepared.searchable_body.is_empty());
     }
 
     #[test]
-    fn prepare_uploaded_markdown_document_preserves_raw_content() {
-        let prepared = prepare_uploaded_markdown_document(
+    fn prepare_uploaded_preserves_raw_content() {
+        let prepared = prepare_uploaded(
             "notes",
             "note.md",
             "# Hello\n\nBody",
@@ -181,8 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_filesystem_markdown_document_omits_raw_content() {
-        let prepared = prepare_filesystem_markdown_document(
+    fn prepare_filesystem_omits_raw_content() {
+        let prepared = prepare_filesystem(
             "notes",
             Path::new("note.md"),
             "# Hello\n\nBody",
@@ -195,14 +192,14 @@ mod tests {
 
     #[test]
     fn uploaded_and_filesystem_documents_share_title_and_searchable_body() {
-        let uploaded = prepare_uploaded_markdown_document(
+        let uploaded = prepare_uploaded(
             "notes",
             "note.md",
             "---\ntitle: ignored\n---\n# Hello\n\nBody",
             None,
             0,
         );
-        let filesystem = prepare_filesystem_markdown_document(
+        let filesystem = prepare_filesystem(
             "notes",
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Hello\n\nBody",
@@ -215,14 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn build_embedding_chunks_uses_chunk_doc_ids() {
-        let document = prepare_filesystem_markdown_document(
+    fn embedding_chunks_uses_chunk_doc_ids() {
+        let document = prepare_filesystem(
             "notes",
             Path::new("note.md"),
             &"a".repeat(DEFAULT_TEST_CHUNK_SIZE * 3),
             1,
         );
-        let chunks = build_embedding_chunks(&document, test_chunking_config());
+        let chunks = embedding_chunks(&document, test_chunking_config());
 
         assert!(chunks.len() >= 2);
         assert_eq!(chunks[0].0, document.did.numeric);
@@ -233,35 +230,27 @@ mod tests {
     }
 
     #[test]
-    fn build_embedding_chunks_returns_empty_for_empty_searchable_body() {
-        let document = prepare_filesystem_markdown_document(
+    fn embedding_chunks_returns_empty_for_empty_searchable_body() {
+        let document = prepare_filesystem(
             "notes",
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n",
             1,
         );
-        let chunks = build_embedding_chunks(&document, test_chunking_config());
+        let chunks = embedding_chunks(&document, test_chunking_config());
 
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn collect_embedding_chunks_preserves_document_order() {
-        let first = prepare_filesystem_markdown_document(
-            "notes",
-            Path::new("a.md"),
-            "# A\n\nAlpha",
-            1,
-        );
-        let second = prepare_filesystem_markdown_document(
-            "notes",
-            Path::new("b.md"),
-            "# B\n\nBeta",
-            2,
-        );
+    fn collect_chunks_preserves_document_order() {
+        let first =
+            prepare_filesystem("notes", Path::new("a.md"), "# A\n\nAlpha", 1);
+        let second =
+            prepare_filesystem("notes", Path::new("b.md"), "# B\n\nBeta", 2);
         let mut processed = Vec::new();
 
-        let chunks = collect_embedding_chunks(
+        let chunks = collect_chunks(
             &[first.clone(), second.clone()],
             test_chunking_config(),
             |count| processed.push(count),

@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_embedding_chunks_skips_frontmatter_only_docs() {
+    fn collect_chunks_skips_frontmatter_only_docs() {
         let docs = vec![PreparedSearchDocument {
             did: DocumentId::new("notes", "note.md"),
             relative_path: "note.md".to_string(),
@@ -207,14 +207,13 @@ mod tests {
             document_length: None,
         };
         let mut processed = 0;
-        let chunks =
-            docbert_core::document_preparation::collect_embedding_chunks(
-                &docs,
-                chunking_config,
-                |_| {
-                    processed += 1;
-                },
-            );
+        let chunks = docbert_core::document_preparation::collect_chunks(
+            &docs,
+            chunking_config,
+            |_| {
+                processed += 1;
+            },
+        );
 
         assert!(chunks.is_empty());
         assert_eq!(processed, 1);
