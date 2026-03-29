@@ -827,7 +827,7 @@ fn process_document_batch(
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
-        let docs_to_embed = docbert_core::document_preparation::collect_chunks(
+        let docs_to_embed = docbert_core::preparation::collect_chunks(
             &document_batch.documents,
             runtime.chunking_config,
             |processed_count| {

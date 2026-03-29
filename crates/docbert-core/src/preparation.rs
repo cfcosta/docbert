@@ -8,13 +8,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreparedMarkdownBody {
+pub struct MarkdownBody {
     pub title: String,
     pub searchable_body: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PreparedSearchDocument {
+pub struct SearchDocument {
     pub did: DocumentId,
     pub relative_path: String,
     pub title: String,
@@ -27,12 +27,12 @@ pub struct PreparedSearchDocument {
 pub fn prepare_markdown(
     relative_path: &Path,
     raw_markdown: &str,
-) -> PreparedMarkdownBody {
+) -> MarkdownBody {
     let searchable_body =
         text_util::strip_yaml_frontmatter(raw_markdown).to_string();
     let title = ingestion::extract_title(&searchable_body, relative_path);
 
-    PreparedMarkdownBody {
+    MarkdownBody {
         title,
         searchable_body,
     }
@@ -44,11 +44,11 @@ pub fn prepare_uploaded(
     raw_markdown: &str,
     metadata: Option<serde_json::Value>,
     mtime: u64,
-) -> PreparedSearchDocument {
+) -> SearchDocument {
     let prepared = prepare_markdown(Path::new(relative_path), raw_markdown);
     let did = DocumentId::new(collection, relative_path);
 
-    PreparedSearchDocument {
+    SearchDocument {
         did,
         relative_path: relative_path.to_string(),
         title: prepared.title,
@@ -64,12 +64,12 @@ pub fn prepare_filesystem(
     relative_path: &Path,
     raw_markdown: &str,
     mtime: u64,
-) -> PreparedSearchDocument {
+) -> SearchDocument {
     let prepared = prepare_markdown(relative_path, raw_markdown);
     let relative_path = relative_path.to_string_lossy().to_string();
     let did = DocumentId::new(collection, &relative_path);
 
-    PreparedSearchDocument {
+    SearchDocument {
         did,
         relative_path,
         title: prepared.title,
@@ -81,7 +81,7 @@ pub fn prepare_filesystem(
 }
 
 pub fn embedding_chunks(
-    document: &PreparedSearchDocument,
+    document: &SearchDocument,
     chunking_config: ChunkingConfig,
 ) -> Vec<(u64, String)> {
     chunking::chunk_text(
@@ -100,7 +100,7 @@ pub fn embedding_chunks(
 }
 
 pub fn collect_chunks<F>(
-    documents: &[PreparedSearchDocument],
+    documents: &[SearchDocument],
     chunking_config: ChunkingConfig,
     mut on_document_processed: F,
 ) -> Vec<(u64, String)>

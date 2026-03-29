@@ -1,8 +1,8 @@
 use docbert_core::{
     ConfigDb,
-    document_preparation::PreparedSearchDocument,
     error,
     ingestion::{self, LoadFailure},
+    preparation::SearchDocument,
     walker::DiscoveredFile,
 };
 
@@ -10,7 +10,7 @@ use crate::cli;
 
 #[derive(Debug, Default)]
 pub(crate) struct DocumentLoadBatch {
-    pub documents: Vec<PreparedSearchDocument>,
+    pub documents: Vec<SearchDocument>,
     pub metadata_files: Vec<DiscoveredFile>,
     pub failures: Vec<LoadFailure>,
 }
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn collect_chunks_skips_frontmatter_only_docs() {
-        let docs = vec![PreparedSearchDocument {
+        let docs = vec![SearchDocument {
             did: DocumentId::new("notes", "note.md"),
             relative_path: "note.md".to_string(),
             title: "note".to_string(),
@@ -207,7 +207,7 @@ mod tests {
             document_length: None,
         };
         let mut processed = 0;
-        let chunks = docbert_core::document_preparation::collect_chunks(
+        let chunks = docbert_core::preparation::collect_chunks(
             &docs,
             chunking_config,
             |_| {

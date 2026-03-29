@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use docbert_core::{DocumentId, chunking, document_preparation, embedding};
+use docbert_core::{DocumentId, chunking, embedding, preparation};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -60,12 +60,12 @@ fn api_chunking_config() -> chunking::ChunkingConfig {
 fn prepare_documents(
     collection: &str,
     documents: &[IngestDocument],
-) -> Result<Vec<document_preparation::PreparedSearchDocument>, ApiError> {
+) -> Result<Vec<preparation::SearchDocument>, ApiError> {
     let mut prepared = Vec::with_capacity(documents.len());
 
     for doc in documents {
         let prepared_doc = match doc.content_type.as_str() {
-            "text/markdown" => document_preparation::prepare_uploaded(
+            "text/markdown" => preparation::prepare_uploaded(
                 collection,
                 &doc.path,
                 &doc.content,
@@ -79,7 +79,7 @@ fn prepare_documents(
                     &doc.content,
                 );
                 let did = DocumentId::new(collection, &doc.path);
-                document_preparation::PreparedSearchDocument {
+                preparation::SearchDocument {
                     did,
                     relative_path: doc.path.clone(),
                     title: processed.title,
@@ -90,10 +90,8 @@ fn prepare_documents(
                 }
             }
         };
-        let embedding_chunks = document_preparation::embedding_chunks(
-            &prepared_doc,
-            api_chunking_config(),
-        );
+        let embedding_chunks =
+            preparation::embedding_chunks(&prepared_doc, api_chunking_config());
 
         if embedding_chunks.is_empty() {
             return Err(ApiError::BadRequest(format!(
@@ -151,7 +149,7 @@ pub async fn ingest(
     let docs_to_embed: Vec<(u64, String)> = prepared
         .iter()
         .flat_map(|doc| {
-            document_preparation::embedding_chunks(doc, api_chunking_config())
+            preparation::embedding_chunks(doc, api_chunking_config())
         })
         .collect();
 
@@ -496,10 +494,8 @@ mod tests {
         let prepared = prepare_documents("notes", &documents).unwrap();
         assert_eq!(prepared.len(), 1);
         assert_eq!(prepared[0].title, "Alpha");
-        let embedding_chunks = document_preparation::embedding_chunks(
-            &prepared[0],
-            api_chunking_config(),
-        );
+        let embedding_chunks =
+            preparation::embedding_chunks(&prepared[0], api_chunking_config());
         assert_eq!(embedding_chunks.len(), 1);
         assert_eq!(embedding_chunks[0].0, prepared[0].did.numeric);
         assert!(embedding_chunks[0].1.contains("ownership"));
@@ -516,7 +512,7 @@ mod tests {
         }];
 
         let prepared = prepare_documents("notes", &documents).unwrap();
-        let expected = document_preparation::prepare_markdown(
+        let expected = preparation::prepare_markdown(
             std::path::Path::new("alpha.md"),
             &documents[0].content,
         );

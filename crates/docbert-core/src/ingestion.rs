@@ -4,8 +4,8 @@ use rayon::prelude::*;
 use tantivy::IndexWriter;
 
 use crate::{
-    document_preparation::{self, PreparedSearchDocument},
     error::Result,
+    preparation::{self, SearchDocument},
     tantivy_index::SearchIndex,
     walker::DiscoveredFile,
 };
@@ -23,7 +23,7 @@ pub struct LoadFailure {
 #[derive(Debug, Clone, Default)]
 pub struct LoadDocumentsResult {
     /// Successfully loaded documents in file order.
-    pub documents: Vec<PreparedSearchDocument>,
+    pub documents: Vec<SearchDocument>,
     /// Discovered files that were loaded successfully.
     pub loaded_files: Vec<DiscoveredFile>,
     /// Files that could not be read.
@@ -65,7 +65,7 @@ pub fn load_documents(
     enum LoadOutcome {
         Loaded {
             file: DiscoveredFile,
-            document: PreparedSearchDocument,
+            document: SearchDocument,
         },
         Failed(LoadFailure),
     }
@@ -75,7 +75,7 @@ pub fn load_documents(
         .map(|file| match std::fs::read_to_string(&file.absolute_path) {
             Ok(raw_content) => LoadOutcome::Loaded {
                 file: file.clone(),
-                document: document_preparation::prepare_filesystem(
+                document: preparation::prepare_filesystem(
                     collection,
                     &file.relative_path,
                     &raw_content,
@@ -111,7 +111,7 @@ pub fn ingest_prepared_documents(
     index: &SearchIndex,
     writer: &mut IndexWriter,
     collection: &str,
-    documents: &[PreparedSearchDocument],
+    documents: &[SearchDocument],
 ) -> Result<usize> {
     for doc in documents {
         index.add_document(
@@ -303,7 +303,7 @@ mod tests {
 
         let files = crate::walker::discover_files(tmp.path()).unwrap();
         let loaded = load_documents("notes", &files);
-        let prepared = document_preparation::prepare_markdown(
+        let prepared = preparation::prepare_markdown(
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Heading\n\nBody content.",
         );
@@ -424,7 +424,7 @@ mod tests {
         let index = SearchIndex::open_in_ram().unwrap();
         let mut writer = index.writer(15_000_000).unwrap();
 
-        let docs = vec![PreparedSearchDocument {
+        let docs = vec![SearchDocument {
             did: DocumentId::new("notes", "x.md"),
             relative_path: "x.md".to_string(),
             title: "Rust Guide".to_string(),

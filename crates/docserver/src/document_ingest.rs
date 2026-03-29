@@ -2,8 +2,8 @@ use std::sync::MutexGuard;
 
 use docbert_core::{
     chunking::document_family_key,
-    document_preparation::PreparedSearchDocument,
     incremental,
+    preparation::SearchDocument,
 };
 use tantivy::IndexWriter;
 
@@ -30,7 +30,7 @@ pub(crate) trait IngestionBackend {
     fn stage_document(
         &mut self,
         collection: &str,
-        document: &PreparedSearchDocument,
+        document: &SearchDocument,
     ) -> Result<(), ApiError>;
 
     fn rollback_staged_documents(&mut self);
@@ -45,7 +45,7 @@ pub(crate) trait IngestionBackend {
     fn persist_document_artifacts(
         &mut self,
         collection: &str,
-        document: &PreparedSearchDocument,
+        document: &SearchDocument,
     ) -> Result<(), ApiError>;
 
     fn remove_persisted_documents(&mut self, doc_ids: &[u64], context: &str);
@@ -107,7 +107,7 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
     fn stage_document(
         &mut self,
         collection: &str,
-        document: &PreparedSearchDocument,
+        document: &SearchDocument,
     ) -> Result<(), ApiError> {
         self.state.search_index.add_document(
             &self.writer,
@@ -151,7 +151,7 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
     fn persist_document_artifacts(
         &mut self,
         collection: &str,
-        document: &PreparedSearchDocument,
+        document: &SearchDocument,
     ) -> Result<(), ApiError> {
         let metadata = document_metadata(collection, document);
         let stored_content = document
@@ -185,7 +185,7 @@ impl IngestionBackend for AppStateIngestionBackend<'_> {
 pub(crate) struct DocumentIngestCommand<'a, B> {
     pub(crate) backend: &'a mut B,
     pub(crate) collection: &'a str,
-    pub(crate) documents: &'a [PreparedSearchDocument],
+    pub(crate) documents: &'a [SearchDocument],
     pub(crate) embedding_entries: &'a [EmbeddingEntry],
 }
 
@@ -301,7 +301,7 @@ where
 #[allow(dead_code)]
 pub(crate) fn document_metadata(
     collection: &str,
-    document: &PreparedSearchDocument,
+    document: &SearchDocument,
 ) -> incremental::DocumentMetadata {
     incremental::DocumentMetadata {
         collection: collection.to_string(),
@@ -374,7 +374,7 @@ mod tests {
         fn stage_document(
             &mut self,
             _collection: &str,
-            document: &PreparedSearchDocument,
+            document: &SearchDocument,
         ) -> Result<(), ApiError> {
             let next_index = self.staged_doc_ids.len();
             if self.fail_on_stage_doc == Some(next_index) {
@@ -408,7 +408,7 @@ mod tests {
         fn persist_document_artifacts(
             &mut self,
             _collection: &str,
-            document: &PreparedSearchDocument,
+            document: &SearchDocument,
         ) -> Result<(), ApiError> {
             let next_index = self.persist_calls;
             self.persist_calls += 1;
@@ -523,7 +523,7 @@ mod tests {
         fn stage_document(
             &mut self,
             collection: &str,
-            document: &PreparedSearchDocument,
+            document: &SearchDocument,
         ) -> Result<(), ApiError> {
             self.inner.stage_document(collection, document)
         }
@@ -546,7 +546,7 @@ mod tests {
         fn persist_document_artifacts(
             &mut self,
             _collection: &str,
-            _document: &PreparedSearchDocument,
+            _document: &SearchDocument,
         ) -> Result<(), ApiError> {
             Err(ApiError::internal("persist_document_artifacts failed"))
         }
@@ -564,12 +564,9 @@ mod tests {
         }
     }
 
-    fn prepared_document(
-        collection: &str,
-        path: &str,
-    ) -> PreparedSearchDocument {
+    fn prepared_document(collection: &str, path: &str) -> SearchDocument {
         let did = DocumentId::new(collection, path);
-        PreparedSearchDocument {
+        SearchDocument {
             did,
             relative_path: path.to_string(),
             title: format!("title for {path}"),
@@ -580,9 +577,7 @@ mod tests {
         }
     }
 
-    fn embedding_entries(
-        documents: &[PreparedSearchDocument],
-    ) -> Vec<EmbeddingEntry> {
+    fn embedding_entries(documents: &[SearchDocument]) -> Vec<EmbeddingEntry> {
         documents
             .iter()
             .map(|document| (document.did.numeric, 1, 1, vec![1.0]))
@@ -752,7 +747,7 @@ mod tests {
             "legacy body",
             2,
         );
-        let replacement_document = PreparedSearchDocument {
+        let replacement_document = SearchDocument {
             did: did.clone(),
             relative_path: "note.md".to_string(),
             title: "Replacement Title".to_string(),
@@ -820,7 +815,7 @@ mod tests {
             "legacy body",
             3,
         );
-        let replacement_document = PreparedSearchDocument {
+        let replacement_document = SearchDocument {
             did: did.clone(),
             relative_path: "note.md".to_string(),
             title: "Replacement Title".to_string(),
