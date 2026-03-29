@@ -11,7 +11,7 @@ pub struct EnrichedSearchResult {
     pub metadata: Option<serde_json::Value>,
 }
 
-pub fn enrich_results_with_metadata<F>(
+pub fn enrich<F>(
     results: Vec<FinalResult>,
     mut load_metadata: F,
 ) -> Vec<EnrichedSearchResult>
@@ -50,11 +50,9 @@ mod tests {
     }
 
     #[test]
-    fn enrich_results_preserves_order_rank_and_score() {
-        let enriched = enrich_results_with_metadata(
-            vec![result(1, 2.0, 10), result(2, 1.0, 20)],
-            |_| None,
-        );
+    fn enrich_preserves_order_rank_and_score() {
+        let enriched =
+            enrich(vec![result(1, 2.0, 10), result(2, 1.0, 20)], |_| None);
 
         assert_eq!(enriched.len(), 2);
         assert_eq!(enriched[0].rank, 1);
@@ -66,11 +64,10 @@ mod tests {
     }
 
     #[test]
-    fn enrich_results_attaches_metadata_by_doc_num_id() {
-        let enriched =
-            enrich_results_with_metadata(vec![result(1, 2.0, 10)], |doc_id| {
-                Some(serde_json::json!({ "doc": doc_id }))
-            });
+    fn enrich_attaches_metadata_by_doc_num_id() {
+        let enriched = enrich(vec![result(1, 2.0, 10)], |doc_id| {
+            Some(serde_json::json!({ "doc": doc_id }))
+        });
 
         assert_eq!(
             enriched[0].metadata,
@@ -79,9 +76,8 @@ mod tests {
     }
 
     #[test]
-    fn enrich_results_keeps_none_when_loader_returns_none() {
-        let enriched =
-            enrich_results_with_metadata(vec![result(1, 2.0, 10)], |_| None);
+    fn enrich_keeps_none_when_loader_returns_none() {
+        let enriched = enrich(vec![result(1, 2.0, 10)], |_| None);
 
         assert_eq!(enriched[0].metadata, None);
     }
