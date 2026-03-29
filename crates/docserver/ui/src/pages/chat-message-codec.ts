@@ -1,8 +1,8 @@
 import type {
   ChatActor,
   ChatPart as ApiChatPart,
+  ChatSource,
   ConversationFull,
-  SearchResult,
 } from "../lib/api";
 
 export interface ToolCallInfo {
@@ -23,7 +23,7 @@ export interface Message {
   content: string;
   parts?: ContentPart[];
   actor?: ChatActor;
-  sources?: SearchResult[];
+  sources?: ChatSource[];
 }
 
 export function toApiPart(part: ContentPart): ApiChatPart {
@@ -128,9 +128,6 @@ export function apiToMessages(msgs: ConversationFull["messages"]): Message[] {
       parts: parts.length > 0 ? parts : undefined,
       actor: message.actor,
       sources: message.sources?.map((source) => ({
-        rank: 0,
-        score: 0,
-        doc_id: "",
         collection: source.collection,
         path: source.path,
         title: source.title,

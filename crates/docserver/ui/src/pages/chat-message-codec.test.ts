@@ -86,4 +86,40 @@ describe("chat-message-codec", () => {
       },
     ]);
   });
+
+  test("message sources roundtrip without synthetic search fields", () => {
+    const messages: Message[] = [
+      {
+        id: "assistant-with-sources",
+        role: "assistant",
+        content: "Answer",
+        parts: [{ type: "text", text: "Answer" }],
+        sources: [
+          {
+            collection: "notes",
+            path: "rust.md",
+            title: "Rust",
+          },
+        ],
+      },
+    ];
+
+    const apiMessages = messagesToApi(messages);
+    expect(apiMessages[0].sources).toEqual([
+      {
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust",
+      },
+    ]);
+
+    const roundTripped = apiToMessages(apiMessages);
+    expect(roundTripped[0].sources).toEqual([
+      {
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust",
+      },
+    ]);
+  });
 });
