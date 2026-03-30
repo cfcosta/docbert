@@ -138,7 +138,7 @@
 
 .chat-conv-confirm-yes {
   padding: 4px 10px;
-  min-height: 28px;
+  min-height: 32px;
   border: none;
   border-radius: var(--radius);
   background: var(--error, #b91c1c);
@@ -155,7 +155,7 @@
 
 .chat-conv-confirm-no {
   padding: 4px 10px;
-  min-height: 28px;
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
@@ -283,7 +283,7 @@
   width: 100%;
   min-width: 0;
   padding: 4px 8px;
-  min-height: 28px;
+  min-height: 32px;
   border: none;
   border-radius: 6px;
   background: var(--bg-secondary);
@@ -475,7 +475,7 @@
   gap: 6px;
   width: 100%;
   padding: 4px 8px;
-  min-height: 28px;
+  min-height: 32px;
   border: none;
   border-radius: 6px;
   background: var(--bg-secondary);
@@ -540,7 +540,7 @@
   gap: 6px;
   width: 100%;
   padding: 4px 8px;
-  min-height: 28px;
+  min-height: 32px;
   border: none;
   border-radius: 6px;
   background: var(--bg-secondary);
