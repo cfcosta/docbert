@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Context } from "@mariozechner/pi-ai";
 
-import type { SearchResult } from "../lib/api";
+import type { SearchExcerpt, SearchResult } from "../lib/api";
 import { executeSearchToolCall, searchChatTools, searchModeForTool } from "./chat-tools";
 import type { ChatToolRuntimeState } from "./chat-subagents";
 
@@ -19,7 +19,12 @@ function emptyContext(): Context {
   };
 }
 
-function result(collection: string, path: string, title: string): SearchResult {
+function result(
+  collection: string,
+  path: string,
+  title: string,
+  excerpts?: SearchExcerpt[],
+): SearchResult {
   return {
     rank: 1,
     score: 1,
@@ -27,13 +32,15 @@ function result(collection: string, path: string, title: string): SearchResult {
     collection,
     path,
     title,
+    excerpts,
   };
 }
 
 describe("chat-tools", () => {
-  test("executeSearchToolCall_returns_json_text_and_merges_current_turn_results", async () => {
+  test("executeSearchToolCall_returns_json_text_with_excerpts_and_merges_current_turn_results", async () => {
     const state = runtimeState([result("notes", "a.md", "A")]);
     const context = emptyContext();
+    const excerpt = [{ text: "10: Rust ownership", start_line: 10, end_line: 10 }];
     const callInfo = await executeSearchToolCall({
       call: {
         id: "tool-1",
@@ -46,13 +53,19 @@ describe("chat-tools", () => {
         query: "rust",
         mode: "hybrid",
         result_count: 2,
-        results: [result("notes", "a.md", "A duplicate"), result("notes", "b.md", "B")],
+        results: [
+          result("notes", "a.md", "A duplicate", excerpt),
+          result("notes", "b.md", "B", excerpt),
+        ],
       }),
     });
 
     expect(callInfo.result).toBe(
       JSON.stringify(
-        [result("notes", "a.md", "A duplicate"), result("notes", "b.md", "B")],
+        [
+          result("notes", "a.md", "A duplicate", excerpt),
+          result("notes", "b.md", "B", excerpt),
+        ],
         null,
         2,
       ),
@@ -60,6 +73,7 @@ describe("chat-tools", () => {
     expect(
       state.currentTurnSearchResults.map((entry) => `${entry.collection}:${entry.path}`),
     ).toEqual(["notes:a.md", "notes:b.md"]);
+    expect(state.currentTurnSearchResults[1].excerpts).toEqual(excerpt);
   });
 
   test("executeSearchToolCall_records_tool_results_for_success_and_error", async () => {

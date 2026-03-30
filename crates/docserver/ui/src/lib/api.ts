@@ -49,6 +49,12 @@ export interface IngestResponse {
 
 export type SearchMode = "semantic" | "hybrid";
 
+export interface SearchExcerpt {
+  text: string;
+  start_line: number;
+  end_line: number;
+}
+
 export interface SearchResult {
   rank: number;
   score: number;
@@ -57,6 +63,7 @@ export interface SearchResult {
   path: string;
   title: string;
   metadata?: Record<string, unknown>;
+  excerpts?: SearchExcerpt[];
 }
 
 export interface SearchResponse {
