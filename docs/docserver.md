@@ -215,11 +215,35 @@ Returns `200 OK`:
       "title": "Project Timeline and Milestones",
       "metadata": {
         "author": "alice"
-      }
+      },
+      "excerpts": [
+        {
+          "text": "Project timeline draft\nMilestone one ships in April\nMilestone two ships in June",
+          "start_line": 12,
+          "end_line": 14
+        }
+      ]
     }
   ]
 }
 ```
+
+Response fields:
+
+- top-level:
+  - `query` — echoed search query
+  - `mode` — resolved search mode used by the server
+  - `result_count` — number of returned results
+  - `results` — result array in ranked order
+- each result item includes:
+  - `rank`, `score`, `doc_id`, `collection`, `path`, `title`
+  - `metadata` — optional user metadata stored for the document
+  - `excerpts` — optional/additive excerpt payload for UI rendering
+    - each excerpt has `text`, `start_line`, and `end_line`
+    - excerpts are derived from stored document content after search ranking is complete
+    - when the literal query text is not present, the server falls back to the opening lines of the document
+
+The `excerpts` field is additive and does not change search ranking, filtering, or document ordering.
 
 `"semantic"` mode maps to `docbert_core::search::execute_semantic_search`. `"hybrid"` mode maps to `docbert_core::search::execute_search` with fuzzy matching enabled.
 
