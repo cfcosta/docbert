@@ -755,22 +755,7 @@ fn resolve_reference(
     config_db: &ConfigDb,
     reference: &str,
 ) -> Result<(String, String), rmcp::ErrorData> {
-    if let Some(short_id) = reference.strip_prefix('#') {
-        return search::resolve_by_doc_id(config_db, short_id).ok_or_else(
-            || {
-                rmcp::ErrorData::resource_not_found(
-                    format!("document not found: #{short_id}"),
-                    None,
-                )
-            },
-        );
-    }
-
-    if let Some((collection, path)) = reference.split_once(':') {
-        return Ok((collection.to_string(), path.to_string()));
-    }
-
-    search::resolve_by_path(config_db, reference).ok_or_else(|| {
+    search::resolve_reference(config_db, reference).ok_or_else(|| {
         rmcp::ErrorData::resource_not_found(
             format!("document not found: {reference}"),
             None,

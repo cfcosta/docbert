@@ -589,6 +589,32 @@ impl ConfigDb {
         Ok(result)
     }
 
+    /// Look up a document by its short hex display id.
+    pub fn find_document_by_short_id(
+        &self,
+        short_id: &str,
+    ) -> Result<Option<(u64, DocumentMetadata)>> {
+        let entries = self.list_all_document_metadata_typed()?;
+        Ok(entries.into_iter().find(|(_doc_id, meta)| {
+            let did = crate::doc_id::DocumentId::new(
+                &meta.collection,
+                &meta.relative_path,
+            );
+            did.short == short_id
+        }))
+    }
+
+    /// Look up a document by its relative path across all collections.
+    pub fn find_document_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<(u64, DocumentMetadata)>> {
+        let entries = self.list_all_document_metadata_typed()?;
+        Ok(entries
+            .into_iter()
+            .find(|(_doc_id, meta)| meta.relative_path == path))
+    }
+
     // -- Settings --
 
     /// Store a key-value setting.

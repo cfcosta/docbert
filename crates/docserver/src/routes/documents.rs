@@ -220,13 +220,12 @@ pub async fn list_by_collection(
     for (doc_id, meta) in &all_meta {
         if meta.collection == collection {
             let short_id = docbert_core::search::short_doc_id(*doc_id);
-            // Try to get title from Tantivy search results.
             let title = state
                 .search_index
-                .search(&format!("\"{short_id}\""), 1)
+                .find_by_collection_path(&meta.collection, &meta.relative_path)
                 .ok()
-                .and_then(|r| r.into_iter().next())
-                .map(|r| r.title)
+                .flatten()
+                .map(|result| result.title)
                 .unwrap_or_else(|| meta.relative_path.clone());
             items.push(DocumentListItem {
                 doc_id: short_id,
@@ -266,20 +265,11 @@ pub async fn get(
             ))
         })?;
 
-    // Retrieve the document content from Tantivy.
-    // Search by the doc_id to find it.
-    let results = state
+    let title = state
         .search_index
-        .search(&format!("\"{did}\""), 1)
-        .unwrap_or_default();
-
-    // Fall back: we have metadata but might not find it via search.
-    // Try a direct path-based lookup.
-    let title = if let Some(r) = results.first() {
-        r.title.clone()
-    } else {
-        path.clone()
-    };
+        .find_by_collection_path(&meta.collection, &meta.relative_path)?
+        .map(|result| result.title)
+        .unwrap_or_else(|| path.clone());
 
     // Load stored content.
     let content = state
@@ -386,6 +376,26 @@ mod tests {
         content: &str,
         metadata: Option<serde_json::Value>,
     ) -> DocumentId {
+        seed_document_with_index_id(
+            state,
+            collection,
+            path,
+            content,
+            metadata,
+            &DocumentId::new(collection, path).to_string(),
+            "Hello",
+        )
+    }
+
+    fn seed_document_with_index_id(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+        index_doc_id: &str,
+        title: &str,
+    ) -> DocumentId {
         state.config_db.set_managed_collection(collection).unwrap();
         let did = DocumentId::new(collection, path);
         let stored_metadata = incremental::DocumentMetadata {
@@ -408,11 +418,11 @@ mod tests {
                 .search_index
                 .add_document(
                     &writer,
-                    &did.to_string(),
+                    index_doc_id,
                     did.numeric,
                     collection,
                     path,
-                    "Hello",
+                    title,
                     content,
                     0,
                 )
@@ -576,6 +586,71 @@ mod tests {
                 "expected ingest to fail for an unsupported content type"
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn documents_list_by_collection_resolves_title_via_exact_lookup_even_with_arbitrary_index_doc_id()
+     {
+        let (_tmp, state) = test_state();
+        seed_document_with_index_id(
+            &state,
+            "notes",
+            "zeta.md",
+            "# Zeta\nBody",
+            None,
+            "external-id-1",
+            "Zeta Title",
+        );
+        seed_document_with_index_id(
+            &state,
+            "notes",
+            "alpha.md",
+            "# Alpha\nBody",
+            None,
+            "external-id-2",
+            "Alpha Title",
+        );
+
+        let items = list_by_collection(State(state), Path("notes".to_string()))
+            .await
+            .unwrap()
+            .0;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path, "alpha.md");
+        assert_eq!(items[0].title, "Alpha Title");
+        assert_eq!(items[1].path, "zeta.md");
+        assert_eq!(items[1].title, "Zeta Title");
+    }
+
+    #[tokio::test]
+    async fn routes_get_uses_exact_document_lookup_not_full_text_search() {
+        let (_tmp, state) = test_state();
+        let did = seed_document_with_index_id(
+            &state,
+            "notes",
+            "hello.md",
+            "# Hello\nBody",
+            Some(serde_json::json!({ "topic": "rust" })),
+            "external-id",
+            "Indexed Hello",
+        );
+
+        let document = get(
+            State(state),
+            Path(("notes".to_string(), "hello.md".to_string())),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(document.doc_id, did.to_string());
+        assert_eq!(document.title, "Indexed Hello");
+        assert_eq!(document.content, "# Hello\nBody");
+        assert_eq!(
+            document.metadata,
+            Some(serde_json::json!({ "topic": "rust" }))
+        );
     }
 
     #[tokio::test]

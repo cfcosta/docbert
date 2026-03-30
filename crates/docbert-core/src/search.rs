@@ -385,17 +385,11 @@ pub fn resolve_by_doc_id(
     config_db: &ConfigDb,
     short_id: &str,
 ) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata_typed().ok()?;
-    for (_doc_id, meta) in entries {
-        let did = crate::doc_id::DocumentId::new(
-            &meta.collection,
-            &meta.relative_path,
-        );
-        if did.short == short_id || did.to_string().contains(short_id) {
-            return Some((meta.collection, meta.relative_path));
-        }
-    }
-    None
+    config_db
+        .find_document_by_short_id(short_id)
+        .ok()
+        .flatten()
+        .map(|(_doc_id, meta)| (meta.collection, meta.relative_path))
 }
 
 /// Look up a document by its relative path across all collections.
@@ -427,13 +421,29 @@ pub fn resolve_by_path(
     config_db: &ConfigDb,
     path: &str,
 ) -> Option<(String, String)> {
-    let entries = config_db.list_all_document_metadata_typed().ok()?;
-    for (_doc_id, meta) in entries {
-        if meta.relative_path == path {
-            return Some((meta.collection, meta.relative_path));
-        }
+    config_db
+        .find_document_by_path(path)
+        .ok()
+        .flatten()
+        .map(|(_doc_id, meta)| (meta.collection, meta.relative_path))
+}
+
+/// Resolve a user-supplied document reference.
+///
+/// Supports `#short_id`, `collection:path`, and bare relative paths.
+pub fn resolve_reference(
+    config_db: &ConfigDb,
+    reference: &str,
+) -> Option<(String, String)> {
+    if let Some(short_id) = reference.strip_prefix('#') {
+        return resolve_by_doc_id(config_db, short_id);
     }
-    None
+
+    if let Some((collection, path)) = reference.split_once(':') {
+        return Some((collection.to_string(), path.to_string()));
+    }
+
+    resolve_by_path(config_db, reference)
 }
 
 fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {

@@ -366,6 +366,36 @@ impl SearchIndex {
         writer.delete_term(term);
     }
 
+    /// Look up a document by exact collection name and relative path.
+    pub fn find_by_collection_path(
+        &self,
+        collection: &str,
+        path: &str,
+    ) -> Result<Option<SearchResult>> {
+        let fields = self.fields();
+        let collection_term =
+            tantivy::Term::from_field_text(fields.collection, collection);
+        let path_term = tantivy::Term::from_field_text(fields.path, path);
+        let query = tantivy::query::BooleanQuery::new(vec![
+            (
+                tantivy::query::Occur::Must,
+                Box::new(tantivy::query::TermQuery::new(
+                    collection_term,
+                    IndexRecordOption::Basic,
+                )),
+            ),
+            (
+                tantivy::query::Occur::Must,
+                Box::new(tantivy::query::TermQuery::new(
+                    path_term,
+                    IndexRecordOption::Basic,
+                )),
+            ),
+        ]);
+
+        Ok(self.execute_query(&query, 1)?.into_iter().next())
+    }
+
     fn execute_query(
         &self,
         query: &dyn tantivy::query::Query,

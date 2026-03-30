@@ -409,27 +409,11 @@ pub(crate) fn cmd_get(
 ) -> error::Result<()> {
     let reference = &args.reference;
 
-    // Try to resolve the reference
-    let (collection, path) = if let Some(stripped) = reference.strip_prefix('#')
-    {
-        // Doc ID reference: look up in metadata
-        search::resolve_by_doc_id(config_db, stripped).ok_or_else(|| {
-            error::Error::NotFound {
-                kind: "document",
-                name: format!("#{stripped}"),
-            }
-        })?
-    } else if let Some((coll, path)) = reference.split_once(':') {
-        (coll.to_string(), path.to_string())
-    } else {
-        // Plain path: search all collections
-        search::resolve_by_path(config_db, reference).ok_or_else(|| {
-            error::Error::NotFound {
-                kind: "document",
-                name: reference.to_string(),
-            }
-        })?
-    };
+    let (collection, path) = search::resolve_reference(config_db, reference)
+        .ok_or_else(|| error::Error::NotFound {
+            kind: "document",
+            name: reference.to_string(),
+        })?;
 
     let collection_path =
         config_db.get_collection(&collection)?.ok_or_else(|| {
