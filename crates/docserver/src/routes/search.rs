@@ -1,7 +1,7 @@
 use axum::{Json, extract::State};
 use docbert_core::{
-    results,
     search::{self, SearchMode, SearchQuery},
+    text_util,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,13 @@ pub struct SearchResponse {
     results: Vec<SearchResultItem>,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct SearchExcerpt {
+    text: String,
+    start_line: usize,
+    end_line: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SearchResultItem {
     rank: usize,
@@ -45,6 +52,8 @@ pub struct SearchResultItem {
     title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    excerpts: Vec<SearchExcerpt>,
 }
 
 pub async fn search(
@@ -72,20 +81,12 @@ pub async fn search(
         &state.embedding_db,
         &mut model,
     )?;
+    drop(model);
 
-    let items =
-        results::enrich(results, |doc_id| load_user_metadata(&state, doc_id))
-            .into_iter()
-            .map(|r| SearchResultItem {
-                rank: r.rank,
-                score: r.score,
-                doc_id: r.doc_id,
-                collection: r.collection,
-                path: r.path,
-                title: r.title,
-                metadata: r.metadata,
-            })
-            .collect::<Vec<_>>();
+    let items = results
+        .into_iter()
+        .map(|result| build_search_result_item(&state, result, &body.query))
+        .collect::<Vec<_>>();
 
     let result_count = items.len();
     Ok(Json(SearchResponse {
@@ -94,6 +95,49 @@ pub async fn search(
         result_count,
         results: items,
     }))
+}
+
+fn build_search_result_item(
+    state: &AppState,
+    result: search::FinalResult,
+    query: &str,
+) -> SearchResultItem {
+    let metadata = load_user_metadata(state, result.doc_num_id);
+    let excerpts = load_excerpts(state, result.doc_num_id, query);
+
+    SearchResultItem {
+        rank: result.rank,
+        score: result.score,
+        doc_id: result.doc_id,
+        collection: result.collection,
+        path: result.path,
+        title: result.title,
+        metadata,
+        excerpts,
+    }
+}
+
+fn load_excerpts(
+    state: &AppState,
+    doc_numeric_id: u64,
+    query: &str,
+) -> Vec<SearchExcerpt> {
+    state
+        .config_db
+        .get_document_content(doc_numeric_id)
+        .ok()
+        .flatten()
+        .map(|content| {
+            text_util::extract_excerpts(&content, query, 3)
+                .into_iter()
+                .map(|excerpt| SearchExcerpt {
+                    text: excerpt.text,
+                    start_line: excerpt.start_line,
+                    end_line: excerpt.end_line,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn load_user_metadata(
@@ -111,7 +155,14 @@ fn load_user_metadata(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+    use docbert_core::{
+        ConfigDb,
+        DocumentId,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
+        incremental,
+    };
 
     use super::*;
     use crate::state::Inner;
@@ -135,6 +186,44 @@ mod tests {
         )
     }
 
+    fn seed_stored_document(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+        content: &str,
+        user_metadata: Option<serde_json::Value>,
+    ) -> DocumentId {
+        state.config_db.set_managed_collection(collection).unwrap();
+        let did = DocumentId::new(collection, path);
+        let metadata = incremental::DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: 0,
+        };
+        state
+            .config_db
+            .put_document_artifacts(
+                did.numeric,
+                &metadata,
+                content,
+                user_metadata.as_ref(),
+            )
+            .unwrap();
+        did
+    }
+
+    fn final_result(did: &DocumentId, title: &str) -> search::FinalResult {
+        search::FinalResult {
+            rank: 1,
+            score: 0.95,
+            doc_id: did.short.clone(),
+            doc_num_id: did.numeric,
+            collection: "notes".to_string(),
+            path: "rust.md".to_string(),
+            title: title.to_string(),
+        }
+    }
+
     #[test]
     fn default_mode_is_semantic() {
         assert_eq!(default_mode(), "semantic");
@@ -154,6 +243,163 @@ mod tests {
         assert_eq!(
             load_user_metadata(&state, 7),
             Some(serde_json::json!({"topic": "rust"}))
+        );
+    }
+
+    #[test]
+    fn build_search_result_item_preserves_metadata_and_adds_excerpts() {
+        let (_tmp, state) = test_state();
+        let did = seed_stored_document(
+            &state,
+            "notes",
+            "rust.md",
+            "line1\nRust ownership\nline3\nline4",
+            Some(serde_json::json!({"topic": "rust"})),
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Rust"),
+            "ownership",
+        );
+
+        assert_eq!(item.metadata, Some(serde_json::json!({"topic": "rust"})));
+        assert_eq!(item.excerpts.len(), 1);
+        assert_eq!(
+            item.excerpts[0],
+            SearchExcerpt {
+                text: "line1\nRust ownership\nline3\nline4".to_string(),
+                start_line: 1,
+                end_line: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn build_search_result_item_uses_first_lines_when_query_has_no_literal_match()
+     {
+        let (_tmp, state) = test_state();
+        let did = seed_stored_document(
+            &state,
+            "notes",
+            "rust.md",
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7",
+            None,
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Semantic result"),
+            "memory management",
+        );
+
+        assert_eq!(item.excerpts.len(), 1);
+        assert_eq!(
+            item.excerpts[0],
+            SearchExcerpt {
+                text: "line1\nline2\nline3\nline4\nline5\nline6".to_string(),
+                start_line: 1,
+                end_line: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn build_search_result_item_caps_excerpt_count_at_three() {
+        let (_tmp, state) = test_state();
+        let did = seed_stored_document(
+            &state,
+            "notes",
+            "rust.md",
+            &[
+                "ownership one",
+                "line2",
+                "line3",
+                "line4",
+                "line5",
+                "line6",
+                "line7",
+                "ownership two",
+                "line9",
+                "line10",
+                "line11",
+                "line12",
+                "line13",
+                "line14",
+                "ownership three",
+                "line16",
+                "line17",
+                "line18",
+                "line19",
+                "line20",
+                "line21",
+                "ownership four",
+            ]
+            .join("\n"),
+            None,
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Rust"),
+            "ownership",
+        );
+
+        assert_eq!(item.excerpts.len(), 3);
+        assert!(
+            !item
+                .excerpts
+                .iter()
+                .any(|excerpt| excerpt.text.contains("ownership four"))
+        );
+    }
+
+    #[test]
+    fn search_result_item_serialization_keeps_existing_fields_and_adds_excerpts()
+     {
+        let (_tmp, state) = test_state();
+        let did = seed_stored_document(
+            &state,
+            "notes",
+            "rust.md",
+            "line1\nRust ownership\nline3",
+            Some(serde_json::json!({"topic": "rust"})),
+        );
+
+        let value = serde_json::to_value(build_search_result_item(
+            &state,
+            final_result(&did, "Rust"),
+            "ownership",
+        ))
+        .unwrap();
+
+        assert_eq!(value.get("rank").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(
+            value.get("doc_id").and_then(|v| v.as_str()),
+            Some(did.short.as_str())
+        );
+        assert_eq!(
+            value.get("collection").and_then(|v| v.as_str()),
+            Some("notes")
+        );
+        assert_eq!(value.get("path").and_then(|v| v.as_str()), Some("rust.md"));
+        assert_eq!(value.get("title").and_then(|v| v.as_str()), Some("Rust"));
+        assert_eq!(
+            value.get("metadata"),
+            Some(&serde_json::json!({"topic": "rust"}))
+        );
+        let excerpts = value
+            .get("excerpts")
+            .and_then(|v| v.as_array())
+            .expect("excerpts array");
+        assert_eq!(excerpts.len(), 1);
+        assert_eq!(
+            excerpts[0],
+            serde_json::json!({
+                "text": "line1\nRust ownership\nline3",
+                "start_line": 1,
+                "end_line": 3,
+            })
         );
     }
 
