@@ -153,3 +153,9 @@
   color: var(--success, #16a34a);
   font-weight: 500;
 }
+
+.settings-error {
+  font-size: 0.85rem;
+  color: var(--error, #b91c1c);
+  font-weight: 500;
+}

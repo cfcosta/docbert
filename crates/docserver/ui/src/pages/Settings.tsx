@@ -51,6 +51,8 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -59,8 +61,11 @@ export default function Settings() {
         setProvider(s.provider);
         setModel(s.model);
         setApiKey(s.api_key ?? "");
+        setLoadError(null);
       })
-      .catch(() => {})
+      .catch((error) => {
+        setLoadError(error instanceof Error ? error.message : "Could not load settings.");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -69,16 +74,19 @@ export default function Settings() {
     const models = PROVIDERS[p]?.models ?? [];
     setModel(models[0]?.id ?? null);
     setSaved(false);
+    setSaveError(null);
   };
 
   const handleModelChange = (m: string) => {
     setModel(m);
     setSaved(false);
+    setSaveError(null);
   };
 
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
+    setSaveError(null);
     try {
       await api.updateLlmSettings({
         provider,
@@ -87,8 +95,8 @@ export default function Settings() {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {
-      /* ignore */
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not save settings.");
     } finally {
       setSaving(false);
     }
@@ -122,6 +130,11 @@ export default function Settings() {
           <p className="settings-description">
             Choose the provider and model used for chat responses.
           </p>
+          {loadError && (
+            <p className="settings-error" role="alert">
+              {loadError}
+            </p>
+          )}
 
           <div className="settings-field">
             <label className="settings-label" htmlFor="provider-select">
@@ -178,6 +191,7 @@ export default function Settings() {
                 onChange={(e) => {
                   setApiKey(e.target.value);
                   setSaved(false);
+                  setSaveError(null);
                 }}
               />
               <p className="settings-hint">Falls back to environment variable if not set.</p>
@@ -193,6 +207,11 @@ export default function Settings() {
               {saving ? "Saving..." : "Save"}
             </button>
             {saved && <span className="settings-saved">Saved</span>}
+            {saveError && (
+              <span className="settings-error" role="alert">
+                {saveError}
+              </span>
+            )}
           </div>
         </section>
       </div>
