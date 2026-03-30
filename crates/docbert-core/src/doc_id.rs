@@ -31,6 +31,16 @@ pub struct DocumentId {
     pub short: String,
 }
 
+/// Strip a leading `#` from a user-facing document reference.
+pub fn strip_document_ref_prefix(reference: &str) -> &str {
+    reference.strip_prefix('#').unwrap_or(reference)
+}
+
+/// Format a short document id as a user-facing `#`-prefixed reference.
+pub fn format_document_ref(short_id: &str) -> String {
+    format!("#{}", strip_document_ref_prefix(short_id))
+}
+
 impl DocumentId {
     /// Build a stable document ID from a collection name and relative path.
     ///
@@ -97,7 +107,7 @@ impl DocumentId {
 
 impl std::fmt::Display for DocumentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{}", self.short)
+        write!(f, "{}", format_document_ref(&self.short))
     }
 }
 
@@ -149,5 +159,13 @@ mod tests {
         assert_eq!(too_small.short.len(), 6);
         let too_big = id.extend_short(100);
         assert_eq!(too_big.short.len(), 16);
+    }
+
+    #[test]
+    fn doc_id_helpers_normalize_prefixed_and_unprefixed_refs_equally() {
+        assert_eq!(strip_document_ref_prefix("abc123"), "abc123");
+        assert_eq!(strip_document_ref_prefix("#abc123"), "abc123");
+        assert_eq!(format_document_ref("abc123"), "#abc123");
+        assert_eq!(format_document_ref("#abc123"), "#abc123");
     }
 }
