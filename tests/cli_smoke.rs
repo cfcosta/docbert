@@ -131,6 +131,110 @@ fn get_json_accepts_hash_prefixed_and_bare_short_document_refs()
     Ok(())
 }
 
+#[test]
+fn status_json_cli_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    setup_fixture(tempdir.path())?;
+    let config_db = ConfigDb::open(&tempdir.path().join("config.db"))?;
+    config_db.set_setting("embedding_model", "lightonai/ColBERT-Zero")?;
+    drop(config_db);
+
+    let output = std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(tempdir.path())
+        .arg("status")
+        .arg("--json")
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(json.get("collections").and_then(Value::as_u64), Some(1));
+    assert_eq!(json.get("documents").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        json.get("embedding_model").and_then(Value::as_str),
+        Some("lightonai/ColBERT-Zero")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn model_show_json_cli_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    setup_fixture(tempdir.path())?;
+    let config_db = ConfigDb::open(&tempdir.path().join("config.db"))?;
+    config_db.set_setting("model_name", "config/model")?;
+    drop(config_db);
+
+    let output = std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(tempdir.path())
+        .arg("model")
+        .arg("show")
+        .arg("--json")
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        json.get("resolved").and_then(Value::as_str),
+        Some("config/model")
+    );
+    assert_eq!(json.get("source").and_then(Value::as_str), Some("config"));
+
+    Ok(())
+}
+
+#[test]
+fn get_and_multi_get_json_cli_smoke() -> Result<(), Box<dyn std::error::Error>>
+{
+    let tempdir = tempfile::tempdir()?;
+    setup_fixture(tempdir.path())?;
+
+    let get_output = std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(tempdir.path())
+        .arg("get")
+        .arg("notes:hello.md")
+        .arg("--json")
+        .output()?;
+    assert!(get_output.status.success());
+    let get_json: Value = serde_json::from_slice(&get_output.stdout)?;
+    assert_eq!(
+        get_json.get("collection").and_then(Value::as_str),
+        Some("notes")
+    );
+    assert_eq!(
+        get_json.get("path").and_then(Value::as_str),
+        Some("hello.md")
+    );
+
+    let multi_get_output = std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(tempdir.path())
+        .arg("multi-get")
+        .arg("*.md")
+        .arg("--json")
+        .output()?;
+    assert!(multi_get_output.status.success());
+    let multi_get_json: Value =
+        serde_json::from_slice(&multi_get_output.stdout)?;
+    let items = multi_get_json.as_array().expect("multi-get array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].get("collection").and_then(Value::as_str),
+        Some("notes")
+    );
+    assert_eq!(
+        items[0].get("path").and_then(Value::as_str),
+        Some("hello.md")
+    );
+
+    Ok(())
+}
+
 fn docbert_bin() -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Ok(bin) = std::env::var("CARGO_BIN_EXE_docbert") {
         return Ok(PathBuf::from(bin));
