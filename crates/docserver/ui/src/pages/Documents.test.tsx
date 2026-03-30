@@ -204,6 +204,24 @@ describe("Documents page", () => {
     );
   });
 
+  test("collection_create_button_has_accessible_name", async () => {
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: { notes: [] },
+      documentBodies: {},
+    });
+
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    const createButton = view.getByRole("button", { name: "Create collection" });
+    expect(createButton).toBeTruthy();
+  });
+
   test("uploading_markdown_files_refreshes_collection_and_shows_success_status", async () => {
     const docsByCollection: Record<string, DocumentListItem[]> = { notes: [] };
     installDocumentsApiStubs({

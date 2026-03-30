@@ -411,7 +411,12 @@ export default function Documents() {
                 onChange={(event) => setNewCollectionName(event.target.value)}
                 className="collection-add-input"
               />
-              <button type="submit" className="collection-add-btn" disabled={!newCollectionName.trim()}>
+              <button
+                type="submit"
+                className="collection-add-btn"
+                aria-label="Create collection"
+                disabled={!newCollectionName.trim()}
+              >
                 +
               </button>
             </form>
