@@ -124,6 +124,12 @@
   opacity: 1;
 }
 
+@media (hover: none), (pointer: coarse) {
+  .chat-conv-delete {
+    opacity: 1;
+  }
+}
+
 .chat-conv-delete:hover {
   color: var(--error, #b91c1c);
   background: var(--error-bg, rgba(185, 28, 28, 0.1));
