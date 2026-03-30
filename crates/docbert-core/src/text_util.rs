@@ -4,6 +4,17 @@ pub const DEFAULT_SNIPPET_LINES: usize = 6;
 /// Maximum number of characters in a snippet before truncation.
 pub const DEFAULT_SNIPPET_MAX_CHARS: usize = 400;
 
+const MATCH_CONTEXT_LINES_BEFORE: usize = 2;
+const MATCH_CONTEXT_LINES_AFTER: usize = 2;
+
+/// A text excerpt with inclusive line range metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextExcerpt {
+    pub text: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 /// Strip a leading YAML frontmatter block when one is present.
 ///
 /// Frontmatter must start at the beginning of the document with `---` and end
@@ -53,6 +64,63 @@ pub fn add_line_numbers(text: &str, start_line: usize) -> String {
         .join("\n")
 }
 
+/// Extract up to `max_excerpts` distinct excerpts around literal query matches.
+///
+/// Excerpts are line-based. Each match includes two lines of context before and
+/// after the matching line when available. Overlapping windows are merged into a
+/// single excerpt. When the query is not found literally, the first few lines of
+/// the document are returned instead. Empty input returns an empty vector.
+///
+/// Returned line numbers are 1-indexed and inclusive.
+pub fn extract_excerpts(
+    text: &str,
+    query: &str,
+    max_excerpts: usize,
+) -> Vec<TextExcerpt> {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() || max_excerpts == 0 {
+        return Vec::new();
+    }
+
+    let query_lower = query.to_lowercase();
+    let mut ranges: Vec<(usize, usize)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            line.to_lowercase().contains(&query_lower).then_some((
+                idx.saturating_sub(MATCH_CONTEXT_LINES_BEFORE),
+                (idx + MATCH_CONTEXT_LINES_AFTER + 1).min(lines.len()),
+            ))
+        })
+        .collect();
+
+    if ranges.is_empty() {
+        ranges.push((0, DEFAULT_SNIPPET_LINES.min(lines.len())));
+    }
+
+    let mut merged_ranges: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some((last_start, last_end)) = merged_ranges.last_mut()
+            && start <= *last_end
+        {
+            *last_start = (*last_start).min(start);
+            *last_end = (*last_end).max(end);
+            continue;
+        }
+        merged_ranges.push((start, end));
+    }
+
+    merged_ranges
+        .into_iter()
+        .take(max_excerpts)
+        .map(|(start, end)| TextExcerpt {
+            text: truncate_snippet(lines[start..end].join("\n")),
+            start_line: start + 1,
+            end_line: end,
+        })
+        .collect()
+}
+
 /// Extract a snippet around the first occurrence of `query` in `text`.
 ///
 /// Returns `(snippet_text, start_line_number)`, where `start_line_number` is
@@ -88,18 +156,14 @@ pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
     }
 
     let (start, end) = if let Some(idx) = match_idx {
-        let start = idx.saturating_sub(2);
-        let end = (idx + 3).min(lines.len());
+        let start = idx.saturating_sub(MATCH_CONTEXT_LINES_BEFORE);
+        let end = (idx + MATCH_CONTEXT_LINES_AFTER + 1).min(lines.len());
         (start, end)
     } else {
         (0, DEFAULT_SNIPPET_LINES.min(lines.len()))
     };
 
-    let mut snippet = lines[start..end].join("\n");
-    if snippet.len() > DEFAULT_SNIPPET_MAX_CHARS {
-        snippet.truncate(DEFAULT_SNIPPET_MAX_CHARS);
-        snippet.push_str("...");
-    }
+    let snippet = truncate_snippet(lines[start..end].join("\n"));
 
     Some((snippet, start + 1))
 }
@@ -155,6 +219,15 @@ pub fn apply_line_limits(
     slice
 }
 
+fn truncate_snippet(mut snippet: String) -> String {
+    if snippet.len() > DEFAULT_SNIPPET_MAX_CHARS {
+        snippet.truncate(DEFAULT_SNIPPET_MAX_CHARS);
+        snippet.push_str("...");
+    }
+
+    snippet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +266,115 @@ mod tests {
     }
 
     #[test]
+    fn extract_excerpts_returns_multiple_non_overlapping_matches() {
+        let text = [
+            "line1",
+            "rust line one",
+            "line3",
+            "line4",
+            "line5",
+            "line6",
+            "line7",
+            "line8",
+            "rust line two",
+            "line10",
+            "line11",
+        ]
+        .join("\n");
+
+        let excerpts = extract_excerpts(&text, "rust", 3);
+
+        assert_eq!(excerpts.len(), 2);
+        assert_eq!(
+            excerpts[0],
+            TextExcerpt {
+                text: "line1\nrust line one\nline3\nline4".to_string(),
+                start_line: 1,
+                end_line: 4,
+            }
+        );
+        assert_eq!(
+            excerpts[1],
+            TextExcerpt {
+                text: "line7\nline8\nrust line two\nline10\nline11".to_string(),
+                start_line: 7,
+                end_line: 11,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_excerpts_no_match_returns_head_excerpt() {
+        let text = "line1\nline2\nline3\nline4\nline5\nline6\nline7";
+
+        let excerpts = extract_excerpts(text, "zzz_nomatch", 3);
+
+        assert_eq!(
+            excerpts,
+            vec![TextExcerpt {
+                text: "line1\nline2\nline3\nline4\nline5\nline6".to_string(),
+                start_line: 1,
+                end_line: 6,
+            }]
+        );
+    }
+
+    #[test]
+    fn extract_excerpts_caps_result_count() {
+        let text = [
+            "rust a", "line2", "line3", "line4", "line5", "line6", "line7",
+            "rust b", "line9", "line10", "line11", "line12", "line13",
+            "line14", "rust c", "line16", "line17", "line18", "line19",
+            "line20", "line21", "rust d",
+        ]
+        .join("\n");
+
+        let excerpts = extract_excerpts(&text, "rust", 3);
+
+        assert_eq!(excerpts.len(), 3);
+        assert!(excerpts.iter().all(|excerpt| excerpt.text.contains("rust")));
+        assert!(
+            !excerpts
+                .iter()
+                .any(|excerpt| excerpt.text.contains("rust d"))
+        );
+    }
+
+    #[test]
+    fn extract_excerpts_merges_overlapping_match_windows() {
+        let text = [
+            "line1",
+            "line2",
+            "rust first",
+            "line4",
+            "rust second",
+            "line6",
+            "line7",
+            "line8",
+        ]
+        .join("\n");
+
+        let excerpts = extract_excerpts(&text, "rust", 3);
+
+        assert_eq!(excerpts.len(), 1);
+        assert_eq!(excerpts[0].start_line, 1);
+        assert_eq!(excerpts[0].end_line, 7);
+        assert!(excerpts[0].text.contains("rust first"));
+        assert!(excerpts[0].text.contains("rust second"));
+    }
+
+    #[test]
+    fn extract_excerpts_reports_line_ranges() {
+        let text = "line1\nline2\nline3\nline4\nrust line\nline6\nline7\nline8";
+
+        let excerpts = extract_excerpts(text, "rust", 3);
+
+        assert_eq!(excerpts.len(), 1);
+        assert_eq!(excerpts[0].start_line, 3);
+        assert_eq!(excerpts[0].end_line, 7);
+    }
+
+    #[test]
     fn extract_snippet_match_found() {
         let text = "line1\nline2\nline3\nrust is great\nline5\nline6\nline7";
         let (snippet, start) = extract_snippet(text, "rust").unwrap();
@@ -220,6 +402,15 @@ mod tests {
         let (snippet, _) = extract_snippet(&text, "a").unwrap();
         assert!(snippet.len() <= DEFAULT_SNIPPET_MAX_CHARS + 3); // +3 for "..."
         assert!(snippet.ends_with("..."));
+    }
+
+    #[test]
+    fn extract_snippet_keeps_existing_first_match_behavior() {
+        let text = "line1\nline2\nline3\nrust is great\nline5\nline6\nrust later\nline8";
+        let (snippet, start) = extract_snippet(text, "rust").unwrap();
+
+        assert_eq!(snippet, "line2\nline3\nrust is great\nline5\nline6");
+        assert_eq!(start, 2);
     }
 
     #[test]
