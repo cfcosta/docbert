@@ -35,3 +35,11 @@ cuda = ["docbert-core/cuda"]
 [dev-dependencies]
 rmcp = { version = "1.2.0", features = ["client", "transport-child-process"] }
 tempfile = "3"
+
+[[test]]
+name = "cli_smoke"
+path = "../../tests/cli_smoke.rs"
+
+[[test]]
+name = "mcp_stdio"
+path = "../../tests/mcp_stdio.rs"

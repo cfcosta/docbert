@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use docbert_core::{ConfigDb, SearchIndex};
+use docbert_core::{ConfigDb, DocumentId, SearchIndex, incremental};
 use serde_json::Value;
 
 fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -13,6 +13,15 @@ fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let config_db = ConfigDb::open(&data_dir.join("config.db"))?;
     config_db.set_collection("notes", collection_dir.to_str().unwrap())?;
+    let did = DocumentId::new("notes", "hello.md");
+    config_db.set_document_metadata_typed(
+        did.numeric,
+        &incremental::DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 1,
+        },
+    )?;
 
     let tantivy_dir = data_dir.join("tantivy");
     std::fs::create_dir_all(&tantivy_dir)?;
@@ -89,6 +98,33 @@ fn search_json_writes_results_to_stdout_and_keeps_stderr_clean_in_bm25_mode()
 
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+
+    Ok(())
+}
+
+#[test]
+fn get_json_accepts_hash_prefixed_document_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    setup_fixture(tempdir.path())?;
+    let did = DocumentId::new("notes", "hello.md");
+
+    let output = std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(tempdir.path())
+        .arg("get")
+        .arg(did.to_string())
+        .arg("--json")
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        json.get("collection").and_then(Value::as_str),
+        Some("notes")
+    );
+    assert_eq!(json.get("path").and_then(Value::as_str), Some("hello.md"));
 
     Ok(())
 }

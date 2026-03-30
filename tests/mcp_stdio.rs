@@ -1,6 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use docbert_core::{ConfigDb, SearchIndex};
+use docbert_core::{
+    ConfigDb,
+    DocumentId,
+    SearchIndex,
+    incremental::DocumentMetadata,
+};
 use rmcp::{
     ServiceExt,
     model::{
@@ -31,6 +36,15 @@ fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let config_db = ConfigDb::open(&data_dir.join("config.db"))?;
     setup_config(&config_db, &collection_dir)?;
+    let did = DocumentId::new("notes", "hello.md");
+    config_db.set_document_metadata_typed(
+        did.numeric,
+        &DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 1,
+        },
+    )?;
 
     let tantivy_dir = data_dir.join("tantivy");
     std::fs::create_dir_all(&tantivy_dir)?;
@@ -114,8 +128,10 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
         Some("notes")
     );
 
+    let did = DocumentId::new("notes", "hello.md");
+
     let get_args = json!({
-        "reference": "notes:hello.md",
+        "reference": did.to_string(),
         "lineNumbers": true,
         "maxLines": 1
     });
