@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Message } from "./chat-message-codec";
 import { buildTranscriptRenderItems } from "./chat-transcript-model";
 import type { SubagentMessage } from "./chat-message-groups";
 
