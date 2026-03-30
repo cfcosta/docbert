@@ -37,6 +37,8 @@ mock.module("@mariozechner/pi-ai", () => ({
 const { default: Chat } = await import("./Chat");
 
 const originalApi = { ...api };
+const originalMatchMedia = window.matchMedia;
+const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
 const NO_SETTINGS: LlmSettings = { provider: null, model: null, api_key: null };
 
 type ApiTrackers = {
@@ -205,6 +207,35 @@ async function waitForCondition(
   throw new Error(message());
 }
 
+function stubMatchMedia(matches: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    value: (query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)" ? matches : false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+    configurable: true,
+    writable: true,
+  });
+}
+
+function captureScrollIntoViewCalls() {
+  const calls: Array<ScrollIntoViewOptions | undefined> = [];
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    value: (options?: ScrollIntoViewOptions) => {
+      calls.push(options);
+    },
+    configurable: true,
+    writable: true,
+  });
+  return calls;
+}
+
 beforeEach(() => {
   streamCallCount = 0;
   getModelCallCount = 0;
@@ -214,6 +245,16 @@ beforeEach(() => {
 
 afterEach(() => {
   Object.assign(api, originalApi);
+  Object.defineProperty(window, "matchMedia", {
+    value: originalMatchMedia,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    value: originalScrollIntoView,
+    configurable: true,
+    writable: true,
+  });
 });
 
 describe("Chat page", () => {
@@ -237,6 +278,53 @@ describe("Chat page", () => {
     );
     expect(trackers.getConversationIds).toEqual(["loaded-1"]);
     expect(view.container.textContent).toContain("Loaded conversation");
+  });
+
+  test("auto_scroll_respects_reduced_motion_preference", async () => {
+    const defaultConversation = makeConversation("scroll-default", [
+      {
+        id: "assistant-default",
+        role: "assistant",
+        content: "Loaded answer",
+        actor: { type: "parent" },
+        parts: [{ type: "text", text: "Loaded answer" }],
+      },
+    ]);
+
+    stubMatchMedia(false);
+    const defaultCalls = captureScrollIntoViewCalls();
+    installApiStubs({ conversation: defaultConversation });
+    const defaultView = renderChat("/chat/scroll-default");
+
+    await waitForCondition(
+      () => defaultView.container.textContent?.includes("Loaded answer") ?? false,
+      () => `default-motion conversation never rendered: ${JSON.stringify(defaultView.container.textContent)}`,
+    );
+
+    expect(defaultCalls.at(-1)).toEqual({ behavior: "smooth" });
+    defaultView.unmount();
+
+    const reducedConversation = makeConversation("scroll-reduced", [
+      {
+        id: "assistant-reduced",
+        role: "assistant",
+        content: "Loaded answer",
+        actor: { type: "parent" },
+        parts: [{ type: "text", text: "Loaded answer" }],
+      },
+    ]);
+
+    stubMatchMedia(true);
+    const reducedCalls = captureScrollIntoViewCalls();
+    installApiStubs({ conversation: reducedConversation });
+    const reducedView = renderChat("/chat/scroll-reduced");
+
+    await waitForCondition(
+      () => reducedView.container.textContent?.includes("Loaded answer") ?? false,
+      () => `reduced-motion conversation never rendered: ${JSON.stringify(reducedView.container.textContent)}`,
+    );
+
+    expect(reducedCalls.at(-1)).toEqual({ behavior: "auto" });
   });
 
   test("missing_llm_settings_appends_configuration_message_without_starting_stream", async () => {

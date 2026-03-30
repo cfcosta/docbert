@@ -55,6 +55,14 @@ function formatRelativeTime(ms: number): string {
   return `${days}d ago`;
 }
 
+function chatScrollBehavior(): ScrollBehavior {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return "smooth";
+  }
+
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
 export default function Chat() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
@@ -98,7 +106,7 @@ export default function Chat() {
   }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: chatScrollBehavior() });
   }, [messages]);
 
   const selectConversation = useCallback(
