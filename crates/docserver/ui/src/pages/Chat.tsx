@@ -1,532 +1,47 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router";
-import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router";
+import { getModel } from "@mariozechner/pi-ai";
 import "katex/dist/katex.min.css";
-import type { Context, Tool, UserMessage, Message as PiMessage } from "@mariozechner/pi-ai";
-import { api } from "../lib/api";
-import type { ConversationFull, ConversationSummary, LlmSettings } from "../lib/api";
-import {
-  apiToMessages,
-  messagesToApi,
-  type Message,
-  type ToolCallInfo,
-} from "./chat-message-codec";
-import {
-  applyInterruptedStopReason,
-  createPiContext,
-  createToolResultMessage,
-} from "./chat-context";
-import {
-  insertOrUpdateSubagentMessage,
-  setSubagentStatus,
-  updateSubagentMessageById,
-  upsertSubagentPart,
-  type AnalyzeFilesAcceptedItem,
-  type ChatToolRuntimeState,
-  type QueuedAnalysisFile,
-  type SubagentAnalysisResult,
-} from "./chat-subagents";
-import {
-  assistantToolCalls,
-  consumeAssistantStream,
-  isInterruptedAssistantResult,
-  shouldContinueAssistantToolRound,
-} from "./chat-stream";
-import { executeSearchToolCall, searchChatTools } from "./chat-tools";
+
+import type { ConversationFull, ConversationSummary } from "../lib/api";
+import { createPiContext } from "./chat-context";
 import { groupMessagesForDisplay } from "./chat-message-groups";
+import {
+  CHAT_SYSTEM_PROMPT,
+  MAX_TOOL_ROUNDS,
+  chatAgentTools,
+  createAssistantPlaceholder,
+  createConversationTitle,
+  createMissingConfigMessage,
+  createRuntimeErrorMessage,
+  createUserMessage,
+  queueSubagentResult,
+  resolveReadyLlmSettings,
+  runParentAgentRound,
+  updateMessageById,
+  updateSubagentMessages,
+} from "./chat-agent-runtime";
+import type { Message } from "./chat-message-codec";
+import type { ChatToolRuntimeState, QueuedAnalysisFile } from "./chat-subagents";
 import ChatTranscript from "./ChatTranscript";
+import {
+  createConversationRecord,
+  deleteConversationRecord,
+  loadConversationById,
+  loadConversationSummaries,
+  loadLlmSettings,
+  persistConversationMessages,
+} from "./chat-session";
 import "./Chat.css";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = (Math.random() * 16) | 0;
+    return (char === "x" ? random : (random & 0x3) | 0x8).toString(16);
   });
-}
-
-interface ReadyLlmSettings {
-  provider: string;
-  model: string;
-  api_key: string;
-}
-
-type UpdateAssistantMessage = (fn: (message: Message) => Message) => void;
-
-// ── Tool definitions for pi-ai ──
-
-const analyzeDocumentTool: Tool = {
-  name: "analyze_document",
-  description:
-    "Run a focused file analysis subagent for one document and return a concise summary relevant to the user question.",
-  parameters: Type.Object({
-    collection: Type.String({ description: "The collection name" }),
-    path: Type.String({
-      description: "The document path within the collection",
-    }),
-    focus: Type.Optional(
-      Type.String({
-        description: "Optional extra focus for this file analysis.",
-      }),
-    ),
-  }),
-};
-
-const tools: Tool[] = [...searchChatTools, analyzeDocumentTool];
-
-const SYSTEM_PROMPT = `You are a helpful assistant with access to a document store.
-
-When the user asks a question:
-1. Use search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once — this is usually the best default.
-2. When a specific document looks relevant, call analyze_document for that file. You may call analyze_document multiple times for different files.
-3. Use the tool results from those file analyses to answer the user.
-4. Prefer focused per-document analysis over making unsupported claims from titles or snippets alone.
-
-If no relevant documents are found, say so and suggest what the user might want to ingest.`;
-
-const MAX_TOOL_ROUNDS = 10;
-
-function resolveReadyLlmSettings(settings: LlmSettings): ReadyLlmSettings | null {
-  if (!settings.provider || !settings.model || !settings.api_key) {
-    return null;
-  }
-
-  return {
-    provider: settings.provider,
-    model: settings.model,
-    api_key: settings.api_key,
-  };
-}
-
-function createUserMessage(text: string): Message {
-  return {
-    id: uuid(),
-    role: "user",
-    content: text,
-    parts: [{ type: "text", text }],
-  };
-}
-
-function createAssistantPlaceholder(id: string): Message {
-  return { id, role: "assistant", content: "", parts: [] };
-}
-
-function createQueuedSubagentMessage(messageId: string, file: AnalyzeFilesAcceptedItem): Message {
-  return {
-    id: messageId,
-    role: "assistant",
-    content: "Queued for file analysis.",
-    parts: [{ type: "text", text: "Queued for file analysis." }],
-    actor: {
-      type: "subagent",
-      id: messageId,
-      collection: file.collection,
-      path: file.path,
-      status: "queued",
-    },
-  };
-}
-
-function createMissingConfigMessage(): Message {
-  return {
-    id: uuid(),
-    role: "assistant",
-    content:
-      "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
-  };
-}
-
-function createRuntimeErrorMessage(error: unknown): Message {
-  return {
-    id: uuid(),
-    role: "assistant",
-    content: `Something went wrong: ${error instanceof Error ? error.message : "unknown error"}`,
-  };
-}
-
-function createConversationTitle(text: string): string {
-  return text.length > 80 ? text.slice(0, 80) + "..." : text;
-}
-
-function createSubagentContext(
-  userQuestion: string,
-  fileContent: string,
-  file: QueuedAnalysisFile,
-  focus?: string,
-): Context {
-  const userPiMsg: UserMessage = {
-    role: "user",
-    content: [
-      `User question: ${userQuestion}`,
-      `Analyze exactly this file: ${file.collection}/${file.path}`,
-      focus ? `Extra focus: ${focus}` : null,
-      "Focus on the most relevant facts, note uncertainty, and do not answer beyond this file.",
-      "Return a concise summary that the parent agent can use as tool output.",
-      "",
-      fileContent,
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join("\n"),
-    timestamp: Date.now(),
-  };
-
-  return {
-    systemPrompt:
-      "You are a file-analysis subagent. Read one file and report the important findings relevant to the user question. Do not call tools. Do not synthesize across files.",
-    messages: [userPiMsg],
-    tools: [],
-  };
-}
-
-function updateMessageById(
-  messages: Message[],
-  id: string,
-  updater: (message: Message) => Message,
-): Message[] {
-  return messages.map((message) => (message.id === id ? updater(message) : message));
-}
-
-function applyTextDelta(message: Message, captured: string, delta: string): Message {
-  const parts = [...(message.parts ?? [])];
-  const last = parts[parts.length - 1];
-  if (last && last.type === "text") {
-    parts[parts.length - 1] = { type: "text", text: captured };
-  } else {
-    parts.push({ type: "text", text: captured });
-  }
-
-  return { ...message, content: message.content + delta, parts };
-}
-
-function applyThinkingDelta(message: Message, captured: string): Message {
-  const parts = [...(message.parts ?? [])];
-  const last = parts[parts.length - 1];
-  if (last && last.type === "thinking") {
-    parts[parts.length - 1] = { type: "thinking", text: captured };
-  } else {
-    parts.push({ type: "thinking", text: captured });
-  }
-
-  return { ...message, parts };
-}
-
-function applyStreamError(message: Message, provider: string, error: unknown): Message {
-  const rendered = typeof error === "string" ? error : JSON.stringify(error);
-  return {
-    ...message,
-    content: message.content || `Error from ${provider}: ${rendered}`,
-  };
-}
-
-function startSubagentMessage(message: Message): Message {
-  return {
-    ...setSubagentStatus(message, "running"),
-    content: "",
-    parts: [],
-  };
-}
-
-function applySubagentTextDelta(message: Message, captured: string): Message {
-  return upsertSubagentPart(startSubagentMessageIfQueued(message), {
-    type: "text",
-    text: captured,
-  });
-}
-
-function applySubagentThinkingDelta(message: Message, captured: string): Message {
-  return upsertSubagentPart(startSubagentMessageIfQueued(message), {
-    type: "thinking",
-    text: captured,
-  });
-}
-
-function startSubagentMessageIfQueued(message: Message): Message {
-  if (message.actor?.type === "subagent" && message.actor.status === "queued") {
-    return startSubagentMessage(message);
-  }
-  return message;
-}
-
-function finalizeSubagentMessage(message: Message, status: "done" | "error"): Message {
-  return setSubagentStatus(message, status);
-}
-
-function appendPendingToolCall(message: Message, callInfo: ToolCallInfo): Message {
-  return {
-    ...message,
-    parts: [...(message.parts ?? []), { type: "tool_call", call: { ...callInfo } }],
-  };
-}
-
-function applyToolCallResult(message: Message, callInfo: ToolCallInfo): Message {
-  const parts = [...(message.parts ?? [])];
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const part = parts[i];
-    if (part.type === "tool_call" && part.call.name === callInfo.name && !part.call.result) {
-      parts[i] = { type: "tool_call", call: { ...callInfo } };
-      break;
-    }
-  }
-
-  return {
-    ...message,
-    parts,
-  };
-}
-
-async function runFileSubagent({
-  model,
-  settings,
-  controller,
-  file,
-  userQuestion,
-  focus,
-  updateMessage,
-}: {
-  model: ReturnType<typeof getModel>;
-  settings: ReadyLlmSettings;
-  controller: AbortController;
-  file: QueuedAnalysisFile;
-  userQuestion: string;
-  focus?: string;
-  updateMessage: (updater: (message: Message) => Message) => void;
-}): Promise<SubagentAnalysisResult> {
-  try {
-    const document = await api.getDocument(file.collection, file.path);
-    const context = createSubagentContext(userQuestion, document.content, file, focus);
-    let streamError: string | undefined;
-
-    updateMessage((message) => startSubagentMessage(message));
-
-    const stream = streamSimple(model, context, {
-      apiKey: settings.api_key,
-      signal: controller.signal,
-      reasoning: model.reasoning ? "medium" : undefined,
-    });
-
-    const consumed = await consumeAssistantStream(stream, {
-      onTextDelta: (text) => {
-        updateMessage((message) => applySubagentTextDelta(message, text));
-      },
-      onThinkingDelta: (thinking) => {
-        updateMessage((message) => applySubagentThinkingDelta(message, thinking));
-      },
-      onError: (error) => {
-        streamError = typeof error === "string" ? error : JSON.stringify(error);
-        updateMessage((message) => {
-          const next = applyStreamError(message, settings.provider, error);
-          return finalizeSubagentMessage(next, "error");
-        });
-      },
-    });
-
-    if (streamError) {
-      updateMessage((message) => finalizeSubagentMessage(message, "error"));
-      return {
-        collection: file.collection,
-        path: file.path,
-        reason: file.reason,
-        title: file.title,
-        error: streamError,
-      };
-    }
-
-    if (consumed.interrupted) {
-      const interruptedError =
-        consumed.result.errorMessage ?? "Response interrupted before completion.";
-      updateMessage((message) => finalizeSubagentMessage(message, "error"));
-      return {
-        collection: file.collection,
-        path: file.path,
-        reason: file.reason,
-        title: file.title,
-        error: interruptedError,
-      };
-    }
-
-    updateMessage((message) => finalizeSubagentMessage(message, "done"));
-    return {
-      collection: file.collection,
-      path: file.path,
-      reason: file.reason,
-      title: file.title,
-      text: consumed.text,
-    };
-  } catch (error) {
-    const rendered = error instanceof Error ? error.message : "unknown error";
-    updateMessage((message) => {
-      const next = applyStreamError(message, settings.provider, rendered);
-      return finalizeSubagentMessage(next, "error");
-    });
-    return {
-      collection: file.collection,
-      path: file.path,
-      reason: file.reason,
-      title: file.title,
-      error: rendered,
-    };
-  }
-}
-
-async function runAnalyzeDocumentTool({
-  call,
-  model,
-  settings,
-  controller,
-  userQuestion,
-  piContext,
-  runtimeState,
-  queueSubagentMessage,
-  updateSubagentMessage,
-}: {
-  call: { id: string; name: string; arguments: Record<string, unknown> };
-  model: ReturnType<typeof getModel>;
-  settings: ReadyLlmSettings;
-  controller: AbortController;
-  userQuestion: string;
-  piContext: Context;
-  runtimeState: ChatToolRuntimeState;
-  queueSubagentMessage: (file: QueuedAnalysisFile) => void;
-  updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
-}): Promise<ToolCallInfo> {
-  const collection = String(call.arguments.collection ?? "").trim();
-  const path = String(call.arguments.path ?? "").trim();
-  const focus =
-    typeof call.arguments.focus === "string" && call.arguments.focus.trim().length > 0
-      ? call.arguments.focus.trim()
-      : undefined;
-  const messageId = uuid();
-  const matchedResult = runtimeState.currentTurnSearchResults.find(
-    (result) => result.collection === collection && result.path === path,
-  );
-  const file: QueuedAnalysisFile = {
-    collection,
-    path,
-    reason: focus ?? userQuestion,
-    title: matchedResult?.title,
-    messageId,
-  };
-
-  queueSubagentMessage(file);
-
-  const result = await runFileSubagent({
-    model,
-    settings,
-    controller,
-    file,
-    userQuestion,
-    focus,
-    updateMessage: (updater) => {
-      updateSubagentMessage(messageId, updater);
-    },
-  });
-
-  const callInfo: ToolCallInfo = { name: call.name, args: call.arguments };
-
-  if (result.error) {
-    callInfo.result = `Error: ${result.error}`;
-    callInfo.isError = true;
-    piContext.messages.push(
-      createToolResultMessage(call.id, call.name, `Error: ${result.error}`, true) as PiMessage,
-    );
-    return callInfo;
-  }
-
-  const toolText = result.text?.trim() || "No relevant findings from this file.";
-  callInfo.result = toolText;
-  piContext.messages.push(
-    createToolResultMessage(call.id, call.name, toolText, false) as PiMessage,
-  );
-
-  return callInfo;
-}
-
-async function runParentAgentRound({
-  model,
-  settings,
-  controller,
-  userQuestion,
-  piContext,
-  updateAssistantMessage,
-  runtimeState,
-  queueSubagentMessage,
-  updateSubagentMessage,
-}: {
-  model: ReturnType<typeof getModel>;
-  settings: ReadyLlmSettings;
-  controller: AbortController;
-  userQuestion: string;
-  piContext: Context;
-  updateAssistantMessage: UpdateAssistantMessage;
-  runtimeState: ChatToolRuntimeState;
-  queueSubagentMessage: (file: QueuedAnalysisFile) => void;
-  updateSubagentMessage: (messageId: string, updater: (message: Message) => Message) => void;
-}): Promise<boolean> {
-  const stream = streamSimple(model, piContext, {
-    apiKey: settings.api_key,
-    signal: controller.signal,
-    reasoning: model.reasoning ? "medium" : undefined,
-  });
-
-  const consumed = await consumeAssistantStream(stream, {
-    onTextDelta: (text, delta) => {
-      updateAssistantMessage((message) => applyTextDelta(message, text, delta));
-    },
-    onThinkingDelta: (thinking) => {
-      updateAssistantMessage((message) => applyThinkingDelta(message, thinking));
-    },
-    onError: (error) => {
-      updateAssistantMessage((message) => applyStreamError(message, settings.provider, error));
-    },
-  });
-
-  const result = consumed.result;
-  piContext.messages.push(result);
-
-  if (isInterruptedAssistantResult(result)) {
-    updateAssistantMessage((message) =>
-      applyInterruptedStopReason(message, result.stopReason, result.errorMessage),
-    );
-    return false;
-  }
-
-  if (!shouldContinueAssistantToolRound(result)) {
-    return false;
-  }
-
-  const toolCalls = assistantToolCalls(result);
-
-  for (const call of toolCalls) {
-    const callArgs = call.arguments as Record<string, unknown>;
-    const pendingCallInfo: ToolCallInfo = { name: call.name, args: callArgs };
-
-    updateAssistantMessage((message) => appendPendingToolCall(message, pendingCallInfo));
-
-    const resolvedCallInfo =
-      call.name === "analyze_document"
-        ? await runAnalyzeDocumentTool({
-            call: { id: call.id, name: call.name, arguments: callArgs },
-            model,
-            settings,
-            controller,
-            userQuestion,
-            piContext,
-            runtimeState,
-            queueSubagentMessage,
-            updateSubagentMessage,
-          })
-        : await executeSearchToolCall({
-            call: { id: call.id, name: call.name, arguments: callArgs },
-            piContext,
-            runtimeState,
-          });
-
-    updateAssistantMessage((message) => applyToolCallResult(message, resolvedCallInfo));
-  }
-
-  return true;
 }
 
 function formatRelativeTime(ms: number): string {
@@ -545,7 +60,7 @@ export default function Chat() {
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [activeConv, setActiveConv] = useState<ConversationFull | null>(null);
+  const [activeConversation, setActiveConversation] = useState<ConversationFull | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -553,35 +68,31 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const loadConversations = useCallback(async () => {
-    try {
-      const list = await api.listConversations();
-      setConversations(list);
-    } catch {
-      /* ignore */
-    }
+  const reloadConversations = useCallback(async () => {
+    const nextConversations = await loadConversationSummaries();
+    setConversations(nextConversations);
   }, []);
 
   useEffect(() => {
-    void loadConversations();
-  }, [loadConversations]);
+    void reloadConversations();
+  }, [reloadConversations]);
 
-  // Load conversation from URL param on mount or when param changes.
   useEffect(() => {
     if (conversationId && conversationId !== activeId) {
       void (async () => {
-        try {
-          const conv = await api.getConversation(conversationId);
-          setActiveId(conversationId);
-          setActiveConv(conv);
-          setMessages(apiToMessages(conv.messages));
-        } catch {
+        const loadedConversation = await loadConversationById(conversationId);
+        if (!loadedConversation) {
           navigate("/chat", { replace: true });
+          return;
         }
+
+        setActiveId(conversationId);
+        setActiveConversation(loadedConversation.conversation);
+        setMessages(loadedConversation.messages);
       })();
     } else if (!conversationId && activeId) {
       setActiveId(null);
-      setActiveConv(null);
+      setActiveConversation(null);
       setMessages([]);
     }
   }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -592,22 +103,22 @@ export default function Chat() {
 
   const selectConversation = useCallback(
     async (id: string) => {
-      try {
-        const conv = await api.getConversation(id);
-        setActiveId(id);
-        setActiveConv(conv);
-        setMessages(apiToMessages(conv.messages));
-        navigate(`/chat/${id}`);
-      } catch {
-        /* ignore */
+      const loadedConversation = await loadConversationById(id);
+      if (!loadedConversation) {
+        return;
       }
+
+      setActiveId(id);
+      setActiveConversation(loadedConversation.conversation);
+      setMessages(loadedConversation.messages);
+      navigate(`/chat/${id}`);
     },
     [navigate],
   );
 
   const startNewChat = useCallback(() => {
     setActiveId(null);
-    setActiveConv(null);
+    setActiveConversation(null);
     setMessages([]);
     setInput("");
     navigate("/chat");
@@ -615,68 +126,66 @@ export default function Chat() {
 
   const deleteConversation = useCallback(
     async (id: string) => {
-      try {
-        await api.deleteConversation(id);
-        setConfirmDelete(null);
-        if (activeId === id) {
-          startNewChat();
-        }
-        await loadConversations();
-      } catch {
-        /* ignore */
+      const deleted = await deleteConversationRecord(id);
+      if (!deleted) {
+        return;
       }
+
+      setConfirmDelete(null);
+      if (activeId === id) {
+        startNewChat();
+      }
+      await reloadConversations();
     },
-    [activeId, startNewChat, loadConversations],
+    [activeId, reloadConversations, startNewChat],
   );
 
   const saveConversation = useCallback(
-    async (convId: string, conv: ConversationFull | null, msgs: Message[]) => {
-      try {
-        const apiMsgs = messagesToApi(msgs);
-        if (conv) {
-          await api.updateConversation(convId, { ...conv, messages: apiMsgs });
-        }
-        await loadConversations();
-      } catch {
-        /* ignore */
-      }
+    async (conversationIdToSave: string, conversation: ConversationFull | null, nextMessages: Message[]) => {
+      await persistConversationMessages(
+        conversationIdToSave,
+        conversation,
+        nextMessages,
+        reloadConversations,
+      );
     },
-    [loadConversations],
+    [reloadConversations],
   );
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading) {
+      return;
+    }
 
-    const userMsg = createUserMessage(text);
-    const nextMessages = [...messages, userMsg];
+    const userMessage = createUserMessage(uuid(), text);
+    const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setInput("");
     setLoading(true);
 
-    let convId = activeId;
-    let conv = activeConv;
-    if (!convId) {
+    let conversationIdToSave = activeId;
+    let conversation = activeConversation;
+    if (!conversationIdToSave) {
       const id = uuid();
-      try {
-        conv = await api.createConversation(id, createConversationTitle(text));
-        convId = id;
+      const createdConversation = await createConversationRecord(id, createConversationTitle(text));
+      if (createdConversation) {
+        conversation = createdConversation;
+        conversationIdToSave = id;
         setActiveId(id);
-        setActiveConv(conv);
+        setActiveConversation(createdConversation);
         navigate(`/chat/${id}`, { replace: true });
-      } catch {
-        /* ignore -- we'll still show the chat, just won't persist */
       }
     }
 
     try {
-      const maybeReadySettings = resolveReadyLlmSettings(await api.getLlmSettings());
+      const maybeReadySettings = resolveReadyLlmSettings(await loadLlmSettings());
 
       if (!maybeReadySettings) {
-        const errMsgs = [...nextMessages, createMissingConfigMessage()];
-        setMessages(errMsgs);
-        if (convId && conv) {
-          void saveConversation(convId, conv, errMsgs);
+        const errorMessages = [...nextMessages, createMissingConfigMessage(uuid())];
+        setMessages(errorMessages);
+        if (conversationIdToSave && conversation) {
+          void saveConversation(conversationIdToSave, conversation, errorMessages);
         }
         return;
       }
@@ -687,26 +196,26 @@ export default function Chat() {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const piContext = createPiContext(nextMessages, SYSTEM_PROMPT, tools);
+      const piContext = createPiContext(nextMessages, CHAT_SYSTEM_PROMPT, chatAgentTools);
       const assistantId = uuid();
       const runtimeState: ChatToolRuntimeState = {
         currentTurnSearchResults: [],
         queuedAnalysisFiles: [],
       };
-      const updateAssistantMessage: UpdateAssistantMessage = (fn) =>
-        setMessages((prev) => updateMessageById(prev, assistantId, fn));
-      const updateSubagentMessage = (messageId: string, updater: (message: Message) => Message) =>
-        setMessages((prev) => updateSubagentMessageById(prev, messageId, updater));
+      const updateAssistantMessage = (updater: (message: Message) => Message) =>
+        setMessages((previous) => updateMessageById(previous, assistantId, updater));
+      const updateSubagentMessage = (
+        messageId: string,
+        updater: (message: Message) => Message,
+      ) => setMessages((previous) => updateSubagentMessages(previous, messageId, updater));
       const queueSubagentMessage = (file: QueuedAnalysisFile) => {
         runtimeState.queuedAnalysisFiles = [...runtimeState.queuedAnalysisFiles, file];
-        setMessages((prev) =>
-          insertOrUpdateSubagentMessage(prev, createQueuedSubagentMessage(file.messageId, file)),
-        );
+        setMessages((previous) => queueSubagentResult(previous, file));
       };
 
-      setMessages((prev) => [...prev, createAssistantPlaceholder(assistantId)]);
+      setMessages((previous) => [...previous, createAssistantPlaceholder(assistantId)]);
 
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         const shouldContinue = await runParentAgentRound({
           model,
           settings,
@@ -717,6 +226,7 @@ export default function Chat() {
           runtimeState,
           queueSubagentMessage,
           updateSubagentMessage,
+          createId: uuid,
         });
         if (!shouldContinue) {
           break;
@@ -724,19 +234,19 @@ export default function Chat() {
       }
 
       abortRef.current = null;
-    } catch (err) {
-      setMessages((prev) => [...prev, createRuntimeErrorMessage(err)]);
+    } catch (error) {
+      setMessages((previous) => [...previous, createRuntimeErrorMessage(uuid(), error)]);
     } finally {
       setLoading(false);
 
-      if (convId && conv) {
+      if (conversationIdToSave && conversation) {
         setMessages((latest) => {
-          void saveConversation(convId, conv, latest);
+          void saveConversation(conversationIdToSave, conversation, latest);
           return latest;
         });
       }
     }
-  }, [input, loading, messages, activeId, activeConv, saveConversation, navigate]);
+  }, [input, loading, messages, activeId, activeConversation, saveConversation, navigate]);
 
   const displayMessageGroups = groupMessagesForDisplay(messages);
 
@@ -749,26 +259,27 @@ export default function Chat() {
           </button>
         </div>
         <div className="chat-conv-list">
-          {conversations.length === 0 && (
-            <div className="chat-conv-empty">No conversations yet.</div>
-          )}
-          {conversations.map((c) => (
-            <div key={c.id} className={`chat-conv-item${activeId === c.id ? " active" : ""}`}>
+          {conversations.length === 0 && <div className="chat-conv-empty">No conversations yet.</div>}
+          {conversations.map((conversation) => (
+            <div
+              key={conversation.id}
+              className={`chat-conv-item${activeId === conversation.id ? " active" : ""}`}
+            >
               <button
                 type="button"
                 className="chat-conv-btn"
-                onClick={() => void selectConversation(c.id)}
-                title={c.title}
+                onClick={() => void selectConversation(conversation.id)}
+                title={conversation.title}
               >
-                <span className="chat-conv-title">{c.title}</span>
-                <span className="chat-conv-time">{formatRelativeTime(c.updated_at)}</span>
+                <span className="chat-conv-title">{conversation.title}</span>
+                <span className="chat-conv-time">{formatRelativeTime(conversation.updated_at)}</span>
               </button>
-              {confirmDelete === c.id ? (
+              {confirmDelete === conversation.id ? (
                 <div className="chat-conv-confirm">
                   <button
                     type="button"
                     className="chat-conv-confirm-yes"
-                    onClick={() => void deleteConversation(c.id)}
+                    onClick={() => void deleteConversation(conversation.id)}
                   >
                     Delete
                   </button>
@@ -784,8 +295,8 @@ export default function Chat() {
                 <button
                   type="button"
                   className="chat-conv-delete"
-                  onClick={() => setConfirmDelete(c.id)}
-                  aria-label={`Delete ${c.title}`}
+                  onClick={() => setConfirmDelete(conversation.id)}
+                  aria-label={`Delete ${conversation.title}`}
                   title="Delete conversation"
                 >
                   <TrashIcon />
@@ -814,8 +325,8 @@ export default function Chat() {
         <div className="chat-input-wrap">
           <form
             className="chat-input-bar"
-            onSubmit={(e) => {
-              e.preventDefault();
+            onSubmit={(event) => {
+              event.preventDefault();
               void sendMessage();
             }}
           >
@@ -823,7 +334,7 @@ export default function Chat() {
               type="text"
               placeholder="Ask a question..."
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(event) => setInput(event.target.value)}
               className="chat-input"
               disabled={loading}
             />
