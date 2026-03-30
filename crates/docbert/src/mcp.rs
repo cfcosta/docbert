@@ -6,6 +6,7 @@ use std::{
 use docbert_core::{
     config_db::ConfigDb,
     data_dir::DataDir,
+    doc_id::format_document_ref,
     embedding_db::EmbeddingDb,
     error,
     model_manager::{DEFAULT_MODEL_ID, ModelManager},
@@ -147,7 +148,7 @@ fn build_search_result_item(
     };
 
     SearchResultItem {
-        doc_id: format!("#{}", result.doc_id),
+        doc_id: format_document_ref(&result.doc_id),
         collection: result.collection,
         path: result.path,
         file,
@@ -1110,6 +1111,53 @@ mod tests {
                 }]
             })
         );
+    }
+
+    #[test]
+    fn mcp_search_result_doc_id_has_single_hash_prefix() {
+        let (server, _tmp, doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let unprefixed = build_search_tool_result(
+            &server.state.config_db,
+            vec![search::FinalResult {
+                rank: 1,
+                score: 1.0,
+                doc_id: doc_id.short.clone(),
+                doc_num_id: doc_id.numeric,
+                collection: "notes".to_string(),
+                path: "rust.md".to_string(),
+                title: "rust.md".to_string(),
+            }],
+            "Rust".to_string(),
+            false,
+        )
+        .unwrap();
+        let prefixed = build_search_tool_result(
+            &server.state.config_db,
+            vec![search::FinalResult {
+                rank: 1,
+                score: 1.0,
+                doc_id: format!("#{}", doc_id.short),
+                doc_num_id: doc_id.numeric,
+                collection: "notes".to_string(),
+                path: "rust.md".to_string(),
+                title: "rust.md".to_string(),
+            }],
+            "Rust".to_string(),
+            false,
+        )
+        .unwrap();
+
+        for result in [unprefixed, prefixed] {
+            let structured = result.structured_content.expect("structured");
+            let doc_id_value =
+                structured["results"][0]["docId"].as_str().expect("doc id");
+            assert_eq!(doc_id_value, format!("#{}", doc_id.short));
+        }
     }
 
     #[tokio::test]

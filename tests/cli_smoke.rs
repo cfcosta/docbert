@@ -103,28 +103,30 @@ fn search_json_writes_results_to_stdout_and_keeps_stderr_clean_in_bm25_mode()
 }
 
 #[test]
-fn get_json_accepts_hash_prefixed_document_ref()
+fn get_json_accepts_hash_prefixed_and_bare_short_document_refs()
 -> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     setup_fixture(tempdir.path())?;
     let did = DocumentId::new("notes", "hello.md");
 
-    let output = std::process::Command::new(docbert_bin()?)
-        .arg("--data-dir")
-        .arg(tempdir.path())
-        .arg("get")
-        .arg(did.to_string())
-        .arg("--json")
-        .output()?;
+    for reference in [did.to_string(), did.short.clone()] {
+        let output = std::process::Command::new(docbert_bin()?)
+            .arg("--data-dir")
+            .arg(tempdir.path())
+            .arg("get")
+            .arg(&reference)
+            .arg("--json")
+            .output()?;
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout)?;
-    let json: Value = serde_json::from_str(&stdout)?;
-    assert_eq!(
-        json.get("collection").and_then(Value::as_str),
-        Some("notes")
-    );
-    assert_eq!(json.get("path").and_then(Value::as_str), Some("hello.md"));
+        assert!(output.status.success(), "reference {reference} failed");
+        let stdout = String::from_utf8(output.stdout)?;
+        let json: Value = serde_json::from_str(&stdout)?;
+        assert_eq!(
+            json.get("collection").and_then(Value::as_str),
+            Some("notes")
+        );
+        assert_eq!(json.get("path").and_then(Value::as_str), Some("hello.md"));
+    }
 
     Ok(())
 }

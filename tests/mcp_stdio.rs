@@ -130,29 +130,31 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 
     let did = DocumentId::new("notes", "hello.md");
 
-    let get_args = json!({
-        "reference": did.to_string(),
-        "lineNumbers": true,
-        "maxLines": 1
-    });
-    let get_result = client
-        .peer()
-        .call_tool(
-            CallToolRequestParams::new("docbert_get")
-                .with_arguments(get_args.as_object().unwrap().clone()),
-        )
-        .await?;
-    let get_resource = get_result
-        .content
-        .iter()
-        .find_map(|c| c.as_resource())
-        .expect("docbert_get resource");
-    match &get_resource.resource {
-        ResourceContents::TextResourceContents { text, .. } => {
-            assert!(text.contains("<!-- Context: Test notes -->"));
-            assert!(text.contains("1: Hello world"));
+    for reference in [did.to_string(), did.short.clone()] {
+        let get_args = json!({
+            "reference": reference,
+            "lineNumbers": true,
+            "maxLines": 1
+        });
+        let get_result = client
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("docbert_get")
+                    .with_arguments(get_args.as_object().unwrap().clone()),
+            )
+            .await?;
+        let get_resource = get_result
+            .content
+            .iter()
+            .find_map(|c| c.as_resource())
+            .expect("docbert_get resource");
+        match &get_resource.resource {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(text.contains("<!-- Context: Test notes -->"));
+                assert!(text.contains("1: Hello world"));
+            }
+            _ => panic!("expected text resource"),
         }
-        _ => panic!("expected text resource"),
     }
 
     let resource_result = client

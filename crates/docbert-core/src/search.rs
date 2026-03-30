@@ -2,6 +2,7 @@ use std::{cmp::Ordering, collections::HashMap, path::Path};
 
 use crate::{
     config_db::{CollectionLocation, ConfigDb},
+    doc_id::{format_document_ref, strip_document_ref_prefix},
     embedding,
     embedding_db::EmbeddingDb,
     error::Result,
@@ -386,7 +387,7 @@ pub fn resolve_by_doc_id(
     short_id: &str,
 ) -> Option<(String, String)> {
     config_db
-        .find_document_by_short_id(short_id)
+        .find_document_by_short_id(strip_document_ref_prefix(short_id))
         .ok()
         .flatten()
         .map(|(_doc_id, meta)| (meta.collection, meta.relative_path))
@@ -435,12 +436,19 @@ pub fn resolve_reference(
     config_db: &ConfigDb,
     reference: &str,
 ) -> Option<(String, String)> {
-    if let Some(short_id) = reference.strip_prefix('#') {
-        return resolve_by_doc_id(config_db, short_id);
+    if reference.starts_with('#') {
+        return resolve_by_doc_id(config_db, reference);
     }
 
     if let Some((collection, path)) = reference.split_once(':') {
         return Some((collection.to_string(), path.to_string()));
+    }
+
+    if reference.len() == 6
+        && reference.chars().all(|ch| ch.is_ascii_hexdigit())
+        && let Some(resolved) = resolve_by_doc_id(config_db, reference)
+    {
+        return Some(resolved);
     }
 
     resolve_by_path(config_db, reference)
@@ -476,7 +484,7 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
 /// ```
 pub fn short_doc_id(numeric: u64) -> String {
     let full = format!("{numeric:016x}");
-    format!("#{}", &full[..6])
+    format_document_ref(&full[..6])
 }
 
 fn document_has_semantic_body(
