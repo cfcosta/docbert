@@ -8,47 +8,11 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import { buildDocumentTabHref } from "../lib/api";
+import { parseDocumentFrontmatter } from "./document-frontmatter";
 import type { SelectedDocumentSummary } from "./documents-tree";
-
-interface ParsedDocument {
-  frontmatter: Record<string, string> | null;
-  body: string;
-}
 
 const DOCUMENT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const DOCUMENT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
-
-function parseFrontmatter(content: string): ParsedDocument {
-  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
-    return { frontmatter: null, body: content };
-  }
-
-  const endIndex = content.indexOf("\n---", 4);
-  if (endIndex === -1) {
-    return { frontmatter: null, body: content };
-  }
-
-  const raw = content.slice(4, endIndex);
-  const body = content.slice(endIndex + 4).replace(/^\r?\n/, "");
-
-  const fields: Record<string, string> = {};
-  for (const line of raw.split("\n")) {
-    const colonIndex = line.indexOf(":");
-    if (colonIndex === -1) {
-      continue;
-    }
-    const key = line.slice(0, colonIndex).trim();
-    const value = line.slice(colonIndex + 1).trim();
-    if (key) {
-      fields[key] = value;
-    }
-  }
-
-  return {
-    frontmatter: Object.keys(fields).length > 0 ? fields : null,
-    body,
-  };
-}
 
 export default function DocumentPreview({
   selectedDoc,
@@ -72,7 +36,7 @@ export default function DocumentPreview({
   }
 
   const permalink = buildDocumentTabHref(selectedDoc.collection, selectedDoc.path);
-  const parsed = preview ? parseFrontmatter(preview) : null;
+  const parsed = preview ? parseDocumentFrontmatter(preview) : null;
 
   return (
     <>
