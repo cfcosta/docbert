@@ -1,51 +1,13 @@
 import type { DragEvent } from "react";
 
 import type { Collection, DocumentListItem } from "../lib/api";
+import { buildDocumentTree, type DocumentTreeNode } from "./document-tree";
 
 export interface SelectedDocumentSummary {
   collection: string;
   path: string;
   title: string;
   doc_id: string;
-}
-
-interface TreeNode {
-  name: string;
-  path: string;
-  isDir: boolean;
-  children: TreeNode[];
-  doc?: DocumentListItem;
-}
-
-function buildTree(docs: DocumentListItem[]): TreeNode[] {
-  const root: TreeNode[] = [];
-
-  for (const doc of docs) {
-    const parts = doc.path.split("/");
-    let level = root;
-    let pathSoFar = "";
-
-    for (let index = 0; index < parts.length; index += 1) {
-      pathSoFar += `${index > 0 ? "/" : ""}${parts[index]}`;
-      const isLast = index === parts.length - 1;
-      let existing = level.find((node) => node.name === parts[index]);
-
-      if (!existing) {
-        existing = {
-          name: parts[index],
-          path: pathSoFar,
-          isDir: !isLast,
-          children: [],
-          doc: isLast ? doc : undefined,
-        };
-        level.push(existing);
-      }
-
-      level = existing.children;
-    }
-  }
-
-  return root;
 }
 
 function formatFileCount(count: number) {
@@ -65,7 +27,7 @@ function renderTree({
   onDeleteDocument,
   onSetConfirmDeleteDoc,
 }: {
-  nodes: TreeNode[];
+  nodes: DocumentTreeNode[];
   collection: string;
   depth: number;
   expanded: Set<string>;
@@ -241,7 +203,7 @@ export default function DocumentsTree({
       {collections.map((collection) => {
         const isExpanded = expanded.has(collection.name);
         const collectionDocs = docs[collection.name] ?? [];
-        const tree = buildTree(collectionDocs);
+        const tree = buildDocumentTree(collectionDocs);
         const isDragTarget = dragOver === collection.name;
         const isLoading = loadingCollections.has(collection.name);
         const countLabel = collection.name in docs ? formatFileCount(collectionDocs.length) : null;
