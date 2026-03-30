@@ -278,6 +278,14 @@
   background: var(--accent-bg);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .tree-upload-btn,
+  .tree-file-delete-btn,
+  .tree-delete-btn {
+    opacity: 1;
+  }
+}
+
 /* ── Collection actions ── */
 
 .tree-file-delete-btn,
