@@ -628,6 +628,10 @@
 }
 
 .chat-tool-search-result {
+  min-width: 0;
+}
+
+.chat-tool-search-result-node {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -675,6 +679,76 @@
   font-size: 0.7rem;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.chat-tool-search-result-children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  margin-left: 16px;
+  padding-left: 14px;
+}
+
+.chat-tool-search-result-children::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 10px;
+  width: 1px;
+  background: var(--border);
+}
+
+.chat-tool-search-excerpt {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  min-width: 0;
+}
+
+.chat-tool-search-excerpt::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 14px;
+  width: 14px;
+  height: 1px;
+  background: var(--border);
+}
+
+.chat-tool-search-excerpt-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.chat-tool-search-excerpt-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg) 92%);
+}
+
+.chat-tool-search-excerpt-range {
+  font-size: 0.68rem;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chat-tool-search-excerpt-text {
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-sources {
