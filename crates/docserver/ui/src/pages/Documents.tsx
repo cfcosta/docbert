@@ -269,6 +269,12 @@ export default function Documents() {
     }
 
     const listedDoc = docs[collection]?.find((doc) => doc.path === path);
+    if (collection in docs && !listedDoc) {
+      setSelectedDoc(null);
+      setPreview(null);
+      return;
+    }
+
     void openDocument(collection, path, listedDoc);
   }, [docs, loadDocs, openDocument, params, selectedDoc]);
 
@@ -407,6 +413,7 @@ export default function Documents() {
         if (selectedDoc?.collection === collection && selectedDoc.path === doc.path) {
           setSelectedDoc(null);
           setPreview(null);
+          navigate(`/documents/${encodeURIComponent(collection)}`, { replace: true });
         }
         setStatus({ tone: "success", text: `Deleted ${doc.title}.` });
         await loadDocs(collection);
@@ -419,7 +426,7 @@ export default function Documents() {
         setDeletingDoc(false);
       }
     },
-    [loadDocs, selectedDoc],
+    [loadDocs, navigate, selectedDoc],
   );
 
   const handleDeleteCollection = async (name: string) => {
