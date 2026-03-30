@@ -5,6 +5,14 @@ import "katex/dist/katex.min.css";
 import { api, buildDocumentTabHref } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import DocumentPreview from "./document-preview";
+import {
+  clearDeletedCollectionSelection,
+  clearDeletedDocumentSelection,
+  removeCollectionFromDocs,
+  removeDocumentFromDocs,
+  removeExpandedKey,
+  toggleExpandedKey,
+} from "./documents-page-state";
 import DocumentsTree, { type SelectedDocumentSummary } from "./documents-tree";
 import "./Documents.css";
 
@@ -93,15 +101,7 @@ export default function Documents() {
     (name: string) => {
       const opening = !expanded.has(name);
 
-      setExpanded((previous) => {
-        const next = new Set(previous);
-        if (next.has(name)) {
-          next.delete(name);
-        } else {
-          next.add(name);
-        }
-        return next;
-      });
+      setExpanded((previous) => toggleExpandedKey(previous, name));
 
       if (opening && !docs[name]) {
         void loadDocs(name);
@@ -111,15 +111,7 @@ export default function Documents() {
   );
 
   const toggleDir = useCallback((key: string) => {
-    setExpanded((previous) => {
-      const next = new Set(previous);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
+    setExpanded((previous) => toggleExpandedKey(previous, key));
   }, []);
 
   const openDocument = useCallback(
@@ -327,13 +319,11 @@ export default function Documents() {
       try {
         await api.deleteDocument(collection, doc.path);
         setConfirmDeleteDoc(null);
-        setDocs((previous) => ({
-          ...previous,
-          [collection]: (previous[collection] ?? []).filter((item) => item.path !== doc.path),
-        }));
-        if (selectedDoc?.collection === collection && selectedDoc.path === doc.path) {
-          setSelectedDoc(null);
-          setPreview(null);
+        setDocs((previous) => removeDocumentFromDocs(previous, collection, doc.path));
+        const nextSelection = clearDeletedDocumentSelection(selectedDoc, preview, collection, doc.path);
+        setSelectedDoc(nextSelection.selectedDoc);
+        setPreview(nextSelection.preview);
+        if (!nextSelection.selectedDoc && selectedDoc?.collection === collection && selectedDoc.path === doc.path) {
           navigate(`/documents/${encodeURIComponent(collection)}`, { replace: true });
         }
         setStatus({ tone: "success", text: `Deleted ${doc.title}.` });
@@ -347,7 +337,7 @@ export default function Documents() {
         setDeletingDoc(false);
       }
     },
-    [loadDocs, navigate, selectedDoc],
+    [loadDocs, navigate, preview, selectedDoc],
   );
 
   const handleDeleteCollection = useCallback(
@@ -355,19 +345,12 @@ export default function Documents() {
       try {
         await api.deleteCollection(name);
         setConfirmDelete(null);
-        setDocs((previous) => {
-          const next = { ...previous };
-          delete next[name];
-          return next;
-        });
-        setExpanded((previous) => {
-          const next = new Set(previous);
-          next.delete(name);
-          return next;
-        });
-        if (selectedDoc?.collection === name) {
-          setSelectedDoc(null);
-          setPreview(null);
+        setDocs((previous) => removeCollectionFromDocs(previous, name));
+        setExpanded((previous) => removeExpandedKey(previous, name));
+        const nextSelection = clearDeletedCollectionSelection(selectedDoc, preview, name);
+        setSelectedDoc(nextSelection.selectedDoc);
+        setPreview(nextSelection.preview);
+        if (!nextSelection.selectedDoc && selectedDoc?.collection === name) {
           setConfirmDeleteDoc(null);
         }
 
@@ -380,7 +363,7 @@ export default function Documents() {
         });
       }
     },
-    [loadCollections, selectedDoc],
+    [loadCollections, preview, selectedDoc],
   );
 
   return (
