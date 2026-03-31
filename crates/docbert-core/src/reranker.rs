@@ -1,6 +1,7 @@
 use candle_core::Tensor;
 
 use crate::{
+    chunking::document_family_key,
     embedding::batch_load_embedding_tensors,
     embedding_db::EmbeddingDb,
     error::{Error, Result},
@@ -10,7 +11,7 @@ use crate::{
 /// Candidate document after ColBERT reranking.
 ///
 /// Returned by [`rerank`]. Results are sorted by score, highest first.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RankedDocument {
     /// Numeric document identifier.
     pub doc_num_id: u64,
@@ -57,6 +58,44 @@ pub(crate) fn score_loaded_embeddings(
     Ok(ranked)
 }
 
+/// Collapse scored chunk embeddings to one best score per requested document.
+///
+/// Scores are grouped by document family. The highest chunk score in each
+/// family wins. Output preserves the order of `requested_doc_ids`, skipping
+/// duplicate family requests and families with no scored chunks.
+pub(crate) fn collapse_best_chunk_scores(
+    requested_doc_ids: &[u64],
+    scored_chunks: Vec<RankedDocument>,
+) -> Vec<RankedDocument> {
+    let mut best_scores_by_family = std::collections::HashMap::new();
+    for RankedDocument { doc_num_id, score } in scored_chunks {
+        let family_key = document_family_key(doc_num_id);
+        best_scores_by_family
+            .entry(family_key)
+            .and_modify(|best_score| {
+                if score > *best_score {
+                    *best_score = score;
+                }
+            })
+            .or_insert(score);
+    }
+
+    let mut emitted_families = std::collections::HashSet::new();
+    let mut collapsed = Vec::new();
+    for &doc_num_id in requested_doc_ids {
+        let family_key = document_family_key(doc_num_id);
+        if !emitted_families.insert(family_key) {
+            continue;
+        }
+        let Some(&score) = best_scores_by_family.get(&family_key) else {
+            continue;
+        };
+        collapsed.push(RankedDocument { doc_num_id, score });
+    }
+
+    collapsed
+}
+
 /// Rerank candidate documents with ColBERT MaxSim scoring.
 ///
 /// For each candidate, this loads the stored embedding, scores it against the
@@ -92,6 +131,176 @@ pub fn rerank(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DocumentId, chunking::chunk_doc_id};
+
+    #[test]
+    fn collapse_best_chunk_scores_returns_one_row_for_multi_chunk_family() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let scored_chunks = vec![
+            RankedDocument {
+                doc_num_id: base_doc_id,
+                score: 0.7,
+            },
+            RankedDocument {
+                doc_num_id: chunk_doc_id(base_doc_id, 1),
+                score: 0.9,
+            },
+            RankedDocument {
+                doc_num_id: chunk_doc_id(base_doc_id, 2),
+                score: 0.8,
+            },
+        ];
+
+        let collapsed =
+            collapse_best_chunk_scores(&[base_doc_id], scored_chunks);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].doc_num_id, base_doc_id);
+        assert_eq!(collapsed[0].score, 0.9);
+    }
+
+    #[test]
+    fn collapse_best_chunk_scores_uses_highest_chunk_score() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+
+        let collapsed = collapse_best_chunk_scores(
+            &[base_doc_id],
+            vec![
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(base_doc_id, 2),
+                    score: 0.4,
+                },
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(base_doc_id, 1),
+                    score: 1.1,
+                },
+                RankedDocument {
+                    doc_num_id: base_doc_id,
+                    score: 0.6,
+                },
+            ],
+        );
+
+        assert_eq!(
+            collapsed,
+            vec![RankedDocument {
+                doc_num_id: base_doc_id,
+                score: 1.1,
+            }]
+        );
+    }
+
+    #[test]
+    fn collapse_best_chunk_scores_keeps_unrelated_families_separate() {
+        let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+
+        let collapsed = collapse_best_chunk_scores(
+            &[first_doc_id, second_doc_id],
+            vec![
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(first_doc_id, 1),
+                    score: 0.8,
+                },
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(second_doc_id, 1),
+                    score: 0.5,
+                },
+            ],
+        );
+
+        assert_eq!(
+            collapsed,
+            vec![
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.8,
+                },
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collapse_best_chunk_scores_does_not_emit_duplicates() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+
+        let collapsed = collapse_best_chunk_scores(
+            &[base_doc_id, base_doc_id],
+            vec![
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(base_doc_id, 1),
+                    score: 0.8,
+                },
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(base_doc_id, 2),
+                    score: 0.9,
+                },
+            ],
+        );
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].doc_num_id, base_doc_id);
+        assert_eq!(collapsed[0].score, 0.9);
+    }
+
+    #[test]
+    fn collapse_best_chunk_scores_preserves_base_only_scores() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+
+        let collapsed = collapse_best_chunk_scores(
+            &[base_doc_id],
+            vec![RankedDocument {
+                doc_num_id: base_doc_id,
+                score: 0.75,
+            }],
+        );
+
+        assert_eq!(
+            collapsed,
+            vec![RankedDocument {
+                doc_num_id: base_doc_id,
+                score: 0.75,
+            }]
+        );
+    }
+
+    #[test]
+    fn collapse_best_chunk_scores_follows_requested_doc_order() {
+        let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+
+        let collapsed = collapse_best_chunk_scores(
+            &[second_doc_id, first_doc_id],
+            vec![
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(first_doc_id, 1),
+                    score: 0.8,
+                },
+                RankedDocument {
+                    doc_num_id: chunk_doc_id(second_doc_id, 1),
+                    score: 0.5,
+                },
+            ],
+        );
+
+        assert_eq!(
+            collapsed,
+            vec![
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.5,
+                },
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.8,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn rerank_empty_candidates() {
