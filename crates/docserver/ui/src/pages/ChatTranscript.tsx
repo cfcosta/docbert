@@ -160,7 +160,13 @@ function SearchResultTree({ results }: { results: SearchResult[] }) {
   );
 }
 
-function ToolCallInline({ call }: { call: ToolCallInfo }) {
+function ToolCallInline({
+  call,
+  tone = "root",
+}: {
+  call: ToolCallInfo;
+  tone?: "root" | "subagent";
+}) {
   const [expanded, setExpanded] = useState(false);
   const argsStr = Object.entries(call.args)
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
@@ -168,7 +174,9 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
   const searchResults = parseToolSearchResults(call);
 
   return (
-    <div className={`chat-tool-call${call.isError ? " error" : ""}`}>
+    <div
+      className={`chat-tool-call chat-tool-call-${tone}${call.isError ? " error" : ""}`}
+    >
       <button
         type="button"
         className="chat-tool-call-header"
@@ -192,6 +200,7 @@ function ToolCallInline({ call }: { call: ToolCallInfo }) {
 
 function renderMessageContent(message: Message, nestedSubagents: SubagentMessage[] = []) {
   const items = buildTranscriptRenderItems(message, nestedSubagents);
+  const toolTone = message.actor?.type === "subagent" ? "subagent" : "root";
 
   return (
     <>
@@ -217,7 +226,7 @@ function renderMessageContent(message: Message, nestedSubagents: SubagentMessage
           return <SubagentInline key={item.key} message={item.message} />;
         }
 
-        return <ToolCallInline key={item.key} call={item.call.call} />;
+        return <ToolCallInline key={item.key} call={item.call.call} tone={toolTone} />;
       })}
     </>
   );

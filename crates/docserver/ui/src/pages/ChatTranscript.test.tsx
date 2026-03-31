@@ -52,6 +52,31 @@ function renderTranscript(groups: DisplayMessageGroup[]) {
   );
 }
 
+function subagentMessageWithToolResult(result: string, name = "search_hybrid"): Message {
+  return {
+    id: "subagent-1",
+    role: "assistant",
+    actor: {
+      type: "subagent",
+      id: "subagent-1",
+      collection: "notes",
+      path: "rust.md",
+      status: "done",
+    },
+    content: "",
+    parts: [
+      {
+        type: "tool_call",
+        call: {
+          name,
+          args: { query: "rust" },
+          result,
+        },
+      },
+    ],
+  };
+}
+
 describe("ChatTranscript", () => {
   test("renders document nodes with excerpt children for search tool results", async () => {
     const user = userEvent.setup();
@@ -137,5 +162,31 @@ describe("ChatTranscript", () => {
     await user.click(view.getByRole("button", { name: /analyze_document/i }));
 
     expect(view.getByText("plain output").tagName).toBe("PRE");
+  });
+
+  test("uses a distinct tool-call style for subagent file analysis tools", async () => {
+    const user = userEvent.setup();
+    const view = renderTranscript([
+      {
+        message: messageWithToolResult("root output", "analyze_document"),
+        nestedSubagents: [],
+      },
+      {
+        message: subagentMessageWithToolResult("inner output", "analyze_document"),
+        nestedSubagents: [],
+      },
+    ]);
+
+    await user.click(view.getByRole("button", { name: /analyze_document/i }));
+    await user.click(view.getByRole("button", { name: /file analysis/i }));
+    const toolButtons = view.getAllByRole("button", { name: /analyze_document/i });
+    await user.click(toolButtons[1]);
+
+    const rootTool = view.getByText("root output").closest(".chat-tool-call");
+    const subagentTool = view.getByText("inner output").closest(".chat-tool-call");
+
+    expect(rootTool?.className).toContain("chat-tool-call-root");
+    expect(rootTool?.className).not.toContain("chat-tool-call-subagent");
+    expect(subagentTool?.className).toContain("chat-tool-call-subagent");
   });
 });
