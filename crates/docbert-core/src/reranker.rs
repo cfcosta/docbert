@@ -2,7 +2,7 @@ use candle_core::Tensor;
 
 use crate::{
     chunking::document_family_key,
-    embedding::batch_load_embedding_tensors,
+    embedding::batch_load_document_family_tensors,
     embedding_db::EmbeddingDb,
     error::{Error, Result},
     model_manager::ModelManager,
@@ -96,6 +96,13 @@ pub(crate) fn collapse_best_chunk_scores(
     collapsed
 }
 
+fn load_candidate_family_tensors_for_rerank(
+    embedding_db: &EmbeddingDb,
+    candidate_ids: &[u64],
+) -> Result<Vec<(u64, Tensor)>> {
+    batch_load_document_family_tensors(embedding_db, candidate_ids)
+}
+
 /// Rerank candidate documents with ColBERT MaxSim scoring.
 ///
 /// For each candidate, this loads the stored embedding, scores it against the
@@ -113,10 +120,16 @@ pub fn rerank(
     // Query is [Q, D], unsqueeze to [1, Q, D]
     let query_3d = query_embedding.unsqueeze(0)?;
 
-    // Batch load all embeddings in a single transaction
-    let embeddings = batch_load_embedding_tensors(embedding_db, candidate_ids)?;
+    let embeddings =
+        load_candidate_family_tensors_for_rerank(embedding_db, candidate_ids)?;
+    let embeddings_with_presence: Vec<(u64, Option<Tensor>)> = embeddings
+        .into_iter()
+        .map(|(doc_id, tensor)| (doc_id, Some(tensor)))
+        .collect();
 
-    let mut ranked = score_loaded_embeddings(&query_3d, embeddings, model)?;
+    let scored_chunks =
+        score_loaded_embeddings(&query_3d, embeddings_with_presence, model)?;
+    let mut ranked = collapse_best_chunk_scores(candidate_ids, scored_chunks);
 
     // Sort by score descending.
     ranked.sort_by(|a, b| {
@@ -297,6 +310,118 @@ mod tests {
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.8,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_candidate_family_tensors_for_rerank_includes_chunk_only_families() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let chunk_only_id = chunk_doc_id(base_doc_id, 1);
+
+        embedding_db
+            .store(chunk_only_id, 2, 2, &[1.0, 2.0, 3.0, 4.0])
+            .unwrap();
+
+        let loaded = load_candidate_family_tensors_for_rerank(
+            &embedding_db,
+            &[base_doc_id],
+        )
+        .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, chunk_only_id);
+        assert_eq!(loaded[0].1.dims2().unwrap(), (2, 2));
+    }
+
+    #[test]
+    fn load_candidate_family_tensors_for_rerank_preserves_candidate_family_order()
+     {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+        let first_chunk_id = chunk_doc_id(first_doc_id, 1);
+        let second_chunk_id = chunk_doc_id(second_doc_id, 1);
+
+        embedding_db.store(first_chunk_id, 1, 1, &[1.0]).unwrap();
+        embedding_db.store(second_chunk_id, 1, 1, &[2.0]).unwrap();
+        embedding_db.store(first_doc_id, 1, 1, &[3.0]).unwrap();
+        embedding_db.store(second_doc_id, 1, 1, &[4.0]).unwrap();
+
+        let loaded = load_candidate_family_tensors_for_rerank(
+            &embedding_db,
+            &[second_doc_id, first_doc_id],
+        )
+        .unwrap();
+        let loaded_ids: Vec<u64> =
+            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
+
+        let mut second_family_expected = vec![second_doc_id, second_chunk_id];
+        second_family_expected.sort_unstable();
+        let mut first_family_expected = vec![first_doc_id, first_chunk_id];
+        first_family_expected.sort_unstable();
+        let expected_ids: Vec<u64> = second_family_expected
+            .into_iter()
+            .chain(first_family_expected)
+            .collect();
+
+        assert_eq!(loaded_ids, expected_ids);
+    }
+
+    #[test]
+    fn family_aware_rerank_pipeline_loads_and_collapses_chunk_only_families() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+        let first_chunk_id = chunk_doc_id(first_doc_id, 1);
+        let second_chunk_id = chunk_doc_id(second_doc_id, 1);
+        let second_chunk_id_2 = chunk_doc_id(second_doc_id, 2);
+
+        embedding_db.store(first_chunk_id, 1, 1, &[1.0]).unwrap();
+        embedding_db.store(second_chunk_id, 1, 1, &[2.0]).unwrap();
+        embedding_db.store(second_chunk_id_2, 1, 1, &[3.0]).unwrap();
+
+        let loaded = load_candidate_family_tensors_for_rerank(
+            &embedding_db,
+            &[second_doc_id, first_doc_id],
+        )
+        .unwrap();
+        let synthetic_scores = loaded
+            .into_iter()
+            .map(|(doc_id, _)| RankedDocument {
+                doc_num_id: doc_id,
+                score: match doc_id {
+                    id if id == first_chunk_id => 0.4,
+                    id if id == second_chunk_id => 0.6,
+                    id if id == second_chunk_id_2 => 0.9,
+                    _ => 0.0,
+                },
+            })
+            .collect();
+
+        let collapsed = collapse_best_chunk_scores(
+            &[second_doc_id, first_doc_id],
+            synthetic_scores,
+        );
+
+        assert_eq!(
+            collapsed,
+            vec![
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.9,
+                },
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.4,
                 },
             ]
         );
