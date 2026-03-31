@@ -103,6 +103,45 @@ fn load_candidate_family_tensors_for_rerank(
     batch_load_document_family_tensors(embedding_db, candidate_ids)
 }
 
+fn rerank_with_scorer<F>(
+    query_embedding: &Tensor,
+    candidate_ids: &[u64],
+    embedding_db: &EmbeddingDb,
+    model: &ModelManager,
+    score_loaded_embeddings_fn: F,
+) -> Result<Vec<RankedDocument>>
+where
+    F: Fn(
+        &Tensor,
+        Vec<(u64, Option<Tensor>)>,
+        &ModelManager,
+    ) -> Result<Vec<RankedDocument>>,
+{
+    // pylate similarity expects 3D tensors: [batch, tokens, dim]
+    // Query is [Q, D], unsqueeze to [1, Q, D]
+    let query_3d = query_embedding.unsqueeze(0)?;
+
+    let embeddings =
+        load_candidate_family_tensors_for_rerank(embedding_db, candidate_ids)?;
+    let embeddings_with_presence: Vec<(u64, Option<Tensor>)> = embeddings
+        .into_iter()
+        .map(|(doc_id, tensor)| (doc_id, Some(tensor)))
+        .collect();
+
+    let scored_chunks =
+        score_loaded_embeddings_fn(&query_3d, embeddings_with_presence, model)?;
+    let mut ranked = collapse_best_chunk_scores(candidate_ids, scored_chunks);
+
+    // Sort by score descending.
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(ranked)
+}
+
 /// Rerank candidate documents with ColBERT MaxSim scoring.
 ///
 /// For each candidate, this loads the stored embedding, scores it against the
@@ -116,29 +155,13 @@ pub fn rerank(
     embedding_db: &EmbeddingDb,
     model: &ModelManager,
 ) -> Result<Vec<RankedDocument>> {
-    // pylate similarity expects 3D tensors: [batch, tokens, dim]
-    // Query is [Q, D], unsqueeze to [1, Q, D]
-    let query_3d = query_embedding.unsqueeze(0)?;
-
-    let embeddings =
-        load_candidate_family_tensors_for_rerank(embedding_db, candidate_ids)?;
-    let embeddings_with_presence: Vec<(u64, Option<Tensor>)> = embeddings
-        .into_iter()
-        .map(|(doc_id, tensor)| (doc_id, Some(tensor)))
-        .collect();
-
-    let scored_chunks =
-        score_loaded_embeddings(&query_3d, embeddings_with_presence, model)?;
-    let mut ranked = collapse_best_chunk_scores(candidate_ids, scored_chunks);
-
-    // Sort by score descending.
-    ranked.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    Ok(ranked)
+    rerank_with_scorer(
+        query_embedding,
+        candidate_ids,
+        embedding_db,
+        model,
+        score_loaded_embeddings,
+    )
 }
 
 #[cfg(test)]
@@ -414,6 +437,67 @@ mod tests {
 
         assert_eq!(
             collapsed,
+            vec![
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.9,
+                },
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rerank_with_scorer_returns_base_document_ids_for_chunk_families() {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+        let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+        let first_chunk_id = chunk_doc_id(first_doc_id, 1);
+        let second_chunk_id = chunk_doc_id(second_doc_id, 1);
+        let second_chunk_id_2 = chunk_doc_id(second_doc_id, 2);
+        let query = Tensor::zeros(
+            &[2, 128],
+            candle_core::DType::F32,
+            &candle_core::Device::Cpu,
+        )
+        .unwrap();
+
+        embedding_db.store(first_chunk_id, 1, 1, &[1.0]).unwrap();
+        embedding_db.store(second_chunk_id, 1, 1, &[2.0]).unwrap();
+        embedding_db.store(second_chunk_id_2, 1, 1, &[3.0]).unwrap();
+
+        let ranked = rerank_with_scorer(
+            &query,
+            &[second_doc_id, first_doc_id],
+            &embedding_db,
+            &model,
+            |_, embeddings, _| {
+                Ok(embeddings
+                    .into_iter()
+                    .filter_map(|(doc_id, tensor)| {
+                        tensor.map(|_| RankedDocument {
+                            doc_num_id: doc_id,
+                            score: match doc_id {
+                                id if id == first_chunk_id => 0.4,
+                                id if id == second_chunk_id => 0.6,
+                                id if id == second_chunk_id_2 => 0.9,
+                                _ => 0.0,
+                            },
+                        })
+                    })
+                    .collect())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            ranked,
             vec![
                 RankedDocument {
                     doc_num_id: second_doc_id,
