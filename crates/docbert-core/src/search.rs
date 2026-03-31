@@ -1,9 +1,8 @@
-use std::{cmp::Ordering, collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use crate::{
     config_db::{CollectionLocation, ConfigDb},
     doc_id::{format_document_ref, strip_document_ref_prefix},
-    embedding,
     embedding_db::EmbeddingDb,
     error::Result,
     incremental::DocumentMetadata,
@@ -13,8 +12,6 @@ use crate::{
     tantivy_index::{SearchIndex, SearchResult},
     text_util,
 };
-
-const SEMANTIC_SEARCH_BATCH_SIZE: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
@@ -228,6 +225,49 @@ pub fn execute_search(
     Ok(limited)
 }
 
+fn semantic_ranked_from_query_embedding(
+    query_embedding: &candle_core::Tensor,
+    doc_ids: &[u64],
+    embedding_db: &EmbeddingDb,
+    model: &ModelManager,
+) -> Result<Vec<RankedDocument>> {
+    reranker::rerank(query_embedding, doc_ids, embedding_db, model)
+}
+
+fn semantic_final_results_from_ranked(
+    metadata: &HashMap<u64, DocumentMetadata>,
+    ranked: Vec<RankedDocument>,
+    min_score: f32,
+    count: usize,
+    all: bool,
+) -> Vec<FinalResult> {
+    let mut results: Vec<FinalResult> = ranked
+        .into_iter()
+        .filter(|ranked| ranked.score >= min_score)
+        .filter_map(|RankedDocument { doc_num_id, score }| {
+            let meta = metadata.get(&doc_num_id)?;
+            Some(FinalResult {
+                rank: 0,
+                score,
+                doc_id: short_doc_id(doc_num_id),
+                doc_num_id,
+                collection: meta.collection.clone(),
+                path: meta.relative_path.clone(),
+                title: String::new(),
+            })
+        })
+        .collect();
+
+    let limit = if all { results.len() } else { count };
+    results.truncate(limit);
+
+    for (i, result) in results.iter_mut().enumerate() {
+        result.rank = i + 1;
+    }
+
+    results
+}
+
 /// Run semantic-only search across all indexed documents.
 ///
 /// Unlike [`execute_search`], this skips BM25 and scores every stored embedding
@@ -271,47 +311,20 @@ pub fn execute_semantic_search(
     }
 
     let query_embedding = model.encode_query(&args.query)?;
-    let query_3d = query_embedding.unsqueeze(0)?;
+    let ranked = semantic_ranked_from_query_embedding(
+        &query_embedding,
+        &doc_ids,
+        embedding_db,
+        model,
+    )?;
 
-    let mut scored: Vec<(u64, f32)> = Vec::new();
-
-    for batch in doc_ids.chunks(SEMANTIC_SEARCH_BATCH_SIZE) {
-        let embeddings =
-            embedding::batch_load_embedding_tensors(embedding_db, batch)?;
-        let batch_scores =
-            reranker::score_loaded_embeddings(&query_3d, embeddings, model)?;
-        scored.extend(
-            batch_scores
-                .into_iter()
-                .map(|ranked| (ranked.doc_num_id, ranked.score)),
-        );
-    }
-
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-
-    let mut results: Vec<FinalResult> = scored
-        .into_iter()
-        .filter_map(|(doc_id, score)| {
-            let meta = metadata.get(&doc_id)?;
-            Some(FinalResult {
-                rank: 0,
-                score,
-                doc_id: short_doc_id(doc_id),
-                doc_num_id: doc_id,
-                collection: meta.collection.clone(),
-                path: meta.relative_path.clone(),
-                title: String::new(),
-            })
-        })
-        .filter(|r| r.score >= args.min_score)
-        .collect();
-
-    let limit = if args.all { results.len() } else { args.count };
-    results.truncate(limit);
-
-    for (i, r) in results.iter_mut().enumerate() {
-        r.rank = i + 1;
-    }
+    let mut results = semantic_final_results_from_ranked(
+        &metadata,
+        ranked,
+        args.min_score,
+        args.count,
+        args.all,
+    );
 
     populate_titles(&mut results, config_db);
 
@@ -718,6 +731,8 @@ pub fn json_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use candle_core::Tensor;
+
     use super::*;
     use crate::{
         config_db::ConfigDb,
@@ -846,6 +861,161 @@ mod tests {
             resolve_by_path(&db, "hello.md"),
             Some(("notes".to_string(), "hello.md".to_string()))
         );
+    }
+
+    #[test]
+    fn semantic_ranked_from_query_embedding_uses_shared_reranker_for_chunk_only_families()
+     {
+        let tmp = tempfile::tempdir().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let chunk_only_id = crate::chunking::chunk_doc_id(base_doc_id, 1);
+
+        let query_embedding = Tensor::zeros(
+            &[2, 128],
+            candle_core::DType::F32,
+            &candle_core::Device::Cpu,
+        )
+        .unwrap();
+        embedding_db
+            .store(chunk_only_id, 2, 128, &vec![0.0; 256])
+            .unwrap();
+
+        let err = semantic_ranked_from_query_embedding(
+            &query_embedding,
+            &[base_doc_id],
+            &embedding_db,
+            &model,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("model not loaded"));
+    }
+
+    #[test]
+    fn semantic_final_results_from_ranked_emits_only_base_document_ids() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let chunk_doc_id = crate::chunking::chunk_doc_id(base_doc_id, 1);
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            base_doc_id,
+            DocumentMetadata {
+                collection: "notes".to_string(),
+                relative_path: "hello.md".to_string(),
+                mtime: 1,
+            },
+        );
+
+        let results = semantic_final_results_from_ranked(
+            &metadata,
+            vec![
+                RankedDocument {
+                    doc_num_id: chunk_doc_id,
+                    score: 0.9,
+                },
+                RankedDocument {
+                    doc_num_id: base_doc_id,
+                    score: 0.8,
+                },
+            ],
+            0.0,
+            10,
+            false,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_num_id, base_doc_id);
+        assert_eq!(results[0].doc_id, short_doc_id(base_doc_id));
+    }
+
+    #[test]
+    fn semantic_final_results_from_ranked_attaches_base_document_metadata() {
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            base_doc_id,
+            DocumentMetadata {
+                collection: "notes".to_string(),
+                relative_path: "nested/hello.md".to_string(),
+                mtime: 1,
+            },
+        );
+
+        let results = semantic_final_results_from_ranked(
+            &metadata,
+            vec![RankedDocument {
+                doc_num_id: base_doc_id,
+                score: 0.8,
+            }],
+            0.0,
+            10,
+            false,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].collection, "notes");
+        assert_eq!(results[0].path, "nested/hello.md");
+        assert_eq!(results[0].title, "");
+    }
+
+    #[test]
+    fn semantic_final_results_from_ranked_applies_min_score_and_count() {
+        let first_doc_id = DocumentId::new("notes", "a.md").numeric;
+        let second_doc_id = DocumentId::new("notes", "b.md").numeric;
+        let third_doc_id = DocumentId::new("notes", "c.md").numeric;
+        let metadata = HashMap::from([
+            (
+                first_doc_id,
+                DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "a.md".to_string(),
+                    mtime: 1,
+                },
+            ),
+            (
+                second_doc_id,
+                DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "b.md".to_string(),
+                    mtime: 1,
+                },
+            ),
+            (
+                third_doc_id,
+                DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "c.md".to_string(),
+                    mtime: 1,
+                },
+            ),
+        ]);
+
+        let results = semantic_final_results_from_ranked(
+            &metadata,
+            vec![
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.9,
+                },
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.7,
+                },
+                RankedDocument {
+                    doc_num_id: third_doc_id,
+                    score: 0.4,
+                },
+            ],
+            0.5,
+            1,
+            false,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_num_id, first_doc_id);
+        assert_eq!(results[0].rank, 1);
+        assert_eq!(results[0].score, 0.9);
     }
 
     /// Set up a search index with sample documents and commit them.
