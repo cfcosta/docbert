@@ -572,6 +572,29 @@ fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
     }
 }
 
+fn hybrid_final_results_from_ranked(
+    bm25_results: &[SearchResult],
+    ranked: Vec<RankedDocument>,
+) -> Vec<FinalResult> {
+    let bm25_lookup: std::collections::HashMap<u64, &SearchResult> =
+        bm25_results.iter().map(|r| (r.doc_num_id, r)).collect();
+
+    ranked
+        .into_iter()
+        .filter_map(|RankedDocument { doc_num_id, score }| {
+            bm25_lookup.get(&doc_num_id).map(|bm25| FinalResult {
+                rank: 0,
+                score,
+                doc_id: bm25.doc_id.clone(),
+                doc_num_id,
+                collection: bm25.collection.clone(),
+                path: bm25.path.clone(),
+                title: bm25.title.clone(),
+            })
+        })
+        .collect()
+}
+
 fn rerank_results(
     bm25_results: &[SearchResult],
     embedding_db: &EmbeddingDb,
@@ -589,24 +612,7 @@ fn rerank_results(
         model,
     )?;
 
-    // Build a lookup from doc_num_id to BM25 result for metadata.
-    let bm25_lookup: std::collections::HashMap<u64, &SearchResult> =
-        bm25_results.iter().map(|r| (r.doc_num_id, r)).collect();
-
-    Ok(ranked
-        .into_iter()
-        .filter_map(|RankedDocument { doc_num_id, score }| {
-            bm25_lookup.get(&doc_num_id).map(|bm25| FinalResult {
-                rank: 0, // Set later
-                score,
-                doc_id: bm25.doc_id.clone(),
-                doc_num_id,
-                collection: bm25.collection.clone(),
-                path: bm25.path.clone(),
-                title: bm25.title.clone(),
-            })
-        })
-        .collect())
+    Ok(hybrid_final_results_from_ranked(bm25_results, ranked))
 }
 
 /// Print results in the default terminal format.
@@ -1009,6 +1015,65 @@ mod tests {
         assert_eq!(results[0].doc_num_id, first_doc_id);
         assert_eq!(results[0].rank, 1);
         assert_eq!(results[0].score, 0.9);
+    }
+
+    #[test]
+    fn hybrid_final_results_from_ranked_preserves_bm25_metadata_for_collapsed_base_ids()
+     {
+        let first_doc_id = DocumentId::new("notes", "a.md").numeric;
+        let second_doc_id = DocumentId::new("docs", "b.md").numeric;
+        let bm25_results = vec![
+            SearchResult {
+                score: 3.0,
+                doc_id: "#aaaaaa".to_string(),
+                doc_num_id: first_doc_id,
+                collection: "notes".to_string(),
+                path: "a.md".to_string(),
+                title: "Alpha".to_string(),
+                mtime: 1,
+            },
+            SearchResult {
+                score: 2.0,
+                doc_id: "#bbbbbb".to_string(),
+                doc_num_id: second_doc_id,
+                collection: "docs".to_string(),
+                path: "b.md".to_string(),
+                title: "Beta".to_string(),
+                mtime: 2,
+            },
+        ];
+
+        let results = hybrid_final_results_from_ranked(
+            &bm25_results,
+            vec![
+                RankedDocument {
+                    doc_num_id: second_doc_id,
+                    score: 0.9,
+                },
+                RankedDocument {
+                    doc_num_id: first_doc_id,
+                    score: 0.8,
+                },
+                RankedDocument {
+                    doc_num_id: DocumentId::new("other", "missing.md").numeric,
+                    score: 0.7,
+                },
+            ],
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].doc_num_id, second_doc_id);
+        assert_eq!(results[0].doc_id, "#bbbbbb");
+        assert_eq!(results[0].collection, "docs");
+        assert_eq!(results[0].path, "b.md");
+        assert_eq!(results[0].title, "Beta");
+        assert_eq!(results[0].score, 0.9);
+        assert_eq!(results[1].doc_num_id, first_doc_id);
+        assert_eq!(results[1].doc_id, "#aaaaaa");
+        assert_eq!(results[1].collection, "notes");
+        assert_eq!(results[1].path, "a.md");
+        assert_eq!(results[1].title, "Alpha");
+        assert_eq!(results[1].score, 0.8);
     }
 
     /// Set up a search index with sample documents and commit them.
