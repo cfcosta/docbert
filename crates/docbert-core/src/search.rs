@@ -225,6 +225,31 @@ pub fn execute_search(
     Ok(limited)
 }
 
+fn semantic_candidates_from_metadata(
+    config_db: &ConfigDb,
+    collection: Option<&str>,
+    metadata_entries: Vec<(u64, DocumentMetadata)>,
+) -> (HashMap<u64, DocumentMetadata>, Vec<u64>) {
+    let mut metadata = HashMap::with_capacity(metadata_entries.len());
+    let mut doc_ids = Vec::with_capacity(metadata_entries.len());
+    let mut collection_paths = HashMap::new();
+
+    for (doc_id, meta) in metadata_entries {
+        if collection.is_none_or(|c| c == meta.collection.as_str())
+            && document_has_semantic_body(
+                config_db,
+                &mut collection_paths,
+                &meta,
+            )
+        {
+            doc_ids.push(doc_id);
+            metadata.insert(doc_id, meta);
+        }
+    }
+
+    (metadata, doc_ids)
+}
+
 fn semantic_ranked_from_query_embedding(
     query_embedding: &candle_core::Tensor,
     doc_ids: &[u64],
@@ -286,25 +311,11 @@ pub fn execute_semantic_search(
         return Ok(vec![]);
     }
 
-    let mut metadata = HashMap::with_capacity(metadata_entries.len());
-    let mut doc_ids = Vec::with_capacity(metadata_entries.len());
-    let mut collection_paths = HashMap::new();
-
-    for (doc_id, meta) in metadata_entries {
-        if args
-            .collection
-            .as_ref()
-            .is_none_or(|c| c == &meta.collection)
-            && document_has_semantic_body(
-                config_db,
-                &mut collection_paths,
-                &meta,
-            )
-        {
-            doc_ids.push(doc_id);
-            metadata.insert(doc_id, meta);
-        }
-    }
+    let (metadata, doc_ids) = semantic_candidates_from_metadata(
+        config_db,
+        args.collection.as_deref(),
+        metadata_entries,
+    );
 
     if doc_ids.is_empty() {
         return Ok(vec![]);
@@ -867,6 +878,52 @@ mod tests {
             resolve_by_path(&db, "hello.md"),
             Some(("notes".to_string(), "hello.md".to_string()))
         );
+    }
+
+    #[test]
+    fn semantic_candidates_from_metadata_respects_collection_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        config_db.set_managed_collection("notes").unwrap();
+        config_db.set_managed_collection("docs").unwrap();
+
+        let notes_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let docs_doc_id = DocumentId::new("docs", "guide.md").numeric;
+        let metadata_entries = vec![
+            (
+                notes_doc_id,
+                DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "hello.md".to_string(),
+                    mtime: 1,
+                },
+            ),
+            (
+                docs_doc_id,
+                DocumentMetadata {
+                    collection: "docs".to_string(),
+                    relative_path: "guide.md".to_string(),
+                    mtime: 1,
+                },
+            ),
+        ];
+
+        let (notes_metadata, notes_doc_ids) = semantic_candidates_from_metadata(
+            &config_db,
+            Some("notes"),
+            metadata_entries.clone(),
+        );
+        assert_eq!(notes_doc_ids, vec![notes_doc_id]);
+        assert_eq!(notes_metadata.len(), 1);
+        assert!(notes_metadata.contains_key(&notes_doc_id));
+
+        let (all_metadata, all_doc_ids) = semantic_candidates_from_metadata(
+            &config_db,
+            None,
+            metadata_entries,
+        );
+        assert_eq!(all_doc_ids, vec![notes_doc_id, docs_doc_id]);
+        assert_eq!(all_metadata.len(), 2);
     }
 
     #[test]
