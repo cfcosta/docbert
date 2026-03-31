@@ -141,7 +141,7 @@ JSON output:
 
 ### `docbert ssearch <query>`
 
-Run semantic-only search across all collections. This skips BM25 and fuzzy matching, then scans stored embeddings directly.
+Run semantic-only search across all collections. This skips BM25 and fuzzy matching, then scores every indexed document family directly.
 
 That makes it useful when wording differs a lot from the query, but it is slower on large corpora.
 
@@ -158,9 +158,10 @@ That makes it useful when wording differs a lot from the query, but it is slower
 #### Behavior
 
 1. Encode the query with ColBERT
-2. Score every stored document embedding, using chunk 0 only
-3. Apply `--min-score` and `-n`, unless `--all` is set
-4. Format the output the same way as `docbert search`
+2. Score every indexed document family against all stored chunk embeddings for that document
+3. Keep the best chunk score as the document score
+4. Apply `--min-score` and `-n`, unless `--all` is set
+5. Format the output the same way as `docbert search`
 
 ### `docbert get <reference>`
 

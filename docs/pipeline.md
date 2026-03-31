@@ -34,7 +34,7 @@ For each new or modified document:
 4. Serialize the resulting `[num_tokens, 128]` `f32` matrix and store it in `embeddings.db`, keyed by the document's numeric ID.
 5. For chunked documents, store each chunk under a chunk-specific numeric ID derived from the base document ID.
 
-Current limitation: reranking still fetches embeddings by the base document ID only, so search uses chunk 0 during ranking. Extra chunk embeddings are stored, but not read back during reranking yet.
+At search time, docbert now reads back all stored embeddings in the document family, not just the base embedding. That means chunked documents can match on any stored chunk. This first pass favors correctness over a dedicated chunk-family lookup index, so family expansion happens at query time.
 
 ### Incremental re-indexing
 
@@ -72,12 +72,13 @@ On later runs of `docbert sync`:
 
 ### Step 4: rerank with MaxSim
 
-1. Load the precomputed embedding matrix for each candidate from `embeddings.db`
-2. Compute `similarity_matrix = query_embeddings @ doc_embeddings.T`, which has shape `[query_length, num_doc_tokens]`
-3. For each query token, take the maximum value across all document tokens
-4. Sum those per-token maxima to get the final MaxSim score
-5. Sort candidates by MaxSim score in descending order
-6. Apply `--min-score` if the user set it
+1. Load the precomputed embedding matrices for each candidate document family from `embeddings.db`
+2. Compute `similarity_matrix = query_embeddings @ doc_embeddings.T` for each stored chunk embedding, which has shape `[query_length, num_doc_tokens]`
+3. For each query token, take the maximum value across all tokens in that chunk embedding
+4. Sum those per-token maxima to get one MaxSim score per chunk
+5. Collapse chunk scores back to one document score by keeping the best chunk score in the family
+6. Sort candidates by MaxSim score in descending order
+7. Apply `--min-score` if the user set it
 
 ### Step 5: format results
 
@@ -101,15 +102,16 @@ For file-list output (`--files`):
 
 ### Semantic-only search (`ssearch` / `semantic_search`)
 
-Semantic-only search skips Tantivy and scores every stored embedding directly:
+Semantic-only search skips Tantivy and scores every indexed document family directly:
 
 1. Load all document IDs from `config.db`
 2. Encode the query with ColBERT
-3. Compute MaxSim against each stored embedding, using chunk 0 only
-4. Sort by score, apply `--min-score`, and limit to `-n` unless `--all` is set
-5. Format the output the same way as `docbert search`
+3. Score each document family by computing MaxSim against all stored chunk embeddings for that document
+4. Keep the best chunk score as the document score
+5. Sort by score, apply `--min-score`, and limit to `-n` unless `--all` is set
+6. Format the output the same way as `docbert search`
 
-Because it scores every stored embedding, semantic-only search is `O(N)` in the number of indexed documents and can get slow on large corpora.
+Because it scores every indexed document family, semantic-only search is `O(N)` in the number of indexed documents and can get slow on large corpora.
 
 ## Performance expectations
 
