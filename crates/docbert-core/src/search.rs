@@ -1719,8 +1719,9 @@ mod tests {
     }
 
     #[test]
-    fn short_doc_id_consistency() {
-        assert_eq!(short_doc_id(42), short_doc_id(42));
+    fn short_doc_id_uses_first_six_hex_digits() {
+        assert_eq!(short_doc_id(0x123456789abcdef0), "#123456");
+        assert_eq!(short_doc_id(0xabcdef1234567890), "#abcdef");
     }
 
     #[test]
