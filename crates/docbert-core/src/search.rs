@@ -894,7 +894,8 @@ mod tests {
     }
 
     #[test]
-    fn semantic_final_results_from_ranked_emits_only_base_document_ids() {
+    fn semantic_final_results_from_ranked_drops_rows_without_base_document_metadata()
+     {
         let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
         let chunk_doc_id = crate::chunking::chunk_doc_id(base_doc_id, 1);
         let mut metadata = HashMap::new();
@@ -909,24 +910,16 @@ mod tests {
 
         let results = semantic_final_results_from_ranked(
             &metadata,
-            vec![
-                RankedDocument {
-                    doc_num_id: chunk_doc_id,
-                    score: 0.9,
-                },
-                RankedDocument {
-                    doc_num_id: base_doc_id,
-                    score: 0.8,
-                },
-            ],
+            vec![RankedDocument {
+                doc_num_id: chunk_doc_id,
+                score: 0.9,
+            }],
             0.0,
             10,
             false,
         );
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].doc_num_id, base_doc_id);
-        assert_eq!(results[0].doc_id, short_doc_id(base_doc_id));
+        assert!(results.is_empty());
     }
 
     #[test]
