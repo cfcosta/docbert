@@ -748,6 +748,50 @@ mod tests {
     }
 
     #[test]
+    fn batch_load_document_families_skips_malformed_entries_and_preserves_order()
+     {
+        let (_tmp, db) = test_db();
+        let first_base_doc_id = DocumentId::new("notes", "a.md").numeric;
+        let second_base_doc_id = DocumentId::new("notes", "b.md").numeric;
+        let malformed_chunk_id = chunk_doc_id(first_base_doc_id, 1);
+        let valid_chunk_id = chunk_doc_id(first_base_doc_id, 2);
+        let other_family_chunk_id = chunk_doc_id(second_base_doc_id, 1);
+
+        db.store(second_base_doc_id, 1, 1, &[9.0]).unwrap();
+        db.store(valid_chunk_id, 1, 1, &[2.0]).unwrap();
+        db.store(first_base_doc_id, 1, 1, &[1.0]).unwrap();
+        db.store(other_family_chunk_id, 1, 1, &[10.0]).unwrap();
+
+        let mut malformed_bytes = Vec::new();
+        malformed_bytes.extend_from_slice(&2u32.to_le_bytes());
+        malformed_bytes.extend_from_slice(&2u32.to_le_bytes());
+        malformed_bytes
+            .extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0]));
+        insert_raw_entry(&db, malformed_chunk_id, &malformed_bytes);
+
+        let loaded = db
+            .batch_load_document_families(&[
+                second_base_doc_id,
+                first_base_doc_id,
+            ])
+            .unwrap();
+        let loaded_ids: Vec<u64> =
+            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
+        let mut first_family_expected = vec![first_base_doc_id, valid_chunk_id];
+        first_family_expected.sort_unstable();
+        let mut second_family_expected =
+            vec![second_base_doc_id, other_family_chunk_id];
+        second_family_expected.sort_unstable();
+        let expected_ids: Vec<u64> = second_family_expected
+            .into_iter()
+            .chain(first_family_expected)
+            .collect();
+
+        assert_eq!(loaded_ids, expected_ids);
+        assert!(!loaded_ids.contains(&malformed_chunk_id));
+    }
+
+    #[test]
     fn overwrite_entry() {
         let (_tmp, db) = test_db();
 
