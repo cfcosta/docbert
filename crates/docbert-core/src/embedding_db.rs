@@ -336,6 +336,63 @@ impl EmbeddingDb {
         Ok(results)
     }
 
+    /// Load all stored embeddings for the requested document families.
+    ///
+    /// Results are grouped by the order of `base_doc_ids`. Within each family,
+    /// embeddings are sorted by stored `doc_id` ascending for deterministic
+    /// output. Malformed embeddings are skipped.
+    pub fn batch_load_document_families(
+        &self,
+        base_doc_ids: &[u64],
+    ) -> Result<Vec<(u64, EmbeddingMatrix)>> {
+        if base_doc_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let requested_family_keys: std::collections::HashSet<u64> =
+            base_doc_ids
+                .iter()
+                .map(|&doc_id| document_family_key(doc_id))
+                .collect();
+
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(EMBEDDINGS)?;
+        let mut families: std::collections::HashMap<
+            u64,
+            Vec<(u64, EmbeddingMatrix)>,
+        > = std::collections::HashMap::new();
+
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let doc_id = key.value();
+            let family_key = document_family_key(doc_id);
+            if !requested_family_keys.contains(&family_key) {
+                continue;
+            }
+
+            let Some(matrix) = parse_embedding_matrix(value.value()) else {
+                continue;
+            };
+
+            families
+                .entry(family_key)
+                .or_default()
+                .push((doc_id, matrix));
+        }
+
+        let mut results = Vec::new();
+        for &base_doc_id in base_doc_ids {
+            let family_key = document_family_key(base_doc_id);
+            let Some(mut family_rows) = families.remove(&family_key) else {
+                continue;
+            };
+            family_rows.sort_by_key(|(doc_id, _)| *doc_id);
+            results.extend(family_rows);
+        }
+
+        Ok(results)
+    }
+
     /// List all stored document IDs.
     ///
     /// # Examples
@@ -562,6 +619,132 @@ mod tests {
         assert_eq!(results[2].0, 10);
         assert!(results[2].1.is_some());
         assert_eq!(results[2].1.as_ref().unwrap().data, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn batch_load_document_families_returns_base_and_chunk_embeddings_for_requested_family()
+     {
+        let (_tmp, db) = test_db();
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let first_chunk_id = chunk_doc_id(base_doc_id, 1);
+        let second_chunk_id = chunk_doc_id(base_doc_id, 2);
+
+        db.store(base_doc_id, 1, 2, &[1.0, 2.0]).unwrap();
+        db.store(first_chunk_id, 1, 2, &[3.0, 4.0]).unwrap();
+        db.store(second_chunk_id, 1, 2, &[5.0, 6.0]).unwrap();
+
+        let loaded = db.batch_load_document_families(&[base_doc_id]).unwrap();
+        let loaded_ids: Vec<u64> =
+            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
+        let mut expected_ids =
+            vec![base_doc_id, first_chunk_id, second_chunk_id];
+        expected_ids.sort_unstable();
+
+        assert_eq!(loaded_ids, expected_ids);
+
+        let loaded_by_id: std::collections::HashMap<u64, Vec<f32>> = loaded
+            .into_iter()
+            .map(|(doc_id, matrix)| (doc_id, matrix.data))
+            .collect();
+        assert_eq!(loaded_by_id.get(&base_doc_id), Some(&vec![1.0, 2.0]));
+        assert_eq!(loaded_by_id.get(&first_chunk_id), Some(&vec![3.0, 4.0]));
+        assert_eq!(loaded_by_id.get(&second_chunk_id), Some(&vec![5.0, 6.0]));
+    }
+
+    #[test]
+    fn batch_load_document_families_excludes_unrelated_families() {
+        let (_tmp, db) = test_db();
+        let requested_base_doc_id =
+            DocumentId::new("notes", "hello.md").numeric;
+        let requested_chunk_id = chunk_doc_id(requested_base_doc_id, 1);
+        let unrelated_base_doc_id = DocumentId::new("docs", "guide.md").numeric;
+        let unrelated_chunk_id = chunk_doc_id(unrelated_base_doc_id, 1);
+
+        db.store(requested_base_doc_id, 1, 2, &[1.0, 2.0]).unwrap();
+        db.store(requested_chunk_id, 1, 2, &[3.0, 4.0]).unwrap();
+        db.store(unrelated_base_doc_id, 1, 2, &[5.0, 6.0]).unwrap();
+        db.store(unrelated_chunk_id, 1, 2, &[7.0, 8.0]).unwrap();
+
+        let loaded = db
+            .batch_load_document_families(&[requested_base_doc_id])
+            .unwrap();
+        let loaded_ids: Vec<u64> =
+            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
+        let mut expected_ids = vec![requested_base_doc_id, requested_chunk_id];
+        expected_ids.sort_unstable();
+
+        assert_eq!(loaded_ids, expected_ids);
+    }
+
+    #[test]
+    fn batch_load_document_families_returns_base_only_documents() {
+        let (_tmp, db) = test_db();
+        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+
+        db.store(base_doc_id, 1, 2, &[1.0, 2.0]).unwrap();
+
+        let loaded = db.batch_load_document_families(&[base_doc_id]).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, base_doc_id);
+        assert_eq!(loaded[0].1.data, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn batch_load_document_families_empty_input_returns_empty() {
+        let (_tmp, db) = test_db();
+
+        db.store(10, 1, 2, &[1.0, 2.0]).unwrap();
+
+        let loaded = db.batch_load_document_families(&[]).unwrap();
+
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn batch_load_document_families_preserves_request_order_and_sorts_within_family()
+     {
+        let (_tmp, db) = test_db();
+        let first_base_doc_id = DocumentId::new("notes", "a.md").numeric;
+        let second_base_doc_id = DocumentId::new("notes", "b.md").numeric;
+        let first_family_chunk_2 = chunk_doc_id(first_base_doc_id, 2);
+        let first_family_chunk_1 = chunk_doc_id(first_base_doc_id, 1);
+        let second_family_chunk_2 = chunk_doc_id(second_base_doc_id, 2);
+        let second_family_chunk_1 = chunk_doc_id(second_base_doc_id, 1);
+
+        db.store(first_family_chunk_2, 1, 2, &[1.0, 2.0]).unwrap();
+        db.store(second_family_chunk_2, 1, 2, &[3.0, 4.0]).unwrap();
+        db.store(first_base_doc_id, 1, 2, &[5.0, 6.0]).unwrap();
+        db.store(second_family_chunk_1, 1, 2, &[7.0, 8.0]).unwrap();
+        db.store(second_base_doc_id, 1, 2, &[9.0, 10.0]).unwrap();
+        db.store(first_family_chunk_1, 1, 2, &[11.0, 12.0]).unwrap();
+
+        let loaded = db
+            .batch_load_document_families(&[
+                second_base_doc_id,
+                first_base_doc_id,
+            ])
+            .unwrap();
+        let loaded_ids: Vec<u64> =
+            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
+        let mut second_family_expected = vec![
+            second_base_doc_id,
+            second_family_chunk_1,
+            second_family_chunk_2,
+        ];
+        second_family_expected.sort_unstable();
+        let mut first_family_expected = vec![
+            first_base_doc_id,
+            first_family_chunk_1,
+            first_family_chunk_2,
+        ];
+        first_family_expected.sort_unstable();
+        let expected_ids: Vec<u64> = second_family_expected
+            .into_iter()
+            .chain(first_family_expected)
+            .collect();
+
+        assert_eq!(loaded_ids, expected_ids);
     }
 
     #[test]
