@@ -1,5 +1,5 @@
 use std::{
-    io::Read,
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     process::Stdio,
@@ -29,9 +29,41 @@ fn web_boot_starts_without_docserver_env()
 -> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let port = free_tcp_port()?;
-    let mut child = std::process::Command::new(docbert_bin()?)
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
+#[test]
+fn web_settings_route_responds() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let response = http_get(port, "/v1/settings/llm")?;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(response.contains("{\"provider\":null,\"model\":null,\"api_key\":null}"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
+fn spawn_web_server(
+    data_dir: &std::path::Path,
+    port: u16,
+) -> Result<std::process::Child, Box<dyn std::error::Error>> {
+    Ok(std::process::Command::new(docbert_bin()?)
         .arg("--data-dir")
-        .arg(tempdir.path())
+        .arg(data_dir)
         .arg("web")
         .arg("--host")
         .arg("127.0.0.1")
@@ -44,14 +76,7 @@ fn web_boot_starts_without_docserver_env()
         .env_remove("DOCSERVER_LOG")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
-
-    wait_for_server(&mut child, port)?;
-
-    child.kill()?;
-    child.wait()?;
-
-    Ok(())
+        .spawn()?)
 }
 
 fn free_tcp_port() -> Result<u16, Box<dyn std::error::Error>> {
@@ -59,6 +84,23 @@ fn free_tcp_port() -> Result<u16, Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+fn http_get(
+    port: u16,
+    path: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    write!(
+        stream,
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        path, port
+    )?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
 }
 
 fn wait_for_server(
