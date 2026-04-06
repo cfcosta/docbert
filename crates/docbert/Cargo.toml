@@ -43,3 +43,7 @@ path = "../../tests/cli_smoke.rs"
 [[test]]
 name = "mcp_stdio"
 path = "../../tests/mcp_stdio.rs"
+
+[[test]]
+name = "web_smoke"
+path = "../../tests/web_smoke.rs"

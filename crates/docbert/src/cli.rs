@@ -56,6 +56,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Start MCP server for AI agent integration
     Mcp,
+    /// Start the web UI server
+    Web(WebArgs),
     /// Manage the ColBERT model configuration
     Model {
         #[command(subcommand)]
@@ -288,6 +290,19 @@ pub struct DoctorArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+}
+
+// -- Web --
+
+#[derive(Debug, Parser)]
+pub struct WebArgs {
+    /// Address to bind the web server to
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Port to bind the web server to
+    #[arg(long, default_value_t = 3030)]
+    pub port: u16,
 }
 
 // -- Completions --
@@ -733,5 +748,24 @@ mod tests {
     fn parse_mcp_command() {
         let cli = Cli::parse_from(["docbert", "mcp"]);
         assert!(matches!(cli.command, Command::Mcp));
+    }
+
+    #[test]
+    fn parse_web_host_and_port() {
+        let cli = Cli::parse_from([
+            "docbert",
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "3030",
+        ]);
+        match cli.command {
+            Command::Web(args) => {
+                assert_eq!(args.host, "127.0.0.1");
+                assert_eq!(args.port, 3030);
+            }
+            _ => panic!("expected web command"),
+        }
     }
 }

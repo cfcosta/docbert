@@ -8,6 +8,7 @@ mod cli;
 mod command_handlers;
 mod indexing_workflow;
 mod mcp;
+mod web;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
 
@@ -152,6 +153,9 @@ fn main() -> error::Result<()> {
         }
         Command::Mcp => {
             mcp::run_mcp(data_dir, config_db, model_resolution.model_id)?;
+        }
+        Command::Web(args) => {
+            web::run(&args)?;
         }
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {
