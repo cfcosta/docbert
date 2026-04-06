@@ -1,12 +1,18 @@
-use axum::{Router, routing};
+use axum::{Router, http::StatusCode, routing};
 
 use super::state::AppState;
 
+pub(crate) mod collections;
 pub(crate) mod conversations;
 pub(crate) mod settings;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .route(
+            "/v1/collections",
+            routing::get(collections::list)
+                .fallback(|| async { StatusCode::NOT_FOUND }),
+        )
         .route(
             "/v1/conversations",
             routing::get(conversations::list).post(conversations::create),

@@ -988,6 +988,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "xdg",
