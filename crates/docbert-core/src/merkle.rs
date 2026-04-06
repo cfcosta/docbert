@@ -8,6 +8,93 @@ pub const MERKLE_HASH_LEN: usize = blake3::OUT_LEN;
 /// Fixed-size BLAKE3 hash used by Merkle snapshots.
 pub type MerkleHash = [u8; MERKLE_HASH_LEN];
 
+const DOMAIN_FILE_CONTENT: &[u8] = b"docbert.merkle.file-content.v1";
+const DOMAIN_FILE_LEAF: &[u8] = b"docbert.merkle.file-leaf.v1";
+const DOMAIN_DIRECTORY_NODE: &[u8] = b"docbert.merkle.directory-node.v1";
+const DOMAIN_COLLECTION_ROOT: &[u8] = b"docbert.merkle.collection-root.v1";
+
+fn update_len(hasher: &mut blake3::Hasher, len: usize) {
+    hasher.update(&(len as u64).to_le_bytes());
+}
+
+fn update_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    update_len(hasher, bytes.len());
+    hasher.update(bytes);
+}
+
+fn update_str(hasher: &mut blake3::Hasher, value: &str) {
+    update_bytes(hasher, value.as_bytes());
+}
+
+fn finish_hash(hasher: blake3::Hasher) -> MerkleHash {
+    *hasher.finalize().as_bytes()
+}
+
+fn sort_child_entries(children: &mut [MerkleChildEntry]) {
+    children.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+}
+
+/// Hash raw file contents with the BLAKE3 file-content domain.
+pub fn hash_file_content(content: &[u8]) -> MerkleHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_FILE_CONTENT);
+    update_bytes(&mut hasher, content);
+    finish_hash(hasher)
+}
+
+/// Hash a file leaf from its relative path and content hash.
+pub fn hash_file_leaf(
+    relative_path: &str,
+    content_hash: &MerkleHash,
+) -> MerkleHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_FILE_LEAF);
+    update_str(&mut hasher, relative_path);
+    hasher.update(content_hash);
+    finish_hash(hasher)
+}
+
+/// Hash a directory node from its relative path and child entries.
+pub fn hash_directory_node(
+    relative_path: &str,
+    children: &[MerkleChildEntry],
+) -> MerkleHash {
+    let mut sorted_children = children.to_vec();
+    sort_child_entries(&mut sorted_children);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_DIRECTORY_NODE);
+    update_str(&mut hasher, relative_path);
+    update_len(&mut hasher, sorted_children.len());
+    for child in &sorted_children {
+        update_str(&mut hasher, &child.name);
+        hasher.update(&[child.kind.discriminator()]);
+        hasher.update(&child.hash);
+    }
+    finish_hash(hasher)
+}
+
+/// Hash a collection root from the root directory child entries.
+pub fn hash_collection_root(children: &[MerkleChildEntry]) -> MerkleHash {
+    let mut sorted_children = children.to_vec();
+    sort_child_entries(&mut sorted_children);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN_COLLECTION_ROOT);
+    update_len(&mut hasher, sorted_children.len());
+    for child in &sorted_children {
+        update_str(&mut hasher, &child.name);
+        hasher.update(&[child.kind.discriminator()]);
+        hasher.update(&child.hash);
+    }
+    finish_hash(hasher)
+}
+
 /// Whether a Merkle child entry points at a file leaf or a directory node.
 #[derive(
     Debug,
@@ -24,6 +111,15 @@ pub type MerkleHash = [u8; MERKLE_HASH_LEN];
 pub enum MerkleNodeKind {
     File,
     Directory,
+}
+
+impl MerkleNodeKind {
+    fn discriminator(self) -> u8 {
+        match self {
+            Self::File => 0,
+            Self::Directory => 1,
+        }
+    }
 }
 
 /// A child stored under a directory node.
@@ -122,12 +218,7 @@ impl MerkleDirectoryNode {
         node_hash: MerkleHash,
         mut children: Vec<MerkleChildEntry>,
     ) -> Self {
-        children.sort_by(|a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| a.kind.cmp(&b.kind))
-                .then_with(|| a.hash.cmp(&b.hash))
-        });
+        sort_child_entries(&mut children);
 
         Self {
             relative_path: relative_path.into(),
@@ -194,6 +285,71 @@ mod tests {
 
     fn hash(byte: u8) -> MerkleHash {
         [byte; MERKLE_HASH_LEN]
+    }
+
+    #[test]
+    fn file_hashes_are_stable_for_same_content() {
+        let content = b"# hello\nworld\n";
+        let first_content_hash = hash_file_content(content);
+        let second_content_hash = hash_file_content(content);
+        let first_leaf_hash =
+            hash_file_leaf("notes/hello.md", &first_content_hash);
+        let second_leaf_hash =
+            hash_file_leaf("notes/hello.md", &second_content_hash);
+
+        assert_eq!(first_content_hash, second_content_hash);
+        assert_eq!(first_leaf_hash, second_leaf_hash);
+    }
+
+    #[test]
+    fn file_hashes_change_when_content_changes() {
+        let original_content_hash = hash_file_content(b"hello");
+        let updated_content_hash = hash_file_content(b"hello!");
+        let original_leaf_hash =
+            hash_file_leaf("notes/hello.md", &original_content_hash);
+        let updated_leaf_hash =
+            hash_file_leaf("notes/hello.md", &updated_content_hash);
+
+        assert_ne!(original_content_hash, updated_content_hash);
+        assert_ne!(original_leaf_hash, updated_leaf_hash);
+    }
+
+    #[test]
+    fn directory_and_root_hashes_ignore_child_input_order() {
+        let children_in_order = vec![
+            MerkleChildEntry::file("a.md", hash(1)),
+            MerkleChildEntry::directory("nested", hash(2)),
+            MerkleChildEntry::file("z.md", hash(3)),
+        ];
+        let children_out_of_order = vec![
+            MerkleChildEntry::file("z.md", hash(3)),
+            MerkleChildEntry::file("a.md", hash(1)),
+            MerkleChildEntry::directory("nested", hash(2)),
+        ];
+
+        assert_eq!(
+            hash_directory_node("notes", &children_in_order),
+            hash_directory_node("notes", &children_out_of_order)
+        );
+        assert_eq!(
+            hash_collection_root(&children_in_order),
+            hash_collection_root(&children_out_of_order)
+        );
+    }
+
+    #[test]
+    fn file_directory_and_root_domains_remain_distinct() {
+        let content_hash = hash_file_content(b"same bytes");
+        let child = MerkleChildEntry::file("same", content_hash);
+
+        assert_ne!(
+            hash_file_leaf("same", &content_hash),
+            hash_directory_node("same", &[child.clone()])
+        );
+        assert_ne!(
+            hash_directory_node("", &[child.clone()]),
+            hash_collection_root(&[child])
+        );
     }
 
     #[test]
