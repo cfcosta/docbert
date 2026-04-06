@@ -1,14 +1,24 @@
-use std::path::Path;
+use std::{path::Path, time::SystemTime};
 
 use axum::{
     Json,
     extract::{Path as AxumPath, State},
     http::StatusCode,
 };
-use docbert_core::{DocumentId, ingestion};
+use docbert_core::{
+    DocumentId,
+    chunking,
+    embedding,
+    ingestion,
+    preparation::{self, SearchDocument},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::web::{paths, state::AppState};
+use crate::web::{
+    ingest::{self, EmbeddingEntry},
+    paths,
+    state::AppState,
+};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct DocumentListItem {
@@ -28,6 +38,36 @@ pub(crate) struct DocumentResponse {
     pub(crate) metadata: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct IngestRequest {
+    pub(crate) collection: String,
+    pub(crate) documents: Vec<IngestDocument>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct IngestDocument {
+    pub(crate) path: String,
+    pub(crate) content: String,
+    pub(crate) content_type: String,
+    #[serde(default)]
+    pub(crate) metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct IngestResponse {
+    pub(crate) ingested: usize,
+    pub(crate) documents: Vec<IngestedDoc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct IngestedDoc {
+    pub(crate) doc_id: String,
+    pub(crate) path: String,
+    pub(crate) title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata: Option<serde_json::Value>,
+}
+
 fn map_error(err: docbert_core::Error) -> StatusCode {
     match err {
         docbert_core::Error::NotFound { .. } => StatusCode::NOT_FOUND,
@@ -36,8 +76,109 @@ fn map_error(err: docbert_core::Error) -> StatusCode {
     }
 }
 
+const TEST_FAKE_EMBEDDINGS_ENV: &str = "DOCBERT_WEB_TEST_FAKE_EMBEDDINGS";
+
 fn title_from_disk(relative_path: &str, content: &str) -> String {
     ingestion::extract_title(content, Path::new(relative_path))
+}
+
+fn upload_chunking_config() -> chunking::ChunkingConfig {
+    chunking::ChunkingConfig {
+        chunk_size: chunking::DEFAULT_CHUNK_SIZE,
+        overlap: chunking::DEFAULT_CHUNK_OVERLAP,
+        document_length: None,
+    }
+}
+
+fn document_mtime(full_path: &Path) -> std::io::Result<u64> {
+    Ok(std::fs::metadata(full_path)?
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs())
+}
+
+fn compute_embedding_entries(
+    state: &AppState,
+    document: &SearchDocument,
+) -> Result<Vec<EmbeddingEntry>, StatusCode> {
+    let docs_to_embed = preparation::embedding_chunks(document, upload_chunking_config());
+    if docs_to_embed.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if std::env::var_os(TEST_FAKE_EMBEDDINGS_ENV).is_some() {
+        return Ok(docs_to_embed
+            .into_iter()
+            .map(|(doc_id, _)| (doc_id, 1, 2, vec![1.0, 0.0]))
+            .collect());
+    }
+
+    let mut model = state
+        .model
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    embedding::embed_documents(&mut model, docs_to_embed)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub(crate) async fn ingest(
+    State(state): State<AppState>,
+    Json(body): Json<IngestRequest>,
+) -> Result<Json<IngestResponse>, StatusCode> {
+    paths::resolve_collection_root(&state.config_db, &body.collection)
+        .map_err(map_error)?;
+
+    let mut ingested = Vec::with_capacity(body.documents.len());
+    for uploaded in &body.documents {
+        if uploaded.content_type != "text/markdown" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        let full_path = paths::resolve_document_path(
+            &state.config_db,
+            &body.collection,
+            &uploaded.path,
+        )
+        .map_err(map_error)?;
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        std::fs::write(&full_path, &uploaded.content)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mtime = document_mtime(&full_path)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let document = ingest::load_markdown_document(
+            &body.collection,
+            &uploaded.path,
+            &full_path,
+            uploaded.metadata.clone(),
+            mtime,
+        )
+        .map_err(map_error)?;
+        let embedding_entries = compute_embedding_entries(&state, &document)?;
+        let result = ingest::ingest_prepared_document(
+            &state,
+            &body.collection,
+            &document,
+            &embedding_entries,
+        )
+        .map_err(map_error)?;
+        ingested.push(IngestedDoc {
+            doc_id: result.doc_id,
+            path: result.path,
+            title: result.title,
+            metadata: result.metadata,
+        });
+    }
+
+    Ok(Json(IngestResponse {
+        ingested: ingested.len(),
+        documents: ingested,
+    }))
 }
 
 pub(crate) async fn list_by_collection(
@@ -105,7 +246,7 @@ pub(crate) async fn get(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use axum::{
         Router,
@@ -138,8 +279,14 @@ mod tests {
         (tmp, state)
     }
 
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
     fn documents_router(state: AppState) -> Router {
         Router::new()
+            .route("/v1/documents", routing::post(ingest))
             .route(
                 "/v1/collections/{name}/documents",
                 routing::get(list_by_collection),
@@ -177,6 +324,121 @@ mod tests {
             )
             .unwrap();
         did
+    }
+
+    #[tokio::test]
+    async fn web_documents_upload_writes_file_to_collection_folder() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Uploaded\n\nBody","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(root.join("hello.md")).unwrap(),
+            "# Uploaded\n\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_documents_upload_preserves_nested_paths() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"nested/deep/hello.md","content":"# Nested\n\nBody","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(root.join("nested/deep/hello.md")).unwrap(),
+            "# Nested\n\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_documents_upload_overwrite_replaces_contents() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("hello.md"), "old").unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Updated\n\nBody v2","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(root.join("hello.md")).unwrap(),
+            "# Updated\n\nBody v2"
+        );
     }
 
     #[tokio::test]

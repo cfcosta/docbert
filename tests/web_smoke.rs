@@ -1,11 +1,13 @@
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     thread,
     time::{Duration, Instant},
 };
+
+use docbert_core::ConfigDb;
 
 #[test]
 fn web_help_lists_flags() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,11 +121,65 @@ fn web_search_reads_excerpts_from_disk() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+#[test]
+fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let collection_root = setup_collection(tempdir.path(), "notes")?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let upload = http_post_json(
+        port,
+        "/v1/documents",
+        r##"{"collection":"notes","documents":[{"path":"nested/uploaded.md","content":"# Uploaded\n\nBody on disk","content_type":"text/markdown"}]}"##,
+    )?;
+    assert!(upload.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {upload}");
+    assert!(upload.contains("\"ingested\":1"));
+    assert!(std::fs::read_to_string(collection_root.join("nested/uploaded.md"))?.contains("Body on disk"));
+
+    let get = http_get(port, "/v1/documents/notes/nested/uploaded.md")?;
+    assert!(get.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {get}");
+    assert!(get.contains("\"path\":\"nested/uploaded.md\""));
+    assert!(get.contains("Body on disk"));
+
+    let search = http_post_json(
+        port,
+        "/v1/search",
+        r#"{"query":"definitely-not-present","mode":"hybrid","count":10,"min_score":0.0}"#,
+    )?;
+    assert!(search.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {search}");
+    assert!(search.contains("\"query\":\"definitely-not-present\""));
+    assert!(search.contains("\"result_count\":0"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
 fn spawn_web_server(
-    data_dir: &std::path::Path,
+    data_dir: &Path,
     port: u16,
 ) -> Result<std::process::Child, Box<dyn std::error::Error>> {
-    Ok(std::process::Command::new(docbert_bin()?)
+    spawn_web_server_with(data_dir, port, false)
+}
+
+fn spawn_web_server_with_test_embeddings(
+    data_dir: &Path,
+    port: u16,
+) -> Result<std::process::Child, Box<dyn std::error::Error>> {
+    spawn_web_server_with(data_dir, port, true)
+}
+
+fn spawn_web_server_with(
+    data_dir: &Path,
+    port: u16,
+    fake_embeddings: bool,
+) -> Result<std::process::Child, Box<dyn std::error::Error>> {
+    let mut command = std::process::Command::new(docbert_bin()?);
+    command
         .arg("--data-dir")
         .arg(data_dir)
         .arg("web")
@@ -137,8 +193,24 @@ fn spawn_web_server(
         .env_remove("DOCSERVER_MODEL")
         .env_remove("DOCSERVER_LOG")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?)
+        .stderr(Stdio::piped());
+    if fake_embeddings {
+        command.env("DOCBERT_WEB_TEST_FAKE_EMBEDDINGS", "1");
+    }
+
+    Ok(command.spawn()?)
+}
+
+fn setup_collection(
+    data_dir: &Path,
+    name: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let root = data_dir.join(name);
+    std::fs::create_dir_all(&root)?;
+    let config_db = ConfigDb::open(&data_dir.join("config.db"))?;
+    config_db.set_collection(name, root.to_str().unwrap())?;
+    drop(config_db);
+    Ok(root)
 }
 
 fn free_tcp_port() -> Result<u16, Box<dyn std::error::Error>> {

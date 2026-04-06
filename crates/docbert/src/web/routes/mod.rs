@@ -25,6 +25,7 @@ pub(crate) fn router() -> Router<AppState> {
                 .put(conversations::update)
                 .delete(conversations::delete),
         )
+        .route("/v1/documents", routing::post(documents::ingest))
         .route(
             "/v1/collections/{name}/documents",
             routing::get(documents::list_by_collection),
