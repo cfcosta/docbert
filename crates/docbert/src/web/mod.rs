@@ -2,6 +2,7 @@ use docbert_core::{ConfigDb, DataDir, error};
 
 use crate::cli::WebArgs;
 
+mod paths;
 mod routes;
 mod server;
 mod state;
