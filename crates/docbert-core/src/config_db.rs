@@ -7,6 +7,7 @@ use crate::{
     Error,
     error::Result,
     incremental::DocumentMetadata,
+    merkle::CollectionMerkleSnapshot,
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
 };
@@ -18,6 +19,8 @@ const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
     TableDefinition::new("document_metadata");
 const CONVERSATIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("conversations");
+const COLLECTION_MERKLE_SNAPSHOTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("collection_merkle_snapshots");
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 
 const KEY_LLM_PROVIDER: &str = "llm_provider";
@@ -123,6 +126,8 @@ impl ConfigDb {
         txn.open_table(CONTEXTS).map_err(map_schema_error)?;
         txn.open_table(CONVERSATIONS).map_err(map_schema_error)?;
         txn.open_table(DOCUMENT_METADATA)
+            .map_err(map_schema_error)?;
+        txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)
             .map_err(map_schema_error)?;
         txn.open_table(SETTINGS).map_err(map_schema_error)?;
         txn.commit()?;
@@ -568,6 +573,53 @@ impl ConfigDb {
             .find(|(_doc_id, meta)| meta.relative_path == path))
     }
 
+    // -- Collection Merkle Snapshots --
+
+    /// Store a full Merkle snapshot blob for one collection.
+    pub fn set_collection_merkle_snapshot(
+        &self,
+        collection: &str,
+        snapshot: &CollectionMerkleSnapshot,
+    ) -> Result<()> {
+        let data = snapshot.serialize();
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
+            table.insert(collection, data.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Load the persisted Merkle snapshot blob for one collection.
+    pub fn get_collection_merkle_snapshot(
+        &self,
+        collection: &str,
+    ) -> Result<Option<CollectionMerkleSnapshot>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
+        table
+            .get(collection)?
+            .map(|bytes| {
+                decode_aligned::<CollectionMerkleSnapshot>(bytes.value())
+            })
+            .transpose()
+    }
+
+    /// Remove a collection Merkle snapshot. Returns `true` if it existed.
+    pub fn remove_collection_merkle_snapshot(
+        &self,
+        collection: &str,
+    ) -> Result<bool> {
+        let txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
+            table.remove(collection)?.is_some()
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
     // -- Settings --
 
     /// Store a key-value setting.
@@ -801,6 +853,26 @@ impl std::fmt::Debug for ConfigDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_snapshot(collection: &str, byte: u8) -> CollectionMerkleSnapshot {
+        CollectionMerkleSnapshot::new(
+            collection,
+            [byte; crate::merkle::MERKLE_HASH_LEN],
+            vec![crate::merkle::MerkleDirectoryNode::new(
+                "",
+                [byte.wrapping_add(1); crate::merkle::MERKLE_HASH_LEN],
+                vec![crate::merkle::MerkleChildEntry::file(
+                    "note.md",
+                    [byte.wrapping_add(2); crate::merkle::MERKLE_HASH_LEN],
+                )],
+            )],
+            vec![crate::merkle::MerkleFileLeaf::new(
+                "note.md",
+                [byte.wrapping_add(3); crate::merkle::MERKLE_HASH_LEN],
+                [byte.wrapping_add(2); crate::merkle::MERKLE_HASH_LEN],
+            )],
+        )
+    }
 
     fn test_db() -> (tempfile::TempDir, ConfigDb) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1087,6 +1159,71 @@ mod tests {
         let mut listed = db.list_all_document_metadata_typed().unwrap();
         listed.sort_by_key(|(doc_id, _)| *doc_id);
         assert_eq!(listed, entries);
+    }
+
+    #[test]
+    fn collection_merkle_snapshot_roundtrips() {
+        let (_tmp, db) = test_db();
+        let snapshot = test_snapshot("notes", 7);
+
+        db.set_collection_merkle_snapshot("notes", &snapshot)
+            .unwrap();
+
+        let loaded = db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist");
+        assert_eq!(loaded, snapshot);
+    }
+
+    #[test]
+    fn collection_merkle_snapshot_replaces_existing_value() {
+        let (_tmp, db) = test_db();
+        let first = test_snapshot("notes", 1);
+        let second = test_snapshot("notes", 9);
+
+        db.set_collection_merkle_snapshot("notes", &first).unwrap();
+        db.set_collection_merkle_snapshot("notes", &second).unwrap();
+
+        assert_eq!(
+            db.get_collection_merkle_snapshot("notes").unwrap(),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn collection_merkle_snapshot_remove_reports_presence() {
+        let (_tmp, db) = test_db();
+        let snapshot = test_snapshot("notes", 3);
+        db.set_collection_merkle_snapshot("notes", &snapshot)
+            .unwrap();
+
+        assert!(db.remove_collection_merkle_snapshot("notes").unwrap());
+        assert!(!db.remove_collection_merkle_snapshot("notes").unwrap());
+        assert!(
+            db.get_collection_merkle_snapshot("notes")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn collection_merkle_snapshot_table_is_created_on_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.db");
+
+        {
+            let db = ConfigDb::open(&path).unwrap();
+            let snapshot = test_snapshot("notes", 5);
+            db.set_collection_merkle_snapshot("notes", &snapshot)
+                .unwrap();
+        }
+
+        let reopened = ConfigDb::open(&path).unwrap();
+        assert_eq!(
+            reopened.get_collection_merkle_snapshot("notes").unwrap(),
+            Some(test_snapshot("notes", 5))
+        );
     }
 
     #[test]

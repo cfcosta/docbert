@@ -226,8 +226,14 @@ mod tests {
 
     #[test]
     fn document_metadata_invalid_bytes_return_none() {
-        let bytes = b"not a valid rkyv payload";
-        assert!(DocumentMetadata::deserialize(bytes).is_none());
+        let mut bytes = DocumentMetadata {
+            collection: "notes".to_string(),
+            relative_path: "hello.md".to_string(),
+            mtime: 12345,
+        }
+        .serialize();
+        bytes.truncate(bytes.len() / 2);
+        assert!(DocumentMetadata::deserialize(&bytes).is_none());
     }
 
     #[test]
