@@ -204,7 +204,7 @@ describe("Documents page", () => {
     );
   });
 
-  test("collection_create_button_has_accessible_name", async () => {
+  test("collection_management_controls_are_hidden", async () => {
     installDocumentsApiStubs({
       collections: [{ name: "notes" }],
       docsByCollection: { notes: [] },
@@ -218,8 +218,8 @@ describe("Documents page", () => {
       () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
     );
 
-    const createButton = view.getByRole("button", { name: "Create collection" });
-    expect(createButton).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Create collection" })).toBeNull();
+    expect(view.queryByLabelText("Delete collection notes")).toBeNull();
   });
 
   test("uploading_markdown_files_refreshes_collection_and_shows_success_status", async () => {

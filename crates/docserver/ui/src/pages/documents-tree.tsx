@@ -154,7 +154,6 @@ export default function DocumentsTree({
   dragOver,
   ingesting,
   deletingDoc,
-  confirmDelete,
   confirmDeleteDoc,
   selectedDoc,
   onToggleCollection,
@@ -162,9 +161,7 @@ export default function DocumentsTree({
   onOpenUploadPicker,
   onSelectFile,
   onDeleteDocument,
-  onSetConfirmDelete,
   onSetConfirmDeleteDoc,
-  onDeleteCollection,
   onDragOver,
   onDragLeave,
   onDrop,
@@ -176,7 +173,6 @@ export default function DocumentsTree({
   dragOver: string | null;
   ingesting: boolean;
   deletingDoc: boolean;
-  confirmDelete: string | null;
   confirmDeleteDoc: string | null;
   selectedDoc: SelectedDocumentSummary | null;
   onToggleCollection: (name: string) => void;
@@ -184,9 +180,7 @@ export default function DocumentsTree({
   onOpenUploadPicker: (collection: string) => void;
   onSelectFile: (collection: string, doc: DocumentListItem) => void;
   onDeleteDocument: (collection: string, doc: DocumentListItem) => void;
-  onSetConfirmDelete: (collection: string | null) => void;
   onSetConfirmDeleteDoc: (path: string | null) => void;
-  onDeleteCollection: (name: string) => void;
   onDragOver: (event: DragEvent<HTMLDivElement>, collection: string) => void;
   onDragLeave: (event: DragEvent<HTMLDivElement>, collection: string) => void;
   onDrop: (event: DragEvent<HTMLDivElement>, collection: string) => void;
@@ -196,7 +190,7 @@ export default function DocumentsTree({
       {collections.length === 0 && (
         <div className="tree-empty">
           <p>No collections yet.</p>
-          <p>Create one to start indexing Markdown files.</p>
+          <p>Add one with the docbert CLI to start indexing Markdown files.</p>
         </div>
       )}
 
@@ -244,36 +238,6 @@ export default function DocumentsTree({
               >
                 <UploadIcon />
               </button>
-              {confirmDelete === collection.name ? (
-                <div className="tree-confirm-delete">
-                  <button
-                    type="button"
-                    className="tree-confirm-yes"
-                    onClick={() => onDeleteCollection(collection.name)}
-                    title="Confirm delete"
-                  >
-                    Delete
-                  </button>
-                  <button
-                    type="button"
-                    className="tree-confirm-no"
-                    onClick={() => onSetConfirmDelete(null)}
-                    title="Cancel"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="tree-delete-btn"
-                  onClick={() => onSetConfirmDelete(collection.name)}
-                  aria-label={`Delete collection ${collection.name}`}
-                  title={`Delete collection ${collection.name}`}
-                >
-                  <TrashIcon />
-                </button>
-              )}
             </div>
 
             {isExpanded && (

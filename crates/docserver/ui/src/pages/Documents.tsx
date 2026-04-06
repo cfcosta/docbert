@@ -6,11 +6,8 @@ import { api, buildDocumentTabHref } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
 import DocumentPreview from "./document-preview";
 import {
-  clearDeletedCollectionSelection,
   clearDeletedDocumentSelection,
-  removeCollectionFromDocs,
   removeDocumentFromDocs,
-  removeExpandedKey,
   toggleExpandedKey,
 } from "./documents-page-state";
 import DocumentsTree, { type SelectedDocumentSummary } from "./documents-tree";
@@ -41,13 +38,11 @@ export default function Documents() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedDoc, setSelectedDoc] = useState<SelectedDocumentSummary | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [newCollectionName, setNewCollectionName] = useState("");
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
   const [deletingDoc, setDeletingDoc] = useState(false);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [uploadCollection, setUploadCollection] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -235,27 +230,6 @@ export default function Documents() {
     [loadDocs],
   );
 
-  const handleCreateCollection = useCallback(async () => {
-    const name = newCollectionName.trim();
-    if (!name) {
-      return;
-    }
-
-    try {
-      await api.createCollection(name);
-      setNewCollectionName("");
-      setExpanded((previous) => new Set(previous).add(name));
-      setDocs((previous) => ({ ...previous, [name]: [] }));
-      setStatus({ tone: "success", text: `Created collection ${name}.` });
-      await loadCollections();
-    } catch (error) {
-      setStatus({
-        tone: "error",
-        text: error instanceof Error ? error.message : "Could not create collection.",
-      });
-    }
-  }, [loadCollections, newCollectionName]);
-
   const openUploadPicker = useCallback(
     (collection: string) => {
       if (ingesting) {
@@ -340,32 +314,6 @@ export default function Documents() {
     [loadDocs, navigate, preview, selectedDoc],
   );
 
-  const handleDeleteCollection = useCallback(
-    async (name: string) => {
-      try {
-        await api.deleteCollection(name);
-        setConfirmDelete(null);
-        setDocs((previous) => removeCollectionFromDocs(previous, name));
-        setExpanded((previous) => removeExpandedKey(previous, name));
-        const nextSelection = clearDeletedCollectionSelection(selectedDoc, preview, name);
-        setSelectedDoc(nextSelection.selectedDoc);
-        setPreview(nextSelection.preview);
-        if (!nextSelection.selectedDoc && selectedDoc?.collection === name) {
-          setConfirmDeleteDoc(null);
-        }
-
-        setStatus({ tone: "success", text: `Deleted collection ${name}.` });
-        await loadCollections();
-      } catch (error) {
-        setStatus({
-          tone: "error",
-          text: error instanceof Error ? error.message : "Could not delete collection.",
-        });
-      }
-    },
-    [loadCollections, preview, selectedDoc],
-  );
-
   return (
     <div className="documents-page">
       <input
@@ -393,33 +341,6 @@ export default function Documents() {
             <span id="collections-heading" className="file-tree-title">
               Collections
             </span>
-            <form
-              className="collection-add-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleCreateCollection();
-              }}
-            >
-              <label className="sr-only" htmlFor="collection-name">
-                New collection name
-              </label>
-              <input
-                id="collection-name"
-                type="text"
-                placeholder="New collection"
-                value={newCollectionName}
-                onChange={(event) => setNewCollectionName(event.target.value)}
-                className="collection-add-input"
-              />
-              <button
-                type="submit"
-                className="collection-add-btn"
-                aria-label="Create collection"
-                disabled={!newCollectionName.trim()}
-              >
-                +
-              </button>
-            </form>
           </div>
 
           <DocumentsTree
@@ -430,7 +351,6 @@ export default function Documents() {
             dragOver={dragOver}
             ingesting={ingesting}
             deletingDoc={deletingDoc}
-            confirmDelete={confirmDelete}
             confirmDeleteDoc={confirmDeleteDoc}
             selectedDoc={selectedDoc}
             onToggleCollection={toggleCollection}
@@ -438,9 +358,7 @@ export default function Documents() {
             onOpenUploadPicker={openUploadPicker}
             onSelectFile={(collection, doc) => void selectFile(collection, doc)}
             onDeleteDocument={(collection, doc) => void handleDeleteDocument(collection, doc)}
-            onSetConfirmDelete={setConfirmDelete}
             onSetConfirmDeleteDoc={setConfirmDeleteDoc}
-            onDeleteCollection={(name) => void handleDeleteCollection(name)}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={(event, collection) => void onDrop(event, collection)}
