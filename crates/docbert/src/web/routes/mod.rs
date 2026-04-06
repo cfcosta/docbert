@@ -5,6 +5,7 @@ use super::{state::AppState, ui};
 pub(crate) mod collections;
 pub(crate) mod conversations;
 pub(crate) mod documents;
+pub(crate) mod search;
 pub(crate) mod settings;
 
 pub(crate) fn router() -> Router<AppState> {
@@ -32,6 +33,7 @@ pub(crate) fn router() -> Router<AppState> {
             "/v1/documents/{collection}/{*path}",
             routing::get(documents::get),
         )
+        .route("/v1/search", routing::post(search::search))
         .route("/v1/settings/llm", routing::get(settings::get))
         .route("/v1/settings/llm", routing::put(settings::update))
         .fallback(ui::serve)

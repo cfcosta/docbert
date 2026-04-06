@@ -95,6 +95,30 @@ fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+#[test]
+fn web_search_reads_excerpts_from_disk() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let response = http_post_json(
+        port,
+        "/v1/search",
+        r#"{"query":"rust","mode":"hybrid","count":10,"min_score":0.0}"#,
+    )?;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(response.contains("\"query\":\"rust\""));
+    assert!(response.contains("\"result_count\":0"));
+    assert!(response.contains("\"results\":[]"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
 fn spawn_web_server(
     data_dir: &std::path::Path,
     port: u16,
@@ -133,6 +157,27 @@ fn http_get(
         stream,
         "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         path, port
+    )?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
+}
+
+fn http_post_json(
+    port: u16,
+    path: &str,
+    body: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        path,
+        port,
+        body.len(),
+        body,
     )?;
     stream.flush()?;
 

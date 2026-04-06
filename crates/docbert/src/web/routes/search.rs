@@ -1,0 +1,402 @@
+use std::path::Path;
+
+use axum::{Json, extract::State, http::StatusCode};
+use docbert_core::{
+    search::{self, SearchMode, SearchQuery},
+    text_util,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::web::{paths, state::AppState};
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SearchRequest {
+    pub(crate) query: String,
+    #[serde(default = "default_mode")]
+    pub(crate) mode: String,
+    pub(crate) collection: Option<String>,
+    #[serde(default = "default_count")]
+    pub(crate) count: usize,
+    #[serde(default)]
+    pub(crate) min_score: f32,
+}
+
+fn default_mode() -> String {
+    SearchMode::Semantic.as_str().to_string()
+}
+
+fn default_count() -> usize {
+    10
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct SearchResponse {
+    pub(crate) query: String,
+    pub(crate) mode: String,
+    pub(crate) result_count: usize,
+    pub(crate) results: Vec<SearchResultItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct SearchExcerpt {
+    pub(crate) text: String,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct SearchResultItem {
+    pub(crate) rank: usize,
+    pub(crate) score: f32,
+    pub(crate) doc_id: String,
+    pub(crate) collection: String,
+    pub(crate) path: String,
+    pub(crate) title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) excerpts: Vec<SearchExcerpt>,
+}
+
+pub(crate) async fn search(
+    State(state): State<AppState>,
+    Json(body): Json<SearchRequest>,
+) -> Result<Json<SearchResponse>, StatusCode> {
+    let mode = SearchMode::parse(&body.mode).ok_or(StatusCode::BAD_REQUEST)?;
+    let request = SearchQuery {
+        query: body.query.clone(),
+        collection: body.collection.clone(),
+        count: body.count,
+        min_score: body.min_score,
+    };
+
+    let mut model = state
+        .model
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let results = search::execute_search_mode(
+        mode,
+        &request,
+        &state.search_index,
+        &state.config_db,
+        &state.embedding_db,
+        &mut model,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    drop(model);
+
+    let items: Vec<SearchResultItem> = results
+        .into_iter()
+        .map(|result| build_search_result_item(&state, result, &body.query))
+        .collect();
+
+    Ok(Json(SearchResponse {
+        query: body.query,
+        mode: mode.as_str().to_string(),
+        result_count: items.len(),
+        results: items,
+    }))
+}
+
+fn build_search_result_item(
+    state: &AppState,
+    result: search::FinalResult,
+    query: &str,
+) -> SearchResultItem {
+    let metadata = load_user_metadata(state, result.doc_num_id);
+    let (title, excerpts) = load_title_and_excerpts(
+        state,
+        &result.collection,
+        &result.path,
+        query,
+        &result.title,
+    );
+
+    SearchResultItem {
+        rank: result.rank,
+        score: result.score,
+        doc_id: result.doc_id,
+        collection: result.collection,
+        path: result.path,
+        title,
+        metadata,
+        excerpts,
+    }
+}
+
+fn load_title_and_excerpts(
+    state: &AppState,
+    collection: &str,
+    path: &str,
+    query: &str,
+    fallback_title: &str,
+) -> (String, Vec<SearchExcerpt>) {
+    let Ok(full_path) =
+        paths::resolve_document_path(&state.config_db, collection, path)
+    else {
+        return (fallback_title.to_string(), Vec::new());
+    };
+    let Ok(content) = std::fs::read_to_string(&full_path) else {
+        return (fallback_title.to_string(), Vec::new());
+    };
+
+    let title = docbert_core::ingestion::extract_title(&content, Path::new(path));
+    let excerpts = text_util::extract_excerpts(&content, query, 3)
+        .into_iter()
+        .map(|excerpt| SearchExcerpt {
+            text: excerpt.text,
+            start_line: excerpt.start_line,
+            end_line: excerpt.end_line,
+        })
+        .collect();
+
+    (title, excerpts)
+}
+
+fn load_user_metadata(
+    state: &AppState,
+    doc_numeric_id: u64,
+) -> Option<serde_json::Value> {
+    state
+        .config_db
+        .get_document_user_metadata(doc_numeric_id)
+        .ok()
+        .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use docbert_core::{
+        ConfigDb, DocumentId, EmbeddingDb, ModelManager, SearchIndex,
+        incremental,
+    };
+
+    use super::*;
+    use crate::web::state::Inner;
+
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let writer = search_index.writer(15_000_000).unwrap();
+        (
+            tmp,
+            Arc::new(Inner {
+                config_db,
+                search_index,
+                embedding_db,
+                model: Mutex::new(ModelManager::new()),
+                writer: Mutex::new(writer),
+            }),
+        )
+    }
+
+    fn seed_filesystem_document(
+        state: &AppState,
+        collection: &str,
+        path: &str,
+        content: &str,
+        user_metadata: Option<serde_json::Value>,
+    ) -> DocumentId {
+        let root = tempfile::tempdir().unwrap();
+        let collection_root = root.keep();
+        std::fs::create_dir_all(
+            collection_root.join(
+                Path::new(path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("")),
+            ),
+        )
+        .unwrap();
+        std::fs::write(collection_root.join(path), content).unwrap();
+        state
+            .config_db
+            .set_collection(collection, collection_root.to_str().unwrap())
+            .unwrap();
+        let did = DocumentId::new(collection, path);
+        state
+            .config_db
+            .set_document_metadata_typed(
+                did.numeric,
+                &incremental::DocumentMetadata {
+                    collection: collection.to_string(),
+                    relative_path: path.to_string(),
+                    mtime: 1,
+                },
+            )
+            .unwrap();
+        if let Some(metadata) = user_metadata.as_ref() {
+            state
+                .config_db
+                .set_document_user_metadata(did.numeric, metadata)
+                .unwrap();
+        }
+        did
+    }
+
+    fn final_result(did: &DocumentId, title: &str, path: &str) -> search::FinalResult {
+        search::FinalResult {
+            rank: 1,
+            score: 0.95,
+            doc_id: did.short.clone(),
+            doc_num_id: did.numeric,
+            collection: "notes".to_string(),
+            path: path.to_string(),
+            title: title.to_string(),
+        }
+    }
+
+    #[test]
+    fn web_search_default_mode_is_semantic() {
+        assert_eq!(default_mode(), "semantic");
+    }
+
+    #[test]
+    fn web_search_result_item_reads_title_and_excerpts_from_disk() {
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "rust.md",
+            "line1\n# Disk Rust\nRust ownership\nline4",
+            Some(serde_json::json!({"topic": "rust"})),
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Index Rust", "rust.md"),
+            "ownership",
+        );
+
+        assert_eq!(item.title, "Disk Rust");
+        assert_eq!(item.metadata, Some(serde_json::json!({"topic": "rust"})));
+        assert_eq!(item.excerpts.len(), 1);
+        assert_eq!(
+            item.excerpts[0],
+            SearchExcerpt {
+                text: "line1\n# Disk Rust\nRust ownership\nline4".to_string(),
+                start_line: 1,
+                end_line: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn web_search_result_item_uses_first_lines_when_query_has_no_literal_match() {
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "rust.md",
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7",
+            None,
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Semantic result", "rust.md"),
+            "memory management",
+        );
+
+        assert_eq!(item.excerpts.len(), 1);
+        assert_eq!(
+            item.excerpts[0],
+            SearchExcerpt {
+                text: "line1\nline2\nline3\nline4\nline5\nline6".to_string(),
+                start_line: 1,
+                end_line: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn web_search_result_item_caps_excerpt_count_at_three() {
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "rust.md",
+            &[
+                "ownership one",
+                "line2",
+                "line3",
+                "line4",
+                "line5",
+                "line6",
+                "line7",
+                "ownership two",
+                "line9",
+                "line10",
+                "line11",
+                "line12",
+                "line13",
+                "line14",
+                "ownership three",
+                "line16",
+                "line17",
+                "line18",
+                "line19",
+                "line20",
+                "line21",
+                "ownership four",
+            ]
+            .join("\n"),
+            None,
+        );
+
+        let item = build_search_result_item(
+            &state,
+            final_result(&did, "Rust", "rust.md"),
+            "ownership",
+        );
+
+        assert_eq!(item.excerpts.len(), 3);
+        assert!(!item.excerpts.iter().any(|e| e.text.contains("ownership four")));
+    }
+
+    #[tokio::test]
+    async fn web_search_rejects_unknown_mode() {
+        let (_tmp, state) = test_state();
+
+        let error = search(
+            State(state),
+            Json(SearchRequest {
+                query: "rust".to_string(),
+                mode: "bm25".to_string(),
+                collection: None,
+                count: 10,
+                min_score: 0.0,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_index_returns_ok() {
+        let (_tmp, state) = test_state();
+
+        let response = search(
+            State(state),
+            Json(SearchRequest {
+                query: "rust".to_string(),
+                mode: "hybrid".to_string(),
+                collection: None,
+                count: 10,
+                min_score: 0.0,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.mode, "hybrid");
+        assert_eq!(response.result_count, 0);
+        assert!(response.results.is_empty());
+    }
+}
