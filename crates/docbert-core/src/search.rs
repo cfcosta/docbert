@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::Path};
 
 use crate::{
-    config_db::{CollectionLocation, ConfigDb},
+    config_db::ConfigDb,
     doc_id::{format_document_ref, strip_document_ref_prefix},
     embedding_db::EmbeddingDb,
     error::Result,
@@ -513,66 +513,48 @@ pub fn short_doc_id(numeric: u64) -> String {
 
 fn document_has_semantic_body(
     config_db: &ConfigDb,
-    collection_locations: &mut std::collections::HashMap<
-        String,
-        Option<CollectionLocation>,
-    >,
+    collection_paths: &mut std::collections::HashMap<String, Option<String>>,
     meta: &DocumentMetadata,
 ) -> bool {
-    let collection_location = collection_locations
+    let collection_path = collection_paths
         .entry(meta.collection.clone())
-        .or_insert_with(|| {
-            config_db
-                .get_collection_location(&meta.collection)
-                .ok()
-                .flatten()
-        });
-    let Some(collection_location) = collection_location.as_ref() else {
+        .or_insert_with(|| config_db.get_collection(&meta.collection).ok().flatten());
+    let Some(collection_path) = collection_path.as_ref() else {
+        return false;
+    };
+    if collection_path.is_empty() {
+        return false;
+    }
+
+    let full_path = Path::new(collection_path).join(&meta.relative_path);
+    let Ok(content) = std::fs::read_to_string(full_path) else {
         return false;
     };
 
-    match collection_location {
-        CollectionLocation::Managed => true,
-        CollectionLocation::Filesystem(path) => {
-            let full_path = Path::new(path).join(&meta.relative_path);
-            let Ok(content) = std::fs::read_to_string(full_path) else {
-                return false;
-            };
-
-            !text_util::strip_yaml_frontmatter(&content)
-                .trim()
-                .is_empty()
-        }
-    }
+    !text_util::strip_yaml_frontmatter(&content)
+        .trim()
+        .is_empty()
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
-    let mut collection_locations: std::collections::HashMap<
-        String,
-        Option<CollectionLocation>,
-    > = std::collections::HashMap::new();
+    let mut collection_paths: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
 
     for r in results {
         let fallback = ingestion::extract_title("", Path::new(&r.path));
-        let collection_location = collection_locations
+        let collection_path = collection_paths
             .entry(r.collection.clone())
-            .or_insert_with(|| {
-                config_db
-                    .get_collection_location(&r.collection)
-                    .ok()
-                    .flatten()
-            });
-        let Some(collection_location) = collection_location.as_ref() else {
+            .or_insert_with(|| config_db.get_collection(&r.collection).ok().flatten());
+        let Some(collection_path) = collection_path.as_ref() else {
             r.title = fallback;
             continue;
         };
-
-        let CollectionLocation::Filesystem(path) = collection_location else {
+        if collection_path.is_empty() {
             r.title = fallback;
             continue;
-        };
+        }
 
-        let full_path = Path::new(path).join(&r.path);
+        let full_path = Path::new(collection_path).join(&r.path);
         let content = std::fs::read_to_string(&full_path).unwrap_or_default();
         let title = if content.is_empty() {
             fallback
@@ -838,22 +820,21 @@ mod tests {
     }
 
     #[test]
-    fn document_has_semantic_body_returns_true_for_managed_collection() {
+    fn filesystem_collections_only_document_has_semantic_body_returns_false_without_registered_path() {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        config_db.set_managed_collection("notes").unwrap();
 
-        let managed = DocumentMetadata {
+        let meta = DocumentMetadata {
             collection: "notes".to_string(),
             relative_path: "api-doc.md".to_string(),
             mtime: 1,
         };
 
-        let mut collection_locations = std::collections::HashMap::new();
-        assert!(document_has_semantic_body(
+        let mut collection_paths = std::collections::HashMap::new();
+        assert!(!document_has_semantic_body(
             &config_db,
-            &mut collection_locations,
-            &managed,
+            &mut collection_paths,
+            &meta,
         ));
     }
 
@@ -881,11 +862,21 @@ mod tests {
     }
 
     #[test]
-    fn semantic_candidates_from_metadata_respects_collection_filter() {
+    fn filesystem_collections_only_semantic_candidates_respect_collection_filter() {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        config_db.set_managed_collection("notes").unwrap();
-        config_db.set_managed_collection("docs").unwrap();
+        let notes_root = tmp.path().join("notes");
+        let docs_root = tmp.path().join("docs");
+        std::fs::create_dir_all(&notes_root).unwrap();
+        std::fs::create_dir_all(&docs_root).unwrap();
+        std::fs::write(notes_root.join("hello.md"), "# Hello\n\nBody").unwrap();
+        std::fs::write(docs_root.join("guide.md"), "# Guide\n\nBody").unwrap();
+        config_db
+            .set_collection("notes", notes_root.to_str().unwrap())
+            .unwrap();
+        config_db
+            .set_collection("docs", docs_root.to_str().unwrap())
+            .unwrap();
 
         let notes_doc_id = DocumentId::new("notes", "hello.md").numeric;
         let docs_doc_id = DocumentId::new("docs", "guide.md").numeric;

@@ -54,34 +54,11 @@ pub struct ConfigDb {
     db: Database,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CollectionLocation {
-    Filesystem(String),
-    Managed,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PersistedLlmSettings {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
-}
-
-impl CollectionLocation {
-    fn from_stored_path(path: String) -> Self {
-        if path.is_empty() {
-            Self::Managed
-        } else {
-            Self::Filesystem(path)
-        }
-    }
-
-    fn as_stored_path(&self) -> &str {
-        match self {
-            Self::Filesystem(path) => path,
-            Self::Managed => "",
-        }
-    }
 }
 
 fn encode_string(value: &str) -> Result<Vec<u8>> {
@@ -165,22 +142,7 @@ impl ConfigDb {
     /// db.set_collection("notes", "/home/user/notes").unwrap();
     /// ```
     pub fn set_collection(&self, name: &str, path: &str) -> Result<()> {
-        self.set_collection_location(
-            name,
-            &CollectionLocation::Filesystem(path.to_string()),
-        )
-    }
-
-    pub fn set_managed_collection(&self, name: &str) -> Result<()> {
-        self.set_collection_location(name, &CollectionLocation::Managed)
-    }
-
-    fn set_collection_location(
-        &self,
-        name: &str,
-        location: &CollectionLocation,
-    ) -> Result<()> {
-        let encoded = encode_string(location.as_stored_path())?;
+        let encoded = encode_string(path)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(COLLECTIONS)?;
@@ -210,15 +172,6 @@ impl ConfigDb {
             .get(name)?
             .map(|v| decode_string(v.value()))
             .transpose()
-    }
-
-    pub(crate) fn get_collection_location(
-        &self,
-        name: &str,
-    ) -> Result<Option<CollectionLocation>> {
-        Ok(self
-            .get_collection(name)?
-            .map(CollectionLocation::from_stored_path))
     }
 
     /// Remove a collection by name. Returns `true` if it existed.
@@ -966,33 +919,12 @@ mod tests {
     }
 
     #[test]
-    fn managed_collection_roundtrips_through_collection_location() {
-        let (tmp, db) = test_db();
-        db.set_managed_collection("notes").unwrap();
-        drop(db);
-
-        let reopened = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        assert_eq!(
-            reopened.get_collection_location("notes").unwrap(),
-            Some(CollectionLocation::Managed)
-        );
-        assert_eq!(
-            reopened.get_collection("notes").unwrap(),
-            Some("".to_string())
-        );
-    }
-
-    #[test]
-    fn filesystem_collection_roundtrips_through_collection_location() {
+    fn filesystem_collections_only_roundtrip_collection_paths() {
         let (tmp, db) = test_db();
         db.set_collection("notes", "/tmp/notes").unwrap();
         drop(db);
 
         let reopened = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        assert_eq!(
-            reopened.get_collection_location("notes").unwrap(),
-            Some(CollectionLocation::Filesystem("/tmp/notes".to_string()))
-        );
         assert_eq!(
             reopened.get_collection("notes").unwrap(),
             Some("/tmp/notes".to_string())
