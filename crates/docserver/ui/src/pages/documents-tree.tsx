@@ -39,7 +39,9 @@ function renderTree({
   onDeleteDocument: (collection: string, doc: DocumentListItem) => void;
   onSetConfirmDeleteDoc: (key: string | null) => void;
 }) {
-  const directories = nodes.filter((node) => node.isDir).sort((a, b) => a.name.localeCompare(b.name));
+  const directories = nodes
+    .filter((node) => node.isDir)
+    .sort((a, b) => a.name.localeCompare(b.name));
   const files = nodes.filter((node) => !node.isDir).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
@@ -92,7 +94,10 @@ function renderTree({
         const isConfirmingDelete = confirmDeleteDoc === deleteKey;
 
         return (
-          <div key={`${collection}/${node.path}`} className={`tree-file-row${isSelected ? " selected" : ""}`}>
+          <div
+            key={`${collection}/${node.path}`}
+            className={`tree-file-row${isSelected ? " selected" : ""}`}
+          >
             <button
               type="button"
               className={`tree-item tree-file${isSelected ? " selected" : ""}`}

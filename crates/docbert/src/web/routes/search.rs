@@ -140,7 +140,8 @@ fn load_title_and_excerpts(
         return (fallback_title.to_string(), Vec::new());
     };
 
-    let title = docbert_core::ingestion::extract_title(&content, Path::new(path));
+    let title =
+        docbert_core::ingestion::extract_title(&content, Path::new(path));
     let excerpts = text_util::extract_excerpts(&content, query, 3)
         .into_iter()
         .map(|excerpt| SearchExcerpt {
@@ -169,7 +170,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use docbert_core::{
-        ConfigDb, DocumentId, EmbeddingDb, ModelManager, SearchIndex,
+        ConfigDb,
+        DocumentId,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
         incremental,
     };
 
@@ -180,7 +185,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         (
             tmp,
@@ -205,9 +211,7 @@ mod tests {
         let collection_root = root.keep();
         std::fs::create_dir_all(
             collection_root.join(
-                Path::new(path)
-                    .parent()
-                    .unwrap_or_else(|| Path::new("")),
+                Path::new(path).parent().unwrap_or_else(|| Path::new("")),
             ),
         )
         .unwrap();
@@ -237,7 +241,11 @@ mod tests {
         did
     }
 
-    fn final_result(did: &DocumentId, title: &str, path: &str) -> search::FinalResult {
+    fn final_result(
+        did: &DocumentId,
+        title: &str,
+        path: &str,
+    ) -> search::FinalResult {
         search::FinalResult {
             rank: 1,
             score: 0.95,
@@ -285,7 +293,8 @@ mod tests {
     }
 
     #[test]
-    fn web_search_result_item_uses_first_lines_when_query_has_no_literal_match() {
+    fn web_search_result_item_uses_first_lines_when_query_has_no_literal_match()
+    {
         let (_tmp, state) = test_state();
         let did = seed_filesystem_document(
             &state,
@@ -354,7 +363,12 @@ mod tests {
         );
 
         assert_eq!(item.excerpts.len(), 3);
-        assert!(!item.excerpts.iter().any(|e| e.text.contains("ownership four")));
+        assert!(
+            !item
+                .excerpts
+                .iter()
+                .any(|e| e.text.contains("ownership four"))
+        );
     }
 
     #[tokio::test]

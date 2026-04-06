@@ -20,11 +20,7 @@ function renderSettings() {
   return render(<Settings />);
 }
 
-async function waitForCondition(
-  condition: () => boolean,
-  message: () => string,
-  timeoutMs = 1000,
-) {
+async function waitForCondition(condition: () => boolean, message: () => string, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (condition()) {

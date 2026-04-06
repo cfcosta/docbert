@@ -103,7 +103,8 @@ fn compute_embedding_entries(
     state: &AppState,
     document: &SearchDocument,
 ) -> Result<Vec<EmbeddingEntry>, StatusCode> {
-    let docs_to_embed = preparation::embedding_chunks(document, upload_chunking_config());
+    let docs_to_embed =
+        preparation::embedding_chunks(document, upload_chunking_config());
     if docs_to_embed.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -204,7 +205,8 @@ pub(crate) async fn list_by_collection(
             &meta.relative_path,
         )
         .map_err(map_error)?;
-        let content = std::fs::read_to_string(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
+        let content = std::fs::read_to_string(&full_path)
+            .map_err(|_| StatusCode::NOT_FOUND)?;
         items.push(DocumentListItem {
             doc_id: docbert_core::search::short_doc_id(*doc_id),
             path: meta.relative_path.clone(),
@@ -226,8 +228,9 @@ pub(crate) async fn delete(
         .map_err(map_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let full_path = paths::resolve_document_path(&state.config_db, &collection, &path)
-        .map_err(map_error)?;
+    let full_path =
+        paths::resolve_document_path(&state.config_db, &collection, &path)
+            .map_err(map_error)?;
     std::fs::remove_file(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
     ingest::delete_document(&state, &collection, &path).map_err(map_error)?;
 
@@ -245,9 +248,11 @@ pub(crate) async fn get(
         .map_err(map_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let full_path = paths::resolve_document_path(&state.config_db, &collection, &path)
-        .map_err(map_error)?;
-    let content = std::fs::read_to_string(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
+    let full_path =
+        paths::resolve_document_path(&state.config_db, &collection, &path)
+            .map_err(map_error)?;
+    let content = std::fs::read_to_string(&full_path)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let metadata = state
         .config_db
         .get_document_user_metadata(did.numeric)
@@ -274,7 +279,11 @@ mod tests {
         routing,
     };
     use docbert_core::{
-        ConfigDb, EmbeddingDb, ModelManager, SearchIndex, incremental,
+        ConfigDb,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
+        incremental,
     };
     use tower::util::ServiceExt;
 
@@ -285,7 +294,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             config_db,
@@ -324,7 +334,14 @@ mod tests {
         relative_path: &str,
         content: &str,
     ) -> DocumentId {
-        std::fs::create_dir_all(root.join(Path::new(relative_path).parent().unwrap_or_else(|| Path::new("")))).unwrap();
+        std::fs::create_dir_all(
+            root.join(
+                Path::new(relative_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("")),
+            ),
+        )
+        .unwrap();
         std::fs::write(root.join(relative_path), content).unwrap();
         state
             .config_db
@@ -602,7 +619,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_documents_get_lists_collection_documents_with_titles_from_disk() {
+    async fn web_documents_get_lists_collection_documents_with_titles_from_disk()
+     {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
@@ -643,7 +661,8 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let items: Vec<DocumentListItem> = serde_json::from_slice(&body).unwrap();
+        let items: Vec<DocumentListItem> =
+            serde_json::from_slice(&body).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "nested/hello.md");
         assert_eq!(items[0].title, "Disk Title");

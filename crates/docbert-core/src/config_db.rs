@@ -741,10 +741,7 @@ impl ConfigDb {
 
     /// Remove multiple documents' metadata, stored content, and optional user
     /// metadata in a single write transaction.
-    pub fn batch_remove_document_state(
-        &self,
-        doc_ids: &[u64],
-    ) -> Result<()> {
+    pub fn batch_remove_document_state(&self, doc_ids: &[u64]) -> Result<()> {
         if doc_ids.is_empty() {
             return Ok(());
         }

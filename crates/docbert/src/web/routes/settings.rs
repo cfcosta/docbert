@@ -78,7 +78,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             config_db,
@@ -148,7 +149,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_settings_update_clears_empty_api_key_and_absent_provider_model() {
+    async fn web_settings_update_clears_empty_api_key_and_absent_provider_model()
+     {
         let (_tmp, state) = test_state();
         state
             .config_db
@@ -189,7 +191,8 @@ mod tests {
             api_key: Some("stored-key".to_string()),
         };
 
-        let response = update(State(state.clone()), Json(body)).await.unwrap().0;
+        let response =
+            update(State(state.clone()), Json(body)).await.unwrap().0;
 
         assert_eq!(response.provider.as_deref(), Some("openai"));
         assert_eq!(response.model.as_deref(), Some("gpt-4.1"));

@@ -294,10 +294,19 @@ export default function Documents() {
         await api.deleteDocument(collection, doc.path);
         setConfirmDeleteDoc(null);
         setDocs((previous) => removeDocumentFromDocs(previous, collection, doc.path));
-        const nextSelection = clearDeletedDocumentSelection(selectedDoc, preview, collection, doc.path);
+        const nextSelection = clearDeletedDocumentSelection(
+          selectedDoc,
+          preview,
+          collection,
+          doc.path,
+        );
         setSelectedDoc(nextSelection.selectedDoc);
         setPreview(nextSelection.preview);
-        if (!nextSelection.selectedDoc && selectedDoc?.collection === collection && selectedDoc.path === doc.path) {
+        if (
+          !nextSelection.selectedDoc &&
+          selectedDoc?.collection === collection &&
+          selectedDoc.path === doc.path
+        ) {
           navigate(`/documents/${encodeURIComponent(collection)}`, { replace: true });
         }
         setStatus({ tone: "success", text: `Deleted ${doc.title}.` });

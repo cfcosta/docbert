@@ -270,10 +270,10 @@ docbert web --host 127.0.0.1 --port 3030
 
 #### Options
 
-| Option          | Description                    |
-| --------------- | ------------------------------ |
+| Option          | Description                        |
+| --------------- | ---------------------------------- |
 | `--host <addr>` | Bind address (default `127.0.0.1`) |
-| `--port <num>`  | Bind port (default `3030`)     |
+| `--port <num>`  | Bind port (default `3030`)         |
 
 #### Behavior
 

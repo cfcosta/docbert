@@ -1,6 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex, error};
+use docbert_core::{
+    ConfigDb,
+    DataDir,
+    EmbeddingDb,
+    ModelManager,
+    SearchIndex,
+    error,
+};
 use tantivy::IndexWriter;
 
 #[allow(dead_code)]

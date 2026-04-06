@@ -62,10 +62,7 @@ describe("chat-tools", () => {
 
     expect(callInfo.result).toBe(
       JSON.stringify(
-        [
-          result("notes", "a.md", "A duplicate", excerpt),
-          result("notes", "b.md", "B", excerpt),
-        ],
+        [result("notes", "a.md", "A duplicate", excerpt), result("notes", "b.md", "B", excerpt)],
         null,
         2,
       ),

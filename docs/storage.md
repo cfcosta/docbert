@@ -4,12 +4,12 @@
 
 docbert stores three different kinds of data, and each one lives in the place that fits it best.
 
-| System            | Purpose                                             | Format                 |
-| ----------------- | --------------------------------------------------- | ---------------------- |
-| redb (config)     | Collection definitions, document metadata, settings | Typed key-value store  |
-| redb (embeddings) | ColBERT per-token embedding matrices                | Binary key-value store |
-| Tantivy           | Full-text search index (BM25 + fuzzy)               | Inverted index on disk |
-| collection folders | Source files for CLI and web reads/uploads/deletes | Regular filesystem files |
+| System             | Purpose                                             | Format                   |
+| ------------------ | --------------------------------------------------- | ------------------------ |
+| redb (config)      | Collection definitions, document metadata, settings | Typed key-value store    |
+| redb (embeddings)  | ColBERT per-token embedding matrices                | Binary key-value store   |
+| Tantivy            | Full-text search index (BM25 + fuzzy)               | Inverted index on disk   |
+| collection folders | Source files for CLI and web reads/uploads/deletes  | Regular filesystem files |
 
 All of it lives under the XDG data directory: `$XDG_DATA_HOME/docbert/`, usually `~/.local/share/docbert/`.
 

@@ -30,7 +30,8 @@ pub(crate) fn load_markdown_document(
     mtime: u64,
 ) -> error::Result<SearchDocument> {
     let raw_markdown = std::fs::read_to_string(full_path)?;
-    let prepared = preparation::prepare_markdown(Path::new(relative_path), &raw_markdown);
+    let prepared =
+        preparation::prepare_markdown(Path::new(relative_path), &raw_markdown);
     let did = docbert_core::DocumentId::new(collection, relative_path);
 
     Ok(SearchDocument {
@@ -50,15 +51,23 @@ pub(crate) fn ingest_prepared_document(
     document: &SearchDocument,
     embedding_entries: &[EmbeddingEntry],
 ) -> error::Result<IngestedDocument> {
-    let existing_embeddings = load_document_family_embeddings(state, document.did.numeric)?;
-    let existing_embedding_ids: Vec<u64> =
-        existing_embeddings.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
-    let current_embedding_ids: Vec<u64> =
-        embedding_entries.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
+    let existing_embeddings =
+        load_document_family_embeddings(state, document.did.numeric)?;
+    let existing_embedding_ids: Vec<u64> = existing_embeddings
+        .iter()
+        .map(|(doc_id, _, _, _)| *doc_id)
+        .collect();
+    let current_embedding_ids: Vec<u64> = embedding_entries
+        .iter()
+        .map(|(doc_id, _, _, _)| *doc_id)
+        .collect();
 
-    let previous_metadata = state.config_db.get_document_metadata_typed(document.did.numeric)?;
-    let previous_user_metadata =
-        state.config_db.get_document_user_metadata(document.did.numeric)?;
+    let previous_metadata = state
+        .config_db
+        .get_document_metadata_typed(document.did.numeric)?;
+    let previous_user_metadata = state
+        .config_db
+        .get_document_user_metadata(document.did.numeric)?;
 
     let mut writer = state.writer.lock().map_err(|_| {
         error::Error::Config("failed to lock tantivy writer".to_string())
@@ -82,7 +91,11 @@ pub(crate) fn ingest_prepared_document(
 
     if let Err(err) = persist_metadata(state, collection, document) {
         let _ = writer.rollback();
-        restore_previous_embeddings(state, &existing_embeddings, &current_embedding_ids)?;
+        restore_previous_embeddings(
+            state,
+            &existing_embeddings,
+            &current_embedding_ids,
+        )?;
         restore_previous_metadata(
             state,
             document.did.numeric,
@@ -93,7 +106,11 @@ pub(crate) fn ingest_prepared_document(
     }
 
     if let Err(err) = writer.commit() {
-        restore_previous_embeddings(state, &existing_embeddings, &current_embedding_ids)?;
+        restore_previous_embeddings(
+            state,
+            &existing_embeddings,
+            &current_embedding_ids,
+        )?;
         restore_previous_metadata(
             state,
             document.did.numeric,
@@ -127,7 +144,9 @@ pub(crate) fn delete_document(
         error::Error::Config("failed to lock tantivy writer".to_string())
     })?;
 
-    state.search_index.delete_document(&writer, &did.to_string());
+    state
+        .search_index
+        .delete_document(&writer, &did.to_string());
     writer.commit()?;
 
     state.embedding_db.remove_document_family(did.numeric)?;
@@ -183,7 +202,12 @@ fn load_document_family_embeddings(
         let Some(matrix) = matrix else {
             continue;
         };
-        entries.push((doc_id, matrix.num_tokens, matrix.dimension, matrix.data));
+        entries.push((
+            doc_id,
+            matrix.num_tokens,
+            matrix.dimension,
+            matrix.data,
+        ));
     }
     Ok(entries)
 }
@@ -193,8 +217,10 @@ fn restore_previous_embeddings(
     previous_embeddings: &[EmbeddingEntry],
     current_embedding_ids: &[u64],
 ) -> error::Result<()> {
-    let previous_ids: std::collections::HashSet<u64> =
-        previous_embeddings.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
+    let previous_ids: std::collections::HashSet<u64> = previous_embeddings
+        .iter()
+        .map(|(doc_id, _, _, _)| *doc_id)
+        .collect();
     let stale_new_ids: Vec<u64> = current_embedding_ids
         .iter()
         .copied()
@@ -216,14 +242,18 @@ fn restore_previous_metadata(
     previous_user_metadata: Option<&serde_json::Value>,
 ) -> error::Result<()> {
     match previous_metadata {
-        Some(metadata) => state.config_db.set_document_metadata_typed(doc_id, metadata)?,
+        Some(metadata) => state
+            .config_db
+            .set_document_metadata_typed(doc_id, metadata)?,
         None => {
             state.config_db.remove_document_metadata(doc_id)?;
         }
     }
 
     match previous_user_metadata {
-        Some(value) => state.config_db.set_document_user_metadata(doc_id, value)?,
+        Some(value) => {
+            state.config_db.set_document_user_metadata(doc_id, value)?
+        }
         None => {
             state.config_db.remove_document_user_metadata(doc_id)?;
         }
@@ -252,10 +282,16 @@ fn remove_stale_previous_embeddings(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::{Arc, Mutex}};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     use docbert_core::{
-        ConfigDb, EmbeddingDb, ModelManager, SearchIndex,
+        ConfigDb,
+        EmbeddingDb,
+        ModelManager,
+        SearchIndex,
         chunking::chunk_doc_id,
     };
 
@@ -266,7 +302,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             config_db,
@@ -278,14 +315,25 @@ mod tests {
         (tmp, state)
     }
 
-    fn seed_collection_root(tmp: &tempfile::TempDir, state: &AppState, collection: &str) -> PathBuf {
+    fn seed_collection_root(
+        tmp: &tempfile::TempDir,
+        state: &AppState,
+        collection: &str,
+    ) -> PathBuf {
         let root = tmp.path().join(collection);
         std::fs::create_dir_all(&root).unwrap();
-        state.config_db.set_collection(collection, root.to_str().unwrap()).unwrap();
+        state
+            .config_db
+            .set_collection(collection, root.to_str().unwrap())
+            .unwrap();
         root
     }
 
-    fn write_markdown(root: &Path, relative_path: &str, content: &str) -> PathBuf {
+    fn write_markdown(
+        root: &Path,
+        relative_path: &str,
+        content: &str,
+    ) -> PathBuf {
         let full_path = root.join(relative_path);
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -294,7 +342,10 @@ mod tests {
         full_path
     }
 
-    fn fake_embedding_entries(doc_id: u64, chunk_count: usize) -> Vec<EmbeddingEntry> {
+    fn fake_embedding_entries(
+        doc_id: u64,
+        chunk_count: usize,
+    ) -> Vec<EmbeddingEntry> {
         let mut entries = Vec::new();
         for chunk_index in 0..chunk_count {
             let embedding_id = if chunk_index == 0 {
@@ -302,7 +353,12 @@ mod tests {
             } else {
                 chunk_doc_id(doc_id, chunk_index)
             };
-            entries.push((embedding_id, 1, 2, vec![chunk_index as f32 + 1.0, 9.0]));
+            entries.push((
+                embedding_id,
+                1,
+                2,
+                vec![chunk_index as f32 + 1.0, 9.0],
+            ));
         }
         entries
     }
@@ -332,15 +388,35 @@ mod tests {
         assert_eq!(ingested.doc_id, document.did.to_string());
         assert_eq!(ingested.title, "Hello");
         assert_eq!(
-            state.config_db.get_document_metadata_typed(document.did.numeric).unwrap().unwrap().mtime,
+            state
+                .config_db
+                .get_document_metadata_typed(document.did.numeric)
+                .unwrap()
+                .unwrap()
+                .mtime,
             7
         );
         assert_eq!(
-            state.config_db.get_document_user_metadata(document.did.numeric).unwrap(),
+            state
+                .config_db
+                .get_document_user_metadata(document.did.numeric)
+                .unwrap(),
             Some(serde_json::json!({"topic": "rust"}))
         );
-        assert!(state.embedding_db.load(document.did.numeric).unwrap().is_some());
-        assert!(state.embedding_db.load(chunk_doc_id(document.did.numeric, 1)).unwrap().is_some());
+        assert!(
+            state
+                .embedding_db
+                .load(document.did.numeric)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(document.did.numeric, 1))
+                .unwrap()
+                .is_some()
+        );
         let indexed = state
             .search_index
             .find_by_collection_path("notes", "hello.md")
@@ -354,7 +430,9 @@ mod tests {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# First\n\nBody");
-        let first = load_markdown_document("notes", "hello.md", &full_path, None, 1).unwrap();
+        let first =
+            load_markdown_document("notes", "hello.md", &full_path, None, 1)
+                .unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -387,7 +465,10 @@ mod tests {
             .unwrap();
         assert_eq!(metadata.mtime, 9);
         assert_eq!(
-            state.config_db.get_document_user_metadata(second.did.numeric).unwrap(),
+            state
+                .config_db
+                .get_document_user_metadata(second.did.numeric)
+                .unwrap(),
             Some(serde_json::json!({"version": 2}))
         );
         let indexed = state
@@ -403,7 +484,9 @@ mod tests {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
-        let document = load_markdown_document("notes", "hello.md", &full_path, None, 1).unwrap();
+        let document =
+            load_markdown_document("notes", "hello.md", &full_path, None, 1)
+                .unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -420,9 +503,27 @@ mod tests {
         )
         .unwrap();
 
-        assert!(state.embedding_db.load(document.did.numeric).unwrap().is_some());
-        assert!(state.embedding_db.load(chunk_doc_id(document.did.numeric, 1)).unwrap().is_some());
-        assert!(state.embedding_db.load(chunk_doc_id(document.did.numeric, 2)).unwrap().is_none());
+        assert!(
+            state
+                .embedding_db
+                .load(document.did.numeric)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(document.did.numeric, 1))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            state
+                .embedding_db
+                .load(chunk_doc_id(document.did.numeric, 2))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

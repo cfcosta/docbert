@@ -36,23 +36,21 @@ fn ui_dist_dir() -> PathBuf {
 }
 
 fn file_response(path: &str, bytes: Vec<u8>) -> Response {
-    let content_type = match Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-    {
-        Some("css") => "text/css; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("html") => "text/html; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("ttf") => "font/ttf",
-        _ => "application/octet-stream",
-    };
+    let content_type =
+        match Path::new(path).extension().and_then(|ext| ext.to_str()) {
+            Some("css") => "text/css; charset=utf-8",
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("html") => "text/html; charset=utf-8",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("woff") => "font/woff",
+            Some("woff2") => "font/woff2",
+            Some("ttf") => "font/ttf",
+            _ => "application/octet-stream",
+        };
 
     ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
 }

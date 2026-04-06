@@ -157,7 +157,9 @@ describe("ChatTranscript", () => {
 
   test("falls back to preformatted output for non-search tools", async () => {
     const user = userEvent.setup();
-    const view = renderTranscript(displayGroups(messageWithToolResult("plain output", "analyze_document")));
+    const view = renderTranscript(
+      displayGroups(messageWithToolResult("plain output", "analyze_document")),
+    );
 
     await user.click(view.getByRole("button", { name: /analyze_document/i }));
 

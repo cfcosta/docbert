@@ -125,7 +125,11 @@ mod tests {
 
     use axum::response::IntoResponse;
     use docbert_core::{
-        ChatMessage, ConfigDb, Conversation, EmbeddingDb, ModelManager,
+        ChatMessage,
+        ConfigDb,
+        Conversation,
+        EmbeddingDb,
+        ModelManager,
         SearchIndex,
         conversation::{ChatActor, ChatPart, ChatRole},
     };
@@ -137,7 +141,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             config_db,
@@ -225,7 +230,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_conversations_update_overwrites_path_id_and_refreshes_timestamp() {
+    async fn web_conversations_update_overwrites_path_id_and_refreshes_timestamp()
+     {
         let (_tmp, state) = test_state();
         state
             .config_db

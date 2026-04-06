@@ -50,8 +50,14 @@ fn web_settings_route_responds() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_server(&mut child, port)?;
 
     let response = http_get(port, "/v1/settings/llm")?;
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
-    assert!(response.contains("{\"provider\":null,\"model\":null,\"api_key\":null}"));
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {response}"
+    );
+    assert!(
+        response
+            .contains("{\"provider\":null,\"model\":null,\"api_key\":null}")
+    );
 
     child.kill()?;
     child.wait()?;
@@ -68,7 +74,10 @@ fn web_root_serves_index_html() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_server(&mut child, port)?;
 
     let response = http_get(port, "/")?;
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {response}"
+    );
     assert!(response.contains("<!doctype html>"));
     assert!(response.contains("<div id=\"root\"></div>"));
 
@@ -79,7 +88,8 @@ fn web_root_serves_index_html() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>> {
+fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>>
+{
     let tempdir = tempfile::tempdir()?;
     let port = free_tcp_port()?;
     let mut child = spawn_web_server(tempdir.path(), port)?;
@@ -87,7 +97,10 @@ fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>
     wait_for_server(&mut child, port)?;
 
     let response = http_get(port, "/documents/notes/hello.md")?;
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {response}"
+    );
     assert!(response.contains("<!doctype html>"));
     assert!(response.contains("<div id=\"root\"></div>"));
 
@@ -98,7 +111,8 @@ fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn web_search_reads_excerpts_from_disk() -> Result<(), Box<dyn std::error::Error>> {
+fn web_search_reads_excerpts_from_disk()
+-> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let port = free_tcp_port()?;
     let mut child = spawn_web_server(tempdir.path(), port)?;
@@ -110,7 +124,10 @@ fn web_search_reads_excerpts_from_disk() -> Result<(), Box<dyn std::error::Error
         "/v1/search",
         r#"{"query":"rust","mode":"hybrid","count":10,"min_score":0.0}"#,
     )?;
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {response}"
+    );
     assert!(response.contains("\"query\":\"rust\""));
     assert!(response.contains("\"result_count\":0"));
     assert!(response.contains("\"results\":[]"));
@@ -126,7 +143,8 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let collection_root = setup_collection(tempdir.path(), "notes")?;
     let port = free_tcp_port()?;
-    let mut child = spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
+    let mut child =
+        spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
 
     wait_for_server(&mut child, port)?;
 
@@ -135,12 +153,21 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
         "/v1/documents",
         r##"{"collection":"notes","documents":[{"path":"nested/uploaded.md","content":"# Uploaded\n\nBody on disk","content_type":"text/markdown"}]}"##,
     )?;
-    assert!(upload.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {upload}");
+    assert!(
+        upload.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {upload}"
+    );
     assert!(upload.contains("\"ingested\":1"));
-    assert!(std::fs::read_to_string(collection_root.join("nested/uploaded.md"))?.contains("Body on disk"));
+    assert!(
+        std::fs::read_to_string(collection_root.join("nested/uploaded.md"))?
+            .contains("Body on disk")
+    );
 
     let get = http_get(port, "/v1/documents/notes/nested/uploaded.md")?;
-    assert!(get.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {get}");
+    assert!(
+        get.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {get}"
+    );
     assert!(get.contains("\"path\":\"nested/uploaded.md\""));
     assert!(get.contains("Body on disk"));
 
@@ -149,7 +176,10 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
         "/v1/search",
         r#"{"query":"definitely-not-present","mode":"hybrid","count":10,"min_score":0.0}"#,
     )?;
-    assert!(search.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {search}");
+    assert!(
+        search.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {search}"
+    );
     assert!(search.contains("\"query\":\"definitely-not-present\""));
     assert!(search.contains("\"result_count\":0"));
 
@@ -160,11 +190,13 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn web_delete_then_get_and_search_fail() -> Result<(), Box<dyn std::error::Error>> {
+fn web_delete_then_get_and_search_fail()
+-> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let collection_root = setup_collection(tempdir.path(), "notes")?;
     let port = free_tcp_port()?;
-    let mut child = spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
+    let mut child =
+        spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
 
     wait_for_server(&mut child, port)?;
 
@@ -173,22 +205,34 @@ fn web_delete_then_get_and_search_fail() -> Result<(), Box<dyn std::error::Error
         "/v1/documents",
         r##"{"collection":"notes","documents":[{"path":"nested/uploaded.md","content":"# Uploaded\n\nBody on disk","content_type":"text/markdown"}]}"##,
     )?;
-    assert!(upload.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {upload}");
+    assert!(
+        upload.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {upload}"
+    );
     assert!(collection_root.join("nested/uploaded.md").exists());
 
     let delete = http_delete(port, "/v1/documents/notes/nested/uploaded.md")?;
-    assert!(delete.starts_with("HTTP/1.1 204 No Content\r\n"), "unexpected response: {delete}");
+    assert!(
+        delete.starts_with("HTTP/1.1 204 No Content\r\n"),
+        "unexpected response: {delete}"
+    );
     assert!(!collection_root.join("nested/uploaded.md").exists());
 
     let get = http_get(port, "/v1/documents/notes/nested/uploaded.md")?;
-    assert!(get.starts_with("HTTP/1.1 404 Not Found\r\n"), "unexpected response: {get}");
+    assert!(
+        get.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        "unexpected response: {get}"
+    );
 
     let search = http_post_json(
         port,
         "/v1/search",
         r#"{"query":"uploaded","mode":"hybrid","count":10,"min_score":0.0}"#,
     )?;
-    assert!(search.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {search}");
+    assert!(
+        search.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response: {search}"
+    );
     assert!(search.contains("\"result_count\":0"));
 
     child.kill()?;

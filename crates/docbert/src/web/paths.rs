@@ -8,12 +8,12 @@ pub(crate) fn resolve_collection_root(
     config_db: &ConfigDb,
     collection: &str,
 ) -> error::Result<PathBuf> {
-    let root = config_db
-        .get_collection(collection)?
-        .ok_or_else(|| error::Error::NotFound {
+    let root = config_db.get_collection(collection)?.ok_or_else(|| {
+        error::Error::NotFound {
             kind: "collection",
             name: collection.to_string(),
-        })?;
+        }
+    })?;
 
     if root.is_empty() {
         return Err(error::Error::Config(format!(
@@ -58,7 +58,9 @@ fn sanitize_relative_path(relative_path: &str) -> error::Result<PathBuf> {
         match component {
             Component::Normal(part) => cleaned.push(part),
             Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(error::Error::Config(format!(
                     "document path must stay within the collection root: {relative_path}"
                 )));
@@ -75,7 +77,10 @@ fn sanitize_relative_path(relative_path: &str) -> error::Result<PathBuf> {
     Ok(cleaned)
 }
 
-fn ensure_path_stays_within_root(root: &Path, candidate: &Path) -> error::Result<()> {
+fn ensure_path_stays_within_root(
+    root: &Path,
+    candidate: &Path,
+) -> error::Result<()> {
     if candidate.exists() {
         let resolved = candidate.canonicalize()?;
         if !resolved.starts_with(root) {
@@ -152,8 +157,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         db.set_collection("notes", root.to_str().unwrap()).unwrap();
 
-        let err = resolve_document_path(&db, "notes", "../secret.md")
-            .unwrap_err();
+        let err =
+            resolve_document_path(&db, "notes", "../secret.md").unwrap_err();
 
         assert!(err.to_string().contains("collection root"));
     }
@@ -173,7 +178,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn web_paths_overwrite_targets_resolve_only_inside_registered_collection_path() {
+    fn web_paths_overwrite_targets_resolve_only_inside_registered_collection_path()
+     {
         use std::os::unix::fs::symlink;
 
         let (tmp, db) = test_db();

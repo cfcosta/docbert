@@ -149,7 +149,11 @@ export default function Chat() {
   );
 
   const saveConversation = useCallback(
-    async (conversationIdToSave: string, conversation: ConversationFull | null, nextMessages: Message[]) => {
+    async (
+      conversationIdToSave: string,
+      conversation: ConversationFull | null,
+      nextMessages: Message[],
+    ) => {
       await persistConversationMessages(
         conversationIdToSave,
         conversation,
@@ -212,10 +216,8 @@ export default function Chat() {
       };
       const updateAssistantMessage = (updater: (message: Message) => Message) =>
         setMessages((previous) => updateMessageById(previous, assistantId, updater));
-      const updateSubagentMessage = (
-        messageId: string,
-        updater: (message: Message) => Message,
-      ) => setMessages((previous) => updateSubagentMessages(previous, messageId, updater));
+      const updateSubagentMessage = (messageId: string, updater: (message: Message) => Message) =>
+        setMessages((previous) => updateSubagentMessages(previous, messageId, updater));
       const queueSubagentMessage = (file: QueuedAnalysisFile) => {
         runtimeState.queuedAnalysisFiles = [...runtimeState.queuedAnalysisFiles, file];
         setMessages((previous) => queueSubagentResult(previous, file));
@@ -267,7 +269,9 @@ export default function Chat() {
           </button>
         </div>
         <div className="chat-conv-list">
-          {conversations.length === 0 && <div className="chat-conv-empty">No conversations yet.</div>}
+          {conversations.length === 0 && (
+            <div className="chat-conv-empty">No conversations yet.</div>
+          )}
           {conversations.map((conversation) => (
             <div
               key={conversation.id}
@@ -280,7 +284,9 @@ export default function Chat() {
                 title={conversation.title}
               >
                 <span className="chat-conv-title">{conversation.title}</span>
-                <span className="chat-conv-time">{formatRelativeTime(conversation.updated_at)}</span>
+                <span className="chat-conv-time">
+                  {formatRelativeTime(conversation.updated_at)}
+                </span>
               </button>
               {confirmDelete === conversation.id ? (
                 <div className="chat-conv-confirm">

@@ -1,17 +1,9 @@
 import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
-import type {
-  Context,
-  Message as PiMessage,
-  Tool,
-  UserMessage,
-} from "@mariozechner/pi-ai";
+import type { Context, Message as PiMessage, Tool, UserMessage } from "@mariozechner/pi-ai";
 
 import { api } from "../lib/api";
 import type { LlmSettings } from "../lib/api";
-import {
-  applyInterruptedStopReason,
-  createToolResultMessage,
-} from "./chat-context";
+import { applyInterruptedStopReason, createToolResultMessage } from "./chat-context";
 import type { Message, ToolCallInfo } from "./chat-message-codec";
 import {
   insertOrUpdateSubagentMessage,

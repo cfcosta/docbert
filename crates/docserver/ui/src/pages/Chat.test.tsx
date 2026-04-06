@@ -191,11 +191,7 @@ function sendButton(container: HTMLElement): HTMLButtonElement {
   return button;
 }
 
-async function waitForCondition(
-  condition: () => boolean,
-  message: () => string,
-  timeoutMs = 1000,
-) {
+async function waitForCondition(condition: () => boolean, message: () => string, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (condition()) {
@@ -298,7 +294,8 @@ describe("Chat page", () => {
 
     await waitForCondition(
       () => defaultView.container.textContent?.includes("Loaded answer") ?? false,
-      () => `default-motion conversation never rendered: ${JSON.stringify(defaultView.container.textContent)}`,
+      () =>
+        `default-motion conversation never rendered: ${JSON.stringify(defaultView.container.textContent)}`,
     );
 
     expect(defaultCalls.at(-1)).toEqual({ behavior: "smooth" });
@@ -321,7 +318,8 @@ describe("Chat page", () => {
 
     await waitForCondition(
       () => reducedView.container.textContent?.includes("Loaded answer") ?? false,
-      () => `reduced-motion conversation never rendered: ${JSON.stringify(reducedView.container.textContent)}`,
+      () =>
+        `reduced-motion conversation never rendered: ${JSON.stringify(reducedView.container.textContent)}`,
     );
 
     expect(reducedCalls.at(-1)).toEqual({ behavior: "auto" });
@@ -349,12 +347,14 @@ describe("Chat page", () => {
     await user.type(chatInput(view.container), "What is Rust?");
     await waitForCondition(
       () => sendButton(view.container).disabled === false,
-      () => `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
     );
     await user.click(sendButton(view.container));
     await waitForCondition(
       () => getLlmSettingsCallCount > 0,
-      () => `submit never reached settings lookup; text=${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `submit never reached settings lookup; text=${JSON.stringify(view.container.textContent)}`,
       300,
     );
 
@@ -363,7 +363,8 @@ describe("Chat page", () => {
         view.container.textContent?.includes(
           "No LLM provider configured. Go to Settings to select a provider, model, and API key.",
         ) ?? false,
-      () => `missing config message not rendered; text=${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `missing config message not rendered; text=${JSON.stringify(view.container.textContent)}`,
     );
     expect(streamCallCount).toBe(0);
     expect(getModelCallCount).toBe(0);
@@ -407,7 +408,8 @@ describe("Chat page", () => {
     await user.type(chatInput(view.container), "Summarize the notes");
     await waitForCondition(
       () => sendButton(view.container).disabled === false,
-      () => `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
     );
     await user.click(sendButton(view.container));
     await waitForCondition(
@@ -466,7 +468,8 @@ describe("Chat page", () => {
     await user.type(chatInput(view.container), "What changed?");
     await waitForCondition(
       () => sendButton(view.container).disabled === false,
-      () => `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
     );
     await user.click(sendButton(view.container));
     await waitForCondition(

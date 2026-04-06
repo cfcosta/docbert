@@ -518,7 +518,9 @@ fn document_has_semantic_body(
 ) -> bool {
     let collection_path = collection_paths
         .entry(meta.collection.clone())
-        .or_insert_with(|| config_db.get_collection(&meta.collection).ok().flatten());
+        .or_insert_with(|| {
+            config_db.get_collection(&meta.collection).ok().flatten()
+        });
     let Some(collection_path) = collection_path.as_ref() else {
         return false;
     };
@@ -537,14 +539,18 @@ fn document_has_semantic_body(
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
-    let mut collection_paths: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+    let mut collection_paths: std::collections::HashMap<
+        String,
+        Option<String>,
+    > = std::collections::HashMap::new();
 
     for r in results {
         let fallback = ingestion::extract_title("", Path::new(&r.path));
         let collection_path = collection_paths
             .entry(r.collection.clone())
-            .or_insert_with(|| config_db.get_collection(&r.collection).ok().flatten());
+            .or_insert_with(|| {
+                config_db.get_collection(&r.collection).ok().flatten()
+            });
         let Some(collection_path) = collection_path.as_ref() else {
             r.title = fallback;
             continue;
@@ -820,7 +826,8 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_collections_only_document_has_semantic_body_returns_false_without_registered_path() {
+    fn filesystem_collections_only_document_has_semantic_body_returns_false_without_registered_path()
+     {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
 
@@ -862,7 +869,8 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_collections_only_semantic_candidates_respect_collection_filter() {
+    fn filesystem_collections_only_semantic_candidates_respect_collection_filter()
+     {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let notes_root = tmp.path().join("notes");

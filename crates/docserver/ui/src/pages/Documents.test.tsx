@@ -5,7 +5,13 @@ import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 
-import { api, type Collection, type DocumentListItem, type DocumentResponse, type IngestResponse } from "../lib/api";
+import {
+  api,
+  type Collection,
+  type DocumentListItem,
+  type DocumentResponse,
+  type IngestResponse,
+} from "../lib/api";
 import Documents from "./Documents";
 
 const originalApi = { ...api };
@@ -27,11 +33,7 @@ function renderDocuments(route: string) {
   );
 }
 
-async function waitForCondition(
-  condition: () => boolean,
-  message: () => string,
-  timeoutMs = 1000,
-) {
+async function waitForCondition(condition: () => boolean, message: () => string, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (condition()) {
@@ -91,7 +93,8 @@ function fileRowDeleteButton(container: HTMLElement, fileName: string): HTMLButt
 function treeConfirmDeleteButton(container: HTMLElement): HTMLButtonElement {
   const buttons = Array.from(container.getElementsByTagName("button"));
   const button = buttons.find(
-    (candidate) => candidate.className.includes("tree-confirm-yes") && candidate.textContent === "Delete",
+    (candidate) =>
+      candidate.className.includes("tree-confirm-yes") && candidate.textContent === "Delete",
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error("tree confirm delete button not found");
@@ -275,7 +278,9 @@ describe("Documents page", () => {
         },
       },
       onDelete: (collection, path) => {
-        docsByCollection[collection] = docsByCollection[collection].filter((doc) => doc.path !== path);
+        docsByCollection[collection] = docsByCollection[collection].filter(
+          (doc) => doc.path !== path,
+        );
       },
     });
     const user = userEvent.setup({ pointerEventsCheck: 0 });
@@ -293,7 +298,8 @@ describe("Documents page", () => {
     );
 
     const documentButton = Array.from(view.container.getElementsByTagName("button")).find(
-      (candidate) => candidate.className.includes("tree-file") && candidate.textContent?.includes("hello.md"),
+      (candidate) =>
+        candidate.className.includes("tree-file") && candidate.textContent?.includes("hello.md"),
     );
     if (!(documentButton instanceof HTMLButtonElement)) {
       throw new Error("document tree button not found");

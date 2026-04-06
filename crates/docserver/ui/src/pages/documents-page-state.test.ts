@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  clearDeletedDocumentSelection,
-  toggleExpandedKey,
-} from "./documents-page-state";
+import { clearDeletedDocumentSelection, toggleExpandedKey } from "./documents-page-state";
 
 describe("documents-page-state", () => {
   test("toggle_collection_and_directory_keys_remain_independent", () => {
@@ -25,16 +22,17 @@ describe("documents-page-state", () => {
       doc_id: "#abc123",
     };
 
-    expect(
-      clearDeletedDocumentSelection(selectedDoc, "preview body", "notes", "hello.md"),
-    ).toEqual({ selectedDoc: null, preview: null });
+    expect(clearDeletedDocumentSelection(selectedDoc, "preview body", "notes", "hello.md")).toEqual(
+      { selectedDoc: null, preview: null },
+    );
 
-    expect(
-      clearDeletedDocumentSelection(selectedDoc, "preview body", "notes", "other.md"),
-    ).toEqual({ selectedDoc, preview: "preview body" });
+    expect(clearDeletedDocumentSelection(selectedDoc, "preview body", "notes", "other.md")).toEqual(
+      { selectedDoc, preview: "preview body" },
+    );
 
-    expect(
-      clearDeletedDocumentSelection(selectedDoc, "preview body", "docs", "hello.md"),
-    ).toEqual({ selectedDoc, preview: "preview body" });
+    expect(clearDeletedDocumentSelection(selectedDoc, "preview body", "docs", "hello.md")).toEqual({
+      selectedDoc,
+      preview: "preview body",
+    });
   });
 });

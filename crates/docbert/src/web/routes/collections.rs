@@ -42,7 +42,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             config_db,
@@ -65,7 +66,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_collections_list_returns_cli_registered_filesystem_collections() {
+    async fn web_collections_list_returns_cli_registered_filesystem_collections()
+     {
         let (tmp, state) = test_state();
         let notes = tmp.path().join("notes");
         let docs = tmp.path().join("docs");
@@ -93,7 +95,8 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let mut items: Vec<CollectionItem> = serde_json::from_slice(&body).unwrap();
+        let mut items: Vec<CollectionItem> =
+            serde_json::from_slice(&body).unwrap();
         items.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(
             items,

@@ -174,9 +174,7 @@ function ToolCallInline({
   const searchResults = parseToolSearchResults(call);
 
   return (
-    <div
-      className={`chat-tool-call chat-tool-call-${tone}${call.isError ? " error" : ""}`}
-    >
+    <div className={`chat-tool-call chat-tool-call-${tone}${call.isError ? " error" : ""}`}>
       <button
         type="button"
         className="chat-tool-call-header"
