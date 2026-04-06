@@ -4,6 +4,7 @@ use crate::{
     config_db::ConfigDb,
     doc_id::DocumentId,
     error::Result,
+    merkle::CollectionMerkleSnapshot,
     storage_codec::{decode_bytes, encode_bytes},
     walker::DiscoveredFile,
 };
@@ -95,6 +96,61 @@ pub struct DiffResult {
     pub changed_files: Vec<DiscoveredFile>,
     /// Document IDs that were in metadata but no longer on disk.
     pub deleted_ids: Vec<u64>,
+}
+
+/// What changed between two Merkle snapshots for the same collection.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MerkleDiffResult {
+    /// Paths present in the current snapshot but not in the previous snapshot.
+    pub new_paths: Vec<String>,
+    /// Paths present in both snapshots whose leaf hash changed.
+    pub changed_paths: Vec<String>,
+    /// Paths present in the previous snapshot but not in the current snapshot.
+    pub deleted_paths: Vec<String>,
+}
+
+/// Compare a previously stored collection snapshot with a newly computed one.
+///
+/// This classifies file paths as new, changed, or deleted using Merkle leaf
+/// hashes instead of filesystem modification times.
+pub fn diff_collection_snapshots(
+    previous: Option<&CollectionMerkleSnapshot>,
+    current: &CollectionMerkleSnapshot,
+) -> MerkleDiffResult {
+    let mut result = MerkleDiffResult::default();
+
+    let previous_files: std::collections::BTreeMap<&str, _> = previous
+        .map(|snapshot| {
+            snapshot
+                .files
+                .iter()
+                .map(|file| (file.relative_path.as_str(), file.leaf_hash))
+                .collect()
+        })
+        .unwrap_or_default();
+    let current_files: std::collections::BTreeMap<&str, _> = current
+        .files
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file.leaf_hash))
+        .collect();
+
+    for (path, current_hash) in &current_files {
+        match previous_files.get(path) {
+            None => result.new_paths.push((*path).to_string()),
+            Some(previous_hash) if previous_hash != current_hash => {
+                result.changed_paths.push((*path).to_string())
+            }
+            Some(_) => {}
+        }
+    }
+
+    for path in previous_files.keys() {
+        if !current_files.contains_key(path) {
+            result.deleted_paths.push((*path).to_string());
+        }
+    }
+
+    result
 }
 
 /// Compare the files you just discovered with the metadata already on disk.
@@ -194,9 +250,10 @@ pub fn batch_store_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use super::*;
+    use crate::merkle::build_collection_snapshot;
 
     fn test_db() -> (tempfile::TempDir, ConfigDb) {
         let tmp = tempfile::tempdir().unwrap();
@@ -210,6 +267,30 @@ mod tests {
             absolute_path: PathBuf::from(format!("/abs/{name}")),
             mtime,
         }
+    }
+
+    fn write_snapshot(
+        root: &tempfile::TempDir,
+        files: &[(&str, &str, u64)],
+    ) -> CollectionMerkleSnapshot {
+        for (relative_path, content, _) in files {
+            let full_path = root.path().join(relative_path);
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&full_path, content).unwrap();
+        }
+
+        let discovered: Vec<DiscoveredFile> = files
+            .iter()
+            .map(|(relative_path, _content, mtime)| DiscoveredFile {
+                relative_path: PathBuf::from(relative_path),
+                absolute_path: root.path().join(relative_path),
+                mtime: *mtime,
+            })
+            .collect();
+
+        build_collection_snapshot("notes", &discovered).unwrap()
     }
 
     #[test]
@@ -234,6 +315,74 @@ mod tests {
         .serialize();
         bytes.truncate(bytes.len() / 2);
         assert!(DocumentMetadata::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn merkle_diff_reports_added_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let current = write_snapshot(&tmp, &[("a.md", "hello", 1)]);
+
+        let diff = diff_collection_snapshots(None, &current);
+
+        assert_eq!(
+            diff,
+            MerkleDiffResult {
+                new_paths: vec!["a.md".to_string()],
+                changed_paths: vec![],
+                deleted_paths: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn merkle_diff_reports_changed_paths() {
+        let previous_tmp = tempfile::tempdir().unwrap();
+        let current_tmp = tempfile::tempdir().unwrap();
+        let previous = write_snapshot(&previous_tmp, &[("a.md", "hello", 1)]);
+        let current = write_snapshot(&current_tmp, &[("a.md", "hello!", 1)]);
+
+        let diff = diff_collection_snapshots(Some(&previous), &current);
+
+        assert_eq!(
+            diff,
+            MerkleDiffResult {
+                new_paths: vec![],
+                changed_paths: vec!["a.md".to_string()],
+                deleted_paths: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn merkle_diff_reports_deleted_paths() {
+        let previous_tmp = tempfile::tempdir().unwrap();
+        let current_tmp = tempfile::tempdir().unwrap();
+        let previous = write_snapshot(&previous_tmp, &[("a.md", "hello", 1)]);
+        let current = write_snapshot(&current_tmp, &[]);
+
+        let diff = diff_collection_snapshots(Some(&previous), &current);
+
+        assert_eq!(
+            diff,
+            MerkleDiffResult {
+                new_paths: vec![],
+                changed_paths: vec![],
+                deleted_paths: vec!["a.md".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn merkle_diff_ignores_mtime_when_content_is_unchanged() {
+        let previous_tmp = tempfile::tempdir().unwrap();
+        let current_tmp = tempfile::tempdir().unwrap();
+        let previous = write_snapshot(&previous_tmp, &[("a.md", "hello", 1)]);
+        let current =
+            write_snapshot(&current_tmp, &[("a.md", "hello", 999_999)]);
+
+        let diff = diff_collection_snapshots(Some(&previous), &current);
+
+        assert_eq!(diff, MerkleDiffResult::default());
     }
 
     #[test]
