@@ -87,6 +87,7 @@ pub mod embedding_db;
 pub mod error;
 pub mod incremental;
 pub mod ingestion;
+pub mod merkle;
 pub mod model_manager;
 pub mod preparation;
 pub mod reranker;
