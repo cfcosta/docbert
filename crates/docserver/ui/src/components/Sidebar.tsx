@@ -11,7 +11,7 @@ export default function Sidebar() {
     <nav className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-header">
         <NavLink to="/documents" className="sidebar-title-link">
-          <h1 className="sidebar-title">docserver</h1>
+          <h1 className="sidebar-title">docbert</h1>
         </NavLink>
       </div>
 

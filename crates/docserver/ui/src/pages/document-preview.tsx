@@ -29,7 +29,7 @@ export default function DocumentPreview({
         </div>
         <h3>No document selected</h3>
         <p>
-          Select a file from the tree to preview it, or upload Markdown files into any collection.
+          Select a file from the tree to preview it, or upload Markdown files into any docbert collection.
         </p>
       </div>
     );
