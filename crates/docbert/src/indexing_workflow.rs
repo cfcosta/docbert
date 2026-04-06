@@ -127,6 +127,18 @@ pub(crate) fn finalize_sync_snapshot(
     )
 }
 
+pub(crate) fn finalize_rebuild_snapshot(
+    config_db: &ConfigDb,
+    collection: &str,
+    root: &Path,
+    rebuild_result: error::Result<()>,
+) -> error::Result<()> {
+    rebuild_result?;
+    let snapshot =
+        collection_snapshots::compute_collection_snapshot(collection, root)?;
+    collection_snapshots::replace_collection_snapshot(config_db, &snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -159,6 +171,14 @@ mod tests {
             embeddings_only,
             index_only,
         }
+    }
+
+    fn rebuild_mode_cases() -> [(&'static str, cli::RebuildArgs, usize); 3] {
+        [
+            ("full", rebuild_args(false, false), 1),
+            ("index-only", rebuild_args(true, false), 1),
+            ("embeddings-only", rebuild_args(false, true), 1),
+        ]
     }
 
     #[test]
@@ -387,25 +407,99 @@ mod tests {
         std::fs::write(root.join("note.md"), "# Note\n\nBody").unwrap();
         let files = docbert_core::walker::discover_files(&root).unwrap();
 
-        let normal =
-            load_rebuild_batch("notes", &files, &rebuild_args(false, false));
-        assert_eq!(normal.documents.len(), 1);
-        assert_eq!(normal.metadata_files.len(), 1);
-
-        let index_only =
-            load_rebuild_batch("notes", &files, &rebuild_args(true, false));
-        assert_eq!(index_only.documents.len(), 1);
-        assert_eq!(index_only.metadata_files.len(), 1);
-
-        let embeddings_only =
-            load_rebuild_batch("notes", &files, &rebuild_args(false, true));
-        assert_eq!(embeddings_only.documents.len(), 1);
-        assert_eq!(embeddings_only.metadata_files.len(), 1);
+        for (mode_name, args, expected_documents) in rebuild_mode_cases() {
+            let batch = load_rebuild_batch("notes", &files, &args);
+            assert_eq!(
+                batch.documents.len(),
+                expected_documents,
+                "unexpected document count for {mode_name}"
+            );
+            assert_eq!(
+                batch.metadata_files.len(),
+                1,
+                "unexpected metadata file count for {mode_name}"
+            );
+        }
 
         let skip_loading =
             load_rebuild_batch("notes", &files, &rebuild_args(true, true));
         assert!(skip_loading.documents.is_empty());
         assert_eq!(skip_loading.metadata_files.len(), 1);
         assert!(skip_loading.failures.is_empty());
+    }
+
+    #[test]
+    fn finalize_rebuild_snapshot_replaces_snapshot_for_all_successful_modes() {
+        for (mode_name, args, expected_documents) in rebuild_mode_cases() {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_db =
+                ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+            let root = tmp.path().join("notes");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("note.md"), "# Note\n\nOriginal").unwrap();
+
+            let original_snapshot = seed_snapshot(&config_db, "notes", &root);
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::fs::write(root.join("note.md"), "# Note\n\nUpdated").unwrap();
+            let files = docbert_core::walker::discover_files(&root).unwrap();
+            let batch = load_rebuild_batch("notes", &files, &args);
+            assert_eq!(
+                batch.documents.len(),
+                expected_documents,
+                "unexpected document count for {mode_name}"
+            );
+            assert_eq!(batch.metadata_files.len(), 1);
+
+            finalize_rebuild_snapshot(&config_db, "notes", &root, Ok(()))
+                .unwrap();
+
+            let stored_snapshot = config_db
+                .get_collection_merkle_snapshot("notes")
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                stored_snapshot, original_snapshot,
+                "snapshot did not change for {mode_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn finalize_rebuild_snapshot_preserves_snapshot_for_all_failed_modes() {
+        for (mode_name, args, expected_documents) in rebuild_mode_cases() {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_db =
+                ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+            let root = tmp.path().join("notes");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("note.md"), "# Note\n\nOriginal").unwrap();
+
+            let original_snapshot = seed_snapshot(&config_db, "notes", &root);
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::fs::write(root.join("note.md"), "# Note\n\nUpdated").unwrap();
+            let files = docbert_core::walker::discover_files(&root).unwrap();
+            let batch = load_rebuild_batch("notes", &files, &args);
+            assert_eq!(
+                batch.documents.len(),
+                expected_documents,
+                "unexpected document count for {mode_name}"
+            );
+            assert_eq!(batch.metadata_files.len(), 1);
+
+            let failure = Err(error::Error::Config(format!(
+                "rebuild failed in {mode_name}"
+            )));
+            assert!(
+                finalize_rebuild_snapshot(&config_db, "notes", &root, failure)
+                    .is_err()
+            );
+            assert_eq!(
+                config_db.get_collection_merkle_snapshot("notes").unwrap(),
+                Some(original_snapshot),
+                "snapshot changed unexpectedly for {mode_name}"
+            );
+        }
     }
 }

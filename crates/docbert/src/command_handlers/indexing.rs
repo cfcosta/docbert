@@ -228,13 +228,19 @@ pub(crate) fn cmd_rebuild(
         }
         let document_batch =
             indexing_workflow::load_rebuild_batch(name, &files, args);
-        process_document_batch(
+        let rebuild_result = process_document_batch(
             config_db,
             &mut runtime,
             name,
             &document_batch,
             !args.embeddings_only,
             !args.index_only,
+        );
+        indexing_workflow::finalize_rebuild_snapshot(
+            config_db,
+            name,
+            root,
+            rebuild_result,
         )?;
 
         eprintln!("  Done.");
