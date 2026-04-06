@@ -77,11 +77,12 @@ mod tests {
             mtime: 0,
         };
         config_db
-            .put_document_artifacts(
+            .set_document_metadata_typed(doc_id.numeric, &metadata)
+            .unwrap();
+        config_db
+            .set_document_user_metadata(
                 doc_id.numeric,
-                &metadata,
-                "# Hello\nBody",
-                Some(&serde_json::json!({ "topic": "rust" })),
+                &serde_json::json!({ "topic": "rust" }),
             )
             .unwrap();
         doc_id
@@ -195,12 +196,6 @@ mod tests {
         );
         assert!(
             config_db
-                .get_document_content(doc_id.numeric)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            config_db
                 .get_document_user_metadata(doc_id.numeric)
                 .unwrap()
                 .is_none()
@@ -235,12 +230,6 @@ mod tests {
         assert!(
             config_db
                 .get_document_metadata_typed(deleted.numeric)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            config_db
-                .get_document_content(deleted.numeric)
                 .unwrap()
                 .is_none()
         );
@@ -291,7 +280,6 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
-            assert!(config_db.get_document_content(doc_id).unwrap().is_none());
             assert!(
                 config_db
                     .get_document_user_metadata(doc_id)
