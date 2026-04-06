@@ -5,6 +5,7 @@ use docbert_core::{ConfigDb, DataDir, error, model_manager::resolve_model};
 use tracing_subscriber::EnvFilter;
 
 mod cli;
+mod collection_snapshots;
 mod command_handlers;
 mod indexing_workflow;
 mod mcp;
