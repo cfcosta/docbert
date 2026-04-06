@@ -228,6 +228,8 @@ pub(crate) fn cmd_rebuild(
         }
         let document_batch =
             indexing_workflow::load_rebuild_batch(name, &files, args);
+        // Rebuild also advances the stored Merkle snapshot only after the
+        // collection has been processed successfully.
         let rebuild_result = process_document_batch(
             config_db,
             &mut runtime,
@@ -315,6 +317,9 @@ pub(crate) fn cmd_sync(
             selection.deleted_ids.len()
         );
 
+        // Keep the stored Merkle snapshot behind the indexed state: plan and
+        // execute sync work first, then advance the snapshot only if the work
+        // succeeded.
         let sync_result = (|| {
             if !selection.deleted_ids.is_empty() {
                 let mut writer = runtime.search_index.writer(15_000_000)?;

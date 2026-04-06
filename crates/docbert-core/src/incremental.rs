@@ -92,7 +92,10 @@ impl DocumentMetadata {
 pub struct DiffResult {
     /// Files that are new (not in metadata).
     pub new_files: Vec<DiscoveredFile>,
-    /// Files that have changed (mtime differs).
+    /// Files whose stored metadata `mtime` differs.
+    ///
+    /// New sync code uses [`MerkleDiffResult`] instead. This legacy helper
+    /// remains for metadata-oriented callers and tests.
     pub changed_files: Vec<DiscoveredFile>,
     /// Document IDs that were in metadata but no longer on disk.
     pub deleted_ids: Vec<u64>,
@@ -165,8 +168,10 @@ pub fn diff_collection_snapshots(
 
 /// Compare the files you just discovered with the metadata already on disk.
 ///
-/// For the given collection, this walks stored metadata, compares mtimes, and
-/// returns a [`DiffResult`] describing what is new, changed, or gone.
+/// This is the older metadata-oriented diff helper. The authoritative sync path
+/// now uses [`diff_collection_snapshots`] and persisted Merkle snapshots of file
+/// content hashes. This function is kept for callers that still want a simple
+/// metadata-vs-discovery comparison.
 pub fn diff_collection(
     config_db: &ConfigDb,
     collection: &str,

@@ -125,6 +125,8 @@ pub(crate) fn ingest_prepared_document(
         return Err(err.into());
     }
 
+    // The collection snapshot must move in lockstep with successful ingest
+    // side effects. If snapshot refresh fails, keep the previous snapshot.
     if let Err(err) = refresh_collection_snapshot(
         state,
         collection,
@@ -182,6 +184,8 @@ pub(crate) fn delete_document(
     state.embedding_db.remove_document_family(did.numeric)?;
     state.config_db.remove_document_metadata(did.numeric)?;
     state.config_db.remove_document_user_metadata(did.numeric)?;
+    // Delete updates the stored collection snapshot only after index and
+    // metadata cleanup succeeds end to end.
     refresh_collection_snapshot(
         state,
         collection,

@@ -25,7 +25,7 @@ The ingester walks each collection and turns files into indexable documents.
 - Recursively scans the directory tree
 - Reads file contents from plain text and Markdown files
 - Assigns each document a stable internal ID, shown as a short hash like `#abc123`
-- Tracks file modification times for incremental re-indexing
+- Builds and persists a per-collection Merkle snapshot of file-content hashes for sync and web-mutation change detection
 
 ### 3. Tantivy index
 
@@ -82,6 +82,7 @@ The web interface serves a SPA and a local JSON API from the same process.
 - Lists collections through `GET /v1/collections`
 - Reads document titles/content from collection folders on disk
 - Uploads write source files into collection folders, then index and embed them
+- Refreshes the stored collection Merkle snapshot after successful uploads, updates, and deletes
 - Deletes remove the source file from the collection folder, then remove indexed state
 
 ## Data flow
@@ -128,7 +129,7 @@ All persistent data lives under the XDG data directory (`$XDG_DATA_HOME/docbert/
 
 ```text
 docbert/
-  config.db          # Collection definitions, context strings, settings
+  config.db          # Collection definitions, context strings, settings, document metadata, and per-collection Merkle snapshots
   embeddings.db      # ColBERT token embeddings for all documents
   tantivy/           # Tantivy index directory (managed by Tantivy)
     meta.json
