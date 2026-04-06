@@ -10,7 +10,7 @@ use docbert_core::{
     preparation::{self, SearchDocument},
 };
 
-use crate::web::state::AppState;
+use crate::{collection_snapshots, web::state::AppState};
 
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
@@ -51,6 +51,11 @@ pub(crate) fn ingest_prepared_document(
     document: &SearchDocument,
     embedding_entries: &[EmbeddingEntry],
 ) -> error::Result<IngestedDocument> {
+    let collection_root = collection_root(state, collection)?;
+    let previous_snapshot = collection_snapshots::load_collection_snapshot(
+        &state.config_db,
+        collection,
+    )?;
     let existing_embeddings =
         load_document_family_embeddings(state, document.did.numeric)?;
     let existing_embedding_ids: Vec<u64> = existing_embeddings
@@ -120,6 +125,26 @@ pub(crate) fn ingest_prepared_document(
         return Err(err.into());
     }
 
+    if let Err(err) = refresh_collection_snapshot(
+        state,
+        collection,
+        &collection_root,
+        previous_snapshot.as_ref(),
+    ) {
+        restore_previous_embeddings(
+            state,
+            &existing_embeddings,
+            &current_embedding_ids,
+        )?;
+        restore_previous_metadata(
+            state,
+            document.did.numeric,
+            previous_metadata.as_ref(),
+            previous_user_metadata.as_ref(),
+        )?;
+        return Err(err);
+    }
+
     remove_stale_previous_embeddings(
         state,
         &existing_embedding_ids,
@@ -156,6 +181,20 @@ pub(crate) fn delete_document(
     Ok(())
 }
 
+fn collection_root(
+    state: &AppState,
+    collection: &str,
+) -> error::Result<std::path::PathBuf> {
+    let root =
+        state.config_db.get_collection(collection)?.ok_or_else(|| {
+            error::Error::NotFound {
+                kind: "collection",
+                name: collection.to_string(),
+            }
+        })?;
+    Ok(std::path::PathBuf::from(root))
+}
+
 fn persist_metadata(
     state: &AppState,
     collection: &str,
@@ -182,6 +221,49 @@ fn persist_metadata(
     }
 
     Ok(())
+}
+
+fn refresh_collection_snapshot(
+    state: &AppState,
+    collection: &str,
+    collection_root: &Path,
+    previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
+) -> error::Result<()> {
+    let current_snapshot = collection_snapshots::compute_collection_snapshot(
+        collection,
+        collection_root,
+    )?;
+    if let Err(err) = collection_snapshots::replace_collection_snapshot(
+        &state.config_db,
+        &current_snapshot,
+    ) {
+        restore_previous_collection_snapshot(
+            state,
+            collection,
+            previous_snapshot,
+        )?;
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn restore_previous_collection_snapshot(
+    state: &AppState,
+    collection: &str,
+    previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
+) -> error::Result<()> {
+    match previous_snapshot {
+        Some(snapshot) => collection_snapshots::replace_collection_snapshot(
+            &state.config_db,
+            snapshot,
+        ),
+        None => {
+            state
+                .config_db
+                .remove_collection_merkle_snapshot(collection)?;
+            Ok(())
+        }
+    }
 }
 
 fn load_document_family_embeddings(
@@ -385,6 +467,12 @@ mod tests {
         )
         .unwrap();
 
+        let snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after ingest");
+
         assert_eq!(ingested.doc_id, document.did.to_string());
         assert_eq!(ingested.title, "Hello");
         assert_eq!(
@@ -423,6 +511,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(indexed.title, "Hello");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].relative_path, "hello.md");
     }
 
     #[test]
@@ -440,6 +530,11 @@ mod tests {
             &fake_embedding_entries(first.did.numeric, 2),
         )
         .unwrap();
+        let first_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after first ingest");
 
         write_markdown(&root, "hello.md", "# Updated\n\nBody v2");
         let second = load_markdown_document(
@@ -457,6 +552,12 @@ mod tests {
             &fake_embedding_entries(second.did.numeric, 2),
         )
         .unwrap();
+
+        let second_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after replacement ingest");
 
         let metadata = state
             .config_db
@@ -477,6 +578,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(indexed.title, "Updated");
+        assert_ne!(first_snapshot.root_hash, second_snapshot.root_hash);
     }
 
     #[test]
@@ -523,6 +625,51 @@ mod tests {
                 .load(chunk_doc_id(document.did.numeric, 2))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn web_ingest_snapshot_failure_preserves_previous_snapshot() {
+        let (tmp, state) = test_state();
+        let root = seed_collection_root(&tmp, &state, "notes");
+        let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
+        let document =
+            load_markdown_document("notes", "hello.md", &full_path, None, 1)
+                .unwrap();
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &document,
+            &fake_embedding_entries(document.did.numeric, 1),
+        )
+        .unwrap();
+        let original_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after first ingest");
+
+        write_markdown(&root, "hello.md", "# Hello\n\nUpdated");
+        let updated =
+            load_markdown_document("notes", "hello.md", &full_path, None, 2)
+                .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            ingest_prepared_document(
+                &state,
+                "notes",
+                &updated,
+                &fake_embedding_entries(updated.did.numeric, 1),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            state
+                .config_db
+                .get_collection_merkle_snapshot("notes")
+                .unwrap(),
+            Some(original_snapshot)
         );
     }
 

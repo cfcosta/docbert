@@ -398,6 +398,13 @@ mod tests {
             std::fs::read_to_string(root.join("hello.md")).unwrap(),
             "# Uploaded\n\nBody"
         );
+        let snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after upload");
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].relative_path, "hello.md");
     }
 
     #[tokio::test]
@@ -452,8 +459,12 @@ mod tests {
             .config_db
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
+        let previous_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap();
 
-        let response = documents_router(state)
+        let response = documents_router(state.clone())
             .oneshot(
                 Request::builder()
                     .uri("/v1/documents")
@@ -475,6 +486,14 @@ mod tests {
             std::fs::read_to_string(root.join("hello.md")).unwrap(),
             "# Updated\n\nBody v2"
         );
+        let updated_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after overwrite upload");
+        if let Some(previous_snapshot) = previous_snapshot {
+            assert_ne!(previous_snapshot.root_hash, updated_snapshot.root_hash);
+        }
     }
 
     #[tokio::test]
