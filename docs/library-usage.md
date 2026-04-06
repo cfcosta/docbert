@@ -512,29 +512,29 @@ fn main() -> docbert_core::Result<()> {
 
 ### Incremental sync
 
-Incremental sync uses modification times to find what changed since the last run.
+Incremental sync uses persisted per-collection Merkle snapshots of file-content hashes.
 
 ```rust,no_run
 use std::path::Path;
-use docbert_core::{ConfigDb, walker};
-use docbert_core::incremental::{diff_collection, store_metadata, DiffResult};
+use docbert_core::{ConfigDb, merkle, walker};
+use docbert_core::incremental::diff_collection_snapshots;
 
 fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(Path::new("config.db"))?;
     let files = walker::discover_files(Path::new("/home/user/notes"))?;
+    let previous = config_db.get_collection_merkle_snapshot("notes")?;
+    let current = merkle::build_collection_snapshot("notes", &files)?;
 
-    let diff: DiffResult = diff_collection(&config_db, "notes", &files)?;
+    let diff = diff_collection_snapshots(previous.as_ref(), &current);
     println!(
         "New: {}, Changed: {}, Deleted: {}",
-        diff.new_files.len(),
-        diff.changed_files.len(),
-        diff.deleted_ids.len(),
+        diff.new_paths.len(),
+        diff.changed_paths.len(),
+        diff.deleted_paths.len(),
     );
 
-    // After indexing, store metadata so future runs can diff correctly
-    for file in &diff.new_files {
-        store_metadata(&config_db, "notes", file)?;
-    }
+    // After a successful sync, replace the stored snapshot atomically.
+    config_db.set_collection_merkle_snapshot("notes", &current)?;
 
     Ok(())
 }

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     config_db::ConfigDb,
     doc_id::DocumentId,
@@ -56,49 +54,6 @@ impl DocumentMetadata {
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
         decode_bytes(bytes).ok()
     }
-}
-
-/// What changed in a collection since the last indexing pass.
-///
-/// Returned by [`diff_collection`]. Files are grouped as new, changed, or
-/// deleted relative to the last stored metadata.
-///
-/// # Examples
-///
-/// ```
-/// # let tmp = tempfile::tempdir().unwrap();
-/// use docbert_core::ConfigDb;
-/// use docbert_core::incremental::{diff_collection, store_metadata};
-/// use docbert_core::walker::DiscoveredFile;
-/// use std::path::PathBuf;
-///
-/// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-///
-/// let file = DiscoveredFile {
-///     relative_path: PathBuf::from("hello.md"),
-///     absolute_path: PathBuf::from("/abs/hello.md"),
-///     mtime: 100,
-/// };
-/// store_metadata(&db, "notes", &file).unwrap();
-///
-/// // Same file with updated mtime -> changed
-/// let updated = DiscoveredFile { mtime: 200, ..file };
-/// let diff = diff_collection(&db, "notes", &[updated]).unwrap();
-/// assert_eq!(diff.changed_files.len(), 1);
-/// assert!(diff.new_files.is_empty());
-/// assert!(diff.deleted_ids.is_empty());
-/// ```
-#[derive(Debug, Default)]
-pub struct DiffResult {
-    /// Files that are new (not in metadata).
-    pub new_files: Vec<DiscoveredFile>,
-    /// Files whose stored metadata `mtime` differs.
-    ///
-    /// New sync code uses [`MerkleDiffResult`] instead. This legacy helper
-    /// remains for metadata-oriented callers and tests.
-    pub changed_files: Vec<DiscoveredFile>,
-    /// Document IDs that were in metadata but no longer on disk.
-    pub deleted_ids: Vec<u64>,
 }
 
 /// What changed between two Merkle snapshots for the same collection.
@@ -166,58 +121,6 @@ pub fn diff_collection_snapshots(
     result
 }
 
-/// Compare the files you just discovered with the metadata already on disk.
-///
-/// This is the older metadata-oriented diff helper. The authoritative sync path
-/// now uses [`diff_collection_snapshots`] and persisted Merkle snapshots of file
-/// content hashes. This function is kept for callers that still want a simple
-/// metadata-vs-discovery comparison.
-pub fn diff_collection(
-    config_db: &ConfigDb,
-    collection: &str,
-    discovered: &[DiscoveredFile],
-) -> Result<DiffResult> {
-    // Build a map of all known documents for this collection.
-    let mut known: HashMap<String, (u64, u64)> = HashMap::new(); // path -> (doc_id, mtime)
-
-    for (doc_id, meta) in config_db.list_all_document_metadata_typed()? {
-        if meta.collection == collection {
-            known.insert(meta.relative_path.clone(), (doc_id, meta.mtime));
-        }
-    }
-
-    let mut result = DiffResult::default();
-
-    // Track which known docs we've seen in the discovered set.
-    let mut seen_paths = std::collections::HashSet::new();
-
-    for file in discovered {
-        let rel_path = file.relative_path.to_string_lossy().to_string();
-        seen_paths.insert(rel_path.clone());
-
-        match known.get(&rel_path) {
-            None => {
-                result.new_files.push(file.clone());
-            }
-            Some((_doc_id, stored_mtime)) => {
-                if file.mtime != *stored_mtime {
-                    result.changed_files.push(file.clone());
-                }
-                // If the mtime matches, the file is unchanged, so skip it.
-            }
-        }
-    }
-
-    // Find deleted documents (in metadata but not on disk).
-    for (path, (doc_id, _)) in &known {
-        if !seen_paths.contains(path) {
-            result.deleted_ids.push(*doc_id);
-        }
-    }
-
-    Ok(result)
-}
-
 /// Write metadata for one document after it has been indexed.
 ///
 /// This recomputes the [`DocumentId`] from the collection name and relative
@@ -269,20 +172,6 @@ mod tests {
 
     use super::*;
     use crate::merkle::build_collection_snapshot;
-
-    fn test_db() -> (tempfile::TempDir, ConfigDb) {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        (tmp, db)
-    }
-
-    fn make_file(name: &str, mtime: u64) -> DiscoveredFile {
-        DiscoveredFile {
-            relative_path: PathBuf::from(name),
-            absolute_path: PathBuf::from(format!("/abs/{name}")),
-            mtime,
-        }
-    }
 
     fn write_snapshot(
         root: &tempfile::TempDir,
@@ -434,66 +323,5 @@ mod tests {
                 .map(|path| DocumentId::new("notes", path).numeric)
                 .collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn all_new_files() {
-        let (_tmp, db) = test_db();
-        let files = vec![make_file("a.md", 100), make_file("b.md", 200)];
-        let diff = diff_collection(&db, "notes", &files).unwrap();
-
-        assert_eq!(diff.new_files.len(), 2);
-        assert!(diff.changed_files.is_empty());
-        assert!(diff.deleted_ids.is_empty());
-    }
-
-    #[test]
-    fn unchanged_files() {
-        let (_tmp, db) = test_db();
-        let file = make_file("a.md", 100);
-        store_metadata(&db, "notes", &file).unwrap();
-
-        let diff = diff_collection(&db, "notes", &[file]).unwrap();
-        assert!(diff.new_files.is_empty());
-        assert!(diff.changed_files.is_empty());
-        assert!(diff.deleted_ids.is_empty());
-    }
-
-    #[test]
-    fn changed_file_detected() {
-        let (_tmp, db) = test_db();
-        let file = make_file("a.md", 100);
-        store_metadata(&db, "notes", &file).unwrap();
-
-        // Same file, different mtime
-        let updated = make_file("a.md", 200);
-        let diff = diff_collection(&db, "notes", &[updated]).unwrap();
-        assert!(diff.new_files.is_empty());
-        assert_eq!(diff.changed_files.len(), 1);
-        assert!(diff.deleted_ids.is_empty());
-    }
-
-    #[test]
-    fn deleted_file_detected() {
-        let (_tmp, db) = test_db();
-        let file = make_file("a.md", 100);
-        store_metadata(&db, "notes", &file).unwrap();
-
-        // Empty discovery = file was deleted
-        let diff = diff_collection(&db, "notes", &[]).unwrap();
-        assert!(diff.new_files.is_empty());
-        assert!(diff.changed_files.is_empty());
-        assert_eq!(diff.deleted_ids.len(), 1);
-    }
-
-    #[test]
-    fn ignores_other_collections() {
-        let (_tmp, db) = test_db();
-        let file = make_file("a.md", 100);
-        store_metadata(&db, "other", &file).unwrap();
-
-        // Diffing "notes" should not see "other"'s files
-        let diff = diff_collection(&db, "notes", &[]).unwrap();
-        assert!(diff.deleted_ids.is_empty());
     }
 }
