@@ -5,7 +5,7 @@ use docbert_core::{
     error,
     incremental::{MerkleDiffResult, diff_collection_snapshots},
     merkle::{CollectionMerkleSnapshot, build_collection_snapshot},
-    walker,
+    walker::{self, DiscoveredFile},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,13 +30,13 @@ pub(crate) fn compute_collection_snapshot(
     build_collection_snapshot(collection, &discovered)
 }
 
-pub(crate) fn compute_collection_snapshot_change(
+pub(crate) fn compute_collection_snapshot_change_for_discovered(
     config_db: &ConfigDb,
     collection: &str,
-    root: &Path,
+    discovered: &[DiscoveredFile],
 ) -> error::Result<CollectionSnapshotChange> {
     let previous_snapshot = load_collection_snapshot(config_db, collection)?;
-    let current_snapshot = compute_collection_snapshot(collection, root)?;
+    let current_snapshot = build_collection_snapshot(collection, discovered)?;
     let diff = diff_collection_snapshots(
         previous_snapshot.as_ref(),
         &current_snapshot,
@@ -47,6 +47,19 @@ pub(crate) fn compute_collection_snapshot_change(
         current_snapshot,
         diff,
     })
+}
+
+pub(crate) fn compute_collection_snapshot_change(
+    config_db: &ConfigDb,
+    collection: &str,
+    root: &Path,
+) -> error::Result<CollectionSnapshotChange> {
+    let discovered = walker::discover_files(root)?;
+    compute_collection_snapshot_change_for_discovered(
+        config_db,
+        collection,
+        &discovered,
+    )
 }
 
 pub(crate) fn replace_collection_snapshot(

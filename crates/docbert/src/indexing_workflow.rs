@@ -1,12 +1,14 @@
+use std::{collections::HashSet, path::Path};
+
 use docbert_core::{
     ConfigDb,
     error,
     ingestion::{self, LoadFailure},
     preparation::SearchDocument,
-    walker::DiscoveredFile,
+    walker::{self, DiscoveredFile},
 };
 
-use crate::cli;
+use crate::{cli, collection_snapshots};
 
 #[derive(Debug, Default)]
 pub(crate) struct DocumentLoadBatch {
@@ -62,6 +64,51 @@ pub(crate) fn load_sync_batch(
         metadata_files: result.loaded_files,
         failures: result.failures,
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SyncSelection {
+    pub new_files: Vec<DiscoveredFile>,
+    pub changed_files: Vec<DiscoveredFile>,
+    pub deleted_ids: Vec<u64>,
+}
+
+pub(crate) fn select_sync_work(
+    config_db: &ConfigDb,
+    collection: &str,
+    root: &Path,
+) -> error::Result<SyncSelection> {
+    let discovered = walker::discover_files(root)?;
+    let change = collection_snapshots::compute_collection_snapshot_change_for_discovered(
+        config_db,
+        collection,
+        &discovered,
+    )?;
+
+    let new_paths: HashSet<&str> =
+        change.diff.new_paths.iter().map(String::as_str).collect();
+    let changed_paths: HashSet<&str> = change
+        .diff
+        .changed_paths
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    let mut selection = SyncSelection {
+        deleted_ids: change.diff.deleted_ids,
+        ..SyncSelection::default()
+    };
+
+    for file in discovered {
+        let relative_path = file.relative_path.to_string_lossy();
+        if new_paths.contains(relative_path.as_ref()) {
+            selection.new_files.push(file);
+        } else if changed_paths.contains(relative_path.as_ref()) {
+            selection.changed_files.push(file);
+        }
+    }
+
+    Ok(selection)
 }
 
 #[cfg(test)]
@@ -123,46 +170,49 @@ mod tests {
     fn sync_stores_metadata_only_for_processed_files_and_deletes_removed_ids() {
         let tmp = tempfile::tempdir().unwrap();
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
 
-        let stored_a = DiscoveredFile {
-            relative_path: PathBuf::from("a.md"),
-            absolute_path: tmp.path().join("a.md"),
-            mtime: 10,
-        };
-        let stored_b = DiscoveredFile {
-            relative_path: PathBuf::from("b.md"),
-            absolute_path: tmp.path().join("b.md"),
-            mtime: 15,
-        };
-        let stored_deleted = DiscoveredFile {
-            relative_path: PathBuf::from("deleted.md"),
-            absolute_path: tmp.path().join("deleted.md"),
-            mtime: 20,
-        };
+        std::fs::write(root.join("a.md"), "# A\n\nOriginal").unwrap();
+        std::fs::write(root.join("b.md"), "# B\n\nKeep").unwrap();
+        std::fs::write(root.join("deleted.md"), "# Gone\n\nDelete me").unwrap();
 
-        incremental::store_metadata(&config_db, "notes", &stored_a).unwrap();
-        incremental::store_metadata(&config_db, "notes", &stored_b).unwrap();
-        incremental::store_metadata(&config_db, "notes", &stored_deleted)
+        let initial_files =
+            docbert_core::walker::discover_files(&root).unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &initial_files)
+            .unwrap();
+        let initial_snapshot = docbert_core::merkle::build_collection_snapshot(
+            "notes",
+            &initial_files,
+        )
+        .unwrap();
+        config_db
+            .set_collection_merkle_snapshot("notes", &initial_snapshot)
             .unwrap();
 
-        std::fs::write(tmp.path().join("a.md"), "# A\n\nUpdated").unwrap();
-        let changed_a = DiscoveredFile {
-            relative_path: PathBuf::from("a.md"),
-            absolute_path: tmp.path().join("a.md"),
-            mtime: 99,
-        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::fs::write(root.join("a.md"), "# A\n\nUpdated").unwrap();
+        std::fs::remove_file(root.join("deleted.md")).unwrap();
 
-        let batch = load_sync_batch("notes", &[changed_a]);
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        assert_eq!(selection.new_files.len(), 0);
+        assert_eq!(selection.changed_files.len(), 1);
+        assert_eq!(
+            selection.changed_files[0].relative_path,
+            PathBuf::from("a.md")
+        );
+        let deleted_id = DocumentId::new("notes", "deleted.md");
+        assert_eq!(selection.deleted_ids, vec![deleted_id.numeric]);
+
+        let batch = load_sync_batch("notes", &selection.changed_files);
         incremental::batch_store_metadata(
             &config_db,
             "notes",
             &batch.metadata_files,
         )
         .unwrap();
-
-        let deleted_id = DocumentId::new("notes", "deleted.md");
         config_db
-            .batch_remove_document_metadata(&[deleted_id.numeric])
+            .batch_remove_document_metadata(&selection.deleted_ids)
             .unwrap();
 
         let updated_a = config_db
@@ -171,7 +221,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(updated_a.mtime, 99);
+        assert!(updated_a.mtime > 0);
 
         let unchanged_b = config_db
             .get_document_metadata_typed(
@@ -179,7 +229,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(unchanged_b.mtime, 15);
+        assert_eq!(unchanged_b.relative_path, "b.md");
 
         assert!(
             config_db

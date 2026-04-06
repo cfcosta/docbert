@@ -290,12 +290,12 @@ pub(crate) fn cmd_sync(
             continue;
         }
 
-        let files = walker::discover_files(root)?;
-        let diff = incremental::diff_collection(config_db, name, &files)?;
+        let selection =
+            indexing_workflow::select_sync_work(config_db, name, root)?;
 
-        if diff.new_files.is_empty()
-            && diff.changed_files.is_empty()
-            && diff.deleted_ids.is_empty()
+        if selection.new_files.is_empty()
+            && selection.changed_files.is_empty()
+            && selection.deleted_ids.is_empty()
         {
             eprintln!("Collection '{name}' is up to date.");
             continue;
@@ -304,14 +304,14 @@ pub(crate) fn cmd_sync(
         eprintln!("Syncing collection '{name}'...");
         eprintln!(
             "  {} new, {} changed, {} deleted",
-            diff.new_files.len(),
-            diff.changed_files.len(),
-            diff.deleted_ids.len()
+            selection.new_files.len(),
+            selection.changed_files.len(),
+            selection.deleted_ids.len()
         );
 
-        if !diff.deleted_ids.is_empty() {
+        if !selection.deleted_ids.is_empty() {
             let mut writer = runtime.search_index.writer(15_000_000)?;
-            for &doc_id in &diff.deleted_ids {
+            for &doc_id in &selection.deleted_ids {
                 let display = search::short_doc_id(doc_id);
                 runtime.search_index.delete_document(&writer, &display);
             }
@@ -319,16 +319,19 @@ pub(crate) fn cmd_sync(
 
             remove_document_embeddings_for_ids(
                 &runtime.embedding_db,
-                &diff.deleted_ids,
+                &selection.deleted_ids,
             )?;
-            remove_document_artifacts_for_ids(config_db, &diff.deleted_ids)?;
-            eprintln!("  Removed {} documents", diff.deleted_ids.len());
+            remove_document_artifacts_for_ids(
+                config_db,
+                &selection.deleted_ids,
+            )?;
+            eprintln!("  Removed {} documents", selection.deleted_ids.len());
         }
 
-        let files_to_process: Vec<_> = diff
+        let files_to_process: Vec<_> = selection
             .new_files
             .into_iter()
-            .chain(diff.changed_files)
+            .chain(selection.changed_files)
             .collect();
 
         if !files_to_process.is_empty() {
