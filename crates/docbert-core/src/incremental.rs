@@ -107,6 +107,8 @@ pub struct MerkleDiffResult {
     pub changed_paths: Vec<String>,
     /// Paths present in the previous snapshot but not in the current snapshot.
     pub deleted_paths: Vec<String>,
+    /// Deterministic document IDs derived from deleted paths.
+    pub deleted_ids: Vec<u64>,
 }
 
 /// Compare a previously stored collection snapshot with a newly computed one.
@@ -118,6 +120,10 @@ pub fn diff_collection_snapshots(
     current: &CollectionMerkleSnapshot,
 ) -> MerkleDiffResult {
     let mut result = MerkleDiffResult::default();
+
+    let collection = previous
+        .map(|snapshot| snapshot.collection.as_str())
+        .unwrap_or(current.collection.as_str());
 
     let previous_files: std::collections::BTreeMap<&str, _> = previous
         .map(|snapshot| {
@@ -146,7 +152,11 @@ pub fn diff_collection_snapshots(
 
     for path in previous_files.keys() {
         if !current_files.contains_key(path) {
-            result.deleted_paths.push((*path).to_string());
+            let deleted_path = (*path).to_string();
+            result
+                .deleted_ids
+                .push(DocumentId::new(collection, &deleted_path).numeric);
+            result.deleted_paths.push(deleted_path);
         }
     }
 
@@ -330,6 +340,7 @@ mod tests {
                 new_paths: vec!["a.md".to_string()],
                 changed_paths: vec![],
                 deleted_paths: vec![],
+                deleted_ids: vec![],
             }
         );
     }
@@ -349,6 +360,7 @@ mod tests {
                 new_paths: vec![],
                 changed_paths: vec!["a.md".to_string()],
                 deleted_paths: vec![],
+                deleted_ids: vec![],
             }
         );
     }
@@ -368,6 +380,7 @@ mod tests {
                 new_paths: vec![],
                 changed_paths: vec![],
                 deleted_paths: vec!["a.md".to_string()],
+                deleted_ids: vec![DocumentId::new("notes", "a.md").numeric],
             }
         );
     }
@@ -383,6 +396,39 @@ mod tests {
         let diff = diff_collection_snapshots(Some(&previous), &current);
 
         assert_eq!(diff, MerkleDiffResult::default());
+    }
+
+    #[test]
+    fn merkle_diff_deleted_ids_match_document_id_derivation_and_ordering() {
+        let previous_tmp = tempfile::tempdir().unwrap();
+        let current_tmp = tempfile::tempdir().unwrap();
+        let previous = write_snapshot(
+            &previous_tmp,
+            &[
+                ("b.md", "bee", 1),
+                ("nested/a.md", "aye", 1),
+                ("nested/c.md", "see", 1),
+            ],
+        );
+        let current = write_snapshot(&current_tmp, &[]);
+
+        let diff = diff_collection_snapshots(Some(&previous), &current);
+
+        assert_eq!(
+            diff.deleted_paths,
+            vec![
+                "b.md".to_string(),
+                "nested/a.md".to_string(),
+                "nested/c.md".to_string(),
+            ]
+        );
+        assert_eq!(
+            diff.deleted_ids,
+            diff.deleted_paths
+                .iter()
+                .map(|path| DocumentId::new("notes", path).numeric)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
