@@ -9,6 +9,7 @@ mod collection_snapshots;
 mod command_handlers;
 mod indexing_workflow;
 mod mcp;
+mod runtime_resources;
 mod web;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
