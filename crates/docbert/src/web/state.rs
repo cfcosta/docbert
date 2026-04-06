@@ -12,6 +12,7 @@ use tantivy::IndexWriter;
 
 #[allow(dead_code)]
 pub(crate) struct Inner {
+    pub(crate) data_dir: DataDir,
     pub(crate) config_db: ConfigDb,
     pub(crate) search_index: SearchIndex,
     pub(crate) embedding_db: EmbeddingDb,
@@ -20,6 +21,12 @@ pub(crate) struct Inner {
 }
 
 pub(crate) type AppState = Arc<Inner>;
+
+impl Inner {
+    pub(crate) fn open_config_db(&self) -> error::Result<&ConfigDb> {
+        Ok(&self.config_db)
+    }
+}
 
 pub(crate) fn init(
     config_db: ConfigDb,
@@ -32,6 +39,7 @@ pub(crate) fn init(
     let writer = search_index.writer(50_000_000)?;
 
     Ok(Arc::new(Inner {
+        data_dir,
         config_db,
         search_index,
         embedding_db,

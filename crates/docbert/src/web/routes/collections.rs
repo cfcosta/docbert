@@ -11,8 +11,10 @@ pub(crate) struct CollectionItem {
 pub(crate) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CollectionItem>>, StatusCode> {
-    let collections = state
-        .config_db
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let collections = config_db
         .list_collections()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let items = collections
@@ -46,6 +48,7 @@ mod tests {
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
+            data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,
             search_index,
             embedding_db,

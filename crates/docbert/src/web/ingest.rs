@@ -403,6 +403,7 @@ mod tests {
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
+            data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,
             search_index,
             embedding_db,

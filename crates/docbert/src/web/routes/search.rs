@@ -183,6 +183,7 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
+        let data_dir = docbert_core::DataDir::new(tmp.path());
         let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let search_index = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
@@ -191,6 +192,7 @@ mod tests {
         (
             tmp,
             Arc::new(Inner {
+                data_dir,
                 config_db,
                 search_index,
                 embedding_db,

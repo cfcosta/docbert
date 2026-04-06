@@ -31,8 +31,10 @@ fn resolve_api_key(
 pub(crate) async fn get(
     State(state): State<AppState>,
 ) -> Result<Json<LlmSettings>, StatusCode> {
-    let stored = state
-        .config_db
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stored = config_db
         .get_persisted_llm_settings()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let api_key = resolve_api_key(stored.api_key, stored.provider.as_deref());
@@ -54,8 +56,8 @@ pub(crate) async fn update(
         api_key: body.api_key.clone().filter(|key| !key.is_empty()),
     };
     state
-        .config_db
-        .set_persisted_llm_settings(&stored)
+        .open_config_db()
+        .and_then(|config_db| config_db.set_persisted_llm_settings(&stored))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(body))
 }
@@ -82,6 +84,7 @@ mod tests {
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
+            data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,
             search_index,
             embedding_db,

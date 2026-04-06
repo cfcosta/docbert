@@ -29,8 +29,10 @@ pub(crate) struct CreateRequest {
 pub(crate) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConversationSummary>>, StatusCode> {
-    let mut summaries: Vec<ConversationSummary> = state
-        .config_db
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut summaries: Vec<ConversationSummary> = config_db
         .list_conversations_typed()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .into_iter()
@@ -59,8 +61,8 @@ pub(crate) async fn create(
         messages: vec![],
     };
     state
-        .config_db
-        .set_conversation_typed(&conv)
+        .open_config_db()
+        .and_then(|config_db| config_db.set_conversation_typed(&conv))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED, Json(conv)))
 }
@@ -69,8 +71,10 @@ pub(crate) async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Conversation>, StatusCode> {
-    let conv = state
-        .config_db
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conv = config_db
         .get_conversation_typed(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -82,8 +86,10 @@ pub(crate) async fn update(
     Path(id): Path<String>,
     Json(mut body): Json<Conversation>,
 ) -> Result<Json<Conversation>, StatusCode> {
-    state
-        .config_db
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    config_db
         .get_conversation_typed(&id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -91,8 +97,7 @@ pub(crate) async fn update(
     body.id = id;
     body.updated_at = now_millis();
 
-    state
-        .config_db
+    config_db
         .set_conversation_typed(&body)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(body))
@@ -103,8 +108,8 @@ pub(crate) async fn delete(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let existed = state
-        .config_db
-        .remove_conversation(&id)
+        .open_config_db()
+        .and_then(|config_db| config_db.remove_conversation(&id))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !existed {
         return Err(StatusCode::NOT_FOUND);
@@ -145,6 +150,7 @@ mod tests {
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
+            data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,
             search_index,
             embedding_db,
