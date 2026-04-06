@@ -9,6 +9,7 @@ description = "A powerful semantic search CLI for your documents"
 docbert-core = { path = "../docbert-core" }
 axum = "0.8"
 clap = { version = "4.5.57", features = ["derive"] }
+include_dir = "0.7"
 clap_complete = "4.5"
 globset = "0.4"
 kdam = { version = "0.6.4", features = ["spinner", "template"] }

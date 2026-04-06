@@ -125,9 +125,9 @@
                     };
                     RUSTFLAGS = "-C target-cpu=native";
                     preBuild = pkgs.lib.optionalString (uiPath != null) ''
-                      rm -rf crates/docserver/ui/dist
-                      mkdir -p crates/docserver/ui
-                      cp -r ${uiPath} crates/docserver/ui/dist
+                      rm -rf crates/docbert/ui/dist
+                      mkdir -p crates/docbert/ui
+                      cp -r ${uiPath} crates/docbert/ui/dist
                     '';
 
                     postInstall = ''

@@ -1,12 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{borrow::Cow, path::Path};
 
 use axum::{
     extract::Request,
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
+use include_dir::{Dir, include_dir};
 
-const UI_DIST_RELATIVE: &str = "../docserver/ui/dist";
+static UI_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
 pub(crate) async fn serve(req: Request) -> Response {
     let path = req.uri().path().trim_start_matches('/');
@@ -15,27 +16,22 @@ pub(crate) async fn serve(req: Request) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    if !path.is_empty() {
-        let asset_path = ui_dist_dir().join(path);
-        if asset_path.is_file() {
-            return match std::fs::read(&asset_path) {
-                Ok(bytes) => file_response(path, bytes),
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
-            };
+    if !path.is_empty()
+        && let Some(file) = UI_DIST.get_file(path)
+    {
+        return file_response(path, Cow::Borrowed(file.contents()));
+    }
+
+    match UI_DIST.get_file("index.html") {
+        Some(file) => {
+            Html(String::from_utf8_lossy(file.contents()).into_owned())
+                .into_response()
         }
-    }
-
-    match std::fs::read_to_string(ui_dist_dir().join("index.html")) {
-        Ok(html) => Html(html).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "UI not built").into_response(),
+        None => (StatusCode::NOT_FOUND, "UI not built").into_response(),
     }
 }
 
-fn ui_dist_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(UI_DIST_RELATIVE)
-}
-
-fn file_response(path: &str, bytes: Vec<u8>) -> Response {
+fn file_response(path: &str, bytes: Cow<'_, [u8]>) -> Response {
     let content_type =
         match Path::new(path).extension().and_then(|ext| ext.to_str()) {
             Some("css") => "text/css; charset=utf-8",
@@ -52,5 +48,5 @@ fn file_response(path: &str, bytes: Vec<u8>) -> Response {
             _ => "application/octet-stream",
         };
 
-    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+    ([(header::CONTENT_TYPE, content_type)], bytes.into_owned()).into_response()
 }
