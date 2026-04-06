@@ -76,6 +76,25 @@ fn main() -> error::Result<()> {
     }
 
     let data_dir = resolve_data_dir(cli.data_dir.as_deref())?;
+
+    if let Command::Mcp = &cli.command {
+        let model_id = {
+            let config_db = ConfigDb::open(&data_dir.config_db())?;
+            resolve_model(&config_db, cli.model.as_deref())?.model_id
+        };
+        mcp::run_mcp(data_dir, model_id)?;
+        return Ok(());
+    }
+
+    if let Command::Web(args) = &cli.command {
+        let model_id = {
+            let config_db = ConfigDb::open(&data_dir.config_db())?;
+            resolve_model(&config_db, cli.model.as_deref())?.model_id
+        };
+        web::run(args, data_dir, model_id)?;
+        return Ok(());
+    }
+
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let model_resolution = resolve_model(&config_db, cli.model.as_deref())?;
 
@@ -152,17 +171,8 @@ fn main() -> error::Result<()> {
                 args.json,
             )?;
         }
-        Command::Mcp => {
-            mcp::run_mcp(data_dir, config_db, model_resolution.model_id)?;
-        }
-        Command::Web(args) => {
-            web::run(
-                &args,
-                data_dir,
-                config_db,
-                model_resolution.model_id.clone(),
-            )?;
-        }
+        Command::Mcp => unreachable!(), // Handled above
+        Command::Web(_) => unreachable!(), // Handled above
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {
                 command_handlers::cmd_model_show(&model_resolution, json);

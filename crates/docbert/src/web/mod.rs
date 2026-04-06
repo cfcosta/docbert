@@ -12,9 +12,9 @@ mod ui;
 pub(crate) fn run(
     args: &WebArgs,
     data_dir: DataDir,
-    config_db: ConfigDb,
     model_id: String,
 ) -> error::Result<()> {
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let state = state::init(config_db, data_dir, model_id)?;
     server::run(&args.host, args.port, state)
 }

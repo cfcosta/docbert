@@ -868,11 +868,8 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
 ///
 /// This blocks until the client disconnects. In practice, it is what
 /// `docbert mcp` calls.
-pub fn run_mcp(
-    data_dir: DataDir,
-    config_db: ConfigDb,
-    model_id: String,
-) -> error::Result<()> {
+pub fn run_mcp(data_dir: DataDir, model_id: String) -> error::Result<()> {
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
