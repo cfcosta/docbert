@@ -526,6 +526,11 @@ mod tests {
         assert_eq!(upload_response.status(), StatusCode::OK);
 
         let did = DocumentId::new("notes", "hello.md");
+        let previous_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after upload");
         let response = documents_router(state.clone())
             .oneshot(
                 Request::builder()
@@ -556,6 +561,13 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let updated_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after delete");
+        assert!(updated_snapshot.files.is_empty());
+        assert_ne!(previous_snapshot.root_hash, updated_snapshot.root_hash);
     }
 
     #[tokio::test]
@@ -588,6 +600,11 @@ mod tests {
         assert_eq!(upload_response.status(), StatusCode::OK);
 
         let did = DocumentId::new("notes", "hello.md");
+        let previous_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after upload");
         let response = documents_router(state.clone())
             .oneshot(
                 Request::builder()
@@ -611,6 +628,13 @@ mod tests {
                 .is_none()
         );
         assert!(state.embedding_db.load(did.numeric).unwrap().is_none());
+        let updated_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after delete");
+        assert!(updated_snapshot.files.is_empty());
+        assert_ne!(previous_snapshot.root_hash, updated_snapshot.root_hash);
     }
 
     #[tokio::test]

@@ -164,6 +164,11 @@ pub(crate) fn delete_document(
     collection: &str,
     relative_path: &str,
 ) -> error::Result<()> {
+    let collection_root = collection_root(state, collection)?;
+    let previous_snapshot = collection_snapshots::load_collection_snapshot(
+        &state.config_db,
+        collection,
+    )?;
     let did = DocumentId::new(collection, relative_path);
     let mut writer = state.writer.lock().map_err(|_| {
         error::Error::Config("failed to lock tantivy writer".to_string())
@@ -177,6 +182,12 @@ pub(crate) fn delete_document(
     state.embedding_db.remove_document_family(did.numeric)?;
     state.config_db.remove_document_metadata(did.numeric)?;
     state.config_db.remove_document_user_metadata(did.numeric)?;
+    refresh_collection_snapshot(
+        state,
+        collection,
+        &collection_root,
+        previous_snapshot.as_ref(),
+    )?;
 
     Ok(())
 }
@@ -664,6 +675,39 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            state
+                .config_db
+                .get_collection_merkle_snapshot("notes")
+                .unwrap(),
+            Some(original_snapshot)
+        );
+    }
+
+    #[test]
+    fn web_delete_snapshot_failure_preserves_previous_snapshot() {
+        let (tmp, state) = test_state();
+        let root = seed_collection_root(&tmp, &state, "notes");
+        let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
+        let document =
+            load_markdown_document("notes", "hello.md", &full_path, None, 1)
+                .unwrap();
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &document,
+            &fake_embedding_entries(document.did.numeric, 1),
+        )
+        .unwrap();
+        let original_snapshot = state
+            .config_db
+            .get_collection_merkle_snapshot("notes")
+            .unwrap()
+            .expect("snapshot should exist after ingest");
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(delete_document(&state, "notes", "hello.md").is_err());
         assert_eq!(
             state
                 .config_db
