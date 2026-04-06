@@ -4,6 +4,7 @@ use super::{state::AppState, ui};
 
 pub(crate) mod collections;
 pub(crate) mod conversations;
+pub(crate) mod documents;
 pub(crate) mod settings;
 
 pub(crate) fn router() -> Router<AppState> {
@@ -22,6 +23,14 @@ pub(crate) fn router() -> Router<AppState> {
             routing::get(conversations::get)
                 .put(conversations::update)
                 .delete(conversations::delete),
+        )
+        .route(
+            "/v1/collections/{name}/documents",
+            routing::get(documents::list_by_collection),
+        )
+        .route(
+            "/v1/documents/{collection}/{*path}",
+            routing::get(documents::get),
         )
         .route("/v1/settings/llm", routing::get(settings::get))
         .route("/v1/settings/llm", routing::put(settings::update))
