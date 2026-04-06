@@ -215,6 +215,25 @@ pub(crate) async fn list_by_collection(
     Ok(Json(items))
 }
 
+pub(crate) async fn delete(
+    State(state): State<AppState>,
+    AxumPath((collection, path)): AxumPath<(String, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let did = DocumentId::new(&collection, &path);
+    state
+        .config_db
+        .get_document_metadata_typed(did.numeric)
+        .map_err(map_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let full_path = paths::resolve_document_path(&state.config_db, &collection, &path)
+        .map_err(map_error)?;
+    std::fs::remove_file(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
+    ingest::delete_document(&state, &collection, &path).map_err(map_error)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn get(
     State(state): State<AppState>,
     AxumPath((collection, path)): AxumPath<(String, String)>,
@@ -293,7 +312,7 @@ mod tests {
             )
             .route(
                 "/v1/documents/{collection}/{*path}",
-                routing::get(get),
+                routing::get(get).delete(delete),
             )
             .with_state(state)
     }
@@ -439,6 +458,147 @@ mod tests {
             std::fs::read_to_string(root.join("hello.md")).unwrap(),
             "# Updated\n\nBody v2"
         );
+    }
+
+    #[tokio::test]
+    async fn web_documents_delete_removes_source_file_and_metadata() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let upload_response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Uploaded\n\nBody","content_type":"text/markdown","metadata":{"topic":"rust"}}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload_response.status(), StatusCode::OK);
+
+        let did = DocumentId::new("notes", "hello.md");
+        let response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/hello.md")
+                    .method("DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(!root.join("hello.md").exists());
+        assert!(
+            state
+                .config_db
+                .get_document_metadata_typed(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .config_db
+                .get_document_user_metadata(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn web_documents_delete_removes_tantivy_entry_and_embeddings() {
+        let _guard = env_lock();
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let upload_response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Uploaded\n\nBody","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload_response.status(), StatusCode::OK);
+
+        let did = DocumentId::new("notes", "hello.md");
+        let response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/hello.md")
+                    .method("DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            state
+                .search_index
+                .find_by_collection_path("notes", "hello.md")
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.embedding_db.load(did.numeric).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn web_documents_delete_returns_not_found_for_missing() {
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        state
+            .config_db
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/missing.md")
+                    .method("DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

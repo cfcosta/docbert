@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use docbert_core::{
+    DocumentId,
     chunking::document_family_key,
     error,
     incremental,
@@ -114,6 +115,26 @@ pub(crate) fn ingest_prepared_document(
         title: document.title.clone(),
         metadata: document.metadata.clone(),
     })
+}
+
+pub(crate) fn delete_document(
+    state: &AppState,
+    collection: &str,
+    relative_path: &str,
+) -> error::Result<()> {
+    let did = DocumentId::new(collection, relative_path);
+    let mut writer = state.writer.lock().map_err(|_| {
+        error::Error::Config("failed to lock tantivy writer".to_string())
+    })?;
+
+    state.search_index.delete_document(&writer, &did.to_string());
+    writer.commit()?;
+
+    state.embedding_db.remove_document_family(did.numeric)?;
+    state.config_db.remove_document_metadata(did.numeric)?;
+    state.config_db.remove_document_user_metadata(did.numeric)?;
+
+    Ok(())
 }
 
 fn persist_metadata(

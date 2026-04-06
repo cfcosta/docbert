@@ -159,6 +159,44 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+fn web_delete_then_get_and_search_fail() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let collection_root = setup_collection(tempdir.path(), "notes")?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server_with_test_embeddings(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let upload = http_post_json(
+        port,
+        "/v1/documents",
+        r##"{"collection":"notes","documents":[{"path":"nested/uploaded.md","content":"# Uploaded\n\nBody on disk","content_type":"text/markdown"}]}"##,
+    )?;
+    assert!(upload.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {upload}");
+    assert!(collection_root.join("nested/uploaded.md").exists());
+
+    let delete = http_delete(port, "/v1/documents/notes/nested/uploaded.md")?;
+    assert!(delete.starts_with("HTTP/1.1 204 No Content\r\n"), "unexpected response: {delete}");
+    assert!(!collection_root.join("nested/uploaded.md").exists());
+
+    let get = http_get(port, "/v1/documents/notes/nested/uploaded.md")?;
+    assert!(get.starts_with("HTTP/1.1 404 Not Found\r\n"), "unexpected response: {get}");
+
+    let search = http_post_json(
+        port,
+        "/v1/search",
+        r#"{"query":"uploaded","mode":"hybrid","count":10,"min_score":0.0}"#,
+    )?;
+    assert!(search.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {search}");
+    assert!(search.contains("\"result_count\":0"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
 fn spawn_web_server(
     data_dir: &Path,
     port: u16,
@@ -250,6 +288,23 @@ fn http_post_json(
         port,
         body.len(),
         body,
+    )?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
+}
+
+fn http_delete(
+    port: u16,
+    path: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    write!(
+        stream,
+        "DELETE {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        path, port
     )?;
     stream.flush()?;
 

@@ -32,7 +32,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route(
             "/v1/documents/{collection}/{*path}",
-            routing::get(documents::get),
+            routing::get(documents::get).delete(documents::delete),
         )
         .route("/v1/search", routing::post(search::search))
         .route("/v1/settings/llm", routing::get(settings::get))
