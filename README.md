@@ -4,6 +4,8 @@ docbert is a CLI for searching local documents. It uses BM25 to find likely matc
 
 Point it at one or more folders, sync the index, and search across Markdown or plain text files.
 
+It can also serve a local web UI with `docbert web`, using those same CLI-managed collection folders as the source of truth.
+
 ## What it does
 
 - two-stage search with BM25 and ColBERT
@@ -41,7 +43,34 @@ docbert search "rust ownership" --json
 
 # Print matching file paths
 docbert search "todo" --files | xargs -I {} code {}
+
+# Start the web UI on localhost:3030
+# Collections must already be added with `docbert collection add`
+docbert web --host 127.0.0.1 --port 3030
 ```
+
+## Web UI
+
+The web UI uses the same collection folders registered in the CLI.
+
+Typical setup:
+
+```bash
+# Register a source folder first
+docbert collection add ~/notes --name notes
+
+# Index existing files
+docbert sync
+
+# Start the web UI
+docbert web --host 127.0.0.1 --port 3030
+```
+
+Behavior:
+
+- `GET /v1/collections` lists CLI-managed collections
+- uploads write into collection folders on disk, then index/embed the new file
+- document deletion removes the source file from the collection folder, then removes indexed state
 
 ## MCP server
 

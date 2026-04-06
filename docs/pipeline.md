@@ -2,6 +2,8 @@
 
 ## Indexing pipeline
 
+The same filesystem-backed indexing path now powers both the CLI and `docbert web`.
+
 ### Phase 1: document discovery
 
 `docbert collection add ~/notes --name notes` does not index files. It only records the collection name and directory path in `config.db`.
@@ -44,6 +46,15 @@ On later runs of `docbert sync`:
 2. Compare mtimes against values stored in `config.db`
 3. Re-process only new or changed files
 4. Remove Tantivy entries and embeddings for files that were deleted on disk
+
+### Web document lifecycle
+
+`docbert web` uses the same collection folders and indexing primitives:
+
+- `GET /v1/collections` lists the collection folders already registered in the CLI
+- `POST /v1/documents` writes a source file into the selected collection folder, then indexes and embeds it
+- `GET /v1/documents/...` reads the source file from disk
+- `DELETE /v1/documents/...` removes the source file from disk, then removes indexed state
 
 ## Search pipeline
 

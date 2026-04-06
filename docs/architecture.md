@@ -2,9 +2,11 @@
 
 ## Overview
 
-docbert is a hybrid document search tool. It keeps a Tantivy index for lexical retrieval and a redb store for ColBERT embeddings, then ties them together behind a CLI.
+docbert is a hybrid document search tool. It keeps a Tantivy index for lexical retrieval and a redb store for ColBERT embeddings, then ties them together behind a CLI and a local web UI.
 
 The main unit of organization is a collection: a named directory tree on disk. You register collections first, then run `docbert sync` or `docbert rebuild` when you want the index updated.
+
+The web server is started with `docbert web --host 127.0.0.1 --port 3030` and serves both the SPA and a small JSON API. `GET /v1/collections` reflects the CLI-managed collections already stored in `config.db`.
 
 ## Main components
 
@@ -66,11 +68,21 @@ The reranker scores each candidate returned by Tantivy.
 
 The CLI is the public face of the system.
 
-- Subcommands: `collection`, `context`, `search`, `get`, `multi-get`
+- Subcommands: `collection`, `context`, `search`, `get`, `multi-get`, `web`, `mcp`
 - Output formats: human-readable by default, or JSON with `--json`
 - Collection filtering: `-c <name>` to search a single collection
 - Score thresholding: `--min-score` to drop low-scoring results
 - Pagination: `-n` to control result count
+
+### 8. Web interface (`docbert web`)
+
+The web interface serves a SPA and a local JSON API from the same process.
+
+- Reads collection definitions from `config.db`
+- Lists collections through `GET /v1/collections`
+- Reads document titles/content from collection folders on disk
+- Uploads write source files into collection folders, then index and embed them
+- Deletes remove the source file from the collection folder, then remove indexed state
 
 ## Data flow
 

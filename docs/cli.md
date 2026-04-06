@@ -256,6 +256,32 @@ Collections: 3
 Documents: 1070
 ```
 
+### `docbert web`
+
+Start the local web UI server.
+
+Use this after you have already registered one or more source folders with `docbert collection add`.
+
+```bash
+docbert collection add ~/notes --name notes
+docbert sync
+docbert web --host 127.0.0.1 --port 3030
+```
+
+#### Options
+
+| Option          | Description                    |
+| --------------- | ------------------------------ |
+| `--host <addr>` | Bind address (default `127.0.0.1`) |
+| `--port <num>`  | Bind port (default `3030`)     |
+
+#### Behavior
+
+- serves the SPA and API from one local process
+- `GET /v1/collections` lists CLI-managed collections
+- uploads write files into collection folders on disk, then ingest them
+- document deletion removes the source file from disk, then removes indexed state
+
 ### `docbert mcp`
 
 Start the MCP (Model Context Protocol) server for AI agents.

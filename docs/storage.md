@@ -9,6 +9,7 @@ docbert stores three different kinds of data, and each one lives in the place th
 | redb (config)     | Collection definitions, document metadata, settings | Typed key-value store  |
 | redb (embeddings) | ColBERT per-token embedding matrices                | Binary key-value store |
 | Tantivy           | Full-text search index (BM25 + fuzzy)               | Inverted index on disk |
+| collection folders | Source files for CLI and web reads/uploads/deletes | Regular filesystem files |
 
 All of it lives under the XDG data directory: `$XDG_DATA_HOME/docbert/`, usually `~/.local/share/docbert/`.
 
@@ -24,6 +25,15 @@ All of it lives under the XDG data directory: `$XDG_DATA_HOME/docbert/`, usually
 ```
 
 The `xdg` crate handles platform-appropriate directory resolution.
+
+## Source-of-truth files
+
+Collection folders are the source of truth for document content.
+
+- `docbert sync` and `docbert rebuild` read from collection folders
+- `docbert web` reads document previews and search excerpts from collection folders
+- web uploads write new source files into collection folders
+- web deletion removes the source file from the collection folder before cleaning index state
 
 ## `config.db` schema
 
