@@ -39,7 +39,10 @@
             let
               pkgs = import nixpkgs {
                 inherit system;
-                overlays = [ (import rust-overlay) ];
+                overlays = [
+                  (import rust-overlay)
+                  bun2nix.overlays.default
+                ];
                 config.allowUnfree = true;
               };
 
@@ -77,26 +80,33 @@
                   };
                 }).config.build.wrapper;
 
-              mkRustWorkspacePackage =
+              uiPath = pkgs.bun2nix.mkDerivation {
+                pname = "docbert-ui";
+                src = ./crates/docbert/ui;
+                packageJson = ./crates/docbert/ui/package.json;
+                bunDeps = pkgs.bun2nix.fetchBunDeps { bunNix = ./crates/docbert/ui/bun.nix; };
+                buildPhase = ''
+                  bun run build
+                '';
+                installPhase = ''
+                  mkdir $out
+                  cp -rf dist/* $out/
+                '';
+              };
+
+              mkPackage =
                 {
                   name,
-                  cargoPackage,
-                  mainProgram ? cargoPackage,
+                  cargoPackage ? "docbert",
+                  mainProgram ? "docbert",
                   buildFeatures ? [ ],
                   buildInputs ? [ ],
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
-                  uiDist ? null,
-                  postInstall ? "",
                 }:
                 rustPlatform.buildRustPackage (
                   {
-                    inherit
-                      name
-                      buildInputs
-                      buildFeatures
-                      postInstall
-                      ;
+                    inherit name buildInputs buildFeatures;
                     nativeBuildInputs = nativeBuildInputs;
                     src = ./.;
                     cargoBuildFlags = [
@@ -114,10 +124,21 @@
                       };
                     };
                     RUSTFLAGS = "-C target-cpu=native";
-                    preBuild = pkgs.lib.optionalString (uiDist != null) ''
+                    preBuild = pkgs.lib.optionalString (uiPath != null) ''
                       rm -rf crates/docserver/ui/dist
                       mkdir -p crates/docserver/ui
-                      cp -r ${uiDist}/dist crates/docserver/ui/dist
+                      cp -r ${uiPath} crates/docserver/ui/dist
+                    '';
+
+                    postInstall = ''
+                      # Generate shell completions
+                      mkdir -p $out/share/bash-completion/completions
+                      mkdir -p $out/share/zsh/site-functions
+                      mkdir -p $out/share/fish/vendor_completions.d
+
+                      $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+                      $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+                      $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
                     '';
 
                     meta.mainProgram = mainProgram;
@@ -127,11 +148,11 @@
             in
             {
               inherit
-                system
+                formatter
+                mkPackage
                 pkgs
                 rust
-                formatter
-                mkRustWorkspacePackage
+                system
                 ;
             }
           )
@@ -139,12 +160,7 @@
     in
     {
       packages = forEachSupportedSystem (
-        {
-          mkRustWorkspacePackage,
-          pkgs,
-          system,
-          ...
-        }:
+        { mkPackage, pkgs, ... }:
         let
           cudaNativeBuildInputs = with pkgs; [
             cudaPackages.cuda_nvcc
@@ -161,66 +177,21 @@
           };
         in
         {
-          default = mkRustWorkspacePackage {
-            name = "docbert";
-            cargoPackage = "docbert";
-            postInstall = ''
-              # Generate shell completions
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-              mkdir -p $out/share/fish/vendor_completions.d
+          default = mkPackage { name = "docbert"; };
 
-              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-            '';
-          };
-          docbert = mkRustWorkspacePackage {
-            name = "docbert";
-            cargoPackage = "docbert";
-            postInstall = ''
-              # Generate shell completions
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-              mkdir -p $out/share/fish/vendor_completions.d
+          docbert = mkPackage { name = "docbert"; };
 
-              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-            '';
-          };
-          docbert-cuda = mkRustWorkspacePackage {
+          docbert-cuda = mkPackage {
             name = "docbert-cuda";
-            cargoPackage = "docbert";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs;
             buildInputs = cudaBuildInputs;
             extraEnv = cudaEnv;
-            postInstall = ''
-              # Generate shell completions
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-              mkdir -p $out/share/fish/vendor_completions.d
-
-              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-            '';
           };
-          docbert-metal = mkRustWorkspacePackage {
-            name = "docbert-metal";
-            cargoPackage = "docbert";
-            buildFeatures = [ "metal" ];
-            postInstall = ''
-              # Generate shell completions
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-              mkdir -p $out/share/fish/vendor_completions.d
 
-              $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-              $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-              $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-            '';
+          docbert-metal = mkPackage {
+            name = "docbert-metal";
+            buildFeatures = [ "metal" ];
           };
         }
       );
@@ -242,8 +213,9 @@
               buildInputs =
                 with pkgs;
                 [
-                  rust
+                  bun2nix.packages.${pkgs.stdenv.hostPlatform.system}.default
                   formatter
+                  rust
 
                   bacon
                   bun
