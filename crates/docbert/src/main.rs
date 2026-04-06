@@ -155,7 +155,12 @@ fn main() -> error::Result<()> {
             mcp::run_mcp(data_dir, config_db, model_resolution.model_id)?;
         }
         Command::Web(args) => {
-            web::run(&args)?;
+            web::run(
+                &args,
+                data_dir,
+                config_db,
+                model_resolution.model_id.clone(),
+            )?;
         }
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {

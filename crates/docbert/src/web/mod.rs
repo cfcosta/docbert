@@ -1,9 +1,16 @@
-use docbert_core::error;
+use docbert_core::{ConfigDb, DataDir, error};
 
 use crate::cli::WebArgs;
 
-pub(crate) fn run(_args: &WebArgs) -> error::Result<()> {
-    Err(error::Error::Config(
-        "docbert web is not implemented yet".to_string(),
-    ))
+mod server;
+mod state;
+
+pub(crate) fn run(
+    args: &WebArgs,
+    data_dir: DataDir,
+    config_db: ConfigDb,
+    model_id: String,
+) -> error::Result<()> {
+    let state = state::init(config_db, data_dir, model_id)?;
+    server::run(&args.host, args.port, state)
 }
