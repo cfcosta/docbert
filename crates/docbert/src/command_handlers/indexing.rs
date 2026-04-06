@@ -309,44 +309,58 @@ pub(crate) fn cmd_sync(
             selection.deleted_ids.len()
         );
 
-        if !selection.deleted_ids.is_empty() {
-            let mut writer = runtime.search_index.writer(15_000_000)?;
-            for &doc_id in &selection.deleted_ids {
-                let display = search::short_doc_id(doc_id);
-                runtime.search_index.delete_document(&writer, &display);
+        let sync_result = (|| {
+            if !selection.deleted_ids.is_empty() {
+                let mut writer = runtime.search_index.writer(15_000_000)?;
+                for &doc_id in &selection.deleted_ids {
+                    let display = search::short_doc_id(doc_id);
+                    runtime.search_index.delete_document(&writer, &display);
+                }
+                writer.commit()?;
+
+                remove_document_embeddings_for_ids(
+                    &runtime.embedding_db,
+                    &selection.deleted_ids,
+                )?;
+                remove_document_artifacts_for_ids(
+                    config_db,
+                    &selection.deleted_ids,
+                )?;
+                eprintln!(
+                    "  Removed {} documents",
+                    selection.deleted_ids.len()
+                );
             }
-            writer.commit()?;
 
-            remove_document_embeddings_for_ids(
-                &runtime.embedding_db,
-                &selection.deleted_ids,
-            )?;
-            remove_document_artifacts_for_ids(
-                config_db,
-                &selection.deleted_ids,
-            )?;
-            eprintln!("  Removed {} documents", selection.deleted_ids.len());
-        }
+            let files_to_process: Vec<_> = selection
+                .new_files
+                .iter()
+                .chain(selection.changed_files.iter())
+                .cloned()
+                .collect();
 
-        let files_to_process: Vec<_> = selection
-            .new_files
-            .into_iter()
-            .chain(selection.changed_files)
-            .collect();
+            if !files_to_process.is_empty() {
+                eprintln!("  Loading {} files...", files_to_process.len());
+                let document_batch =
+                    indexing_workflow::load_sync_batch(name, &files_to_process);
+                process_document_batch(
+                    config_db,
+                    &mut runtime,
+                    name,
+                    &document_batch,
+                    true,
+                    true,
+                )?;
+            }
 
-        if !files_to_process.is_empty() {
-            eprintln!("  Loading {} files...", files_to_process.len());
-            let document_batch =
-                indexing_workflow::load_sync_batch(name, &files_to_process);
-            process_document_batch(
-                config_db,
-                &mut runtime,
-                name,
-                &document_batch,
-                true,
-                true,
-            )?;
-        }
+            Ok(())
+        })();
+
+        indexing_workflow::finalize_sync_snapshot(
+            config_db,
+            &selection,
+            sync_result,
+        )?;
 
         eprintln!("  Done.");
     }

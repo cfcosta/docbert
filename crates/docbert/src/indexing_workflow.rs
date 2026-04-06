@@ -4,6 +4,7 @@ use docbert_core::{
     ConfigDb,
     error,
     ingestion::{self, LoadFailure},
+    merkle::CollectionMerkleSnapshot,
     preparation::SearchDocument,
     walker::{self, DiscoveredFile},
 };
@@ -66,11 +67,12 @@ pub(crate) fn load_sync_batch(
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct SyncSelection {
     pub new_files: Vec<DiscoveredFile>,
     pub changed_files: Vec<DiscoveredFile>,
     pub deleted_ids: Vec<u64>,
+    pub current_snapshot: CollectionMerkleSnapshot,
 }
 
 pub(crate) fn select_sync_work(
@@ -95,8 +97,10 @@ pub(crate) fn select_sync_work(
         .collect();
 
     let mut selection = SyncSelection {
+        new_files: Vec::new(),
+        changed_files: Vec::new(),
         deleted_ids: change.diff.deleted_ids,
-        ..SyncSelection::default()
+        current_snapshot: change.current_snapshot,
     };
 
     for file in discovered {
@@ -111,6 +115,18 @@ pub(crate) fn select_sync_work(
     Ok(selection)
 }
 
+pub(crate) fn finalize_sync_snapshot(
+    config_db: &ConfigDb,
+    selection: &SyncSelection,
+    sync_result: error::Result<()>,
+) -> error::Result<()> {
+    sync_result?;
+    collection_snapshots::replace_collection_snapshot(
+        config_db,
+        &selection.current_snapshot,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -118,6 +134,21 @@ mod tests {
     use docbert_core::{doc_id::DocumentId, incremental};
 
     use super::*;
+
+    fn seed_snapshot(
+        config_db: &ConfigDb,
+        collection: &str,
+        root: &std::path::Path,
+    ) -> docbert_core::merkle::CollectionMerkleSnapshot {
+        let files = docbert_core::walker::discover_files(root).unwrap();
+        let snapshot =
+            docbert_core::merkle::build_collection_snapshot(collection, &files)
+                .unwrap();
+        config_db
+            .set_collection_merkle_snapshot(collection, &snapshot)
+            .unwrap();
+        snapshot
+    }
 
     fn rebuild_args(
         index_only: bool,
@@ -181,14 +212,7 @@ mod tests {
             docbert_core::walker::discover_files(&root).unwrap();
         incremental::batch_store_metadata(&config_db, "notes", &initial_files)
             .unwrap();
-        let initial_snapshot = docbert_core::merkle::build_collection_snapshot(
-            "notes",
-            &initial_files,
-        )
-        .unwrap();
-        config_db
-            .set_collection_merkle_snapshot("notes", &initial_snapshot)
-            .unwrap();
+        let initial_snapshot = seed_snapshot(&config_db, "notes", &root);
 
         std::thread::sleep(std::time::Duration::from_secs(1));
         std::fs::write(root.join("a.md"), "# A\n\nUpdated").unwrap();
@@ -236,6 +260,59 @@ mod tests {
                 .get_document_metadata_typed(deleted_id.numeric)
                 .unwrap()
                 .is_none()
+        );
+        assert_eq!(
+            config_db.get_collection_merkle_snapshot("notes").unwrap(),
+            Some(initial_snapshot)
+        );
+    }
+
+    #[test]
+    fn finalize_sync_snapshot_replaces_snapshot_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "original").unwrap();
+
+        let original_snapshot = seed_snapshot(&config_db, "notes", &root);
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::fs::write(root.join("a.md"), "updated").unwrap();
+
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        assert_ne!(selection.current_snapshot, original_snapshot);
+
+        finalize_sync_snapshot(&config_db, &selection, Ok(())).unwrap();
+
+        assert_eq!(
+            config_db.get_collection_merkle_snapshot("notes").unwrap(),
+            Some(selection.current_snapshot)
+        );
+    }
+
+    #[test]
+    fn finalize_sync_snapshot_preserves_snapshot_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "original").unwrap();
+
+        let original_snapshot = seed_snapshot(&config_db, "notes", &root);
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::fs::write(root.join("a.md"), "updated").unwrap();
+
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        let failure = Err(error::Error::Config("sync failed".to_string()));
+
+        assert!(
+            finalize_sync_snapshot(&config_db, &selection, failure).is_err()
+        );
+        assert_eq!(
+            config_db.get_collection_merkle_snapshot("notes").unwrap(),
+            Some(original_snapshot)
         );
     }
 
