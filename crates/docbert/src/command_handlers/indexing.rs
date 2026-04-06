@@ -30,7 +30,7 @@ pub(super) fn remove_document_artifacts_for_ids(
     config_db: &ConfigDb,
     doc_ids: &[u64],
 ) -> error::Result<()> {
-    config_db.batch_remove_document_artifacts(doc_ids)
+    config_db.batch_remove_document_state(doc_ids)
 }
 
 fn log_load_failures(failures: &[ingestion::LoadFailure]) {

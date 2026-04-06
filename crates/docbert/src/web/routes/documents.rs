@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_documents_get_returns_document_content_and_title_from_disk_not_config() {
+    async fn web_documents_get_returns_document_content_and_title_from_disk() {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
@@ -663,7 +663,10 @@ mod tests {
         );
         state
             .config_db
-            .set_document_content(did.numeric, "Stored content")
+            .set_document_user_metadata(
+                did.numeric,
+                &serde_json::json!({ "topic": "rust" }),
+            )
             .unwrap();
 
         let response = documents_router(state)
@@ -682,5 +685,6 @@ mod tests {
         let item: DocumentResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(item.title, "Disk Title");
         assert_eq!(item.content, "# Disk Title\n\nDisk body");
+        assert_eq!(item.metadata, Some(serde_json::json!({ "topic": "rust" })));
     }
 }
