@@ -1,6 +1,6 @@
 use axum::{Router, http::StatusCode, routing};
 
-use super::state::AppState;
+use super::{state::AppState, ui};
 
 pub(crate) mod collections;
 pub(crate) mod conversations;
@@ -25,4 +25,5 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/v1/settings/llm", routing::get(settings::get))
         .route("/v1/settings/llm", routing::put(settings::update))
+        .fallback(ui::serve)
 }

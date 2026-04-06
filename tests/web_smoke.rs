@@ -57,6 +57,44 @@ fn web_settings_route_responds() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+fn web_root_serves_index_html() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let response = http_get(port, "/")?;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(response.contains("<!doctype html>"));
+    assert!(response.contains("<div id=\"root\"></div>"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
+#[test]
+fn web_spa_fallback_serves_index_html() -> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let response = http_get(port, "/documents/notes/hello.md")?;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {response}");
+    assert!(response.contains("<!doctype html>"));
+    assert!(response.contains("<div id=\"root\"></div>"));
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
 fn spawn_web_server(
     data_dir: &std::path::Path,
     port: u16,
