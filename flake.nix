@@ -146,25 +146,6 @@
           ...
         }:
         let
-          bun2nixPackage = bun2nix.packages.${system}.default;
-          mkDocserverUi = pkgs.stdenv.mkDerivation {
-            pname = "docserver-ui";
-            version = "0.2.1";
-            src = ./crates/docserver/ui;
-            nativeBuildInputs = [ bun2nixPackage.hook ];
-            bunDeps = bun2nixPackage.fetchBunDeps { bunNix = ./crates/docserver/ui/bun.nix; };
-            buildPhase = ''
-              runHook preBuild
-              bun run build
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              mkdir -p $out
-              cp -R dist $out/dist
-              runHook postInstall
-            '';
-          };
           cudaNativeBuildInputs = with pkgs; [
             cudaPackages.cuda_nvcc
             autoAddDriverRunpath
@@ -240,26 +221,6 @@
               $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
               $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
             '';
-          };
-          docserver = mkRustWorkspacePackage {
-            name = "docserver";
-            cargoPackage = "docserver";
-            uiDist = mkDocserverUi;
-          };
-          docserver-cuda = mkRustWorkspacePackage {
-            name = "docserver-cuda";
-            cargoPackage = "docserver";
-            buildFeatures = [ "cuda" ];
-            uiDist = mkDocserverUi;
-            nativeBuildInputs = cudaNativeBuildInputs;
-            buildInputs = cudaBuildInputs;
-            extraEnv = cudaEnv;
-          };
-          docserver-metal = mkRustWorkspacePackage {
-            name = "docserver-metal";
-            cargoPackage = "docserver";
-            buildFeatures = [ "metal" ];
-            uiDist = mkDocserverUi;
           };
         }
       );
