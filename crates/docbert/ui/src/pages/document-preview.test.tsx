@@ -131,4 +131,20 @@ describe("DocumentPreview", () => {
       fragment: "Part",
     });
   });
+
+  test("removes a leading markdown title when it duplicates the header title", () => {
+    const view = renderPreview("# Current\n\nBody paragraph");
+    const scoped = within(view.container);
+
+    expect(scoped.getAllByRole("heading", { name: "Current" })).toHaveLength(1);
+    expect(scoped.getByText("Body paragraph")).toBeTruthy();
+  });
+
+  test("keeps a leading markdown title when it differs from the header title", () => {
+    const view = renderPreview("# Different title\n\nBody paragraph");
+    const scoped = within(view.container);
+
+    expect(scoped.getByRole("heading", { name: "Different title" })).toBeTruthy();
+    expect(scoped.getByText("Body paragraph")).toBeTruthy();
+  });
 });

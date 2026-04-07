@@ -89,7 +89,10 @@ function LoadedDocumentPreview({
 }) {
   const permalink = buildDocumentTabHref(selectedDoc.collection, selectedDoc.path);
   const parsed = preview ? parseDocumentFrontmatter(preview) : null;
-  const body = parsed?.body ?? preview ?? "";
+  const body = useMemo(
+    () => stripLeadingDocumentTitle(parsed?.body ?? preview ?? "", selectedDoc.title),
+    [parsed?.body, preview, selectedDoc.title],
+  );
   const markdownSource = useMemo(
     () =>
       rewriteObsidianLinksToMarkdown(body, {
@@ -250,6 +253,42 @@ function LoadedDocumentPreview({
       </div>
     </>
   );
+}
+
+function stripLeadingDocumentTitle(source: string, title: string): string {
+  const normalizedTitle = title.trim().toLowerCase();
+  if (!normalizedTitle) {
+    return source;
+  }
+
+  const lines = source.split(/\r?\n/);
+  let index = 0;
+
+  while (index < lines.length && lines[index].trim().length === 0) {
+    index += 1;
+  }
+
+  if (index >= lines.length) {
+    return source;
+  }
+
+  const firstContentLine = lines[index].trim();
+  const headingMatch = /^(#{1,6})\s+(.*)$/.exec(firstContentLine);
+  if (!headingMatch) {
+    return source;
+  }
+
+  const headingText = headingMatch[2].trim().toLowerCase();
+  if (headingText !== normalizedTitle) {
+    return source;
+  }
+
+  lines.splice(index, 1);
+  if (index < lines.length && lines[index].trim().length === 0) {
+    lines.splice(index, 1);
+  }
+
+  return lines.join("\n");
 }
 
 function rewriteObsidianLinksToMarkdown(
