@@ -34,7 +34,7 @@ function deferred<T>() {
 
 function LocationObserver() {
   const location = useLocation();
-  return <div data-testid="location-path">{location.pathname}</div>;
+  return <div data-testid="location-path">{`${location.pathname}${location.hash}`}</div>;
 }
 
 function renderDocuments(route: string) {
@@ -128,6 +128,30 @@ function treeFileButton(container: HTMLElement, fileName: string): HTMLButtonEle
     throw new Error(`document tree button not found for ${fileName}`);
   }
   return button;
+}
+
+function captureScrollIntoViewTargets() {
+  const targets: string[] = [];
+  const original = window.HTMLElement.prototype.scrollIntoView;
+
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    value: function () {
+      targets.push((this as HTMLElement).id || (this as HTMLElement).getAttribute("id") || "");
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  return {
+    targets,
+    restore() {
+      Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+        value: original,
+        configurable: true,
+        writable: true,
+      });
+    },
+  };
 }
 
 function installDocumentsApiStubs({
@@ -239,6 +263,87 @@ describe("Documents page", () => {
       () => view.container.textContent?.includes("Body paragraph") ?? false,
       () => `preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
     );
+  });
+
+  test("cross_note_wiki_link_click_updates_pathname_and_hash", async () => {
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: {
+        notes: [
+          { doc_id: "#aaa111", path: "alpha.md", title: "Alpha note" },
+          { doc_id: "#bbb222", path: "beta.md", title: "Beta note" },
+        ],
+      },
+      documentBodies: {
+        "notes:alpha.md": {
+          doc_id: "#aaa111",
+          collection: "notes",
+          path: "alpha.md",
+          title: "Alpha note",
+          content: "[[beta#Section Two]]\n\n# Alpha",
+        },
+        "notes:beta.md": {
+          doc_id: "#bbb222",
+          collection: "notes",
+          path: "beta.md",
+          title: "Beta note",
+          content: "# Section Two\n\nBeta body",
+        },
+      },
+    });
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderDocuments("/documents/notes/alpha.md");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("beta") ?? false,
+      () => `beta wiki link never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(view.getByRole("link", { name: "beta" }));
+
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md#Section%20Two",
+      () => `beta route+hash never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("Beta body") ?? false,
+      () => `beta preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+  });
+
+  test("fragment_bearing_document_opens_scroll_to_the_expected_target", async () => {
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: {
+        notes: [{ doc_id: "#bbb222", path: "beta.md", title: "Beta note" }],
+      },
+      documentBodies: {
+        "notes:beta.md": {
+          doc_id: "#bbb222",
+          collection: "notes",
+          path: "beta.md",
+          title: "Beta note",
+          content: "# Section Two\n\nBeta body\n\nParagraph target ^block-id",
+        },
+      },
+    });
+
+    const scrollSpy = captureScrollIntoViewTargets();
+    try {
+      const view = renderDocuments("/documents/notes/beta.md#^block-id");
+
+      await waitForCondition(
+        () => view.container.textContent?.includes("Beta body") ?? false,
+        () => `beta preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
+      );
+      await waitForCondition(
+        () => scrollSpy.targets.includes("preview-block-block-id"),
+        () => `block target was never scrolled into view: ${JSON.stringify(scrollSpy.targets)}`,
+      );
+    } finally {
+      scrollSpy.restore();
+    }
   });
 
   test("collection_management_controls_are_hidden", async () => {

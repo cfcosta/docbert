@@ -39,11 +39,13 @@ export default function DocumentPreview({
   selectedDoc,
   preview,
   resolverDocuments = [],
+  activeFragment = null,
   onOpenResolvedDocument,
 }: {
   selectedDoc: SelectedDocumentSummary | null;
   preview: string | null;
   resolverDocuments?: Pick<DocumentListItem, "path">[];
+  activeFragment?: string | null;
   onOpenResolvedDocument?: (target: ResolvedDocumentTarget) => void;
 }) {
   if (!selectedDoc) {
@@ -74,6 +76,23 @@ export default function DocumentPreview({
       }),
     [body, resolverDocuments, selectedDoc],
   );
+
+  useEffect(() => {
+    if (!preview || !activeFragment) {
+      return;
+    }
+
+    const targetId = previewTargetIdFromFragment(activeFragment);
+    if (!targetId) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      document.getElementById(targetId)?.scrollIntoView();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [activeFragment, preview, selectedDoc.path]);
 
   const renderHeading = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
     return function Heading({ children, ...props }: ComponentProps<typeof Tag>) {

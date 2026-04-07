@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import "katex/dist/katex.min.css";
 
-import { api, buildDocumentTabHref } from "../lib/api";
+import { api, buildDocumentTabHref, buildDocumentTabHrefWithFragment } from "../lib/api";
 import type { Collection, DocumentListItem } from "../lib/api";
-import DocumentPreview from "./document-preview";
+import DocumentPreview, { type ResolvedDocumentTarget } from "./document-preview";
 import {
   clearDeletedDocumentSelection,
   removeDocumentFromDocs,
@@ -31,6 +31,7 @@ function isMarkdownFile(file: File) {
 
 export default function Documents() {
   const navigate = useNavigate();
+  const location = useLocation();
   const params = useParams<{ collection?: string; "*"?: string }>();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [docs, setDocs] = useState<Record<string, DocumentListItem[]>>({});
@@ -120,6 +121,7 @@ export default function Documents() {
       collection: string,
       path: string,
       fallback?: Pick<DocumentListItem, "title" | "doc_id">,
+      fragment?: string | null,
     ) => {
       const requestId = documentRequestSeqRef.current + 1;
       documentRequestSeqRef.current = requestId;
@@ -132,7 +134,12 @@ export default function Documents() {
       });
       setConfirmDeleteDoc(null);
       setPreview(null);
-      navigate(buildDocumentTabHref(collection, path), { replace: true });
+      navigate(
+        fragment
+          ? buildDocumentTabHrefWithFragment(collection, path, fragment)
+          : buildDocumentTabHref(collection, path),
+        { replace: true },
+      );
 
       try {
         const full = await api.getDocument(collection, path);
@@ -169,8 +176,17 @@ export default function Documents() {
     [openDocument],
   );
 
+  const openResolvedDocument = useCallback(
+    ({ collection, path, fragment }: ResolvedDocumentTarget) => {
+      const listedDoc = docs[collection]?.find((document) => document.path === path);
+      void openDocument(collection, path, listedDoc, fragment);
+    },
+    [docs, openDocument],
+  );
+
   const routeCollection = params.collection?.trim();
   const routePath = params["*"]?.trim();
+  const routeFragment = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
 
   useEffect(() => {
     if (!routeCollection || !routePath) {
@@ -194,8 +210,8 @@ export default function Documents() {
       return;
     }
 
-    void openDocument(routeCollection, routePath, listedDoc);
-  }, [docs, loadDocs, openDocument, routeCollection, routePath]);
+    void openDocument(routeCollection, routePath, listedDoc, routeFragment);
+  }, [docs, loadDocs, openDocument, routeCollection, routeFragment, routePath]);
 
   const ingestFiles = useCallback(
     async (collection: string, files: File[]) => {
@@ -393,7 +409,13 @@ export default function Documents() {
         </section>
 
         <section className="preview-panel" aria-live="polite">
-          <DocumentPreview selectedDoc={selectedDoc} preview={preview} />
+          <DocumentPreview
+            selectedDoc={selectedDoc}
+            preview={preview}
+            resolverDocuments={selectedDoc ? docs[selectedDoc.collection] ?? [] : []}
+            activeFragment={routeFragment}
+            onOpenResolvedDocument={openResolvedDocument}
+          />
         </section>
       </div>
     </div>
