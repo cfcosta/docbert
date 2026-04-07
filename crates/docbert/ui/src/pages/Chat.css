@@ -12,22 +12,25 @@
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--surface-floating) 88%, var(--bg));
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.05),
+    10px 0 28px rgba(15, 16, 24, 0.22);
 }
 
 .chat-sidebar-header {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-selection) 14%, transparent);
 }
 
 .chat-new-btn {
   width: 100%;
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 12%, var(--accent) 14%, var(--border));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-floating) 84%, var(--bg));
+  background: color-mix(in srgb, var(--surface-floating) 78%, var(--bg));
   color: var(--text-h);
   box-shadow: var(--shadow-sm);
   font-size: 0.85rem;
@@ -41,8 +44,8 @@
 }
 
 .chat-new-btn:hover {
-  background: color-mix(in srgb, var(--accent-bg) 70%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 60%, var(--surface-selection));
+  border-color: color-mix(in srgb, var(--accent-cyan) 24%, var(--accent) 18%, var(--border));
   color: var(--accent);
   box-shadow: var(--shadow);
 }
@@ -63,9 +66,11 @@
 .chat-conv-item {
   display: flex;
   align-items: center;
+  border: 1px solid transparent;
   border-radius: var(--radius);
   transition:
     background 0.15s,
+    border-color 0.15s,
     box-shadow 0.15s;
 }
 
@@ -74,8 +79,9 @@
 }
 
 .chat-conv-item.active {
-  background: color-mix(in srgb, var(--accent-bg) 84%, var(--surface-current-line));
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in srgb, var(--accent-bg) 70%, var(--surface-current-line));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--accent-cyan) 14%, var(--border));
+  box-shadow: var(--shadow);
 }
 
 .chat-conv-item.active .chat-conv-btn {
@@ -187,13 +193,17 @@
 
 @media (prefers-color-scheme: dark) {
   .chat-sidebar {
-    box-shadow: inset -1px 0 0 rgba(248, 248, 242, 0.04);
+    box-shadow:
+      inset -1px 0 0 rgba(248, 248, 242, 0.04),
+      12px 0 30px rgba(15, 16, 24, 0.34);
   }
 }
 
 @media (prefers-color-scheme: light) {
   .chat-sidebar {
-    box-shadow: inset -1px 0 0 rgba(255, 251, 235, 0.35);
+    box-shadow:
+      inset -1px 0 0 rgba(255, 251, 235, 0.35),
+      8px 0 22px rgba(108, 102, 75, 0.08);
   }
 }
 
@@ -208,7 +218,8 @@
 }
 
 .chat-header-wrap {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-floating) 72%, var(--bg));
 }
 
 .chat-header {
