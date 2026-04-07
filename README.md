@@ -1,121 +1,57 @@
 # docbert
 
-docbert is a CLI for searching local documents. It uses BM25 to find likely matches quickly, then reranks them with ColBERT.
+docbert is a local document retrieval tool with three main entrypoints:
 
-Point it at one or more folders, sync the index, and search across Markdown or plain text files.
+- a **CLI** for registering collections, indexing them, and searching them
+- a **local web runtime** with a browser UI and HTTP API
+- an **MCP server** for editor and agent integrations
 
-It can also serve a local web UI with `docbert web`, using those same CLI-managed collection folders as the source of truth.
+It uses a hybrid retrieval stack:
+
+- **Tantivy/BM25** for fast lexical retrieval
+- **ColBERT** for semantic reranking or semantic-only search
+
+The current implementation works against local files and local state. Registered collection directories remain the source of truth for document content.
 
 ## What it does
 
-- two-stage search with BM25 and ColBERT
-- semantic-only full scans with `docbert ssearch`
-- named collections for grouping directories
-- incremental indexing that only reprocesses changed files
-- human-readable, JSON, or file-only output
-- CUDA and Metal support for faster embedding work
-- fuzzy matching for typo-tolerant queries
-- Markdown and plain text support
+- named collections backed by filesystem directories
+- incremental indexing with collection snapshots
+- hybrid search with BM25 + ColBERT reranking
+- semantic-only search with `docbert ssearch`
+- Markdown, plain text, and PDF ingestion
+- local web UI and JSON API via `docbert web`
+- persisted conversations and LLM settings for chat in the web UI
+- MCP tools, prompt, and `bert://...` resources via `docbert mcp`
+- CPU, CUDA, Metal, Accelerate, and MKL build options through feature flags
 
 ## Quick start
 
 ```bash
-# Add a collection of markdown notes
+# Register a directory as a collection
+# This records the collection but does not index it yet.
 docbert collection add ~/notes --name notes
 
-# Build or update the index
+# Index new/changed/deleted files
 docbert sync
 
-# Search across all collections
-docbert search "how to configure nginx"
+# Hybrid search (default CLI search path)
+docbert search "rust ownership"
 
-# Search with semantic reranking (default)
-docbert search "memory management in systems programming"
+# Semantic-only search
+docbert ssearch "memory management"
 
-# Run a semantic-only full scan (ColBERT only)
-docbert ssearch "memory management in systems programming"
-
-# Skip neural reranking and use BM25 only
+# Keyword-only/BM25-only search
 docbert search "nginx config" --bm25-only
 
-# Output JSON for scripts
-docbert search "rust ownership" --json
+# JSON output for scripts
+docbert search "release notes" --json
 
-# Print matching file paths
-docbert search "todo" --files | xargs -I {} code {}
-
-# Start the web UI on localhost:3030
-# Collections must already be added with `docbert collection add`
+# Start the local web UI + HTTP API
 docbert web --host 127.0.0.1 --port 3030
-```
 
-## Web UI
-
-The web UI uses the same collection folders registered in the CLI.
-
-Typical setup:
-
-```bash
-# Register a source folder first
-docbert collection add ~/notes --name notes
-
-# Index existing files
-docbert sync
-
-# Start the web UI
-docbert web --host 127.0.0.1 --port 3030
-```
-
-Behavior:
-
-- `GET /v1/collections` lists CLI-managed collections
-- uploads write into collection folders on disk, then index/embed the new file
-- document deletion removes the source file from the collection folder, then removes indexed state
-- the long-running web process keeps the search index and model manager alive, but reopens `config.db`, `embeddings.db`, and a Tantivy writer only for the operation that needs them
-- retryable database or writer lock contention is handled by waiting and retrying, so `docbert sync` can complete while `docbert web` stays up; non-lock errors still fail normally
-
-## MCP server
-
-docbert can also run as an MCP (Model Context Protocol) server for editors and AI tools.
-
-The MCP process keeps the search index and model manager alive, but reopens `config.db` and `embeddings.db` for each tool call or resource read instead of holding redb handles for the full server lifetime. Retryable lock contention waits and retries, which lets `docbert sync` run against the same data directory while MCP is still connected.
-
-Available tools:
-
-- `docbert_search`: keyword + semantic search, with optional collection filters
-- `semantic_search`: semantic-only search across all documents
-- `docbert_get`: fetch a document by path or `#doc_id`
-- `docbert_multi_get`: fetch multiple documents with a glob pattern
-- `docbert_status`: show index health and collection summaries
-
-### Claude Desktop config
-
-File: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "docbert": {
-      "command": "docbert",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Claude Code config
-
-File: `~/.claude/settings.json`
-
-```json
-{
-  "mcpServers": {
-    "docbert": {
-      "command": "docbert",
-      "args": ["mcp"]
-    }
-  }
-}
+# Start the MCP server over stdio
+docbert mcp
 ```
 
 ## Installation
@@ -123,17 +59,15 @@ File: `~/.claude/settings.json`
 ### With Nix
 
 ```bash
-# CPU version
+# CPU build
 nix build github:cfcosta/docbert
 
-# CUDA version (for NVIDIA GPUs)
+# CUDA build
 nix build github:cfcosta/docbert#docbert-cuda
 
-# Metal version (for Apple GPUs on macOS)
+# Metal build (macOS)
 nix build github:cfcosta/docbert#docbert-metal
 ```
-
-Shell completions for bash, zsh, and fish are installed with the Nix package.
 
 ### From source
 
@@ -144,155 +78,246 @@ cd docbert
 # CPU build
 cargo build --release
 
-# With CUDA support
+# CUDA build
 cargo build --release --features cuda
 
-# With Metal support (macOS)
+# Metal build (macOS)
 cargo build --release --features metal
 ```
 
-## Usage
+## Basic workflow
 
-### Manage collections
+### 1. Register collections
 
 ```bash
-# Add a directory as a collection
 docbert collection add /path/to/docs --name docs
-
-# List all collections
+docbert collection add /path/to/notes --name notes
 docbert collection list
-
-# Remove a collection
-docbert collection remove docs
 ```
 
-### Search
+A collection is a named root directory stored in `config.db`.
+
+Adding a collection does **not** index it. Run `sync` or `rebuild` after registration.
+
+### 2. Index content
 
 ```bash
-# Basic search (top 10 results)
-docbert search "your query here"
-
-# More results
-docbert search "query" -n 20
-
-# Search one collection
-docbert search "query" -c notes
-
-# Return all results above a score threshold
-docbert search "query" --all --min-score 0.5
-
-# Disable fuzzy matching
-docbert search "exact phrase" --no-fuzzy
-
-# Semantic-only full scan (slower on large corpora)
-docbert ssearch "meaning of life"
-```
-
-### Retrieve documents
-
-```bash
-# Get a document by collection:path
-docbert get notes:todo.md
-
-# Get by document ID
-docbert get "#a1b2c3"
-
-# Output with metadata
-docbert get notes:readme.md --json
-
-# Get multiple documents with glob patterns
-docbert multi-get "*.md" -c notes
-```
-
-### Maintenance
-
-```bash
-# Show system status
-docbert status
-
-# Sync changes incrementally
+# Normal incremental update
 docbert sync
 
-# Sync one collection
+# Sync one collection only
 docbert sync -c notes
 
 # Full rebuild
 docbert rebuild
 
 # Rebuild one collection
-docbert rebuild -c notes
+docbert rebuild -c docs
 ```
 
-## How search works
+Current indexing behavior:
 
-Search happens in two steps:
+- discovers supported files under each collection root
+- supports `.md`, `.txt`, and `.pdf`
+- respects Git ignore rules only when the collection root is itself a Git repo
+- uses collection Merkle snapshots to detect new, changed, and deleted files during `sync`
+- stores lexical index data, embeddings, metadata, and snapshot state locally
 
-1. Tantivy runs BM25 retrieval, optionally with fuzzy matching, and returns a candidate set.
-2. pylate-rs reranks those candidates with ColBERT using `lightonai/ColBERT-Zero` by default.
+If the active model no longer matches the stored embeddings, `sync` will refuse to proceed and tell you to run `docbert rebuild`.
 
-That gives you fast keyword search without losing semantic ranking.
-
-If you want pure semantic ranking, `docbert ssearch` skips BM25 and scores every stored embedding. That is slower on large collections, but it avoids BM25 and fuzzy-matching bias.
-
-## Configuration
-
-docbert stores its data in `~/.local/share/docbert/` or `$XDG_DATA_HOME/docbert/`.
-
-Use `--data-dir` to override that:
+### 3. Search
 
 ```bash
-docbert --data-dir /custom/path search "query"
+# Hybrid search
+docbert search "query"
+
+# Restrict to one collection
+docbert search "query" -c notes
+
+# More results
+docbert search "query" -n 20
+
+# Return all results above a threshold
+docbert search "query" --all --min-score 0.2
+
+# Disable fuzzy matching
+docbert search "exact phrase" --no-fuzzy
+
+# Print only matching file paths
+docbert search "todo" --files
+
+# Semantic-only search
+docbert ssearch "same concept different wording"
 ```
 
-Data directory resolution order:
-
-1. `--data-dir` CLI flag
-2. `DOCBERT_DATA_DIR` environment variable
-3. XDG default: `$XDG_DATA_HOME/docbert/` or `~/.local/share/docbert/`
-
-### Environment variables
-
-- `DOCBERT_DATA_DIR`: override the data directory
-- `DOCBERT_MODEL`: override the ColBERT model
-- `DOCBERT_LOG`: set the log level, for example `debug`, `info`, or `warn`
-
-### Model selection
-
-Set a default model in `config.db`:
+### 4. Read documents
 
 ```bash
-docbert model set /path/to/model
+# By collection:path
+docbert get notes:todo.md
+
+# By short doc id
+docbert get "#a1b2c3"
+
+# JSON output
+docbert get docs:api.md --json
+
+# Multiple documents by glob
+docbert multi-get "**/*.md" -c notes --files
+```
+
+## Web UI and HTTP API
+
+`docbert web` starts one local process that serves:
+
+- the browser UI
+- the `/v1` HTTP API
+
+Typical setup:
+
+```bash
+docbert collection add ~/notes --name notes
+docbert sync
+docbert web --host 127.0.0.1 --port 3030
+```
+
+The web runtime uses the same collection roots and local storage as the CLI.
+
+Current highlights:
+
+- search API under `/v1/search`
+- document upload/delete routes that mutate source files on disk and keep indexed state in sync
+- persisted conversations and LLM settings for chat
+- one local process serving both the SPA and the API
+
+More detail:
+
+- [Web API reference](./docs/web-api.md)
+- [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
+
+## Chat
+
+The chat experience in the web UI is built from:
+
+- persisted conversations in `config.db`
+- persisted LLM settings in `config.db`
+- web API routes for conversations and settings
+- browser/runtime orchestration on top of docbert search and retrieval tools
+
+Important boundary:
+
+- conversation persistence and settings storage are backend behavior
+- exact chat prompting/orchestration is runtime/UI behavior
+
+See:
+
+- [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
+
+## MCP server
+
+`docbert mcp` starts a stdio MCP server for editor and agent integrations.
+
+The current MCP surface includes:
+
+- search tools
+- retrieval tools
+- status tool
+- one prompt
+- one `bert://{+path}` resource template
+
+Example Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "docbert": {
+      "command": "docbert",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+See:
+
+- [MCP reference](./docs/mcp.md)
+
+## Model selection
+
+Model resolution currently follows this priority order:
+
+1. `--model <id-or-path>`
+2. `DOCBERT_MODEL`
+3. persisted `model_name` in `config.db`
+4. built-in default model
+
+Useful commands:
+
+```bash
 docbert model show
+docbert model set /path/to/model
 docbert model clear
 ```
 
-Override it for a single command:
+For one-off overrides:
 
 ```bash
 docbert --model /path/to/model search "query"
 ```
 
-### Alternative models
+Useful environment variables:
 
-The default model, `lightonai/ColBERT-Zero`, works out of the box. If you want to use another pylate-rs-compatible model:
+- `DOCBERT_DATA_DIR`
+- `DOCBERT_MODEL`
+- `DOCBERT_LOG`
 
-```bash
-docbert model set /path/to/model
-# or
-DOCBERT_MODEL=/path/to/model docbert search "query"
+## Data and storage
+
+By default, docbert stores local state in the XDG data directory, typically:
+
+```text
+~/.local/share/docbert/
 ```
 
-## Supported file types
+That state includes:
 
-- Markdown (`.md`)
-- Plain text (`.txt`)
+- `config.db`
+- `embeddings.db`
+- `tantivy/`
 
-## Performance notes
+The collection roots themselves can live anywhere on disk.
 
-- Use `--bm25-only` when keyword search is enough.
-- The ColBERT model loads on the first semantic search.
-- GPU support speeds up embedding generation.
-- Incremental indexing only reprocesses changed files.
+See:
+
+- [Storage reference](./docs/storage.md)
+
+## How search works
+
+Hybrid search currently works like this:
+
+1. Tantivy retrieves up to 1000 lexical candidates
+2. ColBERT reranks those candidates semantically
+3. docbert filters and formats the final results
+
+Semantic-only search skips the BM25 candidate stage and scores the stored document set semantically.
+
+See:
+
+- [Pipeline reference](./docs/pipeline.md)
+- [Architecture overview](./docs/architecture.md)
+
+## Reference docs
+
+- [CLI reference](./docs/cli.md)
+- [Architecture overview](./docs/architecture.md)
+- [Pipeline reference](./docs/pipeline.md)
+- [Storage reference](./docs/storage.md)
+- [Library usage (`docbert-core`)](./docs/library-usage.md)
+- [Dependency reference](./docs/dependencies.md)
+- [Web API reference](./docs/web-api.md)
+- [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
+- [MCP reference](./docs/mcp.md)
+- [Jina ColBERT v2 research notes](./docs/jina-colbert-v2-research.md) — historical context
 
 ## License
 
