@@ -7,6 +7,7 @@ type SearchResultsProps = {
   results: SearchResult[];
   onOpenDocument?: (result: SearchResult) => void;
   activeDocumentKey?: string | null;
+  variant?: "default" | "tool-inline";
 };
 
 function formatExcerptRange(excerpt: SearchExcerpt): string {
@@ -24,13 +25,16 @@ export default function SearchResults({
   results,
   onOpenDocument,
   activeDocumentKey = null,
+  variant = "default",
 }: SearchResultsProps) {
   if (results.length === 0) {
     return <div className="chat-tool-search-empty">No results</div>;
   }
 
   return (
-    <div className="chat-tool-search-results">
+    <div
+      className={`chat-tool-search-results${variant === "tool-inline" ? " chat-tool-search-results-tool-inline" : ""}`}
+    >
       {results.map((result) => {
         const href = buildDocumentTabHref(result.collection, result.path);
         const isActive = activeDocumentKey === documentKey(result);

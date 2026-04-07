@@ -5,6 +5,8 @@
   padding: 8px 10px;
   background: var(--surface-floating);
   border-top: 1px solid var(--border);
+  font-size: 0.95rem;
+  line-height: 1.625;
 }
 
 .chat-tool-call-subagent .chat-tool-search-results {
@@ -12,7 +14,7 @@
 }
 
 .chat-tool-search-empty {
-  font-size: 0.75rem;
+  font-size: inherit;
   color: var(--text-muted);
 }
 
@@ -34,7 +36,7 @@
 }
 
 .chat-tool-search-result-node.active {
-  border-color: var(--accent-cyan-border);
+  border-color: var(--border);
   background: var(--surface-current-line);
   box-shadow: var(--shadow);
 }
@@ -50,7 +52,7 @@
 }
 
 .chat-tool-search-result-title {
-  font-size: 0.8rem;
+  font-size: inherit;
   font-weight: 600;
   color: var(--text-h);
 }
@@ -85,7 +87,7 @@
 
 .chat-tool-search-result-path {
   margin-top: 2px;
-  font-size: 0.72rem;
+  font-size: inherit;
   font-family: var(--mono);
   color: var(--text-muted);
   overflow: hidden;
@@ -97,7 +99,7 @@
   display: flex;
   gap: 8px;
   margin-top: 6px;
-  font-size: 0.7rem;
+  font-size: inherit;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -145,7 +147,7 @@
 }
 
 .chat-tool-search-excerpt.active {
-  border-color: var(--accent-yellow-border);
+  border-color: var(--border);
   background: var(--surface-current-line);
   box-shadow: var(--shadow);
 }
@@ -175,7 +177,7 @@
 
 .chat-tool-search-excerpt-link:hover,
 .chat-tool-search-excerpt-button:hover {
-  border-color: var(--accent-pink-border);
+  border-color: var(--border);
   background: var(--surface-selection);
 }
 
@@ -184,7 +186,7 @@
 }
 
 .chat-tool-search-excerpt-range {
-  font-size: 0.68rem;
+  font-size: inherit;
   font-family: var(--mono);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
@@ -193,9 +195,95 @@
 
 .chat-tool-search-excerpt-text {
   min-width: 0;
-  font-size: 0.75rem;
-  line-height: 1.5;
+  font-size: inherit;
+  line-height: inherit;
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.chat-tool-search-results-tool-inline {
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+  border-top: none;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-node {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-floating);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.75rem;
+  line-height: 1.625;
+  color: var(--text-muted);
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-node.active {
+  background: var(--surface-current-line);
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-top {
+  justify-content: space-between;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-title-link:hover,
+.chat-tool-search-results-tool-inline .chat-tool-search-result-title-button:hover {
+  color: inherit;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-path,
+.chat-tool-search-results-tool-inline .chat-tool-search-result-meta {
+  font-size: 0.75rem;
+  line-height: 1.625;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-children {
+  gap: 6px;
+  margin-top: 0;
+  margin-left: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.85rem;
+  line-height: 1.625;
+  color: var(--text);
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-result-children::before,
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt::before {
+  display: none;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt-range {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt-link:hover,
+.chat-tool-search-results-tool-inline .chat-tool-search-excerpt-button:hover {
+  background: transparent;
 }

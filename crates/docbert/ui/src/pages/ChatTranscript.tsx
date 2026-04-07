@@ -189,6 +189,7 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
         results={results}
         onOpenDocument={openPreview}
         activeDocumentKey={selectedDoc ? searchDocumentKey(selectedDoc) : null}
+        variant="tool-inline"
       />
       {selectedDoc && (
         <div className="chat-tool-search-preview-shell">
@@ -206,34 +207,18 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
 }
 
 function ThinkingInline({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-
   if (text.trim().length === 0) {
     return null;
   }
 
   return (
     <div className="chat-thinking">
-      <button
-        type="button"
-        className="chat-thinking-header"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
+      <Markdown
+        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
       >
-        <span className="chat-thinking-icon">◎</span>
-        <span className="chat-thinking-title">Reasoning</span>
-        <span className={`chat-thinking-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
-      </button>
-      {expanded && (
-        <div className="chat-thinking-body">
-          <Markdown
-            remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-            rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-          >
-            {text}
-          </Markdown>
-        </div>
-      )}
+        {text}
+      </Markdown>
     </div>
   );
 }
