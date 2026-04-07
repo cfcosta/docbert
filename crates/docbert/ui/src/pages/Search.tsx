@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, type Collection, type SearchMode } from "../lib/api";
 import "./Search.css";
 
 const ALL_COLLECTIONS_VALUE = "";
+const SEARCH_DEBOUNCE_MS = 200;
 
 export default function Search() {
   const [query, setQuery] = useState("");
@@ -12,6 +13,10 @@ export default function Search() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loadingCollections, setLoadingCollections] = useState(true);
   const [collectionsError, setCollectionsError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [resultCount, setResultCount] = useState<number | null>(null);
+  const latestSearchRequestRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -41,6 +46,60 @@ export default function Search() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (loadingCollections || collectionsError) {
+      return;
+    }
+
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      latestSearchRequestRef.current += 1;
+      setSearching(false);
+      setSearchError(null);
+      setResultCount(null);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const requestId = latestSearchRequestRef.current + 1;
+      latestSearchRequestRef.current = requestId;
+      setSearching(true);
+      setSearchError(null);
+
+      api
+        .search({
+          query: trimmedQuery,
+          mode,
+          collection: selectedCollection || undefined,
+        })
+        .then((response) => {
+          if (latestSearchRequestRef.current !== requestId) {
+            return;
+          }
+          setResultCount(response.result_count);
+          setSearchError(null);
+        })
+        .catch((error) => {
+          if (latestSearchRequestRef.current !== requestId) {
+            return;
+          }
+          setSearchError(error instanceof Error ? error.message : "Search failed.");
+          setResultCount(null);
+        })
+        .finally(() => {
+          if (latestSearchRequestRef.current === requestId) {
+            setSearching(false);
+          }
+        });
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [collectionsError, loadingCollections, mode, query, selectedCollection]);
+
+  const trimmedQuery = query.trim();
 
   return (
     <div className="search-page">
@@ -113,13 +172,33 @@ export default function Search() {
             <p className="search-state-title">Could not load collections</p>
             <p className="search-state-text">{collectionsError}</p>
           </div>
-        ) : (
+        ) : !trimmedQuery ? (
           <div className="search-state-card">
             <p className="search-state-title">Start with a search query</p>
             <p className="search-state-text">
               Enter a query above to search across all collections or narrow the scope with the
               collection filter.
             </p>
+          </div>
+        ) : searching ? (
+          <div className="search-state-card">
+            <p className="search-state-title">Searching…</p>
+            <p className="search-state-text">Looking for matching documents.</p>
+          </div>
+        ) : searchError ? (
+          <div className="search-state-card search-state-card-error" role="alert">
+            <p className="search-state-title">Search failed</p>
+            <p className="search-state-text">{searchError}</p>
+          </div>
+        ) : resultCount === 0 ? (
+          <div className="search-state-card">
+            <p className="search-state-title">No results</p>
+            <p className="search-state-text">Try a different query, mode, or collection filter.</p>
+          </div>
+        ) : (
+          <div className="search-state-card">
+            <p className="search-state-title">Found {resultCount ?? 0} results</p>
+            <p className="search-state-text">Full result cards will appear here in the next step.</p>
           </div>
         )}
       </div>
