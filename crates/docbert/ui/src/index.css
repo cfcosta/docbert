@@ -135,10 +135,10 @@
     --text: var(--catppuccin-mocha-text);
     --text-h: var(--catppuccin-mocha-text);
     --text-muted: var(--catppuccin-mocha-subtext0);
-    --bg: var(--catppuccin-mocha-base);
-    --bg-secondary: var(--catppuccin-mocha-surface0);
-    --bg-tertiary: var(--catppuccin-mocha-surface1);
-    --surface-floating: var(--catppuccin-mocha-surface0);
+    --bg: var(--catppuccin-mocha-mantle);
+    --bg-secondary: var(--catppuccin-mocha-base);
+    --bg-tertiary: var(--catppuccin-mocha-surface0);
+    --surface-floating: var(--catppuccin-mocha-base);
     --surface-selection: var(--catppuccin-mocha-surface1);
     --surface-current-line: var(--catppuccin-mocha-surface1);
     --border: var(--catppuccin-mocha-mantle);
