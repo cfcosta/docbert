@@ -7,7 +7,8 @@
 
 .settings-header {
   padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface-floating) 62%, var(--bg));
 }
 
 .settings-body {
@@ -15,6 +16,7 @@
   overflow-y: auto;
   padding: 24px;
   max-width: 560px;
+  background: color-mix(in srgb, var(--bg) 92%, var(--surface-selection));
 }
 
 .settings-loading {
@@ -53,63 +55,85 @@
 .settings-radio {
   padding: 8px 20px;
   min-height: 36px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
   border-radius: var(--radius);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
   color: var(--text);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
   transition:
     background 0.15s,
     color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .settings-radio:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--accent-bg) 64%, var(--surface-selection));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
   color: var(--text-h);
+  box-shadow: var(--shadow);
 }
 
 .settings-radio.active {
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 88%, var(--surface-floating));
   color: var(--accent-text);
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
 }
 
 .settings-select {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
   border-radius: var(--radius);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
   color: var(--text-h);
+  box-shadow: var(--shadow-sm);
   font-family: var(--mono);
   font-size: 0.85rem;
   outline: none;
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.settings-select:hover {
+  background: color-mix(in srgb, var(--surface-selection) 58%, var(--surface-floating));
 }
 
 .settings-select:focus {
   border-color: var(--border-focus);
+  box-shadow: var(--shadow);
 }
 
 .settings-input {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
   border-radius: var(--radius);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
   color: var(--text-h);
+  box-shadow: var(--shadow-sm);
   font-family: var(--mono);
   font-size: 0.85rem;
   outline: none;
-  transition: border-color 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.settings-input:hover {
+  background: color-mix(in srgb, var(--surface-selection) 48%, var(--surface-floating));
 }
 
 .settings-input:focus {
   border-color: var(--border-focus);
+  box-shadow: var(--shadow);
 }
 
 .settings-hint {
@@ -127,20 +151,25 @@
 .settings-save {
   padding: 8px 24px;
   min-height: 36px;
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
   border-radius: var(--radius);
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 88%, var(--surface-floating));
   color: var(--accent-text);
+  box-shadow: var(--shadow-sm);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
   transition:
     background 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
     opacity 0.15s;
 }
 
 .settings-save:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: color-mix(in srgb, var(--accent-hover) 90%, var(--surface-floating));
+  border-color: color-mix(in srgb, var(--accent-hover) 52%, var(--border));
+  box-shadow: var(--shadow);
 }
 
 .settings-save:disabled {
@@ -149,13 +178,27 @@
 }
 
 .settings-saved {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--success-bg) 78%, var(--surface-floating));
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 26%, var(--border));
   font-size: 0.85rem;
-  color: var(--success, #16a34a);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .settings-error {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--error-bg) 82%, var(--surface-floating));
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 28%, var(--border));
   font-size: 0.85rem;
-  color: var(--error, #b91c1c);
-  font-weight: 500;
+  font-weight: 600;
 }
