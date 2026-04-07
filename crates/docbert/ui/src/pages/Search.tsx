@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 
 import SearchResults from "../components/SearchResults";
-import type { SearchResult } from "../lib/api";
 import { api } from "../lib/api";
 import { useSearchSession } from "./search-session";
 import "./Search.css";
@@ -11,13 +10,22 @@ const SEARCH_DEBOUNCE_MS = 200;
 
 export default function Search() {
   const { searchSession, setSearchSession } = useSearchSession();
-  const { query, mode, selectedCollection, collections, loadingCollections, collectionsError } =
-    searchSession;
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [resultCount, setResultCount] = useState<number | null>(null);
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const latestSearchRequestRef = useRef(0);
+  const {
+    query,
+    mode,
+    selectedCollection,
+    collections,
+    loadingCollections,
+    collectionsError,
+    searching,
+    searchError,
+    resultCount,
+    results,
+    latestSearchRequestId,
+    lastIssuedQuery,
+    lastIssuedMode,
+    lastIssuedCollection,
+  } = searchSession;
 
   useEffect(() => {
     if (!loadingCollections) {
@@ -69,19 +77,52 @@ export default function Search() {
 
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
-      latestSearchRequestRef.current += 1;
-      setSearching(false);
-      setSearchError(null);
-      setResultCount(null);
-      setResults([]);
+      const shouldResetBlankState =
+        searching ||
+        searchError !== null ||
+        resultCount !== null ||
+        results.length > 0 ||
+        lastIssuedQuery !== null ||
+        lastIssuedMode !== null ||
+        lastIssuedCollection !== null;
+
+      if (shouldResetBlankState) {
+        setSearchSession((previous) => ({
+          ...previous,
+          latestSearchRequestId: previous.latestSearchRequestId + 1,
+          searching: false,
+          searchError: null,
+          resultCount: null,
+          results: [],
+          lastIssuedQuery: null,
+          lastIssuedMode: null,
+          lastIssuedCollection: null,
+        }));
+      }
+      return;
+    }
+
+    const selectedCollectionValue = selectedCollection || null;
+    const shouldSkipSearch =
+      lastIssuedQuery === trimmedQuery &&
+      lastIssuedMode === mode &&
+      lastIssuedCollection === selectedCollectionValue;
+
+    if (shouldSkipSearch) {
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      const requestId = latestSearchRequestRef.current + 1;
-      latestSearchRequestRef.current = requestId;
-      setSearching(true);
-      setSearchError(null);
+      const requestId = latestSearchRequestId + 1;
+      setSearchSession((previous) => ({
+        ...previous,
+        latestSearchRequestId: requestId,
+        searching: true,
+        searchError: null,
+        lastIssuedQuery: trimmedQuery,
+        lastIssuedMode: previous.mode,
+        lastIssuedCollection: previous.selectedCollection || null,
+      }));
 
       api
         .search({
@@ -90,32 +131,68 @@ export default function Search() {
           collection: selectedCollection || undefined,
         })
         .then((response) => {
-          if (latestSearchRequestRef.current !== requestId) {
+          let shouldApply = false;
+          setSearchSession((previous) => {
+            if (previous.latestSearchRequestId !== requestId) {
+              return previous;
+            }
+            shouldApply = true;
+            return {
+              ...previous,
+              resultCount: response.result_count,
+              results: response.results,
+              searchError: null,
+            };
+          });
+          if (!shouldApply) {
             return;
           }
-          setResultCount(response.result_count);
-          setResults(response.results);
-          setSearchError(null);
         })
         .catch((error) => {
-          if (latestSearchRequestRef.current !== requestId) {
-            return;
-          }
-          setSearchError(error instanceof Error ? error.message : "Search failed.");
-          setResultCount(null);
-          setResults([]);
+          setSearchSession((previous) => {
+            if (previous.latestSearchRequestId !== requestId) {
+              return previous;
+            }
+            return {
+              ...previous,
+              searchError: error instanceof Error ? error.message : "Search failed.",
+              resultCount: null,
+              results: [],
+            };
+          });
         })
         .finally(() => {
-          if (latestSearchRequestRef.current === requestId) {
-            setSearching(false);
-          }
+          setSearchSession((previous) => {
+            if (previous.latestSearchRequestId !== requestId) {
+              return previous;
+            }
+            return {
+              ...previous,
+              searching: false,
+            };
+          });
         });
     }, SEARCH_DEBOUNCE_MS);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [collectionsError, loadingCollections, mode, query, selectedCollection]);
+  }, [
+    collectionsError,
+    lastIssuedCollection,
+    lastIssuedMode,
+    lastIssuedQuery,
+    latestSearchRequestId,
+    loadingCollections,
+    mode,
+    query,
+    resultCount,
+    results,
+    searchError,
+    searching,
+    selectedCollection,
+    setSearchSession,
+  ]);
 
   const trimmedQuery = query.trim();
 

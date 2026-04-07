@@ -14,6 +14,9 @@ export interface SearchSessionState {
   resultCount: number | null;
   results: SearchResult[];
   latestSearchRequestId: number;
+  lastIssuedQuery: string | null;
+  lastIssuedMode: SearchMode | null;
+  lastIssuedCollection: string | null;
 }
 
 export const initialSearchSessionState: SearchSessionState = {
@@ -28,6 +31,9 @@ export const initialSearchSessionState: SearchSessionState = {
   resultCount: null,
   results: [],
   latestSearchRequestId: 0,
+  lastIssuedQuery: null,
+  lastIssuedMode: null,
+  lastIssuedCollection: null,
 };
 
 interface SearchSessionContextValue {
