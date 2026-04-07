@@ -152,6 +152,15 @@ export function buildDocumentTabHref(collection: string, path: string): string {
   return `/documents/${encodeURIComponent(collection)}/${encodePathSegments(path)}`;
 }
 
+export function buildDocumentTabHrefWithFragment(
+  collection: string,
+  path: string,
+  fragment: string,
+): string {
+  const normalizedFragment = fragment.startsWith("#") ? fragment.slice(1) : fragment;
+  return `${buildDocumentTabHref(collection, path)}#${encodeURIComponent(normalizedFragment)}`;
+}
+
 export const api = {
   getLlmSettings: () => request<LlmSettings>("/settings/llm"),
 

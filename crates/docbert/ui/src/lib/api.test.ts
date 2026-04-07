@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildDocumentTabHref, encodeDocumentPath } from "./api";
+import { buildDocumentTabHref, buildDocumentTabHrefWithFragment, encodeDocumentPath } from "./api";
 
 describe("document path encoding", () => {
   test("encode_document_path_preserves_nested_segments", () => {
@@ -26,6 +26,18 @@ describe("document path encoding", () => {
   test("build_document_tab_href_does_not_encode_path_separators", () => {
     expect(buildDocumentTabHref("notes", "nested/path/file.md")).toBe(
       "/documents/notes/nested/path/file.md",
+    );
+  });
+
+  test("build_document_tab_href_with_fragment_encodes_the_fragment", () => {
+    expect(buildDocumentTabHrefWithFragment("my notes", "nested/path/file.md", "Heading One")).toBe(
+      "/documents/my%20notes/nested/path/file.md#Heading%20One",
+    );
+  });
+
+  test("build_document_tab_href_with_fragment_strips_a_leading_hash", () => {
+    expect(buildDocumentTabHrefWithFragment("notes", "file.md", "#^block id")).toBe(
+      "/documents/notes/file.md#%5Eblock%20id",
     );
   });
 });
