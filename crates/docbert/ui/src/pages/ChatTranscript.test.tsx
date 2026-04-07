@@ -1,14 +1,22 @@
 import "../test/setup";
 
 import { createRef } from "react";
-import { beforeEach, describe, expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
+import { api } from "../lib/api";
 import ChatTranscript from "./ChatTranscript";
 import type { DisplayMessageGroup } from "./chat-message-groups";
 import type { Message } from "./chat-message-codec";
+
+const originalApi = { ...api };
+
+function LocationObserver() {
+  const location = useLocation();
+  return <div data-testid="location-path">{location.pathname}</div>;
+}
 
 function messageWithToolResult(result: string, name = "search_hybrid"): Message {
   return {
@@ -35,6 +43,7 @@ function displayGroups(message: Message): DisplayMessageGroup[] {
 function renderTranscript(groups: DisplayMessageGroup[]) {
   return render(
     <MemoryRouter initialEntries={["/"]}>
+      <LocationObserver />
       <Routes>
         <Route
           path="/"
@@ -79,6 +88,20 @@ function subagentMessageWithToolResult(result: string, name = "search_hybrid"): 
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  api.getDocument = async (collection, path) => ({
+    doc_id: "#abc123",
+    collection,
+    path,
+    title: path === "rust.md" ? "Rust Guide" : path,
+    content: "# Rust Guide\n\nRust ownership keeps memory safe.",
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  document.body.innerHTML = "";
+  Object.assign(api, originalApi);
+  mock.restore();
 });
 
 describe("ChatTranscript", () => {
@@ -104,16 +127,15 @@ describe("ChatTranscript", () => {
 
     const view = renderTranscript(displayGroups(messageWithToolResult(results)));
 
-    expect(view.queryByRole("link", { name: "Rust Guide" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Rust Guide" })).toBeNull();
 
     await user.click(view.getByRole("button", { name: /search_hybrid/i }));
 
-    const documentLink = view.getByRole("link", { name: "Rust Guide" });
-    expect(documentLink.getAttribute("href")).toBe("/documents/notes/rust.md");
+    expect(view.getByRole("button", { name: "Rust Guide" })).toBeTruthy();
     expect(view.getByText("notes/rust.md")).toBeTruthy();
   });
 
-  test("clicking an excerpt opens the document page route", async () => {
+  test("clicking a search result opens an inline preview and keeps the chat route", async () => {
     const user = userEvent.setup();
     const results = JSON.stringify([
       {
@@ -136,9 +158,49 @@ describe("ChatTranscript", () => {
     const view = renderTranscript(displayGroups(messageWithToolResult(results)));
 
     await user.click(view.getByRole("button", { name: /search_hybrid/i }));
-    await user.click(view.getByRole("link", { name: /10\s*Rust ownership keeps memory safe\./i }));
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
 
-    expect(view.getByText("Document route")).toBeTruthy();
+    await waitFor(() => {
+      expect(view.getByText("#abc123")).toBeTruthy();
+    });
+
+    expect(view.getByRole("link", { name: "Permalink" }).getAttribute("href")).toBe(
+      "/documents/notes/rust.md",
+    );
+    expect(view.getByTestId("location-path").textContent).toBe("/");
+  });
+
+  test("clicking an excerpt opens the inline preview instead of navigating away", async () => {
+    const user = userEvent.setup();
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+        excerpts: [
+          {
+            text: "Rust ownership keeps memory safe.",
+            start_line: 10,
+            end_line: 10,
+          },
+        ],
+      },
+    ]);
+
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+    await user.click(view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }));
+
+    await waitFor(() => {
+      expect(view.getByRole("link", { name: "Permalink" })).toBeTruthy();
+    });
+
+    expect(view.getByTestId("location-path").textContent).toBe("/");
+    expect(view.queryByText("Document route")).toBeNull();
   });
 
   test("renders no results for empty search payloads", async () => {

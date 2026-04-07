@@ -1,7 +1,8 @@
 import "../test/setup";
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { render } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import SearchResults from "./SearchResults";
@@ -81,5 +82,42 @@ describe("SearchResults", () => {
 
     const excerptLink = view.getByRole("link", { name: /10\s*Rust ownership keeps memory safe\./i });
     expect(excerptLink.getAttribute("href")).toBe("/documents/notes/nested/rust.md");
+  });
+
+  test("supports inline preview actions without navigating", async () => {
+    const user = userEvent.setup();
+    const onOpenDocument = mock(() => undefined);
+    const results: SearchResult[] = [
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+        excerpts: [
+          {
+            text: "Rust ownership keeps memory safe.",
+            start_line: 10,
+            end_line: 10,
+          },
+        ],
+      },
+    ];
+
+    const view = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <SearchResults results={results} onOpenDocument={onOpenDocument} />
+      </MemoryRouter>,
+    );
+
+    expect(view.queryByRole("link", { name: "Rust Guide" })).toBeNull();
+
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
+    await user.click(view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }));
+
+    expect(onOpenDocument).toHaveBeenCalledTimes(2);
+    expect(onOpenDocument).toHaveBeenNthCalledWith(1, results[0]);
+    expect(onOpenDocument).toHaveBeenNthCalledWith(2, results[0]);
   });
 });

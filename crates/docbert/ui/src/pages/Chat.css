@@ -625,6 +625,28 @@
   background: color-mix(in srgb, var(--accent-bg) 26%, var(--bg-secondary));
 }
 
+.chat-tool-search-preview-layout {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-tool-search-preview-shell {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  box-shadow: var(--shadow-sm);
+  min-height: 260px;
+  max-height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-tool-call-subagent .chat-tool-search-preview-shell {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+}
+
 .chat-sources {
   display: flex;
   flex-wrap: wrap;

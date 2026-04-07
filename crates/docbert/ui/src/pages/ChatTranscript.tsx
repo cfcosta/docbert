@@ -1,11 +1,13 @@
-import { useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 import SearchResults from "../components/SearchResults";
-import type { SearchExcerpt, SearchResult } from "../lib/api";
+import { api, type SearchExcerpt, type SearchResult } from "../lib/api";
+import DocumentPreview from "./document-preview";
+import type { SelectedDocumentSummary } from "./documents-tree";
 import type { ToolCallInfo, Message } from "./chat-message-codec";
 import type { DisplayMessageGroup, SubagentMessage } from "./chat-message-groups";
 import { buildTranscriptRenderItems } from "./chat-transcript-model";
@@ -69,6 +71,75 @@ function parseToolSearchResults(call: ToolCallInfo): SearchResult[] | null {
   }
 }
 
+function searchDocumentKey(value: { collection: string; path: string }) {
+  return `${value.collection}:${value.path}`;
+}
+
+function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
+  const [selectedDoc, setSelectedDoc] = useState<SelectedDocumentSummary | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const requestSeqRef = useRef(0);
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    setSelectedDoc(null);
+    setPreview(null);
+  }, [results]);
+
+  const openPreview = useCallback(async (result: SearchResult) => {
+    const requestId = requestSeqRef.current + 1;
+    requestSeqRef.current = requestId;
+
+    setSelectedDoc({
+      collection: result.collection,
+      path: result.path,
+      title: result.title || result.path,
+      doc_id: result.doc_id,
+    });
+    setPreview(null);
+
+    try {
+      const full = await api.getDocument(result.collection, result.path);
+      if (requestSeqRef.current !== requestId) {
+        return;
+      }
+
+      setSelectedDoc({
+        collection: full.collection,
+        path: full.path,
+        title: full.title,
+        doc_id: full.doc_id,
+      });
+      setPreview(full.content || "_No content stored._");
+    } catch (error) {
+      if (requestSeqRef.current !== requestId) {
+        return;
+      }
+
+      setPreview(
+        error instanceof Error
+          ? `_Failed to load document: ${error.message}_`
+          : "_Failed to load document._",
+      );
+    }
+  }, []);
+
+  return (
+    <div className="chat-tool-search-preview-layout">
+      <SearchResults
+        results={results}
+        onOpenDocument={openPreview}
+        activeDocumentKey={selectedDoc ? searchDocumentKey(selectedDoc) : null}
+      />
+      {selectedDoc && (
+        <div className="chat-tool-search-preview-shell">
+          <DocumentPreview selectedDoc={selectedDoc} preview={preview} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ThinkingInline({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -130,7 +201,7 @@ function ToolCallInline({
         <span className="chat-tool-call-args">{argsStr}</span>
         <span className={`chat-tool-call-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
       </button>
-      {expanded && call.result && searchResults && <SearchResults results={searchResults} />}
+      {expanded && call.result && searchResults && <SearchToolResultsInline results={searchResults} />}
       {expanded && call.result && !searchResults && (
         <pre className="chat-tool-call-result">{call.result}</pre>
       )}
