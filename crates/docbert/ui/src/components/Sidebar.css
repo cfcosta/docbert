@@ -8,23 +8,23 @@
   height: 100%;
   overflow-y: auto;
   box-shadow:
-    inset -1px 0 0 rgba(255, 255, 255, 0.05),
-    8px 0 24px rgba(25, 26, 33, 0.12);
+    inset -1px 0 0 rgba(205, 214, 244, 0.05),
+    8px 0 24px rgba(17, 17, 27, 0.12);
 }
 
 @media (prefers-color-scheme: dark) {
   .sidebar {
     box-shadow:
-      inset -1px 0 0 rgba(248, 248, 242, 0.04),
-      10px 0 28px rgba(15, 16, 24, 0.34);
+      inset -1px 0 0 rgba(205, 214, 244, 0.04),
+      10px 0 28px rgba(17, 17, 27, 0.34);
   }
 }
 
 @media (prefers-color-scheme: light) {
   .sidebar {
     box-shadow:
-      inset -1px 0 0 rgba(255, 251, 235, 0.35),
-      8px 0 22px rgba(108, 102, 75, 0.08);
+      inset -1px 0 0 rgba(239, 241, 245, 0.35),
+      8px 0 22px rgba(76, 79, 105, 0.08);
   }
 }
 
