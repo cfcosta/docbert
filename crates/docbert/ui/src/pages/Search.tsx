@@ -196,21 +196,26 @@ export default function Search() {
   const trimmedQuery = query.trim();
 
   return (
-    <div className="search-page">
+    <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
       <header className="search-header">
-        <h2>Search</h2>
-        <p className="search-subtitle">Find documents across your indexed collections.</p>
+        <div className="search-header-inner">
+          <h2>Search</h2>
+          <p className="search-subtitle">Find documents across your indexed collections.</p>
+        </div>
       </header>
 
       <div className="search-body">
         <section className="search-controls" aria-label="Search controls">
-          <div className="search-field search-field-query">
-            <label className="search-label" htmlFor="search-query">
+          <div className="search-query-shell">
+            <label className="search-label sr-only" htmlFor="search-query">
               Query
             </label>
+            <span className="search-query-icon" aria-hidden="true">
+              ⌕
+            </span>
             <input
               id="search-query"
-              className="search-input"
+              className="search-input search-input-query"
               type="search"
               placeholder="Search your documents..."
               value={query}
@@ -220,51 +225,59 @@ export default function Search() {
             />
           </div>
 
-          <div className="search-field-grid">
-            <div className="search-field">
-              <label className="search-label" htmlFor="search-mode">
-                Mode
-              </label>
-              <select
-                id="search-mode"
-                className="search-select"
-                value={mode}
-                onChange={(event) =>
-                  setSearchSession((previous) => ({
-                    ...previous,
-                    mode: event.target.value as typeof previous.mode,
-                  }))
-                }
-              >
-                <option value="hybrid">Hybrid</option>
-                <option value="semantic">Semantic</option>
-              </select>
+          <div className="search-toolbar">
+            <div className="search-toolbar-group">
+              <div className="search-field search-field-inline">
+                <label className="search-label sr-only" htmlFor="search-mode">
+                  Mode
+                </label>
+                <select
+                  id="search-mode"
+                  className="search-select search-filter"
+                  value={mode}
+                  onChange={(event) =>
+                    setSearchSession((previous) => ({
+                      ...previous,
+                      mode: event.target.value as typeof previous.mode,
+                    }))
+                  }
+                >
+                  <option value="hybrid">Hybrid</option>
+                  <option value="semantic">Semantic</option>
+                </select>
+              </div>
+
+              <div className="search-field search-field-inline">
+                <label className="search-label sr-only" htmlFor="search-collection">
+                  Collection
+                </label>
+                <select
+                  id="search-collection"
+                  className="search-select search-filter search-filter-collection"
+                  value={selectedCollection}
+                  onChange={(event) =>
+                    setSearchSession((previous) => ({
+                      ...previous,
+                      selectedCollection: event.target.value,
+                    }))
+                  }
+                  disabled={loadingCollections || collectionsError !== null}
+                >
+                  <option value={ALL_COLLECTIONS_VALUE}>All collections</option>
+                  {collections.map((collection) => (
+                    <option key={collection.name} value={collection.name}>
+                      {collection.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="search-field">
-              <label className="search-label" htmlFor="search-collection">
-                Collection
-              </label>
-              <select
-                id="search-collection"
-                className="search-select"
-                value={selectedCollection}
-                onChange={(event) =>
-                  setSearchSession((previous) => ({
-                    ...previous,
-                    selectedCollection: event.target.value,
-                  }))
-                }
-                disabled={loadingCollections || collectionsError !== null}
-              >
-                <option value={ALL_COLLECTIONS_VALUE}>All collections</option>
-                {collections.map((collection) => (
-                  <option key={collection.name} value={collection.name}>
-                    {collection.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <p className="search-toolbar-hint">
+              {mode === "hybrid" ? "Hybrid ranking" : "Semantic ranking"}
+              <span aria-hidden="true"> · </span>
+              {selectedCollection || "All collections"}
+            </p>
           </div>
         </section>
 
@@ -281,7 +294,7 @@ export default function Search() {
             <p className="search-state-text">{collectionsError}</p>
           </div>
         ) : !trimmedQuery ? (
-          <div className="search-state-card">
+          <div className="search-state-card search-state-card-blank">
             <p className="search-state-title">Start with a search query</p>
             <p className="search-state-text">
               Enter a query above to search across all collections or narrow the scope with the
@@ -307,6 +320,9 @@ export default function Search() {
           <div className="search-results-panel">
             <div className="search-results-summary">
               <p className="search-results-title">Found {resultCount ?? 0} results</p>
+              <p className="search-results-meta">
+                Showing matches for “{trimmedQuery}” in {selectedCollection || "all collections"}.
+              </p>
             </div>
             <SearchResults results={results} />
           </div>
