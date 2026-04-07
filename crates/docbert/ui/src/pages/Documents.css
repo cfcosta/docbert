@@ -15,9 +15,9 @@
   transform: translateX(-50%);
   z-index: 10;
   padding: 8px 20px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--accent-cyan) 14%, var(--border));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 82%, var(--surface-floating));
+  background: color-mix(in srgb, var(--accent) 70%, var(--surface-current-line));
   color: var(--accent-text);
   font-size: 0.85rem;
   font-weight: 600;
@@ -27,7 +27,7 @@
 
 .ingest-toast.error {
   border-color: color-mix(in srgb, var(--error) 42%, var(--border));
-  background: color-mix(in srgb, var(--error) 82%, var(--surface-floating));
+  background: color-mix(in srgb, var(--error) 72%, var(--surface-current-line));
   color: var(--accent-text);
 }
 
@@ -58,8 +58,10 @@
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--surface-floating) 90%, var(--bg));
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--surface-floating) 84%, var(--bg));
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.05),
+    10px 0 28px rgba(15, 16, 24, 0.18);
 }
 
 .file-tree-header {
@@ -68,7 +70,8 @@
   justify-content: space-between;
   gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-selection) 16%, transparent);
 }
 
 .file-tree-title {
@@ -163,10 +166,10 @@
 }
 
 .tree-file.selected {
-  background: color-mix(in srgb, var(--accent-bg) 88%, var(--surface-current-line));
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-current-line));
+  border-color: color-mix(in srgb, var(--accent-cyan) 20%, var(--accent) 30%, var(--border));
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
 }
 
 .tree-file.selected svg {
@@ -406,8 +409,8 @@
 
 .preview-header {
   padding: 16px 24px;
-  border-bottom: 1px solid var(--border-strong);
-  background: color-mix(in srgb, var(--surface-floating) 62%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border-strong));
+  background: color-mix(in srgb, var(--surface-floating) 74%, var(--bg));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -520,6 +523,11 @@
 .preview-content {
   max-width: 720px;
   margin: 0 auto;
+  padding: 24px 28px 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  border-radius: calc(var(--radius-lg) + 2px);
+  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  box-shadow: var(--shadow-sm);
   font-size: 0.9rem;
   line-height: 1.65;
   color: var(--text-h);
@@ -562,8 +570,8 @@
 .preview-content pre {
   margin: 0.6em 0;
   padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
-  background: color-mix(in srgb, var(--code-bg) 86%, var(--surface-floating));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 16%, var(--accent) 10%, var(--border));
+  background: color-mix(in srgb, var(--code-bg) 82%, var(--surface-current-line));
   border-radius: var(--radius);
   overflow-x: auto;
   box-shadow: var(--shadow-sm);
