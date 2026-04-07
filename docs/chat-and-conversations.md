@@ -147,9 +147,7 @@ Example:
       "id": "msg-1",
       "role": "user",
       "actor": { "type": "parent" },
-      "parts": [
-        { "type": "text", "text": "What changed?" }
-      ]
+      "parts": [{ "type": "text", "text": "What changed?" }]
     },
     {
       "id": "msg-2",

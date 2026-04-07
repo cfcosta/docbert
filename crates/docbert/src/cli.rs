@@ -6,10 +6,10 @@ use clap_complete::Shell;
 #[derive(Debug, Parser)]
 #[command(
     name = "docbert",
-    about = "A powerful semantic search CLI for your documents"
+    about = "Local document retrieval CLI with web and MCP runtimes"
 )]
 pub struct Cli {
-    /// Override the XDG data directory
+    /// Override the resolved data directory
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
 
@@ -37,7 +37,7 @@ pub enum Command {
         #[command(subcommand)]
         action: ContextAction,
     },
-    /// Search across collections
+    /// Search indexed documents across collections
     Search(SearchArgs),
     /// Semantic-only search across all collections
     #[command(name = "ssearch")]
@@ -54,11 +54,11 @@ pub enum Command {
     Status(StatusArgs),
     /// Diagnose runtime environment and accelerator availability
     Doctor(DoctorArgs),
-    /// Start MCP server for AI agent integration
+    /// Start the stdio MCP server for editor and agent integrations
     Mcp,
-    /// Start the web UI server
+    /// Start the local web UI and HTTP API server
     Web(WebArgs),
-    /// Manage the ColBERT model configuration
+    /// Manage the persisted default ColBERT model configuration
     Model {
         #[command(subcommand)]
         action: ModelAction,
@@ -147,7 +147,7 @@ pub struct SearchArgs {
     #[arg(short = 'n', long, default_value = "10")]
     pub count: usize,
 
-    /// Search only within this collection
+    /// Search only within this named collection
     #[arg(short = 'c', long)]
     pub collection: Option<String>,
 
@@ -296,11 +296,11 @@ pub struct DoctorArgs {
 
 #[derive(Debug, Parser)]
 pub struct WebArgs {
-    /// Address to bind the web server to
+    /// Address to bind the local web server to
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    /// Port to bind the web server to
+    /// Port to bind the local web server to
     #[arg(long, default_value_t = 3030)]
     pub port: u16,
 }

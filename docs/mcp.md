@@ -28,24 +28,24 @@ For each tool call or resource read, it reopens the config and embedding databas
 
 ### Tools
 
-| Name | Purpose | Returns |
-| --- | --- | --- |
-| `docbert_search` | Hybrid/BM25-oriented search with optional collection filtering and optional snippet previews. | Plain text summary + structured JSON content. |
-| `semantic_search` | Semantic-only ColBERT search across all documents. | Plain text summary + structured JSON content. |
-| `docbert_get` | Read one document by reference, optionally slicing by line range. | Resource content (`text/markdown`). |
-| `docbert_multi_get` | Read multiple documents by glob pattern with per-file size/line limits. | One or more resource contents, plus plain text skip notices when needed. |
-| `docbert_status` | Show index/data-dir/model/collection/document summary. | Plain text summary + structured JSON content. |
+| Name                | Purpose                                                                                       | Returns                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `docbert_search`    | Hybrid/BM25-oriented search with optional collection filtering and optional snippet previews. | Plain text summary + structured JSON content.                            |
+| `semantic_search`   | Semantic-only ColBERT search across all documents.                                            | Plain text summary + structured JSON content.                            |
+| `docbert_get`       | Read one document by reference, optionally slicing by line range.                             | Resource content (`text/markdown`).                                      |
+| `docbert_multi_get` | Read multiple documents by glob pattern with per-file size/line limits.                       | One or more resource contents, plus plain text skip notices when needed. |
+| `docbert_status`    | Show index/data-dir/model/collection/document summary.                                        | Plain text summary + structured JSON content.                            |
 
 ### Prompt
 
-| Name | Purpose |
-| --- | --- |
+| Name            | Purpose                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------- |
 | `docbert_query` | A short usage guide telling clients to start with search, then fetch documents or status as needed. |
 
 ### Resource template
 
-| URI template | Name | MIME type |
-| --- | --- | --- |
+| URI template     | Name               | MIME type       |
+| ---------------- | ------------------ | --------------- |
 | `bert://{+path}` | `docbert-document` | `text/markdown` |
 
 ## Server metadata and instructions

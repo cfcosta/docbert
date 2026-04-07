@@ -152,14 +152,14 @@ Assumptions used during the investigation:
 - docbert used roughly 4 characters per token when sizing chunks
 - ColBERT late-interaction cost and storage grew roughly linearly with token count
 
-| doc_length (tokens) | approx chunk chars | relative cost vs 300 | When the investigation considered it plausible |
-| --- | --- | --- | --- |
-| 300 | ~1200 | 1.0x | ColBERT metadata default; short docs or cost-sensitive usage |
-| 519 | ~2076 | 1.7x | docbert-style default budget; closer to ColBERT-Zero assumptions |
-| 1024 | ~4096 | 3.4x | Medium-long docs; fewer chunks per document |
-| 2048 | ~8192 | 6.8x | Long-form content with a healthier compute budget |
-| 4096 | ~16384 | 13.7x | A conservative step below full 8K context |
-| 8192 | ~32768 | 27.3x | Full 8K context, only if storage and latency costs were acceptable |
+| doc_length (tokens) | approx chunk chars | relative cost vs 300 | When the investigation considered it plausible                     |
+| ------------------- | ------------------ | -------------------- | ------------------------------------------------------------------ |
+| 300                 | ~1200              | 1.0x                 | ColBERT metadata default; short docs or cost-sensitive usage       |
+| 519                 | ~2076              | 1.7x                 | docbert-style default budget; closer to ColBERT-Zero assumptions   |
+| 1024                | ~4096              | 3.4x                 | Medium-long docs; fewer chunks per document                        |
+| 2048                | ~8192              | 6.8x                 | Long-form content with a healthier compute budget                  |
+| 4096                | ~16384             | 13.7x                | A conservative step below full 8K context                          |
+| 8192                | ~32768             | 27.3x                | Full 8K context, only if storage and latency costs were acceptable |
 
 Notes from the original analysis:
 

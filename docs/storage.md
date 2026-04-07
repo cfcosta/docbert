@@ -18,12 +18,12 @@ The actual location is resolved in this order:
 
 Within that root, docbert currently uses four storage layers:
 
-| Path / system | Role |
-| --- | --- |
-| `config.db` | collections, contexts, document metadata, conversations, collection snapshots, and settings |
-| `embeddings.db` | stored ColBERT embedding matrices keyed by numeric document or chunk ID |
-| `tantivy/` | lexical search index |
-| collection roots on disk | source document content used for indexing, document reads, titles, and excerpts |
+| Path / system            | Role                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| `config.db`              | collections, contexts, document metadata, conversations, collection snapshots, and settings |
+| `embeddings.db`          | stored ColBERT embedding matrices keyed by numeric document or chunk ID                     |
+| `tantivy/`               | lexical search index                                                                        |
+| collection roots on disk | source document content used for indexing, document reads, titles, and excerpts             |
 
 A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
 
