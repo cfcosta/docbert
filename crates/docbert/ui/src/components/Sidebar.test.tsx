@@ -17,6 +17,17 @@ describe("Sidebar", () => {
     expect(view.getByRole("heading", { name: "docbert" })).toBeTruthy();
     expect(view.getByRole("link", { name: /documents/i })).toBeTruthy();
     expect(view.getByRole("link", { name: /chat/i })).toBeTruthy();
+    expect(view.getByRole("link", { name: /search/i })).toBeTruthy();
     expect(view.getByRole("link", { name: /settings/i })).toBeTruthy();
+  });
+
+  test("marks_search_link_active_on_search_route", () => {
+    const view = render(
+      <MemoryRouter initialEntries={["/search"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(view.getByRole("link", { name: /search/i }).className).toContain("active");
   });
 });

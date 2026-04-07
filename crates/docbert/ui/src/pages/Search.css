@@ -1,0 +1,29 @@
+.search-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.search-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-subtitle {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.search-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.search-empty-state {
+  max-width: 560px;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}

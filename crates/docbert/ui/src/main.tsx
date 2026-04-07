@@ -5,6 +5,7 @@ import "./index.css";
 import App from "./App";
 import Documents from "./pages/Documents";
 import Chat from "./pages/Chat";
+import Search from "./pages/Search";
 import Settings from "./pages/Settings";
 
 createRoot(document.getElementById("root")!).render(
@@ -17,6 +18,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="documents/:collection/*" element={<Documents />} />
           <Route path="chat" element={<Chat />} />
           <Route path="chat/:conversationId" element={<Chat />} />
+          <Route path="search" element={<Search />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>
