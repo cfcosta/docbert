@@ -59,12 +59,12 @@
     --text: #e8e6f2;
     --text-h: #f8f8f2;
     --text-muted: #6272a4;
-    --bg: #282a36;
-    --bg-secondary: #343746;
-    --bg-tertiary: #424450;
-    --surface-floating: #343746;
-    --surface-selection: #44475a;
-    --surface-current-line: #6272a4;
+    --bg: #21222c;
+    --bg-secondary: #282a36;
+    --bg-tertiary: #303341;
+    --surface-floating: #2b2e3b;
+    --surface-selection: #3a3d4d;
+    --surface-current-line: #44475a;
     --border: rgba(248, 248, 242, 0.12);
     --border-strong: rgba(248, 248, 242, 0.22);
     --border-focus: #bd93f9;
