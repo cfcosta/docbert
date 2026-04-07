@@ -59,15 +59,25 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::runtime_resources;
+
 const DEFAULT_SEARCH_LIMIT: usize = 10;
 const DEFAULT_MULTI_GET_MAX_BYTES: u64 = 10_240;
 
 struct DocbertState {
     data_dir: DataDir,
-    config_db: ConfigDb,
     search_index: SearchIndex,
-    embedding_db: EmbeddingDb,
     model: Mutex<ModelManager>,
+}
+
+impl DocbertState {
+    fn open_config_db(&self) -> error::Result<ConfigDb> {
+        runtime_resources::open_config_db_blocking(&self.data_dir)
+    }
+
+    fn open_embedding_db(&self) -> error::Result<EmbeddingDb> {
+        runtime_resources::open_embedding_db_blocking(&self.data_dir)
+    }
 }
 
 /// MCP (Model Context Protocol) server for docbert.
@@ -207,6 +217,14 @@ impl DocbertMcpServer {
             no_fuzzy: params.no_fuzzy.unwrap_or(false),
         };
 
+        let config_db = self
+            .state
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let embedding_db = self
+            .state
+            .open_embedding_db()
+            .map_err(|e| mcp_error("failed to open embedding db", e))?;
         let mut model = self.state.model.lock().map_err(|_| {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
@@ -214,14 +232,14 @@ impl DocbertMcpServer {
         let results = search::execute_search(
             &args,
             &self.state.search_index,
-            &self.state.embedding_db,
+            &embedding_db,
             &mut model,
         )
         .map_err(|e| mcp_error("search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
         build_search_tool_result(
-            &self.state.config_db,
+            &config_db,
             results,
             query,
             include_snippet,
@@ -248,21 +266,29 @@ impl DocbertMcpServer {
             min_score: params.min_score.unwrap_or(0.0),
         };
 
+        let config_db = self
+            .state
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let embedding_db = self
+            .state
+            .open_embedding_db()
+            .map_err(|e| mcp_error("failed to open embedding db", e))?;
         let mut model = self.state.model.lock().map_err(|_| {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
 
         let results = search::execute_semantic_search(
             &args,
-            &self.state.config_db,
-            &self.state.embedding_db,
+            &config_db,
+            &embedding_db,
             &mut model,
         )
         .map_err(|e| mcp_error("semantic search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
         build_search_tool_result(
-            &self.state.config_db,
+            &config_db,
             results,
             query,
             include_snippet,
@@ -292,11 +318,14 @@ impl DocbertMcpServer {
             reference = base.to_string();
         }
 
-        let (collection, path) =
-            resolve_reference(&self.state.config_db, &reference)?;
+        let config_db = self
+            .state
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let (collection, path) = resolve_reference(&config_db, &reference)?;
 
         let full_path =
-            resolve_full_path(&self.state.config_db, &collection, &path)
+            resolve_full_path(&config_db, &collection, &path)
                 .ok_or_else(|| {
                     rmcp::ErrorData::resource_not_found(
                         format!("collection not found: {collection}"),
@@ -334,8 +363,7 @@ impl DocbertMcpServer {
             body = text_util::add_line_numbers(&body, start_line);
         }
 
-        if let Some(context) =
-            context_for_doc(&self.state.config_db, &collection, &path)
+        if let Some(context) = context_for_doc(&config_db, &collection, &path)
         {
             body = format!("<!-- Context: {context} -->\n\n{body}");
         }
@@ -371,9 +399,11 @@ impl DocbertMcpServer {
             .compile_matcher();
 
         let mut matches: Vec<(String, String)> = Vec::new();
-        let metadata = self
+        let config_db = self
             .state
-            .config_db
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let metadata = config_db
             .list_all_document_metadata_typed()
             .map_err(|e| mcp_error("failed to load document metadata", e))?;
 
@@ -402,8 +432,7 @@ impl DocbertMcpServer {
         let mut content: Vec<Content> = Vec::new();
 
         for (collection, path) in matches {
-            let full_path =
-                resolve_full_path(&self.state.config_db, &collection, &path);
+            let full_path = resolve_full_path(&config_db, &collection, &path);
             let Some(full_path) = full_path else {
                 content.push(Content::text(format!(
                     "[SKIPPED: {collection}:{path} - collection not found]"
@@ -433,8 +462,7 @@ impl DocbertMcpServer {
                 body = text_util::add_line_numbers(&body, 1);
             }
 
-            if let Some(context) =
-                context_for_doc(&self.state.config_db, &collection, &path)
+            if let Some(context) = context_for_doc(&config_db, &collection, &path)
             {
                 body = format!("<!-- Context: {context} -->\n\n{body}");
             }
@@ -461,26 +489,22 @@ impl DocbertMcpServer {
     pub async fn docbert_status(
         &self,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let collections = self
+        let config_db = self
             .state
-            .config_db
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let collections = config_db
             .list_collections()
             .map_err(|e| mcp_error("failed to list collections", e))?;
-        let doc_ids = self
-            .state
-            .config_db
+        let doc_ids = config_db
             .list_document_ids()
             .map_err(|e| mcp_error("failed to list document ids", e))?;
-        let model_name = self
-            .state
-            .config_db
+        let model_name = config_db
             .get_setting_or("model_name", DEFAULT_MODEL_ID)
             .map_err(|e| mcp_error("failed to read model setting", e))?;
 
         let mut counts = std::collections::HashMap::new();
-        for (_doc_id, meta) in self
-            .state
-            .config_db
+        for (_doc_id, meta) in config_db
             .list_all_document_metadata_typed()
             .map_err(|e| mcp_error("failed to load document metadata", e))?
         {
@@ -601,8 +625,11 @@ impl ServerHandler for DocbertMcpServer {
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-        let contents =
-            read_resource_contents(&self.state.config_db, &request.uri)?;
+        let config_db = self
+            .state
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let contents = read_resource_contents(&config_db, &request.uri)?;
         Ok(ReadResourceResult::new(vec![contents]))
     }
 }
@@ -869,15 +896,11 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
 /// This blocks until the client disconnects. In practice, it is what
 /// `docbert mcp` calls.
 pub fn run_mcp(data_dir: DataDir, model_id: String) -> error::Result<()> {
-    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
 
     let state = DocbertState {
         data_dir,
-        config_db,
         search_index,
-        embedding_db,
         model: Mutex::new(ModelManager::with_model_id(model_id)),
     };
 
@@ -970,9 +993,7 @@ mod tests {
 
         let server = DocbertMcpServer::new(DocbertState {
             data_dir,
-            config_db,
             search_index,
-            embedding_db,
             model: Mutex::new(ModelManager::new()),
         });
 
@@ -1061,7 +1082,7 @@ mod tests {
         let doc_id = doc_ids.first().unwrap();
 
         let result = build_search_tool_result(
-            &server.state.config_db,
+            &server.state.open_config_db().unwrap(),
             vec![search::FinalResult {
                 rank: 1,
                 score: 1.25,
@@ -1119,7 +1140,7 @@ mod tests {
         let doc_id = doc_ids.first().unwrap();
 
         let unprefixed = build_search_tool_result(
-            &server.state.config_db,
+            &server.state.open_config_db().unwrap(),
             vec![search::FinalResult {
                 rank: 1,
                 score: 1.0,
@@ -1134,7 +1155,7 @@ mod tests {
         )
         .unwrap();
         let prefixed = build_search_tool_result(
-            &server.state.config_db,
+            &server.state.open_config_db().unwrap(),
             vec![search::FinalResult {
                 rank: 1,
                 score: 1.0,
@@ -1264,7 +1285,7 @@ mod tests {
             build_server(&[("space name.md", "Hello world\n")]);
         let uri = "bert://notes/space%20name.md";
         let contents =
-            read_resource_contents(&server.state.config_db, uri).unwrap();
+            read_resource_contents(&server.state.open_config_db().unwrap(), uri).unwrap();
         match contents {
             ResourceContents::TextResourceContents { text, .. } => {
                 assert!(text.contains("1: Hello world"));
