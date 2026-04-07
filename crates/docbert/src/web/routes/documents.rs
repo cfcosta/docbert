@@ -128,8 +128,11 @@ pub(crate) async fn ingest(
     State(state): State<AppState>,
     Json(body): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, StatusCode> {
-    paths::resolve_collection_root(&state.config_db, &body.collection)
-        .map_err(map_error)?;
+    {
+        let config_db = state.open_config_db_blocking().map_err(map_error)?;
+        paths::resolve_collection_root(&config_db, &body.collection)
+            .map_err(map_error)?;
+    }
 
     let mut ingested = Vec::with_capacity(body.documents.len());
     for uploaded in &body.documents {
@@ -137,12 +140,15 @@ pub(crate) async fn ingest(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        let full_path = paths::resolve_document_path(
-            &state.config_db,
-            &body.collection,
-            &uploaded.path,
-        )
-        .map_err(map_error)?;
+        let full_path = {
+            let config_db = state.open_config_db_blocking().map_err(map_error)?;
+            paths::resolve_document_path(
+                &config_db,
+                &body.collection,
+                &uploaded.path,
+            )
+            .map_err(map_error)?
+        };
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -187,7 +193,7 @@ pub(crate) async fn list_by_collection(
     AxumPath(collection): AxumPath<String>,
 ) -> Result<Json<Vec<DocumentListItem>>, StatusCode> {
     let config_db = state.open_config_db().map_err(map_error)?;
-    paths::resolve_collection_root(config_db, &collection).map_err(map_error)?;
+    paths::resolve_collection_root(&config_db, &collection).map_err(map_error)?;
 
     let all_meta = config_db
         .list_all_document_metadata_typed()
@@ -199,7 +205,7 @@ pub(crate) async fn list_by_collection(
         }
 
         let full_path = paths::resolve_document_path(
-            config_db,
+            &config_db,
             &meta.collection,
             &meta.relative_path,
         )
@@ -221,15 +227,16 @@ pub(crate) async fn delete(
     AxumPath((collection, path)): AxumPath<(String, String)>,
 ) -> Result<StatusCode, StatusCode> {
     let did = DocumentId::new(&collection, &path);
-    state
-        .config_db
-        .get_document_metadata_typed(did.numeric)
-        .map_err(map_error)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let full_path = {
+        let config_db = state.open_config_db_blocking().map_err(map_error)?;
+        config_db
+            .get_document_metadata_typed(did.numeric)
+            .map_err(map_error)?
+            .ok_or(StatusCode::NOT_FOUND)?;
 
-    let full_path =
-        paths::resolve_document_path(&state.config_db, &collection, &path)
-            .map_err(map_error)?;
+        paths::resolve_document_path(&config_db, &collection, &path)
+            .map_err(map_error)?
+    };
     std::fs::remove_file(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
     ingest::delete_document(&state, &collection, &path).map_err(map_error)?;
 
@@ -248,7 +255,7 @@ pub(crate) async fn get(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let full_path =
-        paths::resolve_document_path(config_db, &collection, &path)
+        paths::resolve_document_path(&config_db, &collection, &path)
             .map_err(map_error)?;
     let content = std::fs::read_to_string(&full_path)
         .map_err(|_| StatusCode::NOT_FOUND)?;
@@ -294,7 +301,8 @@ mod tests {
         let search_index = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
+        let placeholder_index = SearchIndex::open_in_ram().unwrap();
+        let writer = placeholder_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,

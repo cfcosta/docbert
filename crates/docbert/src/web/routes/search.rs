@@ -84,8 +84,8 @@ pub(crate) async fn search(
         mode,
         &request,
         &state.search_index,
-        config_db,
-        embedding_db,
+        &config_db,
+        &embedding_db,
         &mut model,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -93,7 +93,7 @@ pub(crate) async fn search(
 
     let items: Vec<SearchResultItem> = results
         .into_iter()
-        .map(|result| build_search_result_item(&state, config_db, result, &body.query))
+        .map(|result| build_search_result_item(&state, &config_db, result, &body.query))
         .collect();
 
     Ok(Json(SearchResponse {

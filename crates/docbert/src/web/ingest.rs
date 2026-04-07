@@ -51,13 +51,13 @@ pub(crate) fn ingest_prepared_document(
     document: &SearchDocument,
     embedding_entries: &[EmbeddingEntry],
 ) -> error::Result<IngestedDocument> {
-    let collection_root = collection_root(state, collection)?;
-    let previous_snapshot = collection_snapshots::load_collection_snapshot(
-        &state.config_db,
-        collection,
-    )?;
+    let config_db = state.open_config_db_blocking()?;
+    let embedding_db = state.open_embedding_db_blocking()?;
+    let collection_root = collection_root(&config_db, collection)?;
+    let previous_snapshot =
+        collection_snapshots::load_collection_snapshot(&config_db, collection)?;
     let existing_embeddings =
-        load_document_family_embeddings(state, document.did.numeric)?;
+        load_document_family_embeddings(&embedding_db, document.did.numeric)?;
     let existing_embedding_ids: Vec<u64> = existing_embeddings
         .iter()
         .map(|(doc_id, _, _, _)| *doc_id)
@@ -67,16 +67,12 @@ pub(crate) fn ingest_prepared_document(
         .map(|(doc_id, _, _, _)| *doc_id)
         .collect();
 
-    let previous_metadata = state
-        .config_db
-        .get_document_metadata_typed(document.did.numeric)?;
-    let previous_user_metadata = state
-        .config_db
-        .get_document_user_metadata(document.did.numeric)?;
+    let previous_metadata =
+        config_db.get_document_metadata_typed(document.did.numeric)?;
+    let previous_user_metadata =
+        config_db.get_document_user_metadata(document.did.numeric)?;
 
-    let mut writer = state.writer.lock().map_err(|_| {
-        error::Error::Config("failed to lock tantivy writer".to_string())
-    })?;
+    let mut writer = state.open_index_writer_blocking(50_000_000)?;
 
     state.search_index.add_document(
         &writer,
@@ -89,20 +85,20 @@ pub(crate) fn ingest_prepared_document(
         document.mtime,
     )?;
 
-    if let Err(err) = state.embedding_db.batch_store(embedding_entries) {
+    if let Err(err) = embedding_db.batch_store(embedding_entries) {
         let _ = writer.rollback();
         return Err(err);
     }
 
-    if let Err(err) = persist_metadata(state, collection, document) {
+    if let Err(err) = persist_metadata(&config_db, collection, document) {
         let _ = writer.rollback();
         restore_previous_embeddings(
-            state,
+            &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
         )?;
         restore_previous_metadata(
-            state,
+            &config_db,
             document.did.numeric,
             previous_metadata.as_ref(),
             previous_user_metadata.as_ref(),
@@ -112,12 +108,12 @@ pub(crate) fn ingest_prepared_document(
 
     if let Err(err) = writer.commit() {
         restore_previous_embeddings(
-            state,
+            &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
         )?;
         restore_previous_metadata(
-            state,
+            &config_db,
             document.did.numeric,
             previous_metadata.as_ref(),
             previous_user_metadata.as_ref(),
@@ -128,18 +124,18 @@ pub(crate) fn ingest_prepared_document(
     // The collection snapshot must move in lockstep with successful ingest
     // side effects. If snapshot refresh fails, keep the previous snapshot.
     if let Err(err) = refresh_collection_snapshot(
-        state,
+        &config_db,
         collection,
         &collection_root,
         previous_snapshot.as_ref(),
     ) {
         restore_previous_embeddings(
-            state,
+            &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
         )?;
         restore_previous_metadata(
-            state,
+            &config_db,
             document.did.numeric,
             previous_metadata.as_ref(),
             previous_user_metadata.as_ref(),
@@ -148,7 +144,7 @@ pub(crate) fn ingest_prepared_document(
     }
 
     remove_stale_previous_embeddings(
-        state,
+        &embedding_db,
         &existing_embedding_ids,
         &current_embedding_ids,
     )?;
@@ -166,28 +162,26 @@ pub(crate) fn delete_document(
     collection: &str,
     relative_path: &str,
 ) -> error::Result<()> {
-    let collection_root = collection_root(state, collection)?;
-    let previous_snapshot = collection_snapshots::load_collection_snapshot(
-        &state.config_db,
-        collection,
-    )?;
+    let config_db = state.open_config_db_blocking()?;
+    let collection_root = collection_root(&config_db, collection)?;
+    let previous_snapshot =
+        collection_snapshots::load_collection_snapshot(&config_db, collection)?;
     let did = DocumentId::new(collection, relative_path);
-    let mut writer = state.writer.lock().map_err(|_| {
-        error::Error::Config("failed to lock tantivy writer".to_string())
-    })?;
+    let mut writer = state.open_index_writer_blocking(50_000_000)?;
 
     state
         .search_index
         .delete_document(&writer, &did.to_string());
     writer.commit()?;
 
-    state.embedding_db.remove_document_family(did.numeric)?;
-    state.config_db.remove_document_metadata(did.numeric)?;
-    state.config_db.remove_document_user_metadata(did.numeric)?;
+    let embedding_db = state.open_embedding_db_blocking()?;
+    embedding_db.remove_document_family(did.numeric)?;
+    config_db.remove_document_metadata(did.numeric)?;
+    config_db.remove_document_user_metadata(did.numeric)?;
     // Delete updates the stored collection snapshot only after index and
     // metadata cleanup succeeds end to end.
     refresh_collection_snapshot(
-        state,
+        &config_db,
         collection,
         &collection_root,
         previous_snapshot.as_ref(),
@@ -197,11 +191,10 @@ pub(crate) fn delete_document(
 }
 
 fn collection_root(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     collection: &str,
 ) -> error::Result<std::path::PathBuf> {
-    let root =
-        state.config_db.get_collection(collection)?.ok_or_else(|| {
+    let root = config_db.get_collection(collection)?.ok_or_else(|| {
             error::Error::NotFound {
                 kind: "collection",
                 name: collection.to_string(),
@@ -211,7 +204,7 @@ fn collection_root(
 }
 
 fn persist_metadata(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     collection: &str,
     document: &SearchDocument,
 ) -> error::Result<()> {
@@ -220,18 +213,14 @@ fn persist_metadata(
         relative_path: document.relative_path.clone(),
         mtime: document.mtime,
     };
-    state
-        .config_db
-        .set_document_metadata_typed(document.did.numeric, &metadata)?;
+    config_db.set_document_metadata_typed(document.did.numeric, &metadata)?;
 
     match document.metadata.as_ref() {
-        Some(value) => state
-            .config_db
-            .set_document_user_metadata(document.did.numeric, value)?,
+        Some(value) => {
+            config_db.set_document_user_metadata(document.did.numeric, value)?
+        }
         None => {
-            state
-                .config_db
-                .remove_document_user_metadata(document.did.numeric)?;
+            config_db.remove_document_user_metadata(document.did.numeric)?;
         }
     }
 
@@ -239,7 +228,7 @@ fn persist_metadata(
 }
 
 fn refresh_collection_snapshot(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     collection: &str,
     collection_root: &Path,
     previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
@@ -249,11 +238,11 @@ fn refresh_collection_snapshot(
         collection_root,
     )?;
     if let Err(err) = collection_snapshots::replace_collection_snapshot(
-        &state.config_db,
+        config_db,
         &current_snapshot,
     ) {
         restore_previous_collection_snapshot(
-            state,
+            config_db,
             collection,
             previous_snapshot,
         )?;
@@ -263,37 +252,33 @@ fn refresh_collection_snapshot(
 }
 
 fn restore_previous_collection_snapshot(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     collection: &str,
     previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
 ) -> error::Result<()> {
     match previous_snapshot {
-        Some(snapshot) => collection_snapshots::replace_collection_snapshot(
-            &state.config_db,
-            snapshot,
-        ),
+        Some(snapshot) => {
+            collection_snapshots::replace_collection_snapshot(config_db, snapshot)
+        }
         None => {
-            state
-                .config_db
-                .remove_collection_merkle_snapshot(collection)?;
+            config_db.remove_collection_merkle_snapshot(collection)?;
             Ok(())
         }
     }
 }
 
 fn load_document_family_embeddings(
-    state: &AppState,
+    embedding_db: &docbert_core::EmbeddingDb,
     base_doc_id: u64,
 ) -> error::Result<Vec<EmbeddingEntry>> {
     let family_key = document_family_key(base_doc_id);
-    let doc_ids: Vec<u64> = state
-        .embedding_db
+    let doc_ids: Vec<u64> = embedding_db
         .list_ids()?
         .into_iter()
         .filter(|doc_id| document_family_key(*doc_id) == family_key)
         .collect();
 
-    let loaded = state.embedding_db.batch_load(&doc_ids)?;
+    let loaded = embedding_db.batch_load(&doc_ids)?;
     let mut entries = Vec::with_capacity(loaded.len());
     for (doc_id, matrix) in loaded {
         let Some(matrix) = matrix else {
@@ -310,7 +295,7 @@ fn load_document_family_embeddings(
 }
 
 fn restore_previous_embeddings(
-    state: &AppState,
+    embedding_db: &docbert_core::EmbeddingDb,
     previous_embeddings: &[EmbeddingEntry],
     current_embedding_ids: &[u64],
 ) -> error::Result<()> {
@@ -324,35 +309,31 @@ fn restore_previous_embeddings(
         .filter(|doc_id| !previous_ids.contains(doc_id))
         .collect();
     if !stale_new_ids.is_empty() {
-        state.embedding_db.batch_remove(&stale_new_ids)?;
+        embedding_db.batch_remove(&stale_new_ids)?;
     }
     if !previous_embeddings.is_empty() {
-        state.embedding_db.batch_store(previous_embeddings)?;
+        embedding_db.batch_store(previous_embeddings)?;
     }
     Ok(())
 }
 
 fn restore_previous_metadata(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     doc_id: u64,
     previous_metadata: Option<&incremental::DocumentMetadata>,
     previous_user_metadata: Option<&serde_json::Value>,
 ) -> error::Result<()> {
     match previous_metadata {
-        Some(metadata) => state
-            .config_db
-            .set_document_metadata_typed(doc_id, metadata)?,
+        Some(metadata) => config_db.set_document_metadata_typed(doc_id, metadata)?,
         None => {
-            state.config_db.remove_document_metadata(doc_id)?;
+            config_db.remove_document_metadata(doc_id)?;
         }
     }
 
     match previous_user_metadata {
-        Some(value) => {
-            state.config_db.set_document_user_metadata(doc_id, value)?
-        }
+        Some(value) => config_db.set_document_user_metadata(doc_id, value)?,
         None => {
-            state.config_db.remove_document_user_metadata(doc_id)?;
+            config_db.remove_document_user_metadata(doc_id)?;
         }
     }
 
@@ -360,7 +341,7 @@ fn restore_previous_metadata(
 }
 
 fn remove_stale_previous_embeddings(
-    state: &AppState,
+    embedding_db: &docbert_core::EmbeddingDb,
     previous_embedding_ids: &[u64],
     current_embedding_ids: &[u64],
 ) -> error::Result<()> {
@@ -372,7 +353,7 @@ fn remove_stale_previous_embeddings(
         .filter(|doc_id| !current_ids.contains(doc_id))
         .collect();
     if !stale_previous_ids.is_empty() {
-        state.embedding_db.batch_remove(&stale_previous_ids)?;
+        embedding_db.batch_remove(&stale_previous_ids)?;
     }
     Ok(())
 }
@@ -401,7 +382,8 @@ mod tests {
         let search_index = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
+        let placeholder_index = SearchIndex::open_in_ram().unwrap();
+        let writer = placeholder_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             config_db,
