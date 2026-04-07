@@ -2,7 +2,7 @@ import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { Context, Message as PiMessage, Tool, UserMessage } from "@mariozechner/pi-ai";
 
 import { api } from "../lib/api";
-import type { LlmSettings } from "../lib/api";
+import type { DocumentResponse, LlmSettings } from "../lib/api";
 import { applyInterruptedStopReason, createToolResultMessage } from "./chat-context";
 import type { Message, ToolCallInfo } from "./chat-message-codec";
 import {
@@ -34,7 +34,7 @@ export type UpdateAssistantMessage = (fn: (message: Message) => Message) => void
 const analyzeDocumentTool: Tool = {
   name: "analyze_document",
   description:
-    "Run a focused file analysis subagent for one document and return a concise summary relevant to the user question.",
+    "Run a focused file analysis subagent for one document and return an evidence-rich analysis the parent agent can synthesize into the final answer.",
   parameters: Type.Object({
     collection: Type.String({ description: "The collection name" }),
     path: Type.String({
@@ -145,22 +145,53 @@ export function updateMessageById(
   return messages.map((message) => (message.id === id ? updater(message) : message));
 }
 
-function createSubagentContext(
+export const FILE_ANALYSIS_SYSTEM_PROMPT = `You are a file-analysis subagent.
+
+Read one document carefully and produce a compact but evidence-rich analysis for the parent agent.
+Stay strictly within this file. Do not call tools. Do not synthesize across files. Do not use outside knowledge.
+Do not optimize for brevity if it would drop useful detail.
+
+Extract the strongest concrete material that helps answer the user question, including:
+- key claims, facts, definitions, decisions, examples, steps, dates, numbers, and caveats
+- short quoted phrases when they carry important meaning
+- uncertainty, ambiguity, or missing information in the file
+
+If the file is only weakly relevant, say so clearly and explain why.`;
+
+function formatSubagentMetadata(metadata?: Record<string, unknown>): string | null {
+  if (!metadata || Object.keys(metadata).length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(metadata, null, 2);
+}
+
+export function createSubagentContext(
   userQuestion: string,
-  fileContent: string,
-  file: QueuedAnalysisFile,
+  document: Pick<DocumentResponse, "collection" | "path" | "title" | "content" | "metadata">,
   focus?: string,
 ): Context {
+  const metadata = formatSubagentMetadata(document.metadata);
   const userPiMessage: UserMessage = {
     role: "user",
     content: [
       `User question: ${userQuestion}`,
-      `Analyze exactly this file: ${file.collection}/${file.path}`,
+      `Analyze exactly this file: ${document.collection}/${document.path}`,
+      `Document title: ${document.title}`,
+      metadata ? `Document metadata:\n${metadata}` : null,
       focus ? `Extra focus: ${focus}` : null,
-      "Focus on the most relevant facts, note uncertainty, and do not answer beyond this file.",
-      "Return a concise summary that the parent agent can use as tool output.",
+      "Return markdown with these sections:",
+      "## Relevance to the question",
+      "State exactly what this file contributes and how strong the relevance is.",
+      "## Key findings",
+      "List the most useful details from the file as concrete bullet points.",
+      "## Supporting evidence",
+      "Include short quotes or very specific references to the text that support the findings.",
+      "## Gaps or uncertainty",
+      "Note limits, ambiguities, or anything the file does not establish.",
+      "Be specific and information-dense so the parent agent can compose a strong final answer.",
       "",
-      fileContent,
+      document.content,
     ]
       .filter((part): part is string => Boolean(part))
       .join("\n"),
@@ -168,8 +199,7 @@ function createSubagentContext(
   };
 
   return {
-    systemPrompt:
-      "You are a file-analysis subagent. Read one file and report the important findings relevant to the user question. Do not call tools. Do not synthesize across files.",
+    systemPrompt: FILE_ANALYSIS_SYSTEM_PROMPT,
     messages: [userPiMessage],
     tools: [],
   };
@@ -282,7 +312,7 @@ async function runFileSubagent({
 }): Promise<SubagentAnalysisResult> {
   try {
     const document = await api.getDocument(file.collection, file.path);
-    const context = createSubagentContext(userQuestion, document.content, file, focus);
+    const context = createSubagentContext(userQuestion, document, focus);
     let streamError: string | undefined;
 
     updateMessage((message) => startSubagentMessage(message));
