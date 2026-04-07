@@ -65,6 +65,62 @@ fn setup_fixture(data_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn setup_empty_mcp_runtime(
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _config_db = ConfigDb::open(&data_dir.join("config.db"))?;
+    let tantivy_dir = data_dir.join("tantivy");
+    std::fs::create_dir_all(&tantivy_dir)?;
+    let _index = SearchIndex::open(&tantivy_dir)?;
+    Ok(())
+}
+
+fn run_sync(
+    data_dir: &Path,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    Ok(std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(data_dir)
+        .arg("sync")
+        .output()?)
+}
+
+#[tokio::test]
+async fn mcp_server_allows_sync_while_running()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    setup_empty_mcp_runtime(tempdir.path())?;
+
+    let bin = docbert_bin()?;
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(bin).configure(|cmd| {
+            cmd.arg("mcp").env("DOCBERT_DATA_DIR", tempdir.path());
+        }),
+    )?;
+
+    let client = ().serve(transport).await?;
+    let tools = client.peer().list_all_tools().await?;
+    assert!(
+        !tools.is_empty(),
+        "expected docbert MCP server to advertise tools"
+    );
+
+    let sync = run_sync(tempdir.path())?;
+    assert!(
+        sync.status.success(),
+        "docbert sync failed while mcp was running\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync.stdout),
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(String::from_utf8_lossy(&sync.stderr).contains("No collections to sync."));
+
+    let tools_after = client.peer().list_all_tools().await?;
+    assert_eq!(tools_after.len(), tools.len());
+
+    client.cancel().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
 {

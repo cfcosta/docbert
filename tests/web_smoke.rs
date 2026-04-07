@@ -42,6 +42,36 @@ fn web_boot_starts_without_docserver_env()
 }
 
 #[test]
+fn web_server_allows_sync_while_running()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tempdir = tempfile::tempdir()?;
+    let port = free_tcp_port()?;
+    let mut child = spawn_web_server(tempdir.path(), port)?;
+
+    wait_for_server(&mut child, port)?;
+
+    let sync = run_sync(tempdir.path())?;
+    assert!(
+        sync.status.success(),
+        "docbert sync failed while web was running\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync.stdout),
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(String::from_utf8_lossy(&sync.stderr).contains("No collections to sync."));
+
+    let response = http_get(port, "/v1/settings/llm")?;
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected response after sync: {response}"
+    );
+
+    child.kill()?;
+    child.wait()?;
+
+    Ok(())
+}
+
+#[test]
 fn web_settings_route_responds() -> Result<(), Box<dyn std::error::Error>> {
     let tempdir = tempfile::tempdir()?;
     let port = free_tcp_port()?;
@@ -281,6 +311,16 @@ fn spawn_web_server_with(
     }
 
     Ok(command.spawn()?)
+}
+
+fn run_sync(
+    data_dir: &Path,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    Ok(std::process::Command::new(docbert_bin()?)
+        .arg("--data-dir")
+        .arg(data_dir)
+        .arg("sync")
+        .output()?)
 }
 
 fn setup_collection(
