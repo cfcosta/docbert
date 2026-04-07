@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
 import SearchResults from "../components/SearchResults";
-import { api, type Collection, type SearchMode, type SearchResult } from "../lib/api";
+import type { SearchResult } from "../lib/api";
+import { api } from "../lib/api";
+import { useSearchSession } from "./search-session";
 import "./Search.css";
 
 const ALL_COLLECTIONS_VALUE = "";
 const SEARCH_DEBOUNCE_MS = 200;
 
 export default function Search() {
-  const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<SearchMode>("hybrid");
-  const [selectedCollection, setSelectedCollection] = useState(ALL_COLLECTIONS_VALUE);
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [loadingCollections, setLoadingCollections] = useState(true);
-  const [collectionsError, setCollectionsError] = useState<string | null>(null);
+  const { searchSession, setSearchSession } = useSearchSession();
+  const { query, mode, selectedCollection, collections, loadingCollections, collectionsError } =
+    searchSession;
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [resultCount, setResultCount] = useState<number | null>(null);
@@ -21,6 +20,10 @@ export default function Search() {
   const latestSearchRequestRef = useRef(0);
 
   useEffect(() => {
+    if (!loadingCollections) {
+      return;
+    }
+
     let active = true;
 
     api
@@ -29,25 +32,35 @@ export default function Search() {
         if (!active) {
           return;
         }
-        setCollections(nextCollections);
-        setCollectionsError(null);
+        setSearchSession((previous) => ({
+          ...previous,
+          collections: nextCollections,
+          collectionsError: null,
+        }));
       })
       .catch((error) => {
         if (!active) {
           return;
         }
-        setCollectionsError(error instanceof Error ? error.message : "Could not load collections.");
+        setSearchSession((previous) => ({
+          ...previous,
+          collectionsError:
+            error instanceof Error ? error.message : "Could not load collections.",
+        }));
       })
       .finally(() => {
         if (active) {
-          setLoadingCollections(false);
+          setSearchSession((previous) => ({
+            ...previous,
+            loadingCollections: false,
+          }));
         }
       });
 
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadingCollections, setSearchSession]);
 
   useEffect(() => {
     if (loadingCollections || collectionsError) {
@@ -125,7 +138,9 @@ export default function Search() {
               type="search"
               placeholder="Search your documents..."
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) =>
+                setSearchSession((previous) => ({ ...previous, query: event.target.value }))
+              }
             />
           </div>
 
@@ -138,7 +153,12 @@ export default function Search() {
                 id="search-mode"
                 className="search-select"
                 value={mode}
-                onChange={(event) => setMode(event.target.value as SearchMode)}
+                onChange={(event) =>
+                  setSearchSession((previous) => ({
+                    ...previous,
+                    mode: event.target.value as typeof previous.mode,
+                  }))
+                }
               >
                 <option value="hybrid">Hybrid</option>
                 <option value="semantic">Semantic</option>
@@ -153,7 +173,12 @@ export default function Search() {
                 id="search-collection"
                 className="search-select"
                 value={selectedCollection}
-                onChange={(event) => setSelectedCollection(event.target.value)}
+                onChange={(event) =>
+                  setSearchSession((previous) => ({
+                    ...previous,
+                    selectedCollection: event.target.value,
+                  }))
+                }
                 disabled={loadingCollections || collectionsError !== null}
               >
                 <option value={ALL_COLLECTIONS_VALUE}>All collections</option>
