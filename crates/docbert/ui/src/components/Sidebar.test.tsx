@@ -1,7 +1,7 @@
 import "../test/setup";
 
 import { describe, expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
 import Sidebar from "./Sidebar";
@@ -28,6 +28,8 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    expect(view.getByRole("link", { name: /search/i }).className).toContain("active");
+    expect(within(view.container).getByRole("link", { name: /^search$/i }).className).toContain(
+      "active",
+    );
   });
 });
