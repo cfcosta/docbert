@@ -1,13 +1,13 @@
-import type { ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import { Link } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import { buildDocumentTabHref } from "../lib/api";
+import { darkPrismTheme, lightPrismTheme } from "../lib/prism-theme";
 import { parseDocumentFrontmatter } from "./document-frontmatter";
 import type { SelectedDocumentSummary } from "./documents-tree";
 
@@ -91,6 +91,7 @@ export default function DocumentPreview({
 }
 
 function CodeBlock({ className, children, ...props }: ComponentProps<"code">) {
+  const prefersDark = usePrefersDarkMode();
   const match = /language-(\w+)/.exec(className ?? "");
   const code = String(children).replace(/\n$/, "");
 
@@ -104,7 +105,7 @@ function CodeBlock({ className, children, ...props }: ComponentProps<"code">) {
 
   return (
     <SyntaxHighlighter
-      style={oneDark}
+      style={prefersDark ? darkPrismTheme : lightPrismTheme}
       language={match[1]}
       PreTag="div"
       customStyle={{ margin: 0, borderRadius: "6px", fontSize: "0.85em" }}
@@ -112,6 +113,33 @@ function CodeBlock({ className, children, ...props }: ComponentProps<"code">) {
       {code}
     </SyntaxHighlighter>
   );
+}
+
+function usePrefersDarkMode() {
+  const [prefersDark, setPrefersDark] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const updatePreference = (event?: MediaQueryListEvent) => {
+      setPrefersDark(event?.matches ?? mediaQuery.matches);
+    };
+
+    updatePreference();
+    mediaQuery.addEventListener("change", updatePreference);
+    return () => mediaQuery.removeEventListener("change", updatePreference);
+  }, []);
+
+  return prefersDark;
 }
 
 function FileIcon({ size = 16 }: { size?: number }) {
