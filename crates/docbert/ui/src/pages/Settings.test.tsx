@@ -1,7 +1,7 @@
 import "../test/setup";
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { api, type LlmSettings } from "../lib/api";
@@ -71,7 +71,7 @@ describe("Settings page", () => {
       () => `load error never rendered: ${JSON.stringify(view.container.textContent)}`,
     );
 
-    expect(view.getByRole("alert").textContent).toContain("Load failed");
+    expect(within(view.container).getByRole("alert").textContent).toContain("Load failed");
   });
 
   test("save_failure_renders_inline_error_text", async () => {
@@ -81,18 +81,21 @@ describe("Settings page", () => {
     const view = renderSettings();
 
     await waitForCondition(
-      () => view.queryByRole("button", { name: "Save" })?.hasAttribute("disabled") === false,
+      () =>
+        within(view.container).queryByRole("button", { name: /^save$/i })?.hasAttribute(
+          "disabled",
+        ) === false,
       () => `save button never enabled: ${JSON.stringify(view.container.textContent)}`,
     );
 
-    await user.click(view.getByRole("button", { name: "Save" }));
+    await user.click(within(view.container).getByRole("button", { name: /^save$/i }));
 
     await waitForCondition(
       () => view.container.textContent?.includes("Save failed") ?? false,
       () => `save error never rendered: ${JSON.stringify(view.container.textContent)}`,
     );
 
-    expect(view.getByRole("alert").textContent).toContain("Save failed");
+    expect(within(view.container).getByRole("alert").textContent).toContain("Save failed");
   });
 
   test("successful_save_still_renders_saved", async () => {
@@ -102,11 +105,14 @@ describe("Settings page", () => {
     const view = renderSettings();
 
     await waitForCondition(
-      () => view.queryByRole("button", { name: "Save" })?.hasAttribute("disabled") === false,
+      () =>
+        within(view.container).queryByRole("button", { name: /^save$/i })?.hasAttribute(
+          "disabled",
+        ) === false,
       () => `save button never enabled: ${JSON.stringify(view.container.textContent)}`,
     );
 
-    await user.click(view.getByRole("button", { name: "Save" }));
+    await user.click(within(view.container).getByRole("button", { name: /^save$/i }));
 
     await waitForCondition(
       () => view.container.textContent?.includes("Saved") ?? false,
