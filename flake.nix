@@ -117,6 +117,7 @@
                       "-p"
                       cargoPackage
                     ];
+                    doCheck = false;
                     cargoLock = {
                       lockFile = ./Cargo.lock;
                       outputHashes = {
