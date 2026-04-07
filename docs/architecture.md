@@ -78,7 +78,9 @@ The CLI is the public face of the system.
 
 The web interface serves a SPA and a local JSON API from the same process.
 
-- Reads collection definitions from `config.db`
+- Keeps `SearchIndex` and the model manager alive for the server lifetime
+- Reopens `config.db` and `embeddings.db` on demand instead of keeping long-lived redb handles in server state
+- Acquires a Tantivy writer only around upload/delete work, then drops it after commit
 - Lists collections through `GET /v1/collections`
 - Reads document titles/content from collection folders on disk
 - Uploads write source files into collection folders, then index and embed them
@@ -140,5 +142,9 @@ docbert/
 
 - Tantivy allows concurrent readers and a single writer, enforced by its lock file
 - redb allows concurrent readers and a single writer through MVCC
+- `docbert web` and `docbert mcp` keep long-lived search/index read state and model state, but do not keep long-lived redb handles between operations
+- `docbert web` also avoids a process-lifetime Tantivy writer; it opens one only for upload/delete mutations
+- When runtime resource acquisition hits retryable lock/contention errors, docbert waits briefly and retries instead of failing fast
+- Non-lock failures still surface immediately rather than being retried as contention
 - Indexing writes run in a single thread, but document encoding can fan out across CPU cores through rayon inside pylate-rs
 - Search is read-only and can serve concurrent queries

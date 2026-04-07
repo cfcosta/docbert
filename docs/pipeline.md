@@ -55,6 +55,8 @@ On later runs of `docbert sync`:
 - `POST /v1/documents` writes a source file into the selected collection folder, then indexes and embeds it
 - `GET /v1/documents/...` reads the source file from disk
 - `DELETE /v1/documents/...` removes the source file from disk, then removes indexed state
+- the long-running web process keeps `SearchIndex` and the model manager alive, but reopens `config.db`, `embeddings.db`, and the Tantivy writer only for the individual read or mutation that needs them
+- retryable lock/contention failures wait and retry; non-lock failures still return errors instead of being treated as contention
 
 ## Search pipeline
 

@@ -71,10 +71,14 @@ Behavior:
 - `GET /v1/collections` lists CLI-managed collections
 - uploads write into collection folders on disk, then index/embed the new file
 - document deletion removes the source file from the collection folder, then removes indexed state
+- the long-running web process keeps the search index and model manager alive, but reopens `config.db`, `embeddings.db`, and a Tantivy writer only for the operation that needs them
+- retryable database or writer lock contention is handled by waiting and retrying, so `docbert sync` can complete while `docbert web` stays up; non-lock errors still fail normally
 
 ## MCP server
 
 docbert can also run as an MCP (Model Context Protocol) server for editors and AI tools.
+
+The MCP process keeps the search index and model manager alive, but reopens `config.db` and `embeddings.db` for each tool call or resource read instead of holding redb handles for the full server lifetime. Retryable lock contention waits and retries, which lets `docbert sync` run against the same data directory while MCP is still connected.
 
 Available tools:
 

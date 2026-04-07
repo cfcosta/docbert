@@ -278,9 +278,13 @@ docbert web --host 127.0.0.1 --port 3030
 #### Behavior
 
 - serves the SPA and API from one local process
+- keeps `SearchIndex` and the model manager alive for the process lifetime
+- reopens `config.db` and `embeddings.db` per request instead of holding redb handles open between operations
+- opens a Tantivy writer only around upload/delete work, then drops it after commit
 - `GET /v1/collections` lists CLI-managed collections
 - uploads write files into collection folders on disk, then ingest them
 - document deletion removes the source file from disk, then removes indexed state
+- retryable lock/contention failures wait and retry, which is why `docbert sync` can complete while `docbert web` is still running; non-lock failures still surface as errors
 
 ### `docbert mcp`
 
@@ -293,6 +297,12 @@ The server exposes these tools over stdio:
 - `docbert_get`
 - `docbert_multi_get`
 - `docbert_status`
+
+Behavior notes:
+
+- keeps `SearchIndex` and the model manager alive for the server lifetime
+- reopens `config.db` and `embeddings.db` for each tool call or resource read instead of holding redb handles open between operations
+- retryable lock/contention failures wait and retry, which is why `docbert sync` can complete while `docbert mcp` is running; non-lock failures still surface normally
 
 Example configuration for Claude Desktop or Claude Code:
 
