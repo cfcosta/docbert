@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::{fs, path::Path};
+
+use pdf_oxide::{converters::ConversionOptions, document::PdfDocument};
 
 use crate::{
     chunking::{self, ChunkingConfig},
@@ -78,6 +80,101 @@ pub fn prepare_filesystem(
         metadata: None,
         mtime,
     }
+}
+
+pub fn load_preview_content(
+    relative_path: &Path,
+    full_path: &Path,
+) -> crate::Result<String> {
+    if is_pdf(relative_path) {
+        return extract_pdf_markdown(&fs::read(full_path)?);
+    }
+
+    Ok(fs::read_to_string(full_path)?)
+}
+
+pub fn prepare_supported_filesystem(
+    collection: &str,
+    relative_path: &Path,
+    full_path: &Path,
+    mtime: u64,
+) -> crate::Result<SearchDocument> {
+    let raw_content = load_preview_content(relative_path, full_path)?;
+    Ok(prepare_filesystem(
+        collection,
+        relative_path,
+        &raw_content,
+        mtime,
+    ))
+}
+
+pub fn extract_pdf_markdown(pdf_bytes: &[u8]) -> crate::Result<String> {
+    let mut doc = PdfDocument::from_bytes(pdf_bytes.to_vec())?;
+    let page_count = doc.page_count()?;
+    let options = ConversionOptions::default();
+    let mut pages = Vec::with_capacity(page_count);
+
+    for page_index in 0..page_count {
+        let markdown = doc.to_markdown(page_index, &options)?;
+        let trimmed = markdown.trim();
+        if !trimmed.is_empty() {
+            pages.push(trimmed.to_string());
+        }
+    }
+
+    if !pages.is_empty() {
+        return Ok(normalize_pdf_markdown(&pages.join("\n\n")));
+    }
+
+    let mut text_pages = Vec::with_capacity(page_count);
+    for page_index in 0..page_count {
+        let text = doc.extract_text(page_index)?;
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            text_pages.push(trimmed.to_string());
+        }
+    }
+
+    Ok(normalize_pdf_markdown(&text_pages.join("\n\n")))
+}
+
+fn normalize_pdf_markdown(content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.is_empty()
+        || trimmed
+            .lines()
+            .any(|line| line.trim_start().starts_with("# "))
+    {
+        return trimmed.to_string();
+    }
+
+    let Some(first_line) = trimmed.lines().find_map(|line| {
+        let candidate = line.trim();
+        (!candidate.is_empty()).then_some(candidate)
+    }) else {
+        return String::new();
+    };
+
+    let title = first_line.trim_start_matches('#').trim();
+    if title.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let rest = trimmed
+        .strip_prefix(first_line)
+        .unwrap_or(trimmed)
+        .trim_start_matches(['\r', '\n']);
+    if rest.is_empty() {
+        format!("# {title}")
+    } else {
+        format!("# {title}\n\n{rest}")
+    }
+}
+
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
 pub fn embedding_chunks(

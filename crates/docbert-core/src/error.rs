@@ -75,6 +75,9 @@ pub enum Error {
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("pdf error: {0}")]
+    Pdf(#[from] pdf_oxide::error::Error),
+
     #[error("archive serialization error: {0}")]
     Rkyv(#[from] rkyv::rancor::Error),
 }

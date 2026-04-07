@@ -195,7 +195,7 @@ export default function DocumentsTree({
       {collections.length === 0 && (
         <div className="tree-empty">
           <p>No collections yet.</p>
-          <p>Add one with the docbert CLI to start indexing Markdown files.</p>
+          <p>Add one with the docbert CLI to start indexing Markdown and PDF files.</p>
         </div>
       )}
 
@@ -233,12 +233,14 @@ export default function DocumentsTree({
                 )}
               </button>
 
+              {isDragTarget && <span className="drop-badge">Drop files or folders</span>}
+
               <button
                 type="button"
                 className="tree-upload-btn"
                 onClick={() => onOpenUploadPicker(collection.name)}
-                aria-label={`Upload Markdown files to ${collection.name}`}
-                title={`Upload Markdown files to ${collection.name}`}
+                aria-label={`Upload Markdown or PDF files to ${collection.name}`}
+                title={`Upload Markdown or PDF files to ${collection.name}`}
                 disabled={ingesting}
               >
                 <UploadIcon />
@@ -250,7 +252,9 @@ export default function DocumentsTree({
                 {isLoading ? (
                   <div className="tree-loading">Loading documents…</div>
                 ) : collectionDocs.length === 0 ? (
-                  <div className="tree-empty-hint">Drop Markdown files here or use upload.</div>
+                  <div className="tree-empty-hint">
+                    Drop Markdown or PDF files here or use upload.
+                  </div>
                 ) : (
                   renderTree({
                     nodes: tree,

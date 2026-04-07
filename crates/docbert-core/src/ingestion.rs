@@ -56,8 +56,9 @@ pub fn extract_title(content: &str, file_path: &Path) -> String {
 /// Read discovered files into memory and derive the metadata needed for indexing.
 ///
 /// This runs in parallel, extracts titles, and computes stable document IDs.
-/// Files that cannot be read are reported in [`LoadDocumentsResult::failures`]
-/// so callers can avoid marking them as successfully processed.
+/// Files that cannot be read or converted are reported in
+/// [`LoadDocumentsResult::failures`] so callers can avoid marking them as
+/// successfully processed.
 pub fn load_documents(
     collection: &str,
     files: &[DiscoveredFile],
@@ -72,20 +73,22 @@ pub fn load_documents(
 
     let outcomes: Vec<_> = files
         .par_iter()
-        .map(|file| match std::fs::read_to_string(&file.absolute_path) {
-            Ok(raw_content) => LoadOutcome::Loaded {
-                file: file.clone(),
-                document: preparation::prepare_filesystem(
-                    collection,
-                    &file.relative_path,
-                    &raw_content,
-                    file.mtime,
-                ),
-            },
-            Err(error) => LoadOutcome::Failed(LoadFailure {
-                file: file.clone(),
-                error: error.to_string(),
-            }),
+        .map(|file| {
+            match preparation::prepare_supported_filesystem(
+                collection,
+                &file.relative_path,
+                &file.absolute_path,
+                file.mtime,
+            ) {
+                Ok(document) => LoadOutcome::Loaded {
+                    file: file.clone(),
+                    document,
+                },
+                Err(error) => LoadOutcome::Failed(LoadFailure {
+                    file: file.clone(),
+                    error: error.to_string(),
+                }),
+            }
         })
         .collect();
 
@@ -311,6 +314,44 @@ mod tests {
         let doc = &loaded.documents[0];
         assert_eq!(doc.title, prepared.title);
         assert_eq!(doc.searchable_body, prepared.searchable_body);
+    }
+
+    #[test]
+    fn load_documents_extracts_pdf_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = pdf_oxide::api::Pdf::from_markdown("# PDF Title\n\nPDF body")
+            .unwrap();
+        std::fs::write(tmp.path().join("paper.pdf"), pdf.into_bytes()).unwrap();
+
+        let files = crate::walker::discover_files(tmp.path()).unwrap();
+        let loaded = load_documents("notes", &files);
+
+        assert_eq!(loaded.documents.len(), 1);
+        assert!(loaded.failures.is_empty());
+        assert_eq!(loaded.documents[0].relative_path, "paper.pdf");
+        assert!(!loaded.documents[0].title.is_empty());
+        assert!(loaded.documents[0].searchable_body.contains("PDF"));
+        assert!(loaded.documents[0].searchable_body.contains("body"));
+    }
+
+    #[test]
+    fn invalid_pdf_becomes_a_load_failure() {
+        use std::path::PathBuf;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file = DiscoveredFile {
+            relative_path: PathBuf::from("broken.pdf"),
+            absolute_path: tmp.path().join("broken.pdf"),
+            mtime: 1,
+        };
+        std::fs::write(&file.absolute_path, b"not a pdf").unwrap();
+
+        let loaded = load_documents("notes", &[file]);
+
+        assert!(loaded.documents.is_empty());
+        assert!(loaded.loaded_files.is_empty());
+        assert_eq!(loaded.failures.len(), 1);
+        assert!(!loaded.failures[0].error.is_empty());
     }
 
     #[test]

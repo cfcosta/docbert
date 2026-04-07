@@ -56,7 +56,7 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Start the stdio MCP server for editor and agent integrations
     Mcp,
-    /// Start the local web UI and HTTP API server
+    /// Start the web UI server
     Web(WebArgs),
     /// Manage the persisted default ColBERT model configuration
     Model {

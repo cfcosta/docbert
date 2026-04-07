@@ -22,12 +22,12 @@ pub struct DiscoveredFile {
 }
 
 /// Supported file extensions for document discovery.
-const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt", "pdf"];
 
 /// Walk a directory tree and return the document files docbert can index.
 ///
-/// Hidden files and directories are skipped. Only supported extensions (`.md`
-/// and `.txt`) are returned. Results come back sorted by relative path.
+/// Hidden files and directories are skipped. Only supported extensions (`.md`,
+/// `.txt`, and `.pdf`) are returned. Results come back sorted by relative path.
 ///
 /// If the collection root is a Git repository, Git ignore rules are respected
 /// as well, including nested `.gitignore` files and `.git/info/exclude`.
@@ -38,11 +38,12 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
 /// # let tmp = tempfile::tempdir().unwrap();
 /// # std::fs::write(tmp.path().join("note.md"), "# Hello").unwrap();
 /// # std::fs::write(tmp.path().join("readme.txt"), "Hello").unwrap();
+/// # std::fs::write(tmp.path().join("paper.pdf"), b"%PDF-test").unwrap();
 /// # std::fs::write(tmp.path().join("image.png"), "binary").unwrap();
 /// use docbert_core::walker::discover_files;
 ///
 /// let files = discover_files(tmp.path()).unwrap();
-/// assert_eq!(files.len(), 2); // .md and .txt only
+/// assert_eq!(files.len(), 3); // .md, .txt, and .pdf
 /// ```
 pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     let canonical_root = root.canonicalize()?;
@@ -143,14 +144,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovers_md_and_txt() {
+    fn discovers_md_txt_and_pdf() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("note.md"), "# Hello").unwrap();
         std::fs::write(tmp.path().join("readme.txt"), "Hello").unwrap();
+        std::fs::write(tmp.path().join("paper.pdf"), b"%PDF-test").unwrap();
         std::fs::write(tmp.path().join("image.png"), "binary").unwrap();
 
         let files = discover_files(tmp.path()).unwrap();
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
 
         let names: Vec<_> = files
             .iter()
@@ -158,6 +160,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"note.md".to_string()));
         assert!(names.contains(&"readme.txt".to_string()));
+        assert!(names.contains(&"paper.pdf".to_string()));
     }
 
     #[test]

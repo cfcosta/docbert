@@ -18,6 +18,7 @@ const selectedDoc: SelectedDocumentSummary = {
 function renderPreview(
   preview: string,
   options: {
+    selectedDoc?: SelectedDocumentSummary;
     resolverDocuments?: Array<{ path: string }>;
     onOpenResolvedDocument?: (target: ResolvedDocumentTarget) => void;
   } = {},
@@ -25,7 +26,7 @@ function renderPreview(
   return render(
     <MemoryRouter>
       <DocumentPreview
-        selectedDoc={selectedDoc}
+        selectedDoc={options.selectedDoc ?? selectedDoc}
         preview={preview}
         resolverDocuments={options.resolverDocuments}
         onOpenResolvedDocument={options.onOpenResolvedDocument}
@@ -146,5 +147,17 @@ describe("DocumentPreview", () => {
 
     expect(scoped.getByRole("heading", { name: "Different title" })).toBeTruthy();
     expect(scoped.getByText("Body paragraph")).toBeTruthy();
+  });
+
+  test("shows an imported-from-pdf badge for pdf documents", () => {
+    const view = renderPreview("PDF body", {
+      selectedDoc: {
+        ...selectedDoc,
+        path: "paper.pdf",
+        title: "Paper",
+      },
+    });
+
+    expect(view.getByText("Imported from PDF")).toBeTruthy();
   });
 });

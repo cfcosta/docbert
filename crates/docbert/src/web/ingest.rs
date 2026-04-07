@@ -22,27 +22,23 @@ pub(crate) struct IngestedDocument {
     pub(crate) metadata: Option<serde_json::Value>,
 }
 
-pub(crate) fn load_markdown_document(
+pub(crate) fn load_document(
     collection: &str,
     relative_path: &str,
     full_path: &Path,
     metadata: Option<serde_json::Value>,
     mtime: u64,
 ) -> error::Result<SearchDocument> {
-    let raw_markdown = std::fs::read_to_string(full_path)?;
-    let prepared =
-        preparation::prepare_markdown(Path::new(relative_path), &raw_markdown);
-    let did = docbert_core::DocumentId::new(collection, relative_path);
+    let raw_content =
+        preparation::load_preview_content(Path::new(relative_path), full_path)?;
 
-    Ok(SearchDocument {
-        did,
-        relative_path: relative_path.to_string(),
-        title: prepared.title,
-        searchable_body: prepared.searchable_body,
-        raw_content: None,
+    Ok(preparation::prepare_uploaded(
+        collection,
+        relative_path,
+        &raw_content,
         metadata,
         mtime,
-    })
+    ))
 }
 
 pub(crate) fn ingest_prepared_document(
@@ -448,7 +444,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
-        let document = load_markdown_document(
+        let document = load_document(
             "notes",
             "hello.md",
             &full_path,
@@ -514,8 +510,7 @@ mod tests {
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# First\n\nBody");
         let first =
-            load_markdown_document("notes", "hello.md", &full_path, None, 1)
-                .unwrap();
+            load_document("notes", "hello.md", &full_path, None, 1).unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -529,7 +524,7 @@ mod tests {
             .expect("snapshot should exist after first ingest");
 
         write_markdown(&root, "hello.md", "# Updated\n\nBody v2");
-        let second = load_markdown_document(
+        let second = load_document(
             "notes",
             "hello.md",
             &full_path,
@@ -576,8 +571,7 @@ mod tests {
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
         let document =
-            load_markdown_document("notes", "hello.md", &full_path, None, 1)
-                .unwrap();
+            load_document("notes", "hello.md", &full_path, None, 1).unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -620,8 +614,7 @@ mod tests {
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
         let document =
-            load_markdown_document("notes", "hello.md", &full_path, None, 1)
-                .unwrap();
+            load_document("notes", "hello.md", &full_path, None, 1).unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -636,8 +629,7 @@ mod tests {
 
         write_markdown(&root, "hello.md", "# Hello\n\nUpdated");
         let updated =
-            load_markdown_document("notes", "hello.md", &full_path, None, 2)
-                .unwrap();
+            load_document("notes", "hello.md", &full_path, None, 2).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
 
         assert!(
@@ -663,8 +655,7 @@ mod tests {
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
         let document =
-            load_markdown_document("notes", "hello.md", &full_path, None, 1)
-                .unwrap();
+            load_document("notes", "hello.md", &full_path, None, 1).unwrap();
         ingest_prepared_document(
             &state,
             "notes",
@@ -689,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn web_ingest_load_markdown_document_reads_from_disk() {
+    fn web_ingest_load_document_reads_from_disk() {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(
@@ -698,14 +689,9 @@ mod tests {
             "---\ntitle: ignored\n---\n# From Disk\n\nBody",
         );
 
-        let document = load_markdown_document(
-            "notes",
-            "nested/hello.md",
-            &full_path,
-            None,
-            5,
-        )
-        .unwrap();
+        let document =
+            load_document("notes", "nested/hello.md", &full_path, None, 5)
+                .unwrap();
 
         assert_eq!(document.relative_path, "nested/hello.md");
         assert_eq!(document.title, "From Disk");

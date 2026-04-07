@@ -5,6 +5,10 @@ use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
 };
+use base64::{
+    Engine as _,
+    engine::general_purpose::STANDARD as BASE64_STANDARD,
+};
 use docbert_core::{
     DocumentId,
     chunking,
@@ -71,7 +75,14 @@ pub(crate) struct IngestedDoc {
 fn map_error(err: docbert_core::Error) -> StatusCode {
     match err {
         docbert_core::Error::NotFound { .. } => StatusCode::NOT_FOUND,
-        docbert_core::Error::Config(_) => StatusCode::BAD_REQUEST,
+        docbert_core::Error::Config(_) | docbert_core::Error::Pdf(_) => {
+            StatusCode::BAD_REQUEST
+        }
+        docbert_core::Error::Io(io_error)
+            if io_error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            StatusCode::NOT_FOUND
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -136,10 +147,6 @@ pub(crate) async fn ingest(
 
     let mut ingested = Vec::with_capacity(body.documents.len());
     for uploaded in &body.documents {
-        if uploaded.content_type != "text/markdown" {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-
         let full_path = {
             let config_db =
                 state.open_config_db_blocking().map_err(map_error)?;
@@ -154,12 +161,25 @@ pub(crate) async fn ingest(
             std::fs::create_dir_all(parent)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
-        std::fs::write(&full_path, &uploaded.content)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        match uploaded.content_type.as_str() {
+            "text/markdown" => {
+                std::fs::write(&full_path, uploaded.content.as_bytes())
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            "application/pdf" => {
+                let pdf_bytes = BASE64_STANDARD
+                    .decode(&uploaded.content)
+                    .map_err(|_| StatusCode::BAD_REQUEST)?;
+                std::fs::write(&full_path, pdf_bytes)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            _ => return Err(StatusCode::BAD_REQUEST),
+        }
 
         let mtime = document_mtime(&full_path)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let document = ingest::load_markdown_document(
+        let document = ingest::load_document(
             &body.collection,
             &uploaded.path,
             &full_path,
@@ -212,8 +232,11 @@ pub(crate) async fn list_by_collection(
             &meta.relative_path,
         )
         .map_err(map_error)?;
-        let content = std::fs::read_to_string(&full_path)
-            .map_err(|_| StatusCode::NOT_FOUND)?;
+        let content = preparation::load_preview_content(
+            Path::new(&meta.relative_path),
+            &full_path,
+        )
+        .map_err(map_error)?;
         items.push(DocumentListItem {
             doc_id: docbert_core::search::short_doc_id(*doc_id),
             path: meta.relative_path.clone(),
@@ -259,8 +282,9 @@ pub(crate) async fn get(
     let full_path =
         paths::resolve_document_path(&config_db, &collection, &path)
             .map_err(map_error)?;
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let content =
+        preparation::load_preview_content(Path::new(&path), &full_path)
+            .map_err(map_error)?;
     let metadata = config_db
         .get_document_user_metadata(did.numeric)
         .map_err(map_error)?;
@@ -364,6 +388,12 @@ mod tests {
         did
     }
 
+    fn sample_pdf_bytes(markdown: &str) -> Vec<u8> {
+        pdf_oxide::api::Pdf::from_markdown(markdown)
+            .unwrap()
+            .into_bytes()
+    }
+
     #[tokio::test]
     async fn web_documents_upload_writes_file_to_collection_folder() {
         let _guard = env_lock().await;
@@ -405,6 +435,72 @@ mod tests {
             .expect("snapshot should exist after upload");
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].relative_path, "hello.md");
+    }
+
+    #[tokio::test]
+    async fn web_documents_upload_imports_pdf_and_get_returns_extracted_markdown()
+     {
+        let _guard = env_lock().await;
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        test_config_db(&state)
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        let pdf = BASE64_STANDARD
+            .encode(sample_pdf_bytes("# PDF Upload\n\nPDF body"));
+        let upload_response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r##"{{"collection":"notes","documents":[{{"path":"paper.pdf","content":"{}","content_type":"application/pdf"}}]}}"##,
+                        pdf,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload_response.status(), StatusCode::OK);
+        assert!(root.join("paper.pdf").exists());
+
+        let body = to_bytes(upload_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let uploaded: IngestResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(uploaded.documents.len(), 1);
+        assert_eq!(uploaded.documents[0].path, "paper.pdf");
+        assert!(!uploaded.documents[0].title.is_empty());
+
+        let get_response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/paper.pdf")
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let body = to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let item: DocumentResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(item.path, "paper.pdf");
+        assert!(!item.title.is_empty());
+        assert!(item.content.contains("PDF"));
+        assert!(item.content.contains("body"));
     }
 
     #[tokio::test]

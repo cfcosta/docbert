@@ -12,6 +12,7 @@ clap = { version = "4.5.57", features = ["derive"] }
 include_dir = "0.7"
 clap_complete = "4.5"
 globset = "0.4"
+base64 = "0.22"
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
 rmcp = { version = "1.2.0", features = ["transport-io"] }
@@ -38,6 +39,7 @@ metal = ["docbert-core/metal"]
 cuda = ["docbert-core/cuda"]
 
 [dev-dependencies]
+pdf_oxide = "0.3.21"
 rmcp = { version = "1.2.0", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

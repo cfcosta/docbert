@@ -56,8 +56,8 @@ export default function DocumentPreview({
         </div>
         <h3>No document selected</h3>
         <p>
-          Select a file from the tree to preview it, or upload Markdown files into any docbert
-          collection.
+          Select a file from the tree to preview it, or upload Markdown or PDF files into any
+          docbert collection.
         </p>
       </div>
     );
@@ -89,6 +89,7 @@ function LoadedDocumentPreview({
 }) {
   const permalink = buildDocumentTabHref(selectedDoc.collection, selectedDoc.path);
   const parsed = preview ? parseDocumentFrontmatter(preview) : null;
+  const isPdfPreview = /\.pdf$/i.test(selectedDoc.path);
   const body = useMemo(
     () => stripLeadingDocumentTitle(parsed?.body ?? preview ?? "", selectedDoc.title),
     [parsed?.body, preview, selectedDoc.title],
@@ -210,7 +211,10 @@ function LoadedDocumentPreview({
         <div className="preview-title-row">
           <div>
             <p className="preview-kicker">{selectedDoc.collection}</p>
-            <h2 className="preview-title">{selectedDoc.title}</h2>
+            <div className="preview-title-group">
+              <h2 className="preview-title">{selectedDoc.title}</h2>
+              {isPdfPreview && <span className="preview-kind-badge">Imported from PDF</span>}
+            </div>
           </div>
           <Link className="preview-permalink" to={permalink}>
             Permalink

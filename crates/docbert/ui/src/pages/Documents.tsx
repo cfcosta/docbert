@@ -18,8 +18,40 @@ interface StatusMessage {
   text: string;
 }
 
-const ACCEPTED_MARKDOWN = ".md,.markdown,.mdown,.mkd";
+interface UploadCandidate {
+  file: File;
+  path: string;
+}
+
+interface FileSystemEntryLike {
+  readonly isFile: boolean;
+  readonly isDirectory: boolean;
+  readonly fullPath?: string;
+  readonly name: string;
+}
+
+interface FileSystemFileEntryLike extends FileSystemEntryLike {
+  file(successCallback: (file: File) => void, errorCallback?: (error: DOMException) => void): void;
+}
+
+interface FileSystemDirectoryReaderLike {
+  readEntries(
+    successCallback: (entries: FileSystemEntryLike[]) => void,
+    errorCallback?: (error: DOMException) => void,
+  ): void;
+}
+
+interface FileSystemDirectoryEntryLike extends FileSystemEntryLike {
+  createReader(): FileSystemDirectoryReaderLike;
+}
+
+interface DataTransferItemWithEntry {
+  webkitGetAsEntry?: () => FileSystemEntryLike | null;
+}
+
+const ACCEPTED_UPLOADS = ".md,.markdown,.mdown,.mkd,.pdf";
 const MARKDOWN_FILE_RE = /\.(md|markdown|mdown|mkd)$/i;
+const PDF_FILE_RE = /\.pdf$/i;
 
 function formatFileCount(count: number) {
   return `${count} file${count === 1 ? "" : "s"}`;
@@ -27,6 +59,112 @@ function formatFileCount(count: number) {
 
 function isMarkdownFile(file: File) {
   return MARKDOWN_FILE_RE.test(file.name) || file.type === "text/markdown";
+}
+
+function isPdfFile(file: File) {
+  return PDF_FILE_RE.test(file.name) || file.type === "application/pdf";
+}
+
+function isSupportedUploadFile(file: File) {
+  return isMarkdownFile(file) || isPdfFile(file);
+}
+
+function uploadCandidateFromFile(file: File): UploadCandidate {
+  return {
+    file,
+    path: file.webkitRelativePath || file.name,
+  };
+}
+
+async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+async function buildIngestDocument(candidate: UploadCandidate) {
+  const { file, path } = candidate;
+  if (isPdfFile(file)) {
+    return {
+      path,
+      content: await fileToBase64(file),
+      content_type: "application/pdf" as const,
+    };
+  }
+
+  return {
+    path,
+    content: await file.text(),
+    content_type: "text/markdown" as const,
+  };
+}
+
+async function extractDroppedFiles(dataTransfer: DataTransfer): Promise<UploadCandidate[]> {
+  const entryItems = Array.from(dataTransfer.items ?? [])
+    .map((item) => (item as DataTransferItemWithEntry).webkitGetAsEntry?.() ?? null)
+    .filter((entry): entry is FileSystemEntryLike => entry !== null);
+
+  if (entryItems.length === 0) {
+    return Array.from(dataTransfer.files).map(uploadCandidateFromFile);
+  }
+
+  const nestedFiles = await Promise.all(entryItems.map((entry) => readDroppedEntry(entry)));
+  return dedupeUploadCandidates(nestedFiles.flat());
+}
+
+async function readDroppedEntry(entry: FileSystemEntryLike): Promise<UploadCandidate[]> {
+  if (entry.isFile) {
+    const file = await getDroppedFile(entry as FileSystemFileEntryLike);
+    const path = normalizeDroppedPath(entry.fullPath, file.name);
+    return [{ file, path }];
+  }
+
+  if (!entry.isDirectory) {
+    return [];
+  }
+
+  const reader = (entry as FileSystemDirectoryEntryLike).createReader();
+  const children = await readAllDirectoryEntries(reader);
+  const nestedFiles = await Promise.all(children.map((child) => readDroppedEntry(child)));
+  return nestedFiles.flat();
+}
+
+function getDroppedFile(entry: FileSystemFileEntryLike): Promise<File> {
+  return new Promise((resolve, reject) => {
+    entry.file(resolve, reject);
+  });
+}
+
+async function readAllDirectoryEntries(
+  reader: FileSystemDirectoryReaderLike,
+): Promise<FileSystemEntryLike[]> {
+  const entries: FileSystemEntryLike[] = [];
+
+  while (true) {
+    const chunk = await new Promise<FileSystemEntryLike[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (chunk.length === 0) {
+      return entries;
+    }
+    entries.push(...chunk);
+  }
+}
+
+function normalizeDroppedPath(fullPath: string | undefined, fallbackName: string) {
+  const normalized = fullPath?.replace(/^\/+/, "").trim();
+  return normalized && normalized.length > 0 ? normalized : fallbackName;
+}
+
+function dedupeUploadCandidates(candidates: UploadCandidate[]) {
+  return Array.from(new Map(candidates.map((candidate) => [candidate.path, candidate])).values());
 }
 
 export default function Documents() {
@@ -214,16 +352,16 @@ export default function Documents() {
   }, [docs, loadDocs, openDocument, routeCollection, routeFragment, routePath]);
 
   const ingestFiles = useCallback(
-    async (collection: string, files: File[]) => {
-      if (files.length === 0) {
+    async (collection: string, candidates: UploadCandidate[]) => {
+      if (candidates.length === 0) {
         return;
       }
 
-      const unsupported = files.filter((file) => !isMarkdownFile(file));
+      const unsupported = candidates.filter(({ file }) => !isSupportedUploadFile(file));
       if (unsupported.length > 0) {
         setStatus({
           tone: "error",
-          text: "Only Markdown files are supported right now.",
+          text: "Only Markdown and PDF files are supported right now.",
         });
         return;
       }
@@ -231,16 +369,12 @@ export default function Documents() {
       setIngesting(true);
       setStatus({
         tone: "loading",
-        text: `Ingesting ${formatFileCount(files.length)} into ${collection}…`,
+        text: `Ingesting ${formatFileCount(candidates.length)} into ${collection}…`,
       });
 
       try {
         const documents = await Promise.all(
-          files.map(async (file) => ({
-            path: file.webkitRelativePath || file.name,
-            content: await file.text(),
-            content_type: "text/markdown" as const,
-          })),
+          candidates.map((candidate) => buildIngestDocument(candidate)),
         );
 
         const response = await api.ingestDocuments(collection, documents);
@@ -286,7 +420,7 @@ export default function Documents() {
         return;
       }
 
-      await ingestFiles(collection, files);
+      await ingestFiles(collection, files.map(uploadCandidateFromFile));
     },
     [ingestFiles, uploadCollection],
   );
@@ -315,7 +449,8 @@ export default function Documents() {
       event.stopPropagation();
       setDragOver(null);
 
-      await ingestFiles(collection, Array.from(event.dataTransfer.files));
+      const droppedFiles = await extractDroppedFiles(event.dataTransfer);
+      await ingestFiles(collection, droppedFiles);
     },
     [ingestFiles],
   );
@@ -364,7 +499,7 @@ export default function Documents() {
         className="sr-only"
         type="file"
         multiple
-        accept={ACCEPTED_MARKDOWN}
+        accept={ACCEPTED_UPLOADS}
         onChange={(event) => void handleUploadInputChange(event)}
       />
 
@@ -381,9 +516,15 @@ export default function Documents() {
       <div className="file-manager">
         <section className="file-tree-panel" aria-labelledby="collections-heading">
           <div className="file-tree-header">
-            <span id="collections-heading" className="file-tree-title">
-              Collections
-            </span>
+            <div>
+              <span id="collections-heading" className="file-tree-title">
+                Collections
+              </span>
+              <p className="file-tree-subtitle">
+                Drop files or folders onto a collection. Mixed Markdown and PDF imports keep folder
+                paths.
+              </p>
+            </div>
           </div>
 
           <DocumentsTree

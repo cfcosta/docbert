@@ -1,7 +1,7 @@
 import "../test/setup";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
@@ -18,7 +18,7 @@ const originalApi = { ...api };
 
 type ApiTrackers = {
   listDocumentsCalls: Record<string, number>;
-  ingested: Array<{ collection: string; paths: string[] }>;
+  ingested: Array<{ collection: string; paths: string[]; contentTypes: string[] }>;
   deleted: Array<{ collection: string; path: string }>;
 };
 
@@ -78,7 +78,7 @@ function uploadButton(container: HTMLElement, collection: string): HTMLButtonEle
   const buttons = Array.from(container.getElementsByTagName("button"));
   const button = buttons.find(
     (candidate) =>
-      candidate.getAttribute("aria-label") === `Upload Markdown files to ${collection}`,
+      candidate.getAttribute("aria-label") === `Upload Markdown or PDF files to ${collection}`,
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error(`upload button not found for ${collection}`);
@@ -93,6 +93,44 @@ function fileInput(container: HTMLElement): HTMLInputElement {
     throw new Error("file input not found");
   }
   return input;
+}
+
+function collectionDropZone(container: HTMLElement, collection: string): HTMLDivElement {
+  const zone = collectionToggle(container, collection).closest(".tree-collection");
+  if (!(zone instanceof HTMLDivElement)) {
+    throw new Error(`drop zone not found for ${collection}`);
+  }
+  return zone;
+}
+
+function fakeFileEntry(path: string, file: File) {
+  return {
+    isFile: true,
+    isDirectory: false,
+    fullPath: `/${path}`,
+    name: path.split("/").at(-1) ?? path,
+    file: (callback: (value: File) => void) => callback(file),
+  };
+}
+
+function fakeDirectoryEntry(path: string, entries: unknown[]) {
+  let consumed = false;
+  return {
+    isFile: false,
+    isDirectory: true,
+    fullPath: `/${path}`,
+    name: path.split("/").at(-1) ?? path,
+    createReader: () => ({
+      readEntries: (callback: (value: unknown[]) => void) => {
+        if (consumed) {
+          callback([]);
+          return;
+        }
+        consumed = true;
+        callback(entries);
+      },
+    }),
+  };
 }
 
 function fileRowDeleteButton(container: HTMLElement, fileName: string): HTMLButtonElement {
@@ -201,7 +239,11 @@ function installDocumentsApiStubs({
         title: document.path.replace(/\.[^.]+$/, ""),
       })),
     };
-    trackers.ingested.push({ collection, paths: documents.map((document) => document.path) });
+    trackers.ingested.push({
+      collection,
+      paths: documents.map((document) => document.path),
+      contentTypes: documents.map((document) => document.content_type),
+    });
     onIngest?.(collection, response);
     return response;
   };
@@ -399,6 +441,124 @@ describe("Documents page", () => {
       () => view.container.textContent?.includes("uploaded.md") ?? false,
       () => `uploaded file never appeared in tree: ${JSON.stringify(view.container.textContent)}`,
     );
+  });
+
+  test("uploading_pdf_files_uses_pdf_content_type", async () => {
+    const docsByCollection: Record<string, DocumentListItem[]> = { notes: [] };
+    const trackers = installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection,
+      documentBodies: {},
+      onIngest: (collection) => {
+        docsByCollection[collection] = [{ doc_id: "#pdf001", path: "paper.pdf", title: "paper" }];
+      },
+    });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(uploadButton(view.container, "notes"));
+    await user.upload(
+      fileInput(view.container),
+      new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "paper.pdf", {
+        type: "application/pdf",
+      }),
+    );
+
+    await waitForCondition(
+      () => trackers.ingested.length === 1,
+      () => `pdf upload never reached API: ${JSON.stringify(trackers.ingested)}`,
+    );
+    expect(trackers.ingested[0]).toEqual({
+      collection: "notes",
+      paths: ["paper.pdf"],
+      contentTypes: ["application/pdf"],
+    });
+  });
+
+  test("dragging_over_a_collection_calls_out_file_and_folder_import", async () => {
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: { notes: [] },
+      documentBodies: {},
+    });
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () =>
+        view.container.textContent?.includes("Drop files or folders onto a collection.") ?? false,
+      () => `import hint never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    fireEvent.dragOver(collectionDropZone(view.container, "notes"), {
+      dataTransfer: { files: [], items: [] },
+    });
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("Drop files or folders") ?? false,
+      () => `drop badge never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+  });
+
+  test("dropping_a_folder_preserves_nested_paths_and_mixed_file_types", async () => {
+    const docsByCollection: Record<string, DocumentListItem[]> = { notes: [] };
+    const trackers = installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection,
+      documentBodies: {},
+      onIngest: (collection) => {
+        docsByCollection[collection] = [
+          { doc_id: "#md001", path: "inbox/note.md", title: "note" },
+          { doc_id: "#pdf001", path: "inbox/paper.pdf", title: "paper" },
+        ];
+      },
+    });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(collectionToggle(view.container, "notes"));
+
+    const noteEntry = fakeFileEntry(
+      "inbox/note.md",
+      new File(["# Note\n\nBody"], "note.md", { type: "text/markdown" }),
+    );
+    const pdfEntry = fakeFileEntry(
+      "inbox/paper.pdf",
+      new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "paper.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    const folderEntry = fakeDirectoryEntry("inbox", [noteEntry, pdfEntry]);
+
+    fireEvent.drop(collectionDropZone(view.container, "notes"), {
+      dataTransfer: {
+        files: [],
+        items: [{ webkitGetAsEntry: () => folderEntry }],
+      },
+    });
+
+    await waitForCondition(
+      () => trackers.ingested.length === 1,
+      () => `folder drop never reached API: ${JSON.stringify(trackers.ingested)}`,
+    );
+    expect(trackers.ingested[0]).toEqual({
+      collection: "notes",
+      paths: ["inbox/note.md", "inbox/paper.pdf"],
+      contentTypes: ["text/markdown", "application/pdf"],
+    });
   });
 
   test("switching_from_one_selected_document_to_another_updates_preview_and_route", async () => {
