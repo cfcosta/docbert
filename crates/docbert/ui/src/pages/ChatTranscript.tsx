@@ -5,8 +5,8 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 import SearchResults from "../components/SearchResults";
-import { api, type SearchExcerpt, type SearchResult } from "../lib/api";
-import DocumentPreview from "./document-preview";
+import { api, type DocumentListItem, type SearchExcerpt, type SearchResult } from "../lib/api";
+import DocumentPreview, { type ResolvedDocumentTarget } from "./document-preview";
 import type { SelectedDocumentSummary } from "./documents-tree";
 import type { ToolCallInfo, Message } from "./chat-message-codec";
 import type { DisplayMessageGroup, SubagentMessage } from "./chat-message-groups";
@@ -78,13 +78,43 @@ function searchDocumentKey(value: { collection: string; path: string }) {
 function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
   const [selectedDoc, setSelectedDoc] = useState<SelectedDocumentSummary | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [activeFragment, setActiveFragment] = useState<string | null>(null);
+  const [resolverDocuments, setResolverDocuments] = useState<Record<string, DocumentListItem[]>>({});
+  const [resolverFailures, setResolverFailures] = useState<Record<string, true>>({});
   const requestSeqRef = useRef(0);
+  const pendingResolverLoadsRef = useRef<Record<string, Promise<DocumentListItem[]> | null>>({});
 
   useEffect(() => {
     requestSeqRef.current += 1;
     setSelectedDoc(null);
     setPreview(null);
+    setActiveFragment(null);
   }, [results]);
+
+  const ensureResolverDocuments = useCallback(async (collection: string) => {
+    if (resolverDocuments[collection] || resolverFailures[collection]) {
+      return resolverDocuments[collection] ?? null;
+    }
+
+    const pending = pendingResolverLoadsRef.current[collection];
+    if (pending) {
+      return pending.catch(() => null);
+    }
+
+    const promise = api.listDocuments(collection);
+    pendingResolverLoadsRef.current[collection] = promise;
+
+    try {
+      const docs = await promise;
+      setResolverDocuments((previous) => ({ ...previous, [collection]: docs }));
+      return docs;
+    } catch {
+      setResolverFailures((previous) => ({ ...previous, [collection]: true }));
+      return null;
+    } finally {
+      pendingResolverLoadsRef.current[collection] = null;
+    }
+  }, [resolverDocuments, resolverFailures]);
 
   const openPreview = useCallback(async (result: SearchResult) => {
     const requestId = requestSeqRef.current + 1;
@@ -97,6 +127,8 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
       doc_id: result.doc_id,
     });
     setPreview(null);
+    setActiveFragment(null);
+    void ensureResolverDocuments(result.collection);
 
     try {
       const full = await api.getDocument(result.collection, result.path);
@@ -122,7 +154,21 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
           : "_Failed to load document._",
       );
     }
-  }, []);
+  }, [ensureResolverDocuments]);
+
+  const openResolvedDocument = useCallback(async (target: ResolvedDocumentTarget) => {
+    const listedDoc = resolverDocuments[target.collection]?.find((document) => document.path === target.path);
+    setActiveFragment(target.fragment);
+    await openPreview({
+      rank: 0,
+      score: 0,
+      doc_id: listedDoc?.doc_id ?? target.path,
+      collection: target.collection,
+      path: target.path,
+      title: listedDoc?.title ?? target.path,
+    });
+    setActiveFragment(target.fragment);
+  }, [openPreview, resolverDocuments]);
 
   return (
     <div className="chat-tool-search-preview-layout">
@@ -133,7 +179,13 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
       />
       {selectedDoc && (
         <div className="chat-tool-search-preview-shell">
-          <DocumentPreview selectedDoc={selectedDoc} preview={preview} />
+          <DocumentPreview
+            selectedDoc={selectedDoc}
+            preview={preview}
+            resolverDocuments={resolverDocuments[selectedDoc.collection] ?? []}
+            activeFragment={activeFragment}
+            onOpenResolvedDocument={openResolvedDocument}
+          />
         </div>
       )}
     </div>

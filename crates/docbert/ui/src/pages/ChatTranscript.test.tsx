@@ -15,7 +15,7 @@ const originalApi = { ...api };
 
 function LocationObserver() {
   const location = useLocation();
-  return <div data-testid="location-path">{location.pathname}</div>;
+  return <div data-testid="location-path">{`${location.pathname}${location.hash}`}</div>;
 }
 
 function messageWithToolResult(result: string, name = "search_hybrid"): Message {
@@ -61,6 +61,30 @@ function renderTranscript(groups: DisplayMessageGroup[]) {
   );
 }
 
+function captureScrollIntoViewTargets() {
+  const targets: string[] = [];
+  const original = window.HTMLElement.prototype.scrollIntoView;
+
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    value: function () {
+      targets.push((this as HTMLElement).id || (this as HTMLElement).getAttribute("id") || "");
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  return {
+    targets,
+    restore() {
+      Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+        value: original,
+        configurable: true,
+        writable: true,
+      });
+    },
+  };
+}
+
 function subagentMessageWithToolResult(result: string, name = "search_hybrid"): Message {
   return {
     id: "subagent-1",
@@ -88,12 +112,25 @@ function subagentMessageWithToolResult(result: string, name = "search_hybrid"): 
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  api.listDocuments = async (collection) => {
+    if (collection !== "notes") {
+      return [];
+    }
+
+    return [
+      { doc_id: "#abc123", path: "rust.md", title: "Rust Guide" },
+      { doc_id: "#def456", path: "linked.md", title: "Linked Guide" },
+    ];
+  };
   api.getDocument = async (collection, path) => ({
-    doc_id: "#abc123",
+    doc_id: path === "linked.md" ? "#def456" : "#abc123",
     collection,
     path,
-    title: path === "rust.md" ? "Rust Guide" : path,
-    content: "# Rust Guide\n\nRust ownership keeps memory safe.",
+    title: path === "rust.md" ? "Rust Guide" : path === "linked.md" ? "Linked Guide" : path,
+    content:
+      path === "linked.md"
+        ? "# Linked Guide\n\n## target heading\n\nLinked body"
+        : "# Rust Guide\n\nRust ownership keeps memory safe.",
   });
 });
 
@@ -203,6 +240,176 @@ describe("ChatTranscript", () => {
 
     expect(view.getByTestId("location-path").textContent).toBe("/");
     expect(view.queryByText("Document route")).toBeNull();
+  });
+
+  test("successful_cross_note_wiki_link_click_keeps_chat_route_and_swaps_inline_preview", async () => {
+    const user = userEvent.setup();
+    api.getDocument = async (collection, path) => ({
+      doc_id: path === "linked.md" ? "#def456" : "#abc123",
+      collection,
+      path,
+      title: path === "linked.md" ? "Linked Guide" : "Rust Guide",
+      content:
+        path === "linked.md"
+          ? "# Linked Guide\n\nLinked body"
+          : "[[linked#target heading]]\n\n# Rust Guide\n\nRust ownership keeps memory safe.",
+    });
+
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+      },
+    ]);
+
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
+
+    await waitFor(() => {
+      expect(view.getByRole("link", { name: "linked" })).toBeTruthy();
+    });
+
+    await user.click(view.getByRole("link", { name: "linked" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Linked body")).toBeTruthy();
+    });
+
+    expect(view.getByTestId("location-path").textContent).toBe("/");
+    expect(view.queryByText("Rust ownership keeps memory safe.")).toBeNull();
+  });
+
+  test("same_note_heading_and_block_links_trigger_scroll_into_view", async () => {
+    const user = userEvent.setup();
+    const scrollSpy = captureScrollIntoViewTargets();
+    api.getDocument = async (collection, path) => ({
+      doc_id: "#abc123",
+      collection,
+      path,
+      title: "Rust Guide",
+      content: "[[#target heading]]\n\n[[#^block-id]]\n\n# target heading\n\nParagraph ^block-id",
+    });
+
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+      },
+    ]);
+
+    try {
+      const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+      await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+      await user.click(view.getByRole("button", { name: "Rust Guide" }));
+
+      await waitFor(() => {
+        expect(view.getByRole("link", { name: "target heading" })).toBeTruthy();
+      });
+
+      await user.click(view.getByRole("link", { name: "target heading" }));
+      await user.click(view.getByRole("link", { name: "^block-id" }));
+
+      expect(scrollSpy.targets).toContain("preview-heading-target-heading");
+      expect(scrollSpy.targets).toContain("preview-block-block-id");
+    } finally {
+      scrollSpy.restore();
+    }
+  });
+
+  test("failed_list_documents_leaves_cross_note_links_as_plain_text_and_preserves_preview", async () => {
+    const user = userEvent.setup();
+    api.listDocuments = async () => {
+      throw new Error("boom");
+    };
+    api.getDocument = async (collection, path) => ({
+      doc_id: "#abc123",
+      collection,
+      path,
+      title: "Rust Guide",
+      content: "[[linked]]\n\n# Rust Guide\n\nRust ownership keeps memory safe.",
+    });
+
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+      },
+    ]);
+
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Rust ownership keeps memory safe.")).toBeTruthy();
+    });
+
+    expect(view.queryByRole("link", { name: "linked" })).toBeNull();
+    expect(view.getByText("linked")).toBeTruthy();
+    expect(view.getByText("Rust ownership keeps memory safe.")).toBeTruthy();
+    expect(view.getByTestId("location-path").textContent).toBe("/");
+  });
+
+  test("list_documents_is_called_once_per_collection_after_caching", async () => {
+    const user = userEvent.setup();
+    const listDocumentsCalls: string[] = [];
+    api.listDocuments = async (collection) => {
+      listDocumentsCalls.push(collection);
+      return [
+        { doc_id: "#abc123", path: "rust.md", title: "Rust Guide" },
+        { doc_id: "#def456", path: "linked.md", title: "Linked Guide" },
+      ];
+    };
+    api.getDocument = async (collection, path) => ({
+      doc_id: path === "linked.md" ? "#def456" : "#abc123",
+      collection,
+      path,
+      title: path === "linked.md" ? "Linked Guide" : "Rust Guide",
+      content:
+        path === "linked.md"
+          ? "# Linked Guide\n\nLinked body"
+          : "[[linked]]\n\n# Rust Guide\n\nRust ownership keeps memory safe.",
+    });
+
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+      },
+    ]);
+
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
+
+    await waitFor(() => {
+      expect(view.getByRole("link", { name: "linked" })).toBeTruthy();
+    });
+
+    await user.click(view.getByRole("link", { name: "linked" }));
+    await waitFor(() => {
+      expect(view.getByText("Linked body")).toBeTruthy();
+    });
+
+    expect(listDocumentsCalls).toEqual(["notes"]);
   });
 
   test("renders no results for empty search payloads", async () => {

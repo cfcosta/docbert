@@ -237,7 +237,7 @@ function rewriteObsidianLinksToMarkdown(
     }
 
     if (resolved.path === options.currentDoc.path && resolved.fragment) {
-      return `[${escapeMarkdownLabel(label)}](#${resolved.fragment})`;
+      return `[${escapeMarkdownLabel(label)}](#${encodeURIComponent(resolved.fragment)})`;
     }
 
     if (resolved.path !== options.currentDoc.path) {
