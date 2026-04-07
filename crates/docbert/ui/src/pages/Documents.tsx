@@ -412,7 +412,7 @@ export default function Documents() {
           <DocumentPreview
             selectedDoc={selectedDoc}
             preview={preview}
-            resolverDocuments={selectedDoc ? docs[selectedDoc.collection] ?? [] : []}
+            resolverDocuments={selectedDoc ? (docs[selectedDoc.collection] ?? []) : []}
             activeFragment={routeFragment}
             onOpenResolvedDocument={openResolvedDocument}
           />

@@ -1,7 +1,7 @@
 import "../test/setup";
 
 import { describe, expect, mock, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 
@@ -37,8 +37,10 @@ function renderPreview(
 describe("DocumentPreview", () => {
   test("renders deterministic heading ids including duplicates", () => {
     const view = renderPreview("# Overview\n\n## Overview\n\n### Deep Dive\n\n## Overview");
-    const headings = view.getAllByRole("heading");
-    const markdownHeadings = headings.filter((heading) => heading.tagName !== "H2" || heading.textContent !== "Current");
+    const headings = within(view.container).getAllByRole("heading");
+    const markdownHeadings = headings.filter(
+      (heading) => heading.tagName !== "H2" || heading.textContent !== "Current",
+    );
 
     expect(markdownHeadings.map((heading) => heading.getAttribute("id"))).toEqual([
       "preview-heading-overview",

@@ -79,7 +79,9 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
   const [selectedDoc, setSelectedDoc] = useState<SelectedDocumentSummary | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [activeFragment, setActiveFragment] = useState<string | null>(null);
-  const [resolverDocuments, setResolverDocuments] = useState<Record<string, DocumentListItem[]>>({});
+  const [resolverDocuments, setResolverDocuments] = useState<Record<string, DocumentListItem[]>>(
+    {},
+  );
   const [resolverFailures, setResolverFailures] = useState<Record<string, true>>({});
   const requestSeqRef = useRef(0);
   const pendingResolverLoadsRef = useRef<Record<string, Promise<DocumentListItem[]> | null>>({});
@@ -91,84 +93,95 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
     setActiveFragment(null);
   }, [results]);
 
-  const ensureResolverDocuments = useCallback(async (collection: string) => {
-    if (resolverDocuments[collection] || resolverFailures[collection]) {
-      return resolverDocuments[collection] ?? null;
-    }
-
-    const pending = pendingResolverLoadsRef.current[collection];
-    if (pending) {
-      return pending.catch(() => null);
-    }
-
-    const promise = api.listDocuments(collection);
-    pendingResolverLoadsRef.current[collection] = promise;
-
-    try {
-      const docs = await promise;
-      setResolverDocuments((previous) => ({ ...previous, [collection]: docs }));
-      return docs;
-    } catch {
-      setResolverFailures((previous) => ({ ...previous, [collection]: true }));
-      return null;
-    } finally {
-      pendingResolverLoadsRef.current[collection] = null;
-    }
-  }, [resolverDocuments, resolverFailures]);
-
-  const openPreview = useCallback(async (result: SearchResult) => {
-    const requestId = requestSeqRef.current + 1;
-    requestSeqRef.current = requestId;
-
-    setSelectedDoc({
-      collection: result.collection,
-      path: result.path,
-      title: result.title || result.path,
-      doc_id: result.doc_id,
-    });
-    setPreview(null);
-    setActiveFragment(null);
-    void ensureResolverDocuments(result.collection);
-
-    try {
-      const full = await api.getDocument(result.collection, result.path);
-      if (requestSeqRef.current !== requestId) {
-        return;
+  const ensureResolverDocuments = useCallback(
+    async (collection: string) => {
+      if (resolverDocuments[collection] || resolverFailures[collection]) {
+        return resolverDocuments[collection] ?? null;
       }
+
+      const pending = pendingResolverLoadsRef.current[collection];
+      if (pending) {
+        return pending.catch(() => null);
+      }
+
+      const promise = api.listDocuments(collection);
+      pendingResolverLoadsRef.current[collection] = promise;
+
+      try {
+        const docs = await promise;
+        setResolverDocuments((previous) => ({ ...previous, [collection]: docs }));
+        return docs;
+      } catch {
+        setResolverFailures((previous) => ({ ...previous, [collection]: true }));
+        return null;
+      } finally {
+        pendingResolverLoadsRef.current[collection] = null;
+      }
+    },
+    [resolverDocuments, resolverFailures],
+  );
+
+  const openPreview = useCallback(
+    async (result: SearchResult) => {
+      const requestId = requestSeqRef.current + 1;
+      requestSeqRef.current = requestId;
 
       setSelectedDoc({
-        collection: full.collection,
-        path: full.path,
-        title: full.title,
-        doc_id: full.doc_id,
+        collection: result.collection,
+        path: result.path,
+        title: result.title || result.path,
+        doc_id: result.doc_id,
       });
-      setPreview(full.content || "_No content stored._");
-    } catch (error) {
-      if (requestSeqRef.current !== requestId) {
-        return;
+      setPreview(null);
+      setActiveFragment(null);
+      void ensureResolverDocuments(result.collection);
+
+      try {
+        const full = await api.getDocument(result.collection, result.path);
+        if (requestSeqRef.current !== requestId) {
+          return;
+        }
+
+        setSelectedDoc({
+          collection: full.collection,
+          path: full.path,
+          title: full.title,
+          doc_id: full.doc_id,
+        });
+        setPreview(full.content || "_No content stored._");
+      } catch (error) {
+        if (requestSeqRef.current !== requestId) {
+          return;
+        }
+
+        setPreview(
+          error instanceof Error
+            ? `_Failed to load document: ${error.message}_`
+            : "_Failed to load document._",
+        );
       }
+    },
+    [ensureResolverDocuments],
+  );
 
-      setPreview(
-        error instanceof Error
-          ? `_Failed to load document: ${error.message}_`
-          : "_Failed to load document._",
+  const openResolvedDocument = useCallback(
+    async (target: ResolvedDocumentTarget) => {
+      const listedDoc = resolverDocuments[target.collection]?.find(
+        (document) => document.path === target.path,
       );
-    }
-  }, [ensureResolverDocuments]);
-
-  const openResolvedDocument = useCallback(async (target: ResolvedDocumentTarget) => {
-    const listedDoc = resolverDocuments[target.collection]?.find((document) => document.path === target.path);
-    setActiveFragment(target.fragment);
-    await openPreview({
-      rank: 0,
-      score: 0,
-      doc_id: listedDoc?.doc_id ?? target.path,
-      collection: target.collection,
-      path: target.path,
-      title: listedDoc?.title ?? target.path,
-    });
-    setActiveFragment(target.fragment);
-  }, [openPreview, resolverDocuments]);
+      setActiveFragment(target.fragment);
+      await openPreview({
+        rank: 0,
+        score: 0,
+        doc_id: listedDoc?.doc_id ?? target.path,
+        collection: target.collection,
+        path: target.path,
+        title: listedDoc?.title ?? target.path,
+      });
+      setActiveFragment(target.fragment);
+    },
+    [openPreview, resolverDocuments],
+  );
 
   return (
     <div className="chat-tool-search-preview-layout">

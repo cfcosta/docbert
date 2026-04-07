@@ -303,7 +303,8 @@ describe("Documents page", () => {
     await user.click(view.getByRole("link", { name: "beta" }));
 
     await waitForCondition(
-      () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md#Section%20Two",
+      () =>
+        view.getByTestId("location-path").textContent === "/documents/notes/beta.md#Section%20Two",
       () => `beta route+hash never updated: ${view.getByTestId("location-path").textContent}`,
     );
     await waitForCondition(

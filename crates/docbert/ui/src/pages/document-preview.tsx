@@ -1,11 +1,4 @@
-import {
-  Children,
-  useEffect,
-  useMemo,
-  useState,
-  type ComponentProps,
-  type ReactNode,
-} from "react";
+import { Children, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { Link } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -98,7 +91,11 @@ export default function DocumentPreview({
     return function Heading({ children, ...props }: ComponentProps<typeof Tag>) {
       const id = headingIds[headingIndex];
       headingIndex += 1;
-      return <Tag id={id} {...props}>{children}</Tag>;
+      return (
+        <Tag id={id} {...props}>
+          {children}
+        </Tag>
+      );
     };
   };
 
@@ -315,7 +312,9 @@ function textContent(node: ReactNode): string {
     return "";
   }
 
-  return textContent((node as { props?: { children?: ReactNode } }).props?.children ?? Children.toArray(node));
+  return textContent(
+    (node as { props?: { children?: ReactNode } }).props?.children ?? Children.toArray(node),
+  );
 }
 
 function escapeMarkdownLabel(text: string) {

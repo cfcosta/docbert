@@ -95,7 +95,9 @@ export function resolveObsidianLink(
 
 function resolveByPath(documents: Pick<DocumentListItem, "path">[], target: string) {
   const normalizedTarget = normalizePathInput(target);
-  return documents.find((document) => normalizePathInput(document.path) === normalizedTarget) ?? null;
+  return (
+    documents.find((document) => normalizePathInput(document.path) === normalizedTarget) ?? null
+  );
 }
 
 function resolveByStem(documents: Pick<DocumentListItem, "path">[], target: string) {
