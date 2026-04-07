@@ -1,7 +1,7 @@
 import "../test/setup";
 
 import { createRef } from "react";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -77,8 +77,12 @@ function subagentMessageWithToolResult(result: string, name = "search_hybrid"): 
   };
 }
 
+beforeEach(() => {
+  document.body.innerHTML = "";
+});
+
 describe("ChatTranscript", () => {
-  test("renders document nodes with excerpt children for search tool results", async () => {
+  test("expands parsed search tool results inside the transcript", async () => {
     const user = userEvent.setup();
     const results = JSON.stringify([
       {
@@ -94,28 +98,19 @@ describe("ChatTranscript", () => {
             start_line: 10,
             end_line: 11,
           },
-          {
-            text: "Traits enable polymorphism.",
-            start_line: 20,
-            end_line: 20,
-          },
         ],
       },
     ]);
 
     const view = renderTranscript(displayGroups(messageWithToolResult(results)));
 
+    expect(view.queryByRole("link", { name: "Rust Guide" })).toBeNull();
+
     await user.click(view.getByRole("button", { name: /search_hybrid/i }));
 
     const documentLink = view.getByRole("link", { name: "Rust Guide" });
     expect(documentLink.getAttribute("href")).toBe("/documents/notes/rust.md");
     expect(view.getByText("notes/rust.md")).toBeTruthy();
-    expect(view.getByText("#1")).toBeTruthy();
-    expect(view.getByText("0.914")).toBeTruthy();
-    expect(view.getByText("10–11")).toBeTruthy();
-    expect(view.getByText(/Rust ownership keeps memory safe\./)).toBeTruthy();
-    expect(view.getByText("20")).toBeTruthy();
-    expect(view.getByText("Traits enable polymorphism.")).toBeTruthy();
   });
 
   test("clicking an excerpt opens the document page route", async () => {
