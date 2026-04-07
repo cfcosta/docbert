@@ -7,8 +7,8 @@
 
 .settings-header {
   padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--border-strong);
-  background: color-mix(in srgb, var(--surface-floating) 62%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border-strong));
+  background: color-mix(in srgb, var(--surface-floating) 74%, var(--bg));
 }
 
 .settings-body {
@@ -16,7 +16,7 @@
   overflow-y: auto;
   padding: 24px;
   max-width: 560px;
-  background: color-mix(in srgb, var(--bg) 92%, var(--surface-selection));
+  background: color-mix(in srgb, var(--bg) 90%, var(--surface-selection));
 }
 
 .settings-loading {
@@ -86,9 +86,9 @@
 .settings-select {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 12%, var(--accent) 12%, var(--border));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
+  background: color-mix(in srgb, var(--surface-floating) 80%, var(--bg));
   color: var(--text-h);
   box-shadow: var(--shadow-sm);
   font-family: var(--mono);
@@ -102,7 +102,7 @@
 }
 
 .settings-select:hover {
-  background: color-mix(in srgb, var(--surface-selection) 58%, var(--surface-floating));
+  background: color-mix(in srgb, var(--surface-selection) 44%, var(--surface-floating));
 }
 
 .settings-select:focus {
@@ -113,9 +113,9 @@
 .settings-input {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent-pink) 10%, var(--accent) 12%, var(--border));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
+  background: color-mix(in srgb, var(--surface-floating) 80%, var(--bg));
   color: var(--text-h);
   box-shadow: var(--shadow-sm);
   font-family: var(--mono);
@@ -128,7 +128,7 @@
 }
 
 .settings-input:hover {
-  background: color-mix(in srgb, var(--surface-selection) 48%, var(--surface-floating));
+  background: color-mix(in srgb, var(--surface-selection) 40%, var(--surface-floating));
 }
 
 .settings-input:focus {
@@ -151,9 +151,9 @@
 .settings-save {
   padding: 8px 24px;
   min-height: 36px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--accent-cyan) 14%, var(--border));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 88%, var(--surface-floating));
+  background: color-mix(in srgb, var(--accent) 72%, var(--surface-current-line));
   color: var(--accent-text);
   box-shadow: var(--shadow-sm);
   font-size: 0.85rem;
@@ -167,8 +167,8 @@
 }
 
 .settings-save:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-hover) 90%, var(--surface-floating));
-  border-color: color-mix(in srgb, var(--accent-hover) 52%, var(--border));
+  background: color-mix(in srgb, var(--accent-hover) 78%, var(--surface-current-line));
+  border-color: color-mix(in srgb, var(--accent-hover) 40%, var(--accent-cyan) 18%, var(--border));
   box-shadow: var(--shadow);
 }
 
@@ -183,11 +183,12 @@
   min-height: 32px;
   padding: 0 10px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--success-bg) 78%, var(--surface-floating));
+  background: color-mix(in srgb, var(--success-bg) 64%, var(--surface-current-line));
   color: var(--success);
-  border: 1px solid color-mix(in srgb, var(--success) 26%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--success) 24%, var(--accent-green) 14%, var(--border));
   font-size: 0.85rem;
   font-weight: 600;
+  box-shadow: var(--shadow-sm);
 }
 
 .settings-error {
@@ -196,9 +197,10 @@
   min-height: 32px;
   padding: 0 10px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--error-bg) 82%, var(--surface-floating));
+  background: color-mix(in srgb, var(--error-bg) 70%, var(--surface-current-line));
   color: var(--error);
-  border: 1px solid color-mix(in srgb, var(--error) 28%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--error) 28%, var(--accent-pink) 12%, var(--border));
   font-size: 0.85rem;
   font-weight: 600;
+  box-shadow: var(--shadow-sm);
 }
