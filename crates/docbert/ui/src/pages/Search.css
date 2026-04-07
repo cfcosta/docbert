@@ -103,6 +103,23 @@
   color: var(--text-muted);
 }
 
+.search-results-panel {
+  max-width: 720px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.search-results-summary {
+  padding: 18px 20px 0;
+}
+
+.search-results-title {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
 @media (max-width: 720px) {
   .search-field-grid {
     grid-template-columns: 1fr;

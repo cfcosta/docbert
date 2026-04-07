@@ -1,22 +1,29 @@
 import "../test/setup";
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
 import App from "../App";
-import { api, type SearchResponse } from "../lib/api";
+import { api, type SearchResponse, type SearchResult } from "../lib/api";
 import Search from "./Search";
 
 const originalApi = { ...api };
 
+function LocationObserver() {
+  const location = useLocation();
+  return <div data-testid="location-path">{location.pathname}</div>;
+}
+
 function renderSearchRoute(route = "/search") {
   return render(
     <MemoryRouter initialEntries={[route]}>
+      <LocationObserver />
       <Routes>
         <Route element={<App />}>
           <Route path="/search" element={<Search />} />
+          <Route path="/documents/:collection/*" element={<div>Document route</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -33,21 +40,52 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function searchResponse(result_count: number): SearchResponse {
+function result(overrides: Partial<SearchResult> = {}): SearchResult {
+  return {
+    rank: 1,
+    score: 0.914,
+    doc_id: "#abc123",
+    collection: "notes",
+    path: "rust.md",
+    title: "Rust Guide",
+    excerpts: [
+      {
+        text: "Rust ownership keeps memory safe.\nBorrow checking prevents aliasing bugs.",
+        start_line: 10,
+        end_line: 11,
+      },
+      {
+        text: "Traits enable polymorphism.",
+        start_line: 20,
+        end_line: 20,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function searchResponse(result_count: number, results: SearchResult[] = []): SearchResponse {
   return {
     query: "rust",
     mode: "hybrid",
     result_count,
-    results: [],
+    results,
   };
 }
 
 beforeEach(() => {
+  document.body.innerHTML = "";
   api.listCollections = async () => [{ name: "notes" }, { name: "docs" }];
-  api.search = async () => searchResponse(2);
+  api.search = async () =>
+    searchResponse(2, [
+      result(),
+      result({ rank: 2, doc_id: "#def456", path: "async.md", title: "Async Rust" }),
+    ]);
 });
 
 afterEach(() => {
+  cleanup();
+  document.body.innerHTML = "";
   Object.assign(api, originalApi);
   mock.restore();
 });
@@ -107,7 +145,7 @@ describe("Search page", () => {
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
       searchCalls.push(params);
-      return searchResponse(2);
+      return searchResponse(2, [result(), result({ rank: 2, doc_id: "#def456", path: "async.md", title: "Async Rust" })]);
     };
 
     const view = renderSearchRoute();
@@ -124,9 +162,56 @@ describe("Search page", () => {
     expect(view.getByText("Found 2 results")).toBeTruthy();
   });
 
+  test("renders full search results through the shared component and supports document navigation", async () => {
+    const user = userEvent.setup();
+    api.search = async () =>
+      searchResponse(2, [
+        result(),
+        result({ rank: 2, doc_id: "#def456", path: "nested/async.md", title: "Async Rust" }),
+      ]);
+
+    const view = renderSearchRoute();
+    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+
+    await user.type(view.getByLabelText("Query"), "rust");
+
+    await waitFor(() => {
+      expect(view.getByText("Rust Guide")).toBeTruthy();
+    });
+
+    expect(view.container.querySelector(".chat-tool-search-results")).toBeTruthy();
+    expect(view.getByText("notes/rust.md")).toBeTruthy();
+    expect(view.getByText("#1")).toBeTruthy();
+    expect(view.getAllByText("0.914")).toHaveLength(2);
+    expect(view.getAllByText("10–11")).toHaveLength(2);
+    expect(view.getAllByText("Traits enable polymorphism.")).toHaveLength(2);
+
+    await user.click(view.getByRole("link", { name: "Rust Guide" }));
+    expect(view.getByText("Document route")).toBeTruthy();
+    expect(view.getByTestId("location-path").textContent).toBe("/documents/notes/rust.md");
+  });
+
+  test("excerpt links navigate to the existing documents route", async () => {
+    const user = userEvent.setup();
+    api.search = async () => searchResponse(1, [result({ path: "nested/rust.md" })]);
+
+    const view = renderSearchRoute();
+    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+
+    await user.type(view.getByLabelText("Query"), "rust");
+
+    await waitFor(() => {
+      expect(view.getByRole("link", { name: /10–11\s*Rust ownership keeps memory safe\./i })).toBeTruthy();
+    });
+
+    await user.click(view.getByRole("link", { name: /10–11\s*Rust ownership keeps memory safe\./i }));
+    expect(view.getByText("Document route")).toBeTruthy();
+    expect(view.getByTestId("location-path").textContent).toBe("/documents/notes/nested/rust.md");
+  });
+
   test("blank query suppresses search calls and preserves the pre-search empty state", async () => {
     const user = userEvent.setup();
-    const searchSpy = mock(async () => searchResponse(2));
+    const searchSpy = mock(async () => searchResponse(2, [result(), result({ rank: 2, doc_id: "#def456", path: "async.md", title: "Async Rust" })]));
     api.search = searchSpy;
 
     const view = renderSearchRoute();
@@ -144,7 +229,7 @@ describe("Search page", () => {
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
       searchCalls.push(params);
-      return searchResponse(1);
+      return searchResponse(1, [result()]);
     };
 
     const view = renderSearchRoute();
@@ -164,7 +249,7 @@ describe("Search page", () => {
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
       searchCalls.push(params);
-      return searchResponse(1);
+      return searchResponse(1, [result()]);
     };
 
     const view = renderSearchRoute();
@@ -193,7 +278,7 @@ describe("Search page", () => {
       expect(view.getByText("Searching…")).toBeTruthy();
     });
 
-    pending.resolve(searchResponse(2));
+    pending.resolve(searchResponse(2, [result(), result({ rank: 2, doc_id: "#def456", path: "async.md", title: "Async Rust" })]));
     await waitFor(() => expect(view.getByText("Found 2 results")).toBeTruthy());
   });
 
@@ -250,10 +335,17 @@ describe("Search page", () => {
     await user.type(view.getByLabelText("Query"), "rust async");
     await waitFor(() => expect(calls).toEqual(["rust", "rust async"]));
 
-    second.resolve({ ...searchResponse(2), query: "rust async", result_count: 5 });
+    second.resolve({
+      ...searchResponse(5, [
+        result({ rank: 1, title: "Async One", path: "async-one.md" }),
+        result({ rank: 2, doc_id: "#def456", title: "Async Two", path: "async-two.md" }),
+      ]),
+      query: "rust async",
+      result_count: 5,
+    });
     await waitFor(() => expect(view.getByText("Found 5 results")).toBeTruthy());
 
-    first.resolve({ ...searchResponse(2), query: "rust", result_count: 1 });
+    first.resolve({ ...searchResponse(1, [result({ title: "Old Rust Result" })]), query: "rust", result_count: 1 });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(view.getByText("Found 5 results")).toBeTruthy();

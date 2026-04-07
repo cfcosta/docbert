@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-import { api, type Collection, type SearchMode } from "../lib/api";
+import SearchResults from "../components/SearchResults";
+import { api, type Collection, type SearchMode, type SearchResult } from "../lib/api";
 import "./Search.css";
 
 const ALL_COLLECTIONS_VALUE = "";
@@ -16,6 +17,7 @@ export default function Search() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [resultCount, setResultCount] = useState<number | null>(null);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const latestSearchRequestRef = useRef(0);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export default function Search() {
       setSearching(false);
       setSearchError(null);
       setResultCount(null);
+      setResults([]);
       return;
     }
 
@@ -78,6 +81,7 @@ export default function Search() {
             return;
           }
           setResultCount(response.result_count);
+          setResults(response.results);
           setSearchError(null);
         })
         .catch((error) => {
@@ -86,6 +90,7 @@ export default function Search() {
           }
           setSearchError(error instanceof Error ? error.message : "Search failed.");
           setResultCount(null);
+          setResults([]);
         })
         .finally(() => {
           if (latestSearchRequestRef.current === requestId) {
@@ -190,15 +195,17 @@ export default function Search() {
             <p className="search-state-title">Search failed</p>
             <p className="search-state-text">{searchError}</p>
           </div>
-        ) : resultCount === 0 ? (
+        ) : resultCount === 0 || results.length === 0 ? (
           <div className="search-state-card">
             <p className="search-state-title">No results</p>
             <p className="search-state-text">Try a different query, mode, or collection filter.</p>
           </div>
         ) : (
-          <div className="search-state-card">
-            <p className="search-state-title">Found {resultCount ?? 0} results</p>
-            <p className="search-state-text">Full result cards will appear here in the next step.</p>
+          <div className="search-results-panel">
+            <div className="search-results-summary">
+              <p className="search-results-title">Found {resultCount ?? 0} results</p>
+            </div>
+            <SearchResults results={results} />
           </div>
         )}
       </div>
