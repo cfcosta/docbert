@@ -70,6 +70,12 @@ pub(crate) async fn search(
         min_score: body.min_score,
     };
 
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let embedding_db = state
+        .open_embedding_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut model = state
         .model
         .lock()
@@ -78,8 +84,8 @@ pub(crate) async fn search(
         mode,
         &request,
         &state.search_index,
-        &state.config_db,
-        &state.embedding_db,
+        config_db,
+        embedding_db,
         &mut model,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -87,7 +93,7 @@ pub(crate) async fn search(
 
     let items: Vec<SearchResultItem> = results
         .into_iter()
-        .map(|result| build_search_result_item(&state, result, &body.query))
+        .map(|result| build_search_result_item(&state, config_db, result, &body.query))
         .collect();
 
     Ok(Json(SearchResponse {
@@ -99,13 +105,14 @@ pub(crate) async fn search(
 }
 
 fn build_search_result_item(
-    state: &AppState,
+    _state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     result: search::FinalResult,
     query: &str,
 ) -> SearchResultItem {
-    let metadata = load_user_metadata(state, result.doc_num_id);
+    let metadata = load_user_metadata(config_db, result.doc_num_id);
     let (title, excerpts) = load_title_and_excerpts(
-        state,
+        config_db,
         &result.collection,
         &result.path,
         query,
@@ -125,14 +132,14 @@ fn build_search_result_item(
 }
 
 fn load_title_and_excerpts(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     collection: &str,
     path: &str,
     query: &str,
     fallback_title: &str,
 ) -> (String, Vec<SearchExcerpt>) {
     let Ok(full_path) =
-        paths::resolve_document_path(&state.config_db, collection, path)
+        paths::resolve_document_path(config_db, collection, path)
     else {
         return (fallback_title.to_string(), Vec::new());
     };
@@ -155,14 +162,10 @@ fn load_title_and_excerpts(
 }
 
 fn load_user_metadata(
-    state: &AppState,
+    config_db: &docbert_core::ConfigDb,
     doc_numeric_id: u64,
 ) -> Option<serde_json::Value> {
-    state
-        .config_db
-        .get_document_user_metadata(doc_numeric_id)
-        .ok()
-        .flatten()
+    config_db.get_document_user_metadata(doc_numeric_id).ok().flatten()
 }
 
 #[cfg(test)]
@@ -275,8 +278,10 @@ mod tests {
             Some(serde_json::json!({"topic": "rust"})),
         );
 
+        let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
+            config_db,
             final_result(&did, "Index Rust", "rust.md"),
             "ownership",
         );
@@ -306,8 +311,10 @@ mod tests {
             None,
         );
 
+        let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
+            config_db,
             final_result(&did, "Semantic result", "rust.md"),
             "memory management",
         );
@@ -358,8 +365,10 @@ mod tests {
             None,
         );
 
+        let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
+            config_db,
             final_result(&did, "Rust", "rust.md"),
             "ownership",
         );

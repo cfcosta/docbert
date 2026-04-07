@@ -26,6 +26,10 @@ impl Inner {
     pub(crate) fn open_config_db(&self) -> error::Result<&ConfigDb> {
         Ok(&self.config_db)
     }
+
+    pub(crate) fn open_embedding_db(&self) -> error::Result<&EmbeddingDb> {
+        Ok(&self.embedding_db)
+    }
 }
 
 pub(crate) fn init(

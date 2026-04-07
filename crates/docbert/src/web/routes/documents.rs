@@ -186,11 +186,10 @@ pub(crate) async fn list_by_collection(
     State(state): State<AppState>,
     AxumPath(collection): AxumPath<String>,
 ) -> Result<Json<Vec<DocumentListItem>>, StatusCode> {
-    paths::resolve_collection_root(&state.config_db, &collection)
-        .map_err(map_error)?;
+    let config_db = state.open_config_db().map_err(map_error)?;
+    paths::resolve_collection_root(config_db, &collection).map_err(map_error)?;
 
-    let all_meta = state
-        .config_db
+    let all_meta = config_db
         .list_all_document_metadata_typed()
         .map_err(map_error)?;
     let mut items = Vec::new();
@@ -200,7 +199,7 @@ pub(crate) async fn list_by_collection(
         }
 
         let full_path = paths::resolve_document_path(
-            &state.config_db,
+            config_db,
             &meta.collection,
             &meta.relative_path,
         )
@@ -241,20 +240,19 @@ pub(crate) async fn get(
     State(state): State<AppState>,
     AxumPath((collection, path)): AxumPath<(String, String)>,
 ) -> Result<Json<DocumentResponse>, StatusCode> {
+    let config_db = state.open_config_db().map_err(map_error)?;
     let did = DocumentId::new(&collection, &path);
-    state
-        .config_db
+    config_db
         .get_document_metadata_typed(did.numeric)
         .map_err(map_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let full_path =
-        paths::resolve_document_path(&state.config_db, &collection, &path)
+        paths::resolve_document_path(config_db, &collection, &path)
             .map_err(map_error)?;
     let content = std::fs::read_to_string(&full_path)
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    let metadata = state
-        .config_db
+    let metadata = config_db
         .get_document_user_metadata(did.numeric)
         .map_err(map_error)?;
 
