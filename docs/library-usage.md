@@ -1,25 +1,66 @@
-# Using docbert-core as a library
+# Using `docbert-core` as a library
 
-If you want to embed docbert in another Rust application, the CLI is not doing anything magical. It uses the same library types exposed by the `docbert-core` crate.
+`docbert-core` is the reusable library behind docbert's local retrieval stack.
 
-## Installation
+Use it when you want to embed docbert's storage, indexing, preparation, and search primitives inside your own Rust application without shelling out to the CLI.
 
-Add docbert-core to your `Cargo.toml`:
+This page focuses on the **library surface** exposed by `docbert-core`. It does **not** document application-only behavior such as:
+
+- the `docbert` CLI command tree
+- `docbert web`
+- `docbert mcp`
+- clap argument parsing or long-lived runtime wiring in `crates/docbert`
+
+For those surfaces, see the other docs pages instead.
+
+## What `docbert-core` gives you
+
+At a high level, the public library gives you:
+
+- local storage helpers (`DataDir`, `ConfigDb`, `EmbeddingDb`)
+- lexical indexing (`SearchIndex`)
+- model management (`ModelManager`)
+- document discovery and preparation (`walker`, `ingestion`, `preparation`, `chunking`)
+- search entrypoints (`execute_search`, `execute_semantic_search`, `execute_search_mode`)
+- document identifiers (`DocumentId`)
+- result enrichment helpers (`results::enrich`)
+- a shared error type (`docbert_core::Error` / `docbert_core::Result`)
+
+The library is centered on **local files and local state**. Your application chooses where the data directory lives and when indexing/searching happens.
+
+## Adding the dependency
+
+For an in-repo consumer or local checkout:
 
 ```toml
 [dependencies]
 docbert-core = { path = "../docbert/crates/docbert-core" }
 ```
 
-## Quick start
+If you expose your own wrapper crate or workspace member, keep the dependency local to the parts that actually need indexing/search functionality.
+
+## Mental model
+
+A typical embedded setup has four storage pieces:
+
+- `config.db`
+- `embeddings.db`
+- `tantivy/`
+- one or more registered collection roots on disk
+
+`docbert-core` helps you work with those layers directly, but it does **not** provide the application runtime that `docbert web` and `docbert mcp` add on top.
+
+## Minimal search example
+
+This is the smallest useful end-to-end library example: open the local stores, resolve a query, and run shared search logic.
 
 ```rust,no_run
 use std::path::Path;
+
 use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
 use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
 
 fn main() -> docbert_core::Result<()> {
-    // The caller decides where docbert stores its state.
     let data_dir = DataDir::new(Path::new("/home/user/.local/share/docbert"));
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
@@ -41,209 +82,281 @@ fn main() -> docbert_core::Result<()> {
         &embedding_db,
         &mut model,
     )?;
-    for r in &results {
-        println!("{} [{:.3}] {}/{}", r.doc_id, r.score, r.collection, r.path);
+
+    for result in results {
+        println!(
+            "{}. [{}] {}:{} {}",
+            result.rank,
+            result.score,
+            result.collection,
+            result.path,
+            result.doc_id,
+        );
     }
 
     Ok(())
 }
 ```
 
-## What the CLI and docserver share
+## Core public types
 
-The most useful thing to know as an embedder is that `docbert` and `docserver` now use the same core contracts for the parts that matter most:
+## `DataDir`
 
-- `preparation::prepare_markdown(...)` for markdown normalization and title derivation
-- `preparation::SearchDocument` for the shared searchable-document shape
-- `preparation::embedding_chunks(...)` and `collect_chunks(...)` for chunk-to-embedding inputs
-- `search::SearchMode`, `SearchQuery`, and `execute_search_mode(...)` for the common search entrypoint
-- `results::enrich(...)` for adding user metadata before rendering an API or CLI-specific response
+`DataDir` is a lightweight wrapper around the root directory for docbert's local state.
 
-The CLI and server still keep their own boundary behavior. For example, the CLI chooses chunk sizes from `ChunkingConfig`, while docserver keeps its default API chunking settings.
+It gives you paths for:
 
-## Core types
+- `config.db`
+- `embeddings.db`
+- `tantivy/`
 
-### `DataDir`
-
-`DataDir` wraps a root path and gives you sub-paths for the config database, embeddings database, and Tantivy index. The caller is responsible for choosing the root path.
+It does **not** resolve XDG defaults for you. That is application behavior; as a library embedder, you choose the root yourself.
 
 ```rust,no_run
 use std::path::Path;
 use docbert_core::DataDir;
 
 fn main() -> docbert_core::Result<()> {
-    let data_dir = DataDir::new(Path::new("/tmp/myindex"));
+    let data_dir = DataDir::new(Path::new("/tmp/my-docbert-state"));
 
-    // Access subpaths
-    let config_path = data_dir.config_db();          // config.db
-    let embeddings_path = data_dir.embeddings_db();  // embeddings.db
-    let tantivy_path = data_dir.tantivy_dir()?;      // tantivy/ (created if needed)
+    let config = data_dir.config_db();
+    let embeddings = data_dir.embeddings_db();
+    let tantivy = data_dir.tantivy_dir()?; // creates tantivy/ if needed
 
+    println!("{}", config.display());
+    println!("{}", embeddings.display());
+    println!("{}", tantivy.display());
     Ok(())
 }
 ```
 
-### `ConfigDb`
+## `ConfigDb`
 
-`ConfigDb` manages collections, context strings, document metadata, and settings in a redb database.
+`ConfigDb` is the main metadata/configuration store.
+
+Its public helpers cover:
+
+- collections
+- contexts
+- document metadata
+- collection Merkle snapshots
+- settings
+- persisted LLM settings
+- conversations
+- document user metadata
+
+If you are embedding only retrieval, the most common operations are:
+
+- opening the DB
+- registering collections
+- listing collections
+- storing/retrieving document metadata
+- reading settings such as `model_name`
 
 ```rust,no_run
 use docbert_core::ConfigDb;
+use docbert_core::incremental::DocumentMetadata;
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let db = ConfigDb::open(std::path::Path::new("config.db"))?;
 
-    // Register a collection (name -> directory path)
-    config_db.set_collection("notes", "/home/user/notes")?;
+    db.set_collection("notes", "/home/user/notes")?;
+    db.set_context("bert://notes", "Personal notes")?;
+    db.set_setting("model_name", "lightonai/ColBERT-Zero")?;
 
-    // List collections as (name, path) pairs
-    let collections = config_db.list_collections()?;
+    let doc_meta = DocumentMetadata {
+        collection: "notes".to_string(),
+        relative_path: "guide.md".to_string(),
+        mtime: 1_700_000_000,
+    };
+    db.set_document_metadata_typed(42, &doc_meta)?;
 
-    // Attach context to a collection for MCP display
-    config_db.set_context("bert://notes", "Personal notes and memos")?;
+    let collections = db.list_collections()?;
+    let model_name = db.get_setting("model_name")?;
+    let loaded_meta = db.get_document_metadata_typed(42)?;
 
-    // Store and read settings
-    config_db.set_setting("model_name", "lightonai/ColBERT-Zero")?;
-    let model = config_db.get_setting("model_name")?; // Option<String>
-
+    println!("collections: {}", collections.len());
+    println!("model: {:?}", model_name);
+    println!("doc meta exists: {}", loaded_meta.is_some());
     Ok(())
 }
 ```
 
-### `SearchIndex`
+### Conversations and settings are library-visible too
 
-`SearchIndex` wraps Tantivy for BM25 full-text search with English stemming.
+Even if your app is not building a web UI, note that these storage APIs are part of the public library surface:
+
+- `set_conversation_typed`
+- `get_conversation_typed`
+- `list_conversations_typed`
+- `get_persisted_llm_settings`
+- `set_persisted_llm_settings`
+- `set_document_user_metadata`
+- `get_document_user_metadata`
+
+That makes `docbert-core` usable for custom apps that want docbert-compatible conversation or metadata persistence without reimplementing the storage schema.
+
+## `SearchIndex`
+
+`SearchIndex` wraps Tantivy.
+
+Public capabilities include:
+
+- opening an on-disk index
+- opening an in-memory index for tests
+- adding documents
+- deleting documents
+- deleting all documents in a collection
+- plain search
+- collection-scoped search
+- fuzzy search
+- lookup by collection/path
 
 ```rust,no_run
-use std::path::Path;
 use docbert_core::SearchIndex;
 
 fn main() -> docbert_core::Result<()> {
-    // Open on disk (creates the directory if needed)
-    let index = SearchIndex::open(Path::new("/path/to/tantivy"))?;
-
-    // Or open an in-memory index for testing
     let index = SearchIndex::open_in_ram()?;
+    let mut writer = index.writer(15_000_000)?;
 
-    // Index a document
-    let mut writer = index.writer(15_000_000)?; // 15 MB memory budget
     index.add_document(
-        &mut writer,
-        "#a1b2c3",          // doc_id (short hex with # prefix)
-        12345,              // doc_num_id (numeric ID)
-        "notes",            // collection
-        "hello.md",         // relative path
-        "Hello World",      // title
-        "body text here",   // body (indexed but not stored)
-        1700000000,         // mtime (Unix timestamp)
+        &writer,
+        "#abc123",
+        42,
+        "notes",
+        "hello.md",
+        "Hello",
+        "hello from rust",
+        1_700_000_000,
     )?;
     writer.commit()?;
 
-    // Search with BM25
     let results = index.search("hello", 10)?;
-
-    // Search within one collection
-    let results = index.search_in_collection("hello", "notes", 10)?;
-
-    // Fuzzy search (BM25 + Levenshtein distance 1)
-    let results = index.search_fuzzy("helo", None, 10)?;
-
+    println!("{} result(s)", results.len());
     Ok(())
 }
 ```
 
-### `EmbeddingDb`
+### Important boundary
 
-`EmbeddingDb` stores ColBERT token-level embedding matrices in redb.
+`SearchIndex` is the lexical index only.
 
-Each entry is a flat `f32` array with a small header that records the dimensions.
+It does **not** handle:
+
+- model loading
+- semantic reranking by itself
+- collection discovery from the filesystem
+- metadata persistence in `config.db`
+
+You compose those layers yourself when embedding the library.
+
+## `EmbeddingDb`
+
+`EmbeddingDb` stores ColBERT token-level embedding matrices keyed by numeric document or chunk ID.
+
+The public API supports:
+
+- `store` / `load`
+- `batch_store` / `batch_load` / `batch_remove`
+- `list_ids`
+- document-family helpers used by chunked embeddings
 
 ```rust,no_run
-use std::path::Path;
 use docbert_core::EmbeddingDb;
 
 fn main() -> docbert_core::Result<()> {
-    let db = EmbeddingDb::open(Path::new("embeddings.db"))?;
+    let db = EmbeddingDb::open(std::path::Path::new("embeddings.db"))?;
 
-    // Store an embedding matrix (2 tokens, 3 dimensions = 6 floats)
     db.store(42, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])?;
 
-    // Load an embedding matrix
     if let Some(matrix) = db.load(42)? {
         println!("tokens={}, dim={}", matrix.num_tokens, matrix.dimension);
-        let token0 = matrix.token_embedding(0); // &[f32] of length `dimension`
     }
-
-    // Remove an embedding (returns true if it existed)
-    db.remove(42)?;
-
-    // Batch operations are cheaper because they share a transaction
-    db.batch_store(&[
-        (1, 1, 2, vec![1.0, 2.0]),
-        (2, 1, 2, vec![3.0, 4.0]),
-    ])?;
-    let results = db.batch_load(&[1, 2, 999])?; // preserves order, None for missing
-    db.batch_remove(&[1, 2])?;
-
-    // List all stored document IDs
-    let ids = db.list_ids()?;
 
     Ok(())
 }
 ```
 
-### `ModelManager`
+## `ModelManager`
 
-`ModelManager` lazily loads the ColBERT model. The first encode call downloads the model from HuggingFace Hub if it is not already cached.
+`ModelManager` owns the ColBERT model lifecycle.
 
-By default, documents are encoded at 519 tokens. Call `with_document_length(...)` if you need a different value.
+Common public entrypoints include:
+
+- `ModelManager::new()`
+- `ModelManager::with_model_id(...)`
+- `with_document_length(...)`
+- `runtime_config()`
+- `encode_documents(...)`
+- `encode_query(...)`
 
 ```rust,no_run
 use docbert_core::ModelManager;
 
 fn main() -> docbert_core::Result<()> {
-    // Use the default model, or DOCBERT_MODEL if it is set
-    let mut model = ModelManager::new();
+    let mut model = ModelManager::with_model_id(
+        "lightonai/ColBERT-Zero".to_string(),
+    )
+    .with_document_length(512);
 
-    // Use a specific model
-    let mut model = ModelManager::with_model_id("lightonai/ColBERT-Zero".into());
+    let runtime = model.runtime_config()?;
+    println!("device={}", runtime.device);
 
-    // Override the document encoding length
-    let mut model = ModelManager::new().with_document_length(512);
-
-    // The model is loaded on first encode
-    let doc_embeddings = model.encode_documents(&["document text".into()])?;
-    // Returns a Tensor of shape [batch_size, num_tokens, dimension]
-
-    let query_embedding = model.encode_query("search query")?;
-    // Returns a Tensor of shape [num_tokens, dimension]
-
+    let docs = vec!["document text".to_string()];
+    let _doc_embeddings = model.encode_documents(&docs)?;
+    let _query_embedding = model.encode_query("search query")?;
     Ok(())
 }
 ```
 
-### `SearchDocument` and `preparation`
+### Note on model resolution
 
-If you are embedding docbert in another application, this is the main place where indexing-related behavior is shared now.
+`resolve_model(...)` is also public via `docbert_core::model_manager`, but it is an **application-facing convenience** for the CLI/web runtime precedence rules (CLI override, env var, config, default).
 
-`SearchDocument` is the common searchable-document shape used by both the CLI and docserver paths. It keeps:
+If you are embedding the library directly, you can use it, but many applications will be better served by choosing their model explicitly and constructing `ModelManager` themselves.
 
-- `did`: stable `DocumentId`
-- `relative_path`: path within the collection
-- `title`: derived title
-- `searchable_body`: normalized body used for indexing and embedding
-- `raw_content`: optional original content when you need to preserve uploads separately
-- `metadata`: optional user metadata payload
-- `mtime`: source modification time
+## Document preparation and indexing primitives
+
+The library exposes the same core preparation steps that the application uses under the hood.
+
+## Discovery with `walker`
+
+Use `walker::discover_files(...)` to recursively discover supported files.
+
+Current behavior includes:
+
+- supported extensions: `.md`, `.txt`, `.pdf`
+- hidden files/directories are skipped
+- Git ignore rules are respected only when the collection root is itself a Git repo
+- returned items include relative path, absolute path, and mtime
 
 ```rust,no_run
 use std::path::Path;
-use docbert_core::preparation::{
-    SearchDocument,
-    prepare_markdown,
-    prepare_filesystem,
-    prepare_uploaded,
-};
+use docbert_core::walker;
+
+fn main() -> docbert_core::Result<()> {
+    let files = walker::discover_files(Path::new("/home/user/notes"))?;
+    for file in files {
+        println!("{}", file.relative_path.display());
+    }
+    Ok(())
+}
+```
+
+## Preparing documents with `preparation`
+
+The main shared prepared-document type is `preparation::SearchDocument`.
+
+You typically build it through one of these helpers:
+
+- `prepare_markdown(...)`
+- `prepare_uploaded(...)`
+- `prepare_filesystem(...)`
+- `prepare_supported_filesystem(...)`
+
+```rust,no_run
+use std::path::Path;
+use docbert_core::preparation::{prepare_markdown, prepare_uploaded, prepare_filesystem};
 
 fn main() -> docbert_core::Result<()> {
     let prepared = prepare_markdown(
@@ -253,7 +366,7 @@ fn main() -> docbert_core::Result<()> {
     assert_eq!(prepared.title, "Guide");
     assert_eq!(prepared.searchable_body, "# Guide\n\nBody");
 
-    let uploaded: SearchDocument = prepare_uploaded(
+    let uploaded = prepare_uploaded(
         "notes",
         "guide.md",
         "# Guide\n\nBody",
@@ -266,7 +379,7 @@ fn main() -> docbert_core::Result<()> {
         "notes",
         Path::new("guide.md"),
         "# Guide\n\nBody",
-        1700000000,
+        1_700_000_000,
     );
     assert!(filesystem.raw_content.is_none());
 
@@ -274,101 +387,131 @@ fn main() -> docbert_core::Result<()> {
 }
 ```
 
-### `DocumentId`
+## Loading documents with `ingestion`
 
-`DocumentId` generates a stable ID from the collection name and relative path. The same inputs always produce the same ID.
+`ingestion::load_documents(...)` is the usual bridge from discovered files to prepared documents.
 
-```rust,ignore
-use docbert_core::DocumentId;
+It returns:
 
-let id = DocumentId::new("notes", "hello.md");
-println!("Short ID: {}", id);           // e.g. #a1b2c3
-println!("Numeric ID: {}", id.numeric); // u64 for database keys
-println!("Short hex: {}", id.short);    // e.g. a1b2c3 without #
-
-assert_eq!(DocumentId::new("notes", "hello.md"), id);
-```
-
-## Search pipeline
-
-### Hybrid search (BM25 + ColBERT)
-
-The default search path looks like this:
-
-1. BM25 retrieval through Tantivy, usually top 1000 candidates
-2. ColBERT reranking over those candidates
-3. Score filtering with `min_score`
-4. Result limiting with `count`
-
-If you do not need CLI-only flags like `bm25_only`, `no_fuzzy`, or `all`, use the shared contract that both docserver and docbert now lean on:
+- successfully prepared documents
+- successfully loaded discovered files
+- load failures
 
 ```rust,no_run
-use docbert_core::{ConfigDb, SearchIndex, EmbeddingDb, ModelManager};
-use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+use std::path::Path;
+use docbert_core::{ingestion, walker};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
-    let search_index = SearchIndex::open_in_ram()?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
-    let mut model = ModelManager::new();
+    let files = walker::discover_files(Path::new("/home/user/notes"))?;
+    let loaded = ingestion::load_documents("notes", &files);
 
-    let request = SearchQuery {
-        query: "rust memory safety".to_string(),
-        collection: Some("docs".to_string()),
-        count: 10,
-        min_score: 0.0,
-    };
+    println!("documents={}", loaded.documents.len());
+    println!("failures={}", loaded.failures.len());
+    Ok(())
+}
+```
 
-    let results = execute_search_mode(
-        SearchMode::Hybrid,
-        &request,
-        &search_index,
-        &config_db,
-        &embedding_db,
-        &mut model,
+## Writing lexical documents with `ingestion`
+
+If you already have prepared documents, use `ingest_prepared_documents(...)`.
+
+If you want the convenience wrapper that reads discovered files and writes them immediately, use `ingest_files(...)`.
+
+```rust,no_run
+use docbert_core::{SearchIndex, ingestion, walker};
+
+fn main() -> docbert_core::Result<()> {
+    let files = walker::discover_files(std::path::Path::new("/home/user/notes"))?;
+    let loaded = ingestion::load_documents("notes", &files);
+
+    let index = SearchIndex::open_in_ram()?;
+    let mut writer = index.writer(15_000_000)?;
+    let count = ingestion::ingest_prepared_documents(
+        &index,
+        &mut writer,
+        "notes",
+        &loaded.documents,
     )?;
-    for r in &results {
-        println!("{}: {} (score {:.3})", r.rank, r.title, r.score);
-    }
 
+    println!("indexed={count}");
     Ok(())
 }
 ```
 
-If you need the extra BM25-specific flags, call `execute_search(...)` directly with `SearchParams`.
+## Chunking and embedding
 
-### Semantic-only search
+The chunking and embedding layers are library-accessible too.
 
-Semantic-only search skips BM25 and scores every stored embedding. That can surface related documents even when the query shares few or no keywords with them.
+### Chunking helpers
+
+Use `chunking::resolve_chunking_config(...)` if you want the same chunk-size selection logic the application uses for a given model path.
+
+Use `preparation::embedding_chunks(...)` or `preparation::collect_chunks(...)` if you already have `SearchDocument` values.
 
 ```rust,no_run
-use docbert_core::{ConfigDb, EmbeddingDb, ModelManager};
-use docbert_core::search::{SemanticSearchParams, execute_semantic_search};
+use std::path::Path;
+use docbert_core::chunking::resolve_chunking_config;
+use docbert_core::preparation::{collect_chunks, prepare_filesystem};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
-    let mut model = ModelManager::new();
+    let config = resolve_chunking_config("lightonai/ColBERT-Zero");
 
-    let params = SemanticSearchParams {
-        query: "how does garbage collection work".to_string(),
-        collection: None,
-        count: 10,
-        min_score: 0.0,
-        all: false,
-    };
+    let doc = prepare_filesystem(
+        "notes",
+        Path::new("long.md"),
+        "Long document text...",
+        0,
+    );
 
-    let results = execute_semantic_search(&params, &config_db, &embedding_db, &mut model)?;
+    let chunks = collect_chunks(&[doc], config, |_| {});
+    println!("chunks={}", chunks.len());
     Ok(())
 }
 ```
 
-### BM25-only search
+### Embedding helpers
 
-If you only want fast keyword search, set `bm25_only` and skip model loading entirely.
+The `embedding` module gives you two common library-level workflows:
+
+- `embed_documents(...)` if you want to generate embeddings before deciding how to persist other state
+- `embed_and_store(...)` / `embed_and_store_in_batches(...)` if you want to write directly into `EmbeddingDb`
 
 ```rust,no_run
-use docbert_core::{SearchIndex, EmbeddingDb, ModelManager};
+use docbert_core::{EmbeddingDb, ModelManager};
+use docbert_core::embedding;
+
+fn main() -> docbert_core::Result<()> {
+    let db = EmbeddingDb::open(std::path::Path::new("embeddings.db"))?;
+    let mut model = ModelManager::new();
+
+    let docs = vec![
+        (1_u64, "first document".to_string()),
+        (2_u64, "second document".to_string()),
+    ];
+
+    let entries = embedding::embed_documents(&mut model, docs.clone())?;
+    db.batch_store(&entries)?;
+
+    let written = embedding::embed_and_store(&mut model, &db, docs)?;
+    println!("written={written}");
+    Ok(())
+}
+```
+
+## Search entrypoints
+
+The main public search APIs live in `docbert_core::search`.
+
+## `execute_search(...)`
+
+Use this when you want the full hybrid-search parameter surface, including:
+
+- `bm25_only`
+- `no_fuzzy`
+- `all`
+
+```rust,no_run
+use docbert_core::{EmbeddingDb, ModelManager, SearchIndex};
 use docbert_core::search::{SearchParams, execute_search};
 
 fn main() -> docbert_core::Result<()> {
@@ -386,97 +529,90 @@ fn main() -> docbert_core::Result<()> {
         all: false,
     };
 
-    let results = execute_search(&params, &search_index, &embedding_db, &mut model)?;
+    let _results = execute_search(&params, &search_index, &embedding_db, &mut model)?;
     Ok(())
 }
 ```
 
-## Indexing pipeline
+## `execute_semantic_search(...)`
 
-### Discovering and ingesting files
+Use this when you want semantic-only retrieval over the stored document set.
 
 ```rust,no_run
-use std::path::Path;
-use docbert_core::{SearchIndex, walker, ingestion};
+use docbert_core::{ConfigDb, EmbeddingDb, ModelManager};
+use docbert_core::search::{SemanticSearchParams, execute_semantic_search};
 
 fn main() -> docbert_core::Result<()> {
-    // Discover .md and .txt files; hidden files and directories are skipped
-    let files = walker::discover_files(Path::new("/home/user/notes"))?;
+    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
+    let mut model = ModelManager::new();
 
-    // Load into the shared prepared-document model
-    let loaded = ingestion::load_documents("notes", &files);
-    for doc in &loaded.documents {
-        println!("{} => {}", doc.relative_path, doc.title);
-    }
+    let params = SemanticSearchParams {
+        query: "memory management".to_string(),
+        collection: None,
+        count: 10,
+        min_score: 0.0,
+        all: false,
+    };
 
-    // Index the prepared documents into Tantivy
-    let search_index = SearchIndex::open_in_ram()?;
-    let mut writer = search_index.writer(15_000_000)?;
-    let count = ingestion::ingest_prepared_documents(
-        &search_index,
-        &mut writer,
-        "notes",
-        &loaded.documents,
-    )?;
-    println!("Indexed {} files", count);
-
+    let _results = execute_semantic_search(&params, &config_db, &embedding_db, &mut model)?;
     Ok(())
 }
 ```
 
-`ingest_files(...)` is still available as the convenience wrapper when you do not need to inspect the prepared documents first.
+## `execute_search_mode(...)`
 
-### Chunking documents
-
-Long documents can be split into overlapping chunks before embedding.
-
-At the low level, `chunk_text(...)` and `chunk_doc_id(...)` are still available. If you are working with the shared prepared-document model, prefer the higher-level helpers in `preparation`.
-
-```rust,ignore
-use std::path::Path;
-use docbert_core::chunking::{ChunkingConfig, chunk_doc_id, chunk_text};
-use docbert_core::preparation::{
-    embedding_chunks,
-    collect_chunks,
-    prepare_filesystem,
-};
-
-let config = ChunkingConfig {
-    chunk_size: 1000,
-    overlap: 200,
-    document_length: None,
-};
-
-let doc = prepare_filesystem(
-    "notes",
-    Path::new("long.md"),
-    "long document text...",
-    0,
-);
-
-let embedding_chunks = embedding_chunks(&doc, config);
-for (chunk_id, text) in &embedding_chunks {
-    println!("{} => {} chars", chunk_id, text.len());
-}
-
-let all_chunks = collect_chunks(&[doc], config, |_| {});
-assert_eq!(all_chunks.len(), embedding_chunks.len());
-
-// Lower-level primitives are still available when you need them.
-let raw_chunks = chunk_text("long document text...", 1000, 200);
-let base_id = 12345u64;
-let chunk0_id = chunk_doc_id(base_id, 0); // same as base_id
-let chunk1_id = chunk_doc_id(base_id, 1); // unique ID for chunk 1
-```
-
-### Enriching results for your own API layer
-
-If you are building your own HTTP or TUI layer, core now exposes a small helper for attaching per-document metadata before rendering:
+Use this when your app wants a simpler mode-switching wrapper around `hybrid` vs `semantic` behavior.
 
 ```rust,no_run
-use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
-use docbert_core::results::enrich;
 use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+
+fn main() -> docbert_core::Result<()> {
+    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let search_index = SearchIndex::open_in_ram()?;
+    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
+    let mut model = ModelManager::new();
+
+    let query = SearchQuery {
+        query: "rust".to_string(),
+        collection: Some("notes".to_string()),
+        count: 5,
+        min_score: 0.0,
+    };
+
+    let _results = execute_search_mode(
+        SearchMode::Hybrid,
+        &query,
+        &search_index,
+        &config_db,
+        &embedding_db,
+        &mut model,
+    )?;
+    Ok(())
+}
+```
+
+## Result shapes
+
+The shared search functions return `Vec<search::FinalResult>`.
+
+That type contains:
+
+- `rank`
+- `score`
+- `doc_id`
+- `doc_num_id`
+- `collection`
+- `path`
+- `title`
+
+If you want to attach JSON metadata for your own API/UI surface, use `results::enrich(...)`.
+
+```rust,no_run
+use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+use docbert_core::results::enrich;
+use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
 
 fn main() -> docbert_core::Result<()> {
     let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
@@ -498,94 +634,108 @@ fn main() -> docbert_core::Result<()> {
         &mut model,
     )?;
 
-    let enriched = enrich(results, |doc_id| {
-        config_db.get_document_user_metadata(doc_id).ok().flatten()
+    let hits = enrich(results, |doc_num_id| {
+        config_db.get_document_user_metadata(doc_num_id).ok().flatten()
     });
 
-    for result in enriched {
-        println!("{} {:?}", result.path, result.metadata);
+    for hit in hits {
+        println!("{} {:?}", hit.path, hit.metadata);
     }
 
     Ok(())
 }
 ```
 
-### Incremental sync
+## Document IDs and reference helpers
 
-Incremental sync uses persisted per-collection Merkle snapshots of file-content hashes.
+`DocumentId` is the shared stable identifier for documents.
 
 ```rust,no_run
-use std::path::Path;
-use docbert_core::{ConfigDb, merkle, walker};
-use docbert_core::incremental::diff_collection_snapshots;
+use docbert_core::DocumentId;
 
-fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(Path::new("config.db"))?;
-    let files = walker::discover_files(Path::new("/home/user/notes"))?;
-    let previous = config_db.get_collection_merkle_snapshot("notes")?;
-    let current = merkle::build_collection_snapshot("notes", &files)?;
-
-    let diff = diff_collection_snapshots(previous.as_ref(), &current);
-    println!(
-        "New: {}, Changed: {}, Deleted: {}",
-        diff.new_paths.len(),
-        diff.changed_paths.len(),
-        diff.deleted_paths.len(),
-    );
-
-    // After a successful sync, replace the stored snapshot atomically.
-    config_db.set_collection_merkle_snapshot("notes", &current)?;
-
-    Ok(())
+fn main() {
+    let id = DocumentId::new("notes", "guide.md");
+    println!("display={}", id);
+    println!("short={}", id.short);
+    println!("numeric={}", id.numeric);
 }
 ```
 
-## MCP server
+The `search` module also exposes library-visible reference helpers such as:
 
-The MCP server is part of the `docbert` CLI binary, not the `docbert-core` library.
-Run it with `docbert mcp` or configure it as an MCP server in your editor.
+- `resolve_by_doc_id(...)`
+- `resolve_by_path(...)`
+- `resolve_reference(...)`
+- `short_doc_id(...)`
+
+These are useful if your embedded app accepts docbert-style references like `#abc123` or `collection:path`.
 
 ## Error handling
 
-Most fallible operations return `docbert_core::Result<T>`, which wraps `docbert_core::Error`.
+Most fallible library operations return `docbert_core::Result<T>`.
 
-```rust,ignore
-use docbert_core::{Error, Result};
+The top-level error type is `docbert_core::Error`.
 
-fn my_function() -> Result<()> {
-    // Common variants:
-    // - Error::Io(std::io::Error)                 // file I/O
-    // - Error::Config(String)                     // configuration or validation
-    // - Error::NotFound { kind, name }            // missing document or collection
-    // - Error::DataDir(PathBuf)                   // data directory issues
-    // - Error::Tantivy(tantivy::TantivyError)     // search index errors
-    // - Error::Redb(redb::Error)                  // config or embedding database errors
-    // - Error::Colbert(pylate_rs::ColbertError)   // model errors
-    // - Error::Candle(candle_core::Error)         // tensor operation errors
-    Ok(())
-}
-```
+Common variants include:
 
-## Model resolution
-
-The ColBERT model ID is resolved in this order:
-
-1. `--model` CLI flag
-2. `DOCBERT_MODEL` environment variable
-3. `model_name` stored in `config.db`
-4. compiled-in default: `lightonai/ColBERT-Zero`
+- `Error::Io`
+- `Error::Config`
+- `Error::NotFound`
+- `Error::DataDir`
+- `Error::Tantivy`
+- `Error::Redb*`
+- `Error::Colbert`
+- `Error::Candle`
+- `Error::Json`
+- `Error::Pdf`
+- `Error::Rkyv`
 
 ```rust,no_run
-use docbert_core::ConfigDb;
-use docbert_core::model_manager::{resolve_model, ModelSource};
+use docbert_core::{Error, Result};
 
-fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
-
-    let resolution = resolve_model(&config_db, Some("my/model"))?;
-    println!("Model: {} (source: {})", resolution.model_id, resolution.source.as_str());
-    // Model: my/model (source: cli)
-
+fn do_work() -> Result<()> {
+    let err = Error::Config("example configuration problem".to_string());
+    eprintln!("{err}");
     Ok(())
 }
+
+fn main() -> Result<()> {
+    do_work()
+}
 ```
+
+## What stays application-only
+
+When embedding `docbert-core`, keep these boundaries in mind.
+
+### In the library
+
+The library owns:
+
+- storage primitives
+- indexing/discovery/preparation primitives
+- model loading and embedding helpers
+- search functions
+- result enrichment helpers
+- typed errors
+
+### Outside the library
+
+The application crate (`crates/docbert`) owns:
+
+- CLI argument parsing and subcommands
+- long-lived web runtime state
+- long-lived MCP runtime state
+- route definitions and HTTP response shapes
+- higher-level sync/rebuild orchestration convenience commands
+- browser UI and chat runtime logic
+
+That distinction matters when writing examples. If you are documenting embedded usage, prefer showing direct calls to library APIs rather than invoking CLI concepts indirectly.
+
+## Related references
+
+- [`architecture.md`](./architecture.md)
+- [`pipeline.md`](./pipeline.md)
+- [`storage.md`](./storage.md)
+- [`web-api.md`](./web-api.md)
+- [`mcp.md`](./mcp.md)
