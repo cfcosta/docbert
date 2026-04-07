@@ -72,7 +72,7 @@
 
 .settings-radio:hover {
   background: var(--surface-selection);
-  border-color: var(--accent);
+  border-color: var(--accent-border);
   color: var(--text-h);
   box-shadow: var(--shadow);
 }
@@ -80,13 +80,13 @@
 .settings-radio.active {
   background: var(--accent);
   color: var(--accent-text);
-  border-color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .settings-select {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid var(--accent-cyan);
+  border: 1px solid var(--accent-cyan-border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-h);
@@ -113,7 +113,7 @@
 .settings-input {
   padding: 8px 12px;
   min-height: 36px;
-  border: 1px solid var(--accent-pink);
+  border: 1px solid var(--accent-pink-border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-h);
@@ -151,7 +151,7 @@
 .settings-save {
   padding: 8px 24px;
   min-height: 36px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-border);
   border-radius: var(--radius);
   background: var(--accent);
   color: var(--accent-text);
@@ -168,7 +168,7 @@
 
 .settings-save:hover:not(:disabled) {
   background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  border-color: var(--accent-hover-border);
   box-shadow: var(--shadow);
 }
 
@@ -185,7 +185,7 @@
   border-radius: 999px;
   background: var(--surface-selection);
   color: var(--success);
-  border: 1px solid var(--success);
+  border: 1px solid var(--success-border);
   font-size: 0.85rem;
   font-weight: 600;
   box-shadow: var(--shadow-sm);
@@ -199,7 +199,7 @@
   border-radius: 999px;
   background: var(--surface-selection);
   color: var(--error);
-  border: 1px solid var(--error);
+  border: 1px solid var(--error-border);
   font-size: 0.85rem;
   font-weight: 600;
   box-shadow: var(--shadow-sm);

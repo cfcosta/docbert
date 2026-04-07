@@ -109,7 +109,7 @@
 }
 
 .search-state-card-error {
-  border-color: var(--error);
+  border-color: var(--error-border);
   background: var(--surface-selection);
 }
 

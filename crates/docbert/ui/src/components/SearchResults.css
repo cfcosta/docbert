@@ -34,7 +34,7 @@
 }
 
 .chat-tool-search-result-node.active {
-  border-color: var(--accent-cyan);
+  border-color: var(--accent-cyan-border);
   background: var(--surface-current-line);
   box-shadow: var(--shadow);
 }
@@ -145,7 +145,7 @@
 }
 
 .chat-tool-search-excerpt.active {
-  border-color: var(--accent-yellow);
+  border-color: var(--accent-yellow-border);
   background: var(--surface-current-line);
   box-shadow: var(--shadow);
 }
@@ -175,7 +175,7 @@
 
 .chat-tool-search-excerpt-link:hover,
 .chat-tool-search-excerpt-button:hover {
-  border-color: var(--accent-pink);
+  border-color: var(--accent-pink-border);
   background: var(--surface-selection);
 }
 

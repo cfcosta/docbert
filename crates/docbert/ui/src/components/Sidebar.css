@@ -92,7 +92,7 @@
 
 .sidebar-link:hover {
   background: var(--surface-selection);
-  border-color: var(--accent-cyan);
+  border-color: var(--accent-cyan-border);
   color: var(--text-h);
   text-decoration: none;
   box-shadow: var(--shadow-sm);
@@ -100,7 +100,7 @@
 
 .sidebar-link.active {
   background: var(--surface-current-line);
-  border-color: var(--accent);
+  border-color: var(--accent-border);
   color: var(--accent);
   box-shadow: var(--shadow);
 }
