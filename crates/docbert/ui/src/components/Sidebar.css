@@ -1,30 +1,37 @@
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: color-mix(in srgb, var(--surface-floating) 88%, var(--bg));
+  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.05),
+    8px 0 24px rgba(25, 26, 33, 0.12);
 }
 
 @media (prefers-color-scheme: dark) {
   .sidebar {
-    box-shadow: inset -1px 0 0 rgba(248, 248, 242, 0.04);
+    box-shadow:
+      inset -1px 0 0 rgba(248, 248, 242, 0.04),
+      10px 0 28px rgba(15, 16, 24, 0.34);
   }
 }
 
 @media (prefers-color-scheme: light) {
   .sidebar {
-    box-shadow: inset -1px 0 0 rgba(255, 251, 235, 0.35);
+    box-shadow:
+      inset -1px 0 0 rgba(255, 251, 235, 0.35),
+      8px 0 22px rgba(108, 102, 75, 0.08);
   }
 }
 
 .sidebar-header {
   padding: 20px 16px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-selection) 14%, transparent);
 }
 
 .sidebar-title-link {
@@ -84,17 +91,18 @@
 }
 
 .sidebar-link:hover {
-  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 62%, var(--surface-selection));
+  border-color: color-mix(in srgb, var(--accent-cyan) 24%, var(--accent) 16%, var(--border));
   color: var(--text-h);
   text-decoration: none;
+  box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active {
-  background: color-mix(in srgb, var(--accent-bg) 88%, var(--surface-current-line));
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-current-line));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--accent-cyan) 18%, var(--border));
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
 }
 
 .sidebar-link.active svg {
@@ -108,7 +116,8 @@
 .sidebar-footer {
   margin-top: auto;
   padding: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-selection) 12%, transparent);
 }
 
 @media (max-width: 860px) {
