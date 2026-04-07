@@ -277,7 +277,7 @@ pub(crate) async fn get(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
     use axum::{
         Router,
@@ -286,6 +286,7 @@ mod tests {
         routing,
     };
     use docbert_core::{ConfigDb, ModelManager, SearchIndex, incremental};
+    use tokio::sync::{Mutex, MutexGuard};
     use tower::util::ServiceExt;
 
     use super::*;
@@ -296,7 +297,7 @@ mod tests {
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             search_index: SearchIndex::open_in_ram().unwrap(),
-            model: Mutex::new(ModelManager::new()),
+            model: StdMutex::new(ModelManager::new()),
         });
 
         (tmp, state)
@@ -311,9 +312,9 @@ mod tests {
             .unwrap()
     }
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    async fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
 
     fn documents_router(state: AppState) -> Router {
@@ -346,11 +347,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join(relative_path), content).unwrap();
-        test_config_db(&state)
+        test_config_db(state)
             .set_collection(collection, root.to_str().unwrap())
             .unwrap();
         let did = DocumentId::new(collection, relative_path);
-        test_config_db(&state)
+        test_config_db(state)
             .set_document_metadata_typed(
                 did.numeric,
                 &incremental::DocumentMetadata {
@@ -365,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_upload_writes_file_to_collection_folder() {
-        let _guard = env_lock();
+        let _guard = env_lock().await;
         unsafe {
             std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
         }
@@ -408,7 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_upload_preserves_nested_paths() {
-        let _guard = env_lock();
+        let _guard = env_lock().await;
         unsafe {
             std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
         }
@@ -445,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_upload_overwrite_replaces_contents() {
-        let _guard = env_lock();
+        let _guard = env_lock().await;
         unsafe {
             std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
         }
@@ -493,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_delete_removes_source_file_and_metadata() {
-        let _guard = env_lock();
+        let _guard = env_lock().await;
         unsafe {
             std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
         }
@@ -562,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_delete_removes_tantivy_entry_and_embeddings() {
-        let _guard = env_lock();
+        let _guard = env_lock().await;
         unsafe {
             std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
         }

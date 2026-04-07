@@ -49,6 +49,7 @@ pub(crate) fn compute_collection_snapshot_change_for_discovered(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compute_collection_snapshot_change(
     config_db: &ConfigDb,
     collection: &str,

@@ -403,7 +403,7 @@ mod tests {
     ) -> PathBuf {
         let root = tmp.path().join(collection);
         std::fs::create_dir_all(&root).unwrap();
-        test_config_db(&state)
+        test_config_db(state)
             .set_collection(collection, root.to_str().unwrap())
             .unwrap();
         root

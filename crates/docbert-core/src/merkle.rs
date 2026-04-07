@@ -489,10 +489,10 @@ mod tests {
 
         assert_ne!(
             hash_file_leaf("same", &content_hash),
-            hash_directory_node("same", &[child.clone()])
+            hash_directory_node("same", std::slice::from_ref(&child))
         );
         assert_ne!(
-            hash_directory_node("", &[child.clone()]),
+            hash_directory_node("", std::slice::from_ref(&child)),
             hash_collection_root(&[child])
         );
     }

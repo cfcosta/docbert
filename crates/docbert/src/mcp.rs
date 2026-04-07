@@ -939,7 +939,7 @@ mod tests {
             .unwrap();
 
         let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
+        let _embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
 
         let mut writer = search_index.writer(15_000_000).unwrap();
