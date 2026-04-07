@@ -50,7 +50,7 @@
 }
 
 .sidebar-title {
-  font-size: 1.1rem;
+  font-size: 1.125rem;
   font-weight: 750;
   color: var(--text-h);
   transition: color 0.15s ease-out;
@@ -80,7 +80,7 @@
   border: 1px solid transparent;
   color: var(--text);
   text-decoration: none;
-  font-size: 0.92rem;
+  font-size: 0.875rem;
   font-weight: 550;
   transition:
     background 0.15s ease-out,

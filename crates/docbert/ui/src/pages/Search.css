@@ -20,7 +20,7 @@
 .search-subtitle {
   margin-top: 4px;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 
 .search-body {
@@ -132,7 +132,7 @@
 .search-toolbar-hint {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
 }
 
 .search-state-card {
@@ -185,14 +185,14 @@
 
 .search-results-title {
   color: var(--text-h);
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 600;
 }
 
 .search-results-meta {
   margin: 4px 0 0;
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
 }
 
 .search-results-panel .chat-tool-search-results {
@@ -225,9 +225,9 @@
 
 .search-results-panel .chat-tool-search-result-title {
   display: inline-block;
-  font-size: 1.15rem;
+  font-size: 1.125rem;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 1.55;
   color: var(--accent);
 }
 
@@ -238,14 +238,14 @@
 
 .search-results-panel .chat-tool-search-result-path {
   margin-top: 6px;
-  font-size: 0.78rem;
+  font-size: 0.875rem;
   color: var(--accent-green);
 }
 
 .search-results-panel .chat-tool-search-result-meta {
   gap: 12px;
   margin-top: 8px;
-  font-size: 0.74rem;
+  font-size: 0.875rem;
   color: var(--text-muted);
 }
 
@@ -293,8 +293,8 @@
 }
 
 .search-results-panel .chat-tool-search-excerpt-text {
-  font-size: 0.92rem;
-  line-height: 1.65;
+  font-size: 1rem;
+  line-height: 1.625;
   color: var(--text);
 }
 

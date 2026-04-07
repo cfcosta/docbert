@@ -113,7 +113,7 @@
   --mono: "Berkeley Mono", "SFMono-Regular", ui-monospace, "Cascadia Code", Consolas, monospace;
 
   font-family: var(--sans);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.5;
   color: var(--text);
   background: var(--bg);
@@ -199,15 +199,19 @@ h4 {
 }
 
 h1 {
-  font-size: 1.5rem;
+  font-size: 2rem;
 }
 
 h2 {
-  font-size: 1.25rem;
+  font-size: 1.5rem;
 }
 
 h3 {
-  font-size: 1.05rem;
+  font-size: 1.125rem;
+}
+
+h4 {
+  font-size: 1rem;
 }
 
 p {

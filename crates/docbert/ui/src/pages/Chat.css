@@ -231,7 +231,7 @@
 
 .chat-subtitle {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.875rem;
   margin-top: 4px;
 }
 
@@ -267,7 +267,7 @@
 
 .chat-empty p {
   max-width: 320px;
-  font-size: 0.9rem;
+  font-size: 1rem;
   line-height: 1.5;
 }
 
@@ -286,8 +286,8 @@
 .chat-msg-bubble {
   padding: 10px 16px;
   border-radius: var(--radius-lg);
-  line-height: 1.55;
-  font-size: 0.9rem;
+  line-height: 1.625;
+  font-size: 1rem;
   box-shadow: var(--shadow-sm);
 }
 
@@ -789,7 +789,7 @@
   background: var(--bg-secondary);
   color: var(--text-h);
   box-shadow: var(--shadow-sm);
-  font-size: 0.9rem;
+  font-size: 1rem;
   outline: none;
   transition:
     border-color 0.15s,
