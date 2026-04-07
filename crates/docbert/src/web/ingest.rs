@@ -367,7 +367,6 @@ mod tests {
 
     use docbert_core::{
         ConfigDb,
-        EmbeddingDb,
         ModelManager,
         SearchIndex,
         chunking::chunk_doc_id,
@@ -378,21 +377,20 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let placeholder_index = SearchIndex::open_in_ram().unwrap();
-        let writer = placeholder_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
-            config_db,
-            search_index,
-            embedding_db,
+            search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
-            writer: Mutex::new(writer),
         });
         (tmp, state)
+    }
+
+    fn test_config_db(state: &AppState) -> ConfigDb {
+        ConfigDb::open(&state.data_dir.config_db()).unwrap()
+    }
+
+    fn test_embedding_db(state: &AppState) -> docbert_core::EmbeddingDb {
+        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db()).unwrap()
     }
 
     fn seed_collection_root(
@@ -402,8 +400,7 @@ mod tests {
     ) -> PathBuf {
         let root = tmp.path().join(collection);
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection(collection, root.to_str().unwrap())
             .unwrap();
         root
@@ -465,8 +462,7 @@ mod tests {
         )
         .unwrap();
 
-        let snapshot = state
-            .config_db
+        let snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after ingest");
@@ -474,8 +470,7 @@ mod tests {
         assert_eq!(ingested.doc_id, document.did.to_string());
         assert_eq!(ingested.title, "Hello");
         assert_eq!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_document_metadata_typed(document.did.numeric)
                 .unwrap()
                 .unwrap()
@@ -483,22 +478,19 @@ mod tests {
             7
         );
         assert_eq!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_document_user_metadata(document.did.numeric)
                 .unwrap(),
             Some(serde_json::json!({"topic": "rust"}))
         );
         assert!(
-            state
-                .embedding_db
+            test_embedding_db(&state)
                 .load(document.did.numeric)
                 .unwrap()
                 .is_some()
         );
         assert!(
-            state
-                .embedding_db
+            test_embedding_db(&state)
                 .load(chunk_doc_id(document.did.numeric, 1))
                 .unwrap()
                 .is_some()
@@ -528,8 +520,7 @@ mod tests {
             &fake_embedding_entries(first.did.numeric, 2),
         )
         .unwrap();
-        let first_snapshot = state
-            .config_db
+        let first_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after first ingest");
@@ -551,21 +542,18 @@ mod tests {
         )
         .unwrap();
 
-        let second_snapshot = state
-            .config_db
+        let second_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after replacement ingest");
 
-        let metadata = state
-            .config_db
+        let metadata = test_config_db(&state)
             .get_document_metadata_typed(second.did.numeric)
             .unwrap()
             .unwrap();
         assert_eq!(metadata.mtime, 9);
         assert_eq!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_document_user_metadata(second.did.numeric)
                 .unwrap(),
             Some(serde_json::json!({"version": 2}))
@@ -604,22 +592,19 @@ mod tests {
         .unwrap();
 
         assert!(
-            state
-                .embedding_db
+            test_embedding_db(&state)
                 .load(document.did.numeric)
                 .unwrap()
                 .is_some()
         );
         assert!(
-            state
-                .embedding_db
+            test_embedding_db(&state)
                 .load(chunk_doc_id(document.did.numeric, 1))
                 .unwrap()
                 .is_some()
         );
         assert!(
-            state
-                .embedding_db
+            test_embedding_db(&state)
                 .load(chunk_doc_id(document.did.numeric, 2))
                 .unwrap()
                 .is_none()
@@ -641,8 +626,7 @@ mod tests {
             &fake_embedding_entries(document.did.numeric, 1),
         )
         .unwrap();
-        let original_snapshot = state
-            .config_db
+        let original_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after first ingest");
@@ -663,8 +647,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_collection_merkle_snapshot("notes")
                 .unwrap(),
             Some(original_snapshot)
@@ -686,8 +669,7 @@ mod tests {
             &fake_embedding_entries(document.did.numeric, 1),
         )
         .unwrap();
-        let original_snapshot = state
-            .config_db
+        let original_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after ingest");
@@ -696,8 +678,7 @@ mod tests {
 
         assert!(delete_document(&state, "notes", "hello.md").is_err());
         assert_eq!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_collection_merkle_snapshot("notes")
                 .unwrap(),
             Some(original_snapshot)

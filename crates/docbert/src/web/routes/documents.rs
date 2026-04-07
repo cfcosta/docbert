@@ -283,13 +283,7 @@ mod tests {
         http::{Request, StatusCode},
         routing,
     };
-    use docbert_core::{
-        ConfigDb,
-        EmbeddingDb,
-        ModelManager,
-        SearchIndex,
-        incremental,
-    };
+    use docbert_core::{ConfigDb, ModelManager, SearchIndex, incremental};
     use tower::util::ServiceExt;
 
     use super::*;
@@ -297,22 +291,21 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let placeholder_index = SearchIndex::open_in_ram().unwrap();
-        let writer = placeholder_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
-            config_db,
-            search_index,
-            embedding_db,
+            search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
-            writer: Mutex::new(writer),
         });
 
         (tmp, state)
+    }
+
+    fn test_config_db(state: &AppState) -> ConfigDb {
+        ConfigDb::open(&state.data_dir.config_db()).unwrap()
+    }
+
+    fn test_embedding_db(state: &AppState) -> docbert_core::EmbeddingDb {
+        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db()).unwrap()
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -350,13 +343,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join(relative_path), content).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection(collection, root.to_str().unwrap())
             .unwrap();
         let did = DocumentId::new(collection, relative_path);
-        state
-            .config_db
+        test_config_db(&state)
             .set_document_metadata_typed(
                 did.numeric,
                 &incremental::DocumentMetadata {
@@ -378,8 +369,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
 
@@ -405,8 +395,7 @@ mod tests {
             std::fs::read_to_string(root.join("hello.md")).unwrap(),
             "# Uploaded\n\nBody"
         );
-        let snapshot = state
-            .config_db
+        let snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after upload");
@@ -423,8 +412,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
 
@@ -462,12 +450,10 @@ mod tests {
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("hello.md"), "old").unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
-        let previous_snapshot = state
-            .config_db
+        let previous_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap();
 
@@ -493,8 +479,7 @@ mod tests {
             std::fs::read_to_string(root.join("hello.md")).unwrap(),
             "# Updated\n\nBody v2"
         );
-        let updated_snapshot = state
-            .config_db
+        let updated_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after overwrite upload");
@@ -512,8 +497,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
 
@@ -533,8 +517,7 @@ mod tests {
         assert_eq!(upload_response.status(), StatusCode::OK);
 
         let did = DocumentId::new("notes", "hello.md");
-        let previous_snapshot = state
-            .config_db
+        let previous_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after upload");
@@ -555,21 +538,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(!root.join("hello.md").exists());
         assert!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_document_metadata_typed(did.numeric)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            state
-                .config_db
+            test_config_db(&state)
                 .get_document_user_metadata(did.numeric)
                 .unwrap()
                 .is_none()
         );
-        let updated_snapshot = state
-            .config_db
+        let updated_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after delete");
@@ -586,8 +566,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
 
@@ -607,8 +586,7 @@ mod tests {
         assert_eq!(upload_response.status(), StatusCode::OK);
 
         let did = DocumentId::new("notes", "hello.md");
-        let previous_snapshot = state
-            .config_db
+        let previous_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after upload");
@@ -634,9 +612,8 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(state.embedding_db.load(did.numeric).unwrap().is_none());
-        let updated_snapshot = state
-            .config_db
+        assert!(test_embedding_db(&state).load(did.numeric).unwrap().is_none());
+        let updated_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()
             .expect("snapshot should exist after delete");
@@ -649,8 +626,7 @@ mod tests {
         let (tmp, state) = test_state();
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
-        state
-            .config_db
+        test_config_db(&state)
             .set_collection("notes", root.to_str().unwrap())
             .unwrap();
 
@@ -681,7 +657,7 @@ mod tests {
             "nested/hello.md",
             "# Disk Title\n\nBody",
         );
-        let mut writer = state.writer.lock().unwrap();
+        let mut writer = state.open_index_writer_blocking(15_000_000).unwrap();
         state
             .search_index
             .add_document(
@@ -730,8 +706,7 @@ mod tests {
             "hello.md",
             "# Disk Title\n\nDisk body",
         );
-        state
-            .config_db
+        test_config_db(&state)
             .set_document_user_metadata(
                 did.numeric,
                 &serde_json::json!({ "topic": "rust" }),

@@ -34,7 +34,7 @@ mod tests {
         http::{Request, StatusCode},
         routing,
     };
-    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+    use docbert_core::{ConfigDb, ModelManager, SearchIndex};
     use tower::util::ServiceExt;
 
     use super::*;
@@ -42,18 +42,10 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
-            config_db,
-            search_index,
-            embedding_db,
+            search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
-            writer: Mutex::new(writer),
         });
 
         (tmp, state)
@@ -76,14 +68,15 @@ mod tests {
         let docs = tmp.path().join("docs");
         std::fs::create_dir_all(&notes).unwrap();
         std::fs::create_dir_all(&docs).unwrap();
-        state
-            .config_db
-            .set_collection("notes", notes.to_str().unwrap())
-            .unwrap();
-        state
-            .config_db
-            .set_collection("docs", docs.to_str().unwrap())
-            .unwrap();
+        {
+            let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+            config_db
+                .set_collection("notes", notes.to_str().unwrap())
+                .unwrap();
+            config_db
+                .set_collection("docs", docs.to_str().unwrap())
+                .unwrap();
+        }
 
         let response = collections_router(state)
             .oneshot(

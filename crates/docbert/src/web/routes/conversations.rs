@@ -133,7 +133,6 @@ mod tests {
         ChatMessage,
         ConfigDb,
         Conversation,
-        EmbeddingDb,
         ModelManager,
         SearchIndex,
         conversation::{ChatActor, ChatPart, ChatRole},
@@ -144,18 +143,10 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
-            config_db,
-            search_index,
-            embedding_db,
+            search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
-            writer: Mutex::new(writer),
         });
 
         (tmp, state)
@@ -182,12 +173,11 @@ mod tests {
     #[tokio::test]
     async fn web_conversations_list_sorts_by_updated_at_desc() {
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        let config_db = ConfigDb::open(&state.data_dir.config_db()).unwrap();
+        config_db
             .set_conversation_typed(&conversation("older", 10))
             .unwrap();
-        state
-            .config_db
+        config_db
             .set_conversation_typed(&conversation("newer", 20))
             .unwrap();
 
@@ -215,8 +205,8 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::CREATED);
-        let stored = state
-            .config_db
+        let stored = ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .get_conversation_typed("conv-1")
             .unwrap()
             .unwrap();
@@ -239,8 +229,8 @@ mod tests {
     async fn web_conversations_update_overwrites_path_id_and_refreshes_timestamp()
      {
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_conversation_typed(&conversation("conv-1", 10))
             .unwrap();
 
@@ -264,8 +254,8 @@ mod tests {
         assert_eq!(response.id, "conv-1");
         assert_eq!(response.title, "Updated title");
         assert!(response.updated_at >= 10);
-        let stored = state
-            .config_db
+        let stored = ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .get_conversation_typed("conv-1")
             .unwrap()
             .unwrap();
@@ -276,8 +266,8 @@ mod tests {
     #[tokio::test]
     async fn web_conversations_delete_returns_no_content_for_existing() {
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_conversation_typed(&conversation("conv-1", 10))
             .unwrap();
 
@@ -288,8 +278,8 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(
-            state
-                .config_db
+            ConfigDb::open(&state.data_dir.config_db())
+                .unwrap()
                 .get_conversation_typed("conv-1")
                 .unwrap()
                 .is_none()

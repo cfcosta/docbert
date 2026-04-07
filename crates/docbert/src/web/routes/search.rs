@@ -175,7 +175,6 @@ mod tests {
     use docbert_core::{
         ConfigDb,
         DocumentId,
-        EmbeddingDb,
         ModelManager,
         SearchIndex,
         incremental,
@@ -187,20 +186,12 @@ mod tests {
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = docbert_core::DataDir::new(tmp.path());
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
         (
             tmp,
             Arc::new(Inner {
                 data_dir,
-                config_db,
-                search_index,
-                embedding_db,
+                search_index: SearchIndex::open_in_ram().unwrap(),
                 model: Mutex::new(ModelManager::new()),
-                writer: Mutex::new(writer),
             }),
         )
     }
@@ -221,13 +212,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(collection_root.join(path), content).unwrap();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_collection(collection, collection_root.to_str().unwrap())
             .unwrap();
         let did = DocumentId::new(collection, path);
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_document_metadata_typed(
                 did.numeric,
                 &incremental::DocumentMetadata {
@@ -238,8 +229,8 @@ mod tests {
             )
             .unwrap();
         if let Some(metadata) = user_metadata.as_ref() {
-            state
-                .config_db
+            ConfigDb::open(&state.data_dir.config_db())
+                .unwrap()
                 .set_document_user_metadata(did.numeric, metadata)
                 .unwrap();
         }
@@ -281,7 +272,7 @@ mod tests {
         let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
-            config_db,
+            &config_db,
             final_result(&did, "Index Rust", "rust.md"),
             "ownership",
         );
@@ -314,7 +305,7 @@ mod tests {
         let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
-            config_db,
+            &config_db,
             final_result(&did, "Semantic result", "rust.md"),
             "memory management",
         );
@@ -368,7 +359,7 @@ mod tests {
         let config_db = state.open_config_db().unwrap();
         let item = build_search_result_item(
             &state,
-            config_db,
+            &config_db,
             final_result(&did, "Rust", "rust.md"),
             "ownership",
         );

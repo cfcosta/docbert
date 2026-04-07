@@ -66,7 +66,7 @@ pub(crate) async fn update(
 mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
 
-    use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+    use docbert_core::{ConfigDb, ModelManager, SearchIndex};
 
     use super::*;
     use crate::web::state::Inner;
@@ -78,18 +78,10 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let search_index = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let writer = search_index.writer(15_000_000).unwrap();
         let state = Arc::new(Inner {
             data_dir: docbert_core::DataDir::new(tmp.path()),
-            config_db,
-            search_index,
-            embedding_db,
+            search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
-            writer: Mutex::new(writer),
         });
 
         (tmp, state)
@@ -99,8 +91,8 @@ mod tests {
     fn web_settings_get_prefers_stored_api_key_over_env() {
         let _guard = env_lock();
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_persisted_llm_settings(&PersistedLlmSettings {
                 provider: Some("openai".to_string()),
                 model: Some("gpt-4.1".to_string()),
@@ -127,8 +119,8 @@ mod tests {
     fn web_settings_get_uses_env_api_key_when_stored_key_missing() {
         let _guard = env_lock();
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_persisted_llm_settings(&PersistedLlmSettings {
                 provider: Some("anthropic".to_string()),
                 model: Some("claude-sonnet".to_string()),
@@ -155,8 +147,8 @@ mod tests {
     async fn web_settings_update_clears_empty_api_key_and_absent_provider_model()
      {
         let (_tmp, state) = test_state();
-        state
-            .config_db
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
             .set_persisted_llm_settings(&PersistedLlmSettings {
                 provider: Some("openai".to_string()),
                 model: Some("gpt-4.1".to_string()),
@@ -180,7 +172,10 @@ mod tests {
         assert_eq!(response.model, None);
         assert_eq!(response.api_key, Some(String::new()));
         assert_eq!(
-            state.config_db.get_persisted_llm_settings().unwrap(),
+            ConfigDb::open(&state.data_dir.config_db())
+                .unwrap()
+                .get_persisted_llm_settings()
+                .unwrap(),
             PersistedLlmSettings::default()
         );
     }
@@ -201,7 +196,10 @@ mod tests {
         assert_eq!(response.model.as_deref(), Some("gpt-4.1"));
         assert_eq!(response.api_key.as_deref(), Some("stored-key"));
         assert_eq!(
-            state.config_db.get_persisted_llm_settings().unwrap(),
+            ConfigDb::open(&state.data_dir.config_db())
+                .unwrap()
+                .get_persisted_llm_settings()
+                .unwrap(),
             PersistedLlmSettings {
                 provider: Some("openai".to_string()),
                 model: Some("gpt-4.1".to_string()),
