@@ -217,24 +217,6 @@
   overflow: hidden;
 }
 
-.chat-header-wrap {
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
-}
-
-.chat-header {
-  padding: 20px 24px 16px;
-  max-width: 720px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.chat-subtitle {
-  color: var(--text-muted);
-  font-size: 0.875rem;
-  margin-top: 4px;
-}
-
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -280,7 +262,8 @@
 }
 
 .chat-msg-assistant {
-  margin-right: auto;
+  width: 100%;
+  justify-content: center;
 }
 
 .chat-msg-bubble {
@@ -299,10 +282,14 @@
 }
 
 .chat-msg-assistant .chat-msg-bubble {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 48rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   color: var(--text-h);
-  border-bottom-left-radius: 4px;
+  box-shadow: none;
 }
 
 .chat-msg-subagent .chat-msg-bubble {

@@ -322,13 +322,6 @@ export default function Chat() {
       </aside>
 
       <div className="chat-main">
-        <div className="chat-header-wrap">
-          <header className="chat-header">
-            <h2>Chat</h2>
-            <p className="chat-subtitle">Ask questions about your documents</p>
-          </header>
-        </div>
-
         <ChatTranscript
           displayMessageGroups={displayMessageGroups}
           loading={loading}
