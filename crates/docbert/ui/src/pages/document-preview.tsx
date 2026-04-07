@@ -1,4 +1,11 @@
-import { Children, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
+import {
+  isValidElement,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -338,13 +345,11 @@ function textContent(node: ReactNode): string {
     return node.map((child) => textContent(child)).join("");
   }
 
-  if (!node || typeof node !== "object") {
+  if (!node || !isValidElement(node)) {
     return "";
   }
 
-  return textContent(
-    (node as { props?: { children?: ReactNode } }).props?.children ?? Children.toArray(node),
-  );
+  return textContent((node as { props?: { children?: ReactNode } }).props?.children);
 }
 
 function escapeMarkdownLabel(text: string) {
