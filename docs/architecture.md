@@ -13,7 +13,7 @@ All three sit on top of the same core storage and retrieval stack in `docbert-co
 At a high level, docbert:
 
 1. registers one or more named filesystem collections
-2. indexes markdown/text documents from those collections
+2. indexes Markdown, text, and PDF documents from those collections
 3. stores lexical index data, metadata, embeddings, and settings locally
 4. serves retrieval through the CLI, the web API/UI, or MCP tools/resources
 
@@ -145,7 +145,8 @@ Responsibilities:
 
 - discover eligible files from collection roots
 - respect current walker rules, including Git ignore behavior for repo-backed collections
-- load markdown/text files from disk
+- load Markdown, text, and PDF files from disk
+- convert PDFs into extracted Markdown/text for preview, search, and embeddings
 - derive titles and metadata used by search and API responses
 - produce chunk/embedding-ready document representations
 - update collection snapshots after successful sync/rebuild or web mutations

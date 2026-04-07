@@ -520,10 +520,6 @@ export default function Documents() {
               <span id="collections-heading" className="file-tree-title">
                 Collections
               </span>
-              <p className="file-tree-subtitle">
-                Drop files or folders onto a collection. Mixed Markdown and PDF imports keep folder
-                paths.
-              </p>
             </div>
           </div>
 

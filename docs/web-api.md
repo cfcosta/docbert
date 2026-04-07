@@ -24,21 +24,21 @@ The web process also serves the browser UI, but UI routes are not part of this A
 
 ## Route summary
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET` | `/v1/collections` | List registered collection names. |
-| `GET` | `/v1/conversations` | List saved conversations. |
-| `POST` | `/v1/conversations` | Create a conversation. |
-| `GET` | `/v1/conversations/{id}` | Get one conversation. |
-| `PUT` | `/v1/conversations/{id}` | Replace one conversation. |
-| `DELETE` | `/v1/conversations/{id}` | Delete one conversation. |
-| `POST` | `/v1/documents` | Upload and ingest markdown documents into an existing collection. |
-| `GET` | `/v1/collections/{name}/documents` | List documents in one collection. |
-| `GET` | `/v1/documents/{collection}/{*path}` | Read one document and its stored metadata. |
-| `DELETE` | `/v1/documents/{collection}/{*path}` | Delete one document from disk and from indexed state. |
-| `POST` | `/v1/search` | Run semantic or hybrid search. |
-| `GET` | `/v1/settings/llm` | Read persisted LLM settings, with env-key fallback. |
-| `PUT` | `/v1/settings/llm` | Update persisted LLM settings. |
+| Method   | Route                                | Purpose                                                                  |
+| -------- | ------------------------------------ | ------------------------------------------------------------------------ |
+| `GET`    | `/v1/collections`                    | List registered collection names.                                        |
+| `GET`    | `/v1/conversations`                  | List saved conversations.                                                |
+| `POST`   | `/v1/conversations`                  | Create a conversation.                                                   |
+| `GET`    | `/v1/conversations/{id}`             | Get one conversation.                                                    |
+| `PUT`    | `/v1/conversations/{id}`             | Replace one conversation.                                                |
+| `DELETE` | `/v1/conversations/{id}`             | Delete one conversation.                                                 |
+| `POST`   | `/v1/documents`                      | Upload and ingest Markdown or PDF documents into an existing collection. |
+| `GET`    | `/v1/collections/{name}/documents`   | List documents in one collection.                                        |
+| `GET`    | `/v1/documents/{collection}/{*path}` | Read one document and its stored metadata.                               |
+| `DELETE` | `/v1/documents/{collection}/{*path}` | Delete one document from disk and from indexed state.                    |
+| `POST`   | `/v1/search`                         | Run semantic or hybrid search.                                           |
+| `GET`    | `/v1/settings/llm`                   | Read persisted LLM settings, with env-key fallback.                      |
+| `PUT`    | `/v1/settings/llm`                   | Update persisted LLM settings.                                           |
 
 ## Unsupported and absent routes
 
@@ -58,10 +58,7 @@ Return the names of collections already registered in `config.db`.
 Response body:
 
 ```json
-[
-  { "name": "docs" },
-  { "name": "notes" }
-]
+[{ "name": "docs" }, { "name": "notes" }]
 ```
 
 Notes:
@@ -276,13 +273,16 @@ Uploads use `POST /v1/documents` with this request shape:
 Important limitations:
 
 - `collection` must already exist in the CLI-managed collection registry.
-- `content_type` must be exactly `text/markdown`.
-- The server writes the file into the collection root on disk before ingesting it.
+- `content_type` must be either `text/markdown` or `application/pdf`.
+- For `text/markdown`, `content` is the raw Markdown text.
+- For `application/pdf`, `content` is a base64-encoded PDF payload.
+- The server writes the uploaded file into the collection root on disk before ingesting it.
+- Uploaded PDFs are stored as `.pdf` files on disk; indexing and preview use extracted Markdown/text.
 - Nested paths are allowed.
 
 ### `POST /v1/documents`
 
-Upload and ingest one or more markdown documents into an existing collection.
+Upload and ingest one or more Markdown or PDF documents into an existing collection.
 
 Response body:
 
@@ -303,6 +303,7 @@ Response body:
 Behavior:
 
 - The returned `title` is derived from document content and path.
+- For PDFs, the title comes from extracted Markdown/text content, while the original PDF remains on disk.
 - `metadata` is optional and is stored as document user metadata.
 - Existing files at the same path are overwritten.
 - Ingest also updates the collection snapshot state.
@@ -310,7 +311,7 @@ Behavior:
 Status codes:
 
 - `200 OK`
-- `400 Bad Request` for unsupported content types or invalid collection/path resolution
+- `400 Bad Request` for unsupported content types, invalid base64/PDF payloads, or invalid collection/path resolution
 - `500 Internal Server Error`
 
 ### `GET /v1/collections/{name}/documents`
@@ -333,17 +334,21 @@ Behavior:
 
 - The route verifies that the collection exists.
 - `title` is recomputed from the document currently on disk, not just from indexed state.
+- For PDFs, the title is derived from extracted Markdown/text preview content.
 - Results are sorted by `path`.
 
 Status codes:
 
 - `200 OK`
 - `404 Not Found` if the collection does not exist
+- `400 Bad Request` if a stored PDF for that collection cannot be parsed
 - `500 Internal Server Error`
 
 ### `GET /v1/documents/{collection}/{*path}`
 
 Read one document and its stored metadata.
+
+For Markdown documents, `content` is the stored source text. For PDFs, `content` is extracted Markdown/text preview content rather than raw PDF bytes.
 
 Response body:
 
@@ -367,7 +372,7 @@ Status codes:
 
 - `200 OK`
 - `404 Not Found` if the document metadata does not exist or the file cannot be read from disk
-- `400 Bad Request` if the collection/path cannot be resolved
+- `400 Bad Request` if the collection/path cannot be resolved or the current PDF content cannot be parsed
 - `500 Internal Server Error`
 
 ### `DELETE /v1/documents/{collection}/{*path}`
@@ -546,7 +551,8 @@ Status codes:
 ## Notes for integrators
 
 - Use the CLI to create collections; do not assume an HTTP collection-create route exists.
-- Uploads are markdown-only today.
+- Uploads support both Markdown and PDF documents.
+- PDF uploads send base64-encoded bytes in the request, but document reads return extracted Markdown/text content.
 - Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"`.
 - Document and search endpoints do not use the same `doc_id` format everywhere:
   - search/list responses use short ids

@@ -28,35 +28,35 @@ All dependency versions live in the crate manifests.
 
 ### Direct dependencies
 
-| Dependency | Version | Role in current code |
-| --- | --- | --- |
-| `docbert-core` | path `../docbert-core` | Shared storage, indexing, search, embedding, and model primitives used by the application crate |
-| `axum` | `0.8` | HTTP routing and handlers for `docbert web` |
-| `clap` | `4.5.57` | CLI parsing and command definitions in `src/cli.rs` |
-| `include_dir` | `0.7` | Embeds built UI assets for the web runtime |
-| `clap_complete` | `4.5` | Generates shell completion scripts |
-| `globset` | `0.4` | Glob filtering for MCP resource handling and some search/file filtering paths |
-| `base64` | `0.22` | PDF upload encoding/decoding in web document routes |
-| `kdam` | `0.6.4` | Progress bars/spinners for indexing and embedding work in CLI flows |
-| `percent-encoding` | `2` | URI/resource encoding helpers in the MCP layer |
-| `rmcp` | `1.2.0` | MCP server implementation over stdio |
-| `schemars` | `1.2.1` | JSON schema generation for MCP tool/input shapes |
-| `serde` | `1` | Serialization/deserialization for web and MCP request/response types |
-| `serde_json` | `1` | JSON values and serialization for web/MCP payloads |
-| `tantivy` | `0.25` | Direct access to Tantivy writer/lock types in runtime resource handling |
-| `tokio` | `1` | Async runtime for web server and MCP runtime |
-| `tracing` | `0.1` | Runtime logging instrumentation |
-| `tracing-subscriber` | `0.3` | Logging initialization and env-filter support |
-| `xdg` | `3.0.0` | Resolves the default data directory for the app |
+| Dependency           | Version                | Role in current code                                                                            |
+| -------------------- | ---------------------- | ----------------------------------------------------------------------------------------------- |
+| `docbert-core`       | path `../docbert-core` | Shared storage, indexing, search, embedding, and model primitives used by the application crate |
+| `axum`               | `0.8`                  | HTTP routing and handlers for `docbert web`                                                     |
+| `clap`               | `4.5.57`               | CLI parsing and command definitions in `src/cli.rs`                                             |
+| `include_dir`        | `0.7`                  | Embeds built UI assets for the web runtime                                                      |
+| `clap_complete`      | `4.5`                  | Generates shell completion scripts                                                              |
+| `globset`            | `0.4`                  | Glob filtering for MCP resource handling and some search/file filtering paths                   |
+| `base64`             | `0.22`                 | PDF upload encoding/decoding in web document routes                                             |
+| `kdam`               | `0.6.4`                | Progress bars/spinners for indexing and embedding work in CLI flows                             |
+| `percent-encoding`   | `2`                    | URI/resource encoding helpers in the MCP layer                                                  |
+| `rmcp`               | `1.2.0`                | MCP server implementation over stdio                                                            |
+| `schemars`           | `1.2.1`                | JSON schema generation for MCP tool/input shapes                                                |
+| `serde`              | `1`                    | Serialization/deserialization for web and MCP request/response types                            |
+| `serde_json`         | `1`                    | JSON values and serialization for web/MCP payloads                                              |
+| `tantivy`            | `0.25`                 | Direct access to Tantivy writer/lock types in runtime resource handling                         |
+| `tokio`              | `1`                    | Async runtime for web server and MCP runtime                                                    |
+| `tracing`            | `0.1`                  | Runtime logging instrumentation                                                                 |
+| `tracing-subscriber` | `0.3`                  | Logging initialization and env-filter support                                                   |
+| `xdg`                | `3.0.0`                | Resolves the default data directory for the app                                                 |
 
 ### Direct dev-dependencies
 
-| Dependency | Version | Role in current tests |
-| --- | --- | --- |
+| Dependency  | Version  | Role in current tests                                    |
+| ----------- | -------- | -------------------------------------------------------- |
 | `pdf_oxide` | `0.3.21` | Test PDF generation/helpers for web document route tests |
-| `rmcp` | `1.2.0` | MCP client-side test support |
-| `tempfile` | `3` | Temporary directories/files in tests |
-| `tower` | `0.5` | Test utilities for Axum services |
+| `rmcp`      | `1.2.0`  | MCP client-side test support                             |
+| `tempfile`  | `3`      | Temporary directories/files in tests                     |
+| `tower`     | `0.5`    | Test utilities for Axum services                         |
 
 ### `docbert` feature relationships
 
@@ -114,28 +114,28 @@ Used for:
 
 ### Direct dependencies
 
-| Dependency | Version | Role in current code |
-| --- | --- | --- |
-| `blake3` | `1.8.2` | Merkle snapshot hashing |
-| `bytemuck` | `1.25.0` | Efficient `f32`/byte conversions in embedding storage |
-| `candle-core` | `0.9.1` | Tensor representation and tensor operations for model/embedding work |
-| `hf-hub` | `0.5.0` | Fetches remote model metadata such as `config_sentence_transformers.json` |
-| `ignore` | `0.4` | Filesystem walking with optional Git-ignore-aware discovery |
-| `pylate-rs` | `1.0.4` from git rev `4a014da31ab13faef5155aefb92851100cca5035` | ColBERT model loading, query/document encoding, and similarity scoring |
-| `rayon` | `1.11.0` | Parallel document loading/preparation work |
-| `redb` | `3.1.0` | `config.db` and `embeddings.db` storage |
-| `rkyv` | `0.8.15` | Binary serialization for typed stored data |
-| `pdf_oxide` | `0.3.21` | PDF-to-markdown/text extraction during preparation |
-| `serde` | `1` | Serialization support for public/config/runtime-facing data types |
-| `serde_json` | `1` | JSON values and parsing for metadata, settings, and conversation payloads |
-| `tantivy` | `0.25` | Lexical indexing and BM25/fuzzy retrieval |
-| `thiserror` | `2` | Error definition for `docbert_core::Error` |
+| Dependency    | Version                                                         | Role in current code                                                      |
+| ------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `blake3`      | `1.8.2`                                                         | Merkle snapshot hashing                                                   |
+| `bytemuck`    | `1.25.0`                                                        | Efficient `f32`/byte conversions in embedding storage                     |
+| `candle-core` | `0.9.1`                                                         | Tensor representation and tensor operations for model/embedding work      |
+| `hf-hub`      | `0.5.0`                                                         | Fetches remote model metadata such as `config_sentence_transformers.json` |
+| `ignore`      | `0.4`                                                           | Filesystem walking with optional Git-ignore-aware discovery               |
+| `pylate-rs`   | `1.0.4` from git rev `4a014da31ab13faef5155aefb92851100cca5035` | ColBERT model loading, query/document encoding, and similarity scoring    |
+| `rayon`       | `1.11.0`                                                        | Parallel document loading/preparation work                                |
+| `redb`        | `3.1.0`                                                         | `config.db` and `embeddings.db` storage                                   |
+| `rkyv`        | `0.8.15`                                                        | Binary serialization for typed stored data                                |
+| `pdf_oxide`   | `0.3.21`                                                        | PDF-to-markdown/text extraction during preparation                        |
+| `serde`       | `1`                                                             | Serialization support for public/config/runtime-facing data types         |
+| `serde_json`  | `1`                                                             | JSON values and parsing for metadata, settings, and conversation payloads |
+| `tantivy`     | `0.25`                                                          | Lexical indexing and BM25/fuzzy retrieval                                 |
+| `thiserror`   | `2`                                                             | Error definition for `docbert_core::Error`                                |
 
 ### Direct dev-dependencies
 
-| Dependency | Version | Role in current tests |
-| --- | --- | --- |
-| `tempfile` | `3` | Temporary directories/files in unit tests |
+| Dependency | Version | Role in current tests                     |
+| ---------- | ------- | ----------------------------------------- |
+| `tempfile` | `3`     | Temporary directories/files in unit tests |
 
 ### `docbert-core` feature relationships
 

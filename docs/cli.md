@@ -12,11 +12,11 @@ docbert [GLOBAL OPTIONS] <COMMAND>
 
 ## Global options
 
-| Option | Description |
-| --- | --- |
-| `--data-dir <path>` | Override the resolved data directory for this invocation. |
-| `--model <id-or-path>` | Override the resolved ColBERT model for this invocation. |
-| `-v`, `-vv`, `-vvv` | Enable logging to stderr. `-v` = info, `-vv` = debug, `-vvv` and above = trace. |
+| Option                 | Description                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| `--data-dir <path>`    | Override the resolved data directory for this invocation.                       |
+| `--model <id-or-path>` | Override the resolved ColBERT model for this invocation.                        |
+| `-v`, `-vv`, `-vvv`    | Enable logging to stderr. `-v` = info, `-vv` = debug, `-vvv` and above = trace. |
 
 ### Data directory resolution
 
@@ -78,8 +78,8 @@ List registered collections.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option   | Description                              |
+| -------- | ---------------------------------------- |
 | `--json` | Emit JSON instead of tab-separated text. |
 
 Behavior notes:
@@ -110,8 +110,8 @@ List stored context strings.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option   | Description                              |
+| -------- | ---------------------------------------- |
 | `--json` | Emit JSON instead of tab-separated text. |
 
 Behavior notes:
@@ -127,16 +127,16 @@ This is the default search command. It uses the hybrid search path unless certai
 
 Options:
 
-| Option | Description |
-| --- | --- |
-| `-n, --count <count>` | Number of results to return. Default: `10`. |
-| `-c, --collection <name>` | Restrict search to one collection. |
-| `--json` | Emit JSON output. |
-| `--all` | Return all results above `--min-score`. |
-| `--files` | Print only matching file paths. |
-| `--min-score <score>` | Minimum score threshold. Default: `0.0`. |
-| `--bm25-only` | Skip ColBERT reranking and return BM25-stage results directly. |
-| `--no-fuzzy` | Disable fuzzy matching in the first stage. |
+| Option                    | Description                                                    |
+| ------------------------- | -------------------------------------------------------------- |
+| `-n, --count <count>`     | Number of results to return. Default: `10`.                    |
+| `-c, --collection <name>` | Restrict search to one collection.                             |
+| `--json`                  | Emit JSON output.                                              |
+| `--all`                   | Return all results above `--min-score`.                        |
+| `--files`                 | Print only matching file paths.                                |
+| `--min-score <score>`     | Minimum score threshold. Default: `0.0`.                       |
+| `--bm25-only`             | Skip ColBERT reranking and return BM25-stage results directly. |
+| `--no-fuzzy`              | Disable fuzzy matching in the first stage.                     |
 
 Behavior notes:
 
@@ -163,13 +163,13 @@ Run semantic-only search.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option                | Description                                 |
+| --------------------- | ------------------------------------------- |
 | `-n, --count <count>` | Number of results to return. Default: `10`. |
-| `--json` | Emit JSON output. |
-| `--all` | Return all results above `--min-score`. |
-| `--files` | Print only matching file paths. |
-| `--min-score <score>` | Minimum score threshold. Default: `0.0`. |
+| `--json`              | Emit JSON output.                           |
+| `--all`               | Return all results above `--min-score`.     |
+| `--files`             | Print only matching file paths.             |
+| `--min-score <score>` | Minimum score threshold. Default: `0.0`.    |
 
 Behavior notes:
 
@@ -195,10 +195,10 @@ Accepted reference forms:
 
 Options:
 
-| Option | Description |
-| --- | --- |
-| `--json` | Emit JSON with metadata and content. |
-| `--meta` | Print only collection/path/file metadata. |
+| Option   | Description                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| `--json` | Emit JSON with metadata and content.                                                                          |
+| `--meta` | Print only collection/path/file metadata.                                                                     |
 | `--full` | Accepted, but currently not required because the default non-JSON, non-meta mode already prints full content. |
 
 Behavior notes:
@@ -221,12 +221,12 @@ Retrieve multiple documents by glob pattern against relative paths.
 
 Options:
 
-| Option | Description |
-| --- | --- |
-| `-c, --collection <name>` | Restrict matches to one collection. |
-| `--json` | Emit a JSON array. |
-| `--files` | Print only full file paths. |
-| `--full` | Print full contents for all matches. |
+| Option                    | Description                          |
+| ------------------------- | ------------------------------------ |
+| `-c, --collection <name>` | Restrict matches to one collection.  |
+| `--json`                  | Emit a JSON array.                   |
+| `--files`                 | Print only full file paths.          |
+| `--full`                  | Print full contents for all matches. |
 
 Behavior notes:
 
@@ -252,8 +252,8 @@ Incrementally sync registered collections with source files.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option                    | Description               |
+| ------------------------- | ------------------------- |
 | `-c, --collection <name>` | Sync only one collection. |
 
 Behavior notes:
@@ -281,11 +281,11 @@ Rebuild indexed state from source files.
 
 Options:
 
-| Option | Description |
-| --- | --- |
-| `-c, --collection <name>` | Rebuild only one collection. |
-| `--embeddings-only` | Recompute embeddings without rebuilding the Tantivy index. |
-| `--index-only` | Rebuild the Tantivy index without recomputing embeddings. |
+| Option                    | Description                                                |
+| ------------------------- | ---------------------------------------------------------- |
+| `-c, --collection <name>` | Rebuild only one collection.                               |
+| `--embeddings-only`       | Recompute embeddings without rebuilding the Tantivy index. |
+| `--index-only`            | Rebuild the Tantivy index without recomputing embeddings.  |
 
 Behavior notes:
 
@@ -312,8 +312,8 @@ Show the resolved runtime model, collection count, and document count.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option   | Description                               |
+| -------- | ----------------------------------------- |
 | `--json` | Emit JSON instead of human-readable text. |
 
 Behavior notes:
@@ -342,8 +342,8 @@ Inspect accelerator/runtime availability without opening the normal data directo
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option   | Description                     |
+| -------- | ------------------------------- |
 | `--json` | Emit the doctor report as JSON. |
 
 Behavior notes:
@@ -369,8 +369,8 @@ Show the resolved model and where it came from.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option   | Description                               |
+| -------- | ----------------------------------------- |
 | `--json` | Emit JSON instead of human-readable text. |
 
 Behavior notes:
@@ -405,14 +405,14 @@ docbert model clear
 
 ### `docbert web`
 
-Start the local web UI server.
+Start the web UI server.
 
 Options:
 
-| Option | Description |
-| --- | --- |
+| Option          | Description                         |
+| --------------- | ----------------------------------- |
 | `--host <addr>` | Bind address. Default: `127.0.0.1`. |
-| `--port <port>` | Bind port. Default: `3030`. |
+| `--port <port>` | Bind port. Default: `3030`.         |
 
 Behavior notes:
 
@@ -470,11 +470,11 @@ The resolved model used by commands is chosen in this priority order:
 
 ## Environment variables
 
-| Variable | Description |
-| --- | --- |
-| `DOCBERT_DATA_DIR` | Override the data directory when `--data-dir` is not provided. |
-| `DOCBERT_MODEL` | Override the resolved model when `--model` is not provided. |
-| `DOCBERT_LOG` | Logging filter used when tracing is initialized. If set, it overrides the `-v` mapping. |
+| Variable           | Description                                                                             |
+| ------------------ | --------------------------------------------------------------------------------------- |
+| `DOCBERT_DATA_DIR` | Override the data directory when `--data-dir` is not provided.                          |
+| `DOCBERT_MODEL`    | Override the resolved model when `--model` is not provided.                             |
+| `DOCBERT_LOG`      | Logging filter used when tracing is initialized. If set, it overrides the `-v` mapping. |
 
 ## Exit behavior
 
