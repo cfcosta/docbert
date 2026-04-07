@@ -23,6 +23,7 @@ function renderSearchRoute(route = "/search") {
       <Routes>
         <Route element={<App />}>
           <Route path="/search" element={<Search />} />
+          <Route path="/documents" element={<div>Documents page</div>} />
           <Route path="/documents/:collection/*" element={<div>Document route</div>} />
         </Route>
       </Routes>
@@ -350,5 +351,42 @@ describe("Search page", () => {
 
     expect(view.getByText("Found 5 results")).toBeTruthy();
     expect(view.queryByText("Found 1 results")).toBeNull();
+  });
+
+  test("preserves search state when navigating away and back", async () => {
+    const user = userEvent.setup();
+    const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
+    api.search = async (params) => {
+      searchCalls.push(params);
+      return searchResponse(2, [result(), result({ rank: 2, doc_id: "#def456", path: "async.md", title: "Async Rust" })]);
+    };
+
+    const view = renderSearchRoute();
+    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+
+    await user.type(view.getByLabelText("Query"), "rust");
+    await waitFor(() => expect(searchCalls).toHaveLength(1));
+
+    await user.selectOptions(view.getByLabelText("Mode"), "semantic");
+    await waitFor(() => expect(searchCalls).toHaveLength(2));
+
+    await user.selectOptions(view.getByLabelText("Collection"), "notes");
+    await waitFor(() => expect(searchCalls).toHaveLength(3));
+    await waitFor(() => expect(view.getByText("Rust Guide")).toBeTruthy());
+
+    await user.click(view.getByRole("link", { name: /^Documents$/i }));
+    expect(view.getByText("Documents page")).toBeTruthy();
+    expect(view.getByTestId("location-path").textContent).toBe("/documents");
+
+    await user.click(view.getByRole("link", { name: /^Search$/i }));
+
+    await waitFor(() => expect(view.getByRole("heading", { name: "Search" })).toBeTruthy());
+    expect(view.getByTestId("location-path").textContent).toBe("/search");
+    expect((view.getByLabelText("Query") as HTMLInputElement).value).toBe("rust");
+    expect((view.getByLabelText("Mode") as HTMLSelectElement).value).toBe("semantic");
+    expect((view.getByLabelText("Collection") as HTMLSelectElement).value).toBe("notes");
+    expect(view.getByText("Found 2 results")).toBeTruthy();
+    expect(view.getByText("Rust Guide")).toBeTruthy();
+    expect(searchCalls).toHaveLength(3);
   });
 });
