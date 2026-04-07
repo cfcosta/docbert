@@ -22,6 +22,16 @@ type ApiTrackers = {
   deleted: Array<{ collection: string; path: string }>;
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function LocationObserver() {
   const location = useLocation();
   return <div data-testid="location-path">{location.pathname}</div>;
@@ -125,12 +135,14 @@ function installDocumentsApiStubs({
   documentBodies,
   onIngest,
   onDelete,
+  getDocument,
 }: {
   collections: Collection[];
   docsByCollection: Record<string, DocumentListItem[]>;
   documentBodies: Record<string, DocumentResponse>;
   onIngest?: (collection: string, response: IngestResponse) => void;
   onDelete?: (collection: string, path: string) => void;
+  getDocument?: (collection: string, path: string) => Promise<DocumentResponse>;
 }): ApiTrackers {
   const trackers: ApiTrackers = {
     listDocumentsCalls: {},
@@ -144,6 +156,10 @@ function installDocumentsApiStubs({
     return docsByCollection[collection] ?? [];
   };
   api.getDocument = async (collection: string, path: string) => {
+    if (getDocument) {
+      return getDocument(collection, path);
+    }
+
     const key = `${collection}:${path}`;
     const document = documentBodies[key];
     if (!document) {
@@ -345,6 +361,92 @@ describe("Documents page", () => {
     await waitForCondition(
       () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md",
       () => `beta route never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+
+    expect(view.container.textContent).not.toContain("Alpha body");
+  });
+
+  test("stale_document_response_does_not_override_latest_selection", async () => {
+    const alphaResponse = deferred<DocumentResponse>();
+    const betaResponse = deferred<DocumentResponse>();
+
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: {
+        notes: [
+          { doc_id: "#aaa111", path: "alpha.md", title: "Alpha note" },
+          { doc_id: "#bbb222", path: "beta.md", title: "Beta note" },
+        ],
+      },
+      documentBodies: {},
+      getDocument: async (_collection, path) => {
+        if (path === "alpha.md") {
+          return alphaResponse.promise;
+        }
+        if (path === "beta.md") {
+          return betaResponse.promise;
+        }
+        throw new Error(`unexpected document path ${path}`);
+      },
+    });
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(collectionToggle(view.container, "notes"));
+    await waitForCondition(
+      () => view.container.textContent?.includes("alpha.md") ?? false,
+      () => `alpha document never rendered in tree: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("beta.md") ?? false,
+      () => `beta document never rendered in tree: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(treeFileButton(view.container, "alpha.md"));
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/alpha.md",
+      () => `alpha route never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+
+    await user.click(treeFileButton(view.container, "beta.md"));
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md",
+      () => `beta route never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+
+    betaResponse.resolve({
+      doc_id: "#bbb222",
+      collection: "notes",
+      path: "beta.md",
+      title: "Beta note",
+      content: "# Beta note\n\nBeta body",
+    });
+    await waitForCondition(
+      () => view.container.textContent?.includes("Beta body") ?? false,
+      () => `beta preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    alphaResponse.resolve({
+      doc_id: "#aaa111",
+      collection: "notes",
+      path: "alpha.md",
+      title: "Alpha note",
+      content: "# Alpha note\n\nAlpha body",
+    });
+
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md",
+      () => `route regressed after stale alpha response: ${view.getByTestId("location-path").textContent}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("Beta body") ?? false,
+      () => `beta preview body disappeared after stale alpha response: ${JSON.stringify(view.container.textContent)}`,
     );
 
     expect(view.container.textContent).not.toContain("Alpha body");

@@ -46,6 +46,7 @@ export default function Documents() {
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const selectedDocRef = useRef<SelectedDocumentSummary | null>(null);
+  const documentRequestSeqRef = useRef(0);
 
   const loadCollections = useCallback(async () => {
     try {
@@ -120,6 +121,9 @@ export default function Documents() {
       path: string,
       fallback?: Pick<DocumentListItem, "title" | "doc_id">,
     ) => {
+      const requestId = documentRequestSeqRef.current + 1;
+      documentRequestSeqRef.current = requestId;
+
       setSelectedDoc({
         collection,
         path,
@@ -132,6 +136,10 @@ export default function Documents() {
 
       try {
         const full = await api.getDocument(collection, path);
+        if (documentRequestSeqRef.current !== requestId) {
+          return;
+        }
+
         setSelectedDoc({
           collection: full.collection,
           path: full.path,
@@ -140,6 +148,10 @@ export default function Documents() {
         });
         setPreview(full.content || "_No content stored._");
       } catch (error) {
+        if (documentRequestSeqRef.current !== requestId) {
+          return;
+        }
+
         setPreview(
           error instanceof Error
             ? `_Failed to load document: ${error.message}_`
