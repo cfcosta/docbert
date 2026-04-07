@@ -3,6 +3,8 @@ use std::{
     time::SystemTime,
 };
 
+use ignore::WalkBuilder;
+
 use crate::error::Result;
 
 /// Document file found on disk.
@@ -27,6 +29,9 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
 /// Hidden files and directories are skipped. Only supported extensions (`.md`
 /// and `.txt`) are returned. Results come back sorted by relative path.
 ///
+/// If the collection root is a Git repository, Git ignore rules are respected
+/// as well, including nested `.gitignore` files and `.git/info/exclude`.
+///
 /// # Examples
 ///
 /// ```
@@ -41,54 +46,66 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["md", "txt"];
 /// ```
 pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
     let canonical_root = root.canonicalize()?;
+    let is_git_repo = canonical_root.join(".git").exists();
     let mut results = Vec::new();
-    walk_dir(&canonical_root, &canonical_root, &mut results)?;
-    results.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(results)
-}
 
-fn walk_dir(
-    root: &Path,
-    current: &Path,
-    results: &mut Vec<DiscoveredFile>,
-) -> Result<()> {
-    let entries = std::fs::read_dir(current)?;
+    let mut builder = WalkBuilder::new(&canonical_root);
+    builder
+        .standard_filters(false)
+        .hidden(true)
+        .ignore(false)
+        .parents(false)
+        .git_ignore(is_git_repo)
+        .git_global(is_git_repo)
+        .git_exclude(is_git_repo)
+        .follow_links(false);
 
-    for entry in entries {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
+    for entry in builder.build() {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let path = entry.path();
 
-        // Skip hidden files and directories.
-        if name.starts_with('.') {
+        if path == canonical_root {
             continue;
         }
 
-        let file_type = entry.file_type()?;
+        let file_type = match entry.file_type() {
+            Some(file_type) => file_type,
+            None => std::fs::symlink_metadata(path)?.file_type(),
+        };
 
         if file_type.is_dir() {
-            walk_dir(root, &entry.path(), results)?;
-        } else if file_type.is_symlink() {
+            continue;
+        }
+
+        if file_type.is_symlink() {
             // Resolve symlink and check for cycles.
-            let resolved = match entry.path().canonicalize() {
+            let resolved = match path.canonicalize() {
                 Ok(p) => p,
                 Err(_) => continue, // Skip broken symlinks
             };
             // Skip if the symlink points back into or above the root
             // (cycle prevention).
-            if resolved.starts_with(root) && resolved.is_dir() {
+            if resolved.starts_with(&canonical_root) && resolved.is_dir() {
                 continue;
             }
             if resolved.is_file() && is_supported(&resolved) {
-                results.push(make_discovered(root, &entry.path(), &resolved)?);
+                results.push(make_discovered(
+                    &canonical_root,
+                    path,
+                    &resolved,
+                )?);
             }
-        } else if file_type.is_file() && is_supported(&entry.path()) {
-            let abs = entry.path().canonicalize()?;
-            results.push(make_discovered(root, &entry.path(), &abs)?);
+            continue;
+        }
+
+        if file_type.is_file() && is_supported(path) {
+            let abs = path.canonicalize()?;
+            results.push(make_discovered(&canonical_root, path, &abs)?);
         }
     }
 
-    Ok(())
+    results.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(results)
 }
 
 fn is_supported(path: &Path) -> bool {
@@ -184,6 +201,44 @@ mod tests {
             .collect();
         assert!(paths.contains(&"top.md".to_string()));
         assert!(paths.contains(&"subdir/deep.md".to_string()));
+    }
+
+    #[test]
+    fn respects_gitignore_when_collection_root_is_a_git_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "ignored.md\nsubdir/\n")
+            .unwrap();
+        std::fs::write(tmp.path().join("ignored.md"), "ignore me").unwrap();
+        std::fs::write(tmp.path().join("visible.md"), "keep me").unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("subdir/nested.md"), "ignore me too")
+            .unwrap();
+
+        let files = discover_files(tmp.path()).unwrap();
+        let paths: Vec<_> = files
+            .iter()
+            .map(|f| f.relative_path.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(paths, vec!["visible.md"]);
+    }
+
+    #[test]
+    fn ignores_gitignore_rules_when_root_is_not_a_git_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "ignored.md\n").unwrap();
+        std::fs::write(tmp.path().join("ignored.md"), "should still index")
+            .unwrap();
+        std::fs::write(tmp.path().join("visible.md"), "keep me").unwrap();
+
+        let files = discover_files(tmp.path()).unwrap();
+        let paths: Vec<_> = files
+            .iter()
+            .map(|f| f.relative_path.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(paths, vec!["ignored.md", "visible.md"]);
     }
 
     #[test]
