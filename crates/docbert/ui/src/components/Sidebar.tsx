@@ -3,8 +3,8 @@ import "./Sidebar.css";
 
 const NAV_ITEMS = [
   { to: "/documents", label: "Documents", icon: DocIcon },
-  { to: "/chat", label: "Chat", icon: ChatIcon },
   { to: "/search", label: "Search", icon: SearchIcon },
+  { to: "/chat", label: "Chat", icon: ChatIcon },
 ] as const;
 
 export default function Sidebar() {
