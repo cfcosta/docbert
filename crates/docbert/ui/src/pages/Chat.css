@@ -599,9 +599,9 @@
   width: 100%;
   padding: 4px 8px;
   min-height: 32px;
-  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 10%, var(--accent) 12%, var(--border));
   border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-floating) 84%, var(--bg));
+  background: color-mix(in srgb, var(--surface-floating) 78%, var(--bg));
   color: var(--text-muted);
   font-size: 0.75rem;
   text-align: left;
@@ -614,19 +614,19 @@
 }
 
 .chat-tool-call-header:hover {
-  background: color-mix(in srgb, var(--accent-bg) 62%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 52%, var(--surface-selection));
+  border-color: color-mix(in srgb, var(--accent-cyan) 22%, var(--accent) 16%, var(--border));
   box-shadow: var(--shadow);
 }
 
 .chat-tool-call-subagent .chat-tool-call-header {
-  background: color-mix(in srgb, var(--accent-bg) 44%, var(--surface-floating));
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 36%, var(--surface-current-line));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--accent-cyan) 10%, var(--border));
 }
 
 .chat-tool-call-subagent .chat-tool-call-header:hover {
-  background: color-mix(in srgb, var(--accent-bg) 64%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 52%, var(--surface-selection));
+  border-color: color-mix(in srgb, var(--accent-cyan) 24%, var(--accent) 20%, var(--border));
 }
 
 .chat-tool-call-icon {
@@ -673,8 +673,8 @@
   font-variant-numeric: slashed-zero;
   line-height: 1.5;
   color: var(--text);
-  background: color-mix(in srgb, var(--surface-floating) 80%, var(--bg));
-  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-floating) 74%, var(--bg));
+  border-top: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
   white-space: pre-wrap;
   word-wrap: break-word;
   max-height: 200px;
@@ -682,7 +682,7 @@
 }
 
 .chat-tool-call-subagent .chat-tool-call-result {
-  background: color-mix(in srgb, var(--accent-bg) 30%, var(--surface-floating));
+  background: color-mix(in srgb, var(--accent-bg) 26%, var(--surface-current-line));
 }
 
 .chat-tool-search-preview-layout {
@@ -692,11 +692,11 @@
 
 .chat-tool-search-preview-shell {
   margin-top: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 12%, var(--accent) 12%, var(--border));
   border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in srgb, var(--surface-floating) 78%, var(--bg));
+  box-shadow: var(--shadow);
   min-height: 260px;
   max-height: 480px;
   display: flex;
@@ -704,7 +704,7 @@
 }
 
 .chat-tool-call-subagent .chat-tool-search-preview-shell {
-  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--accent-cyan) 10%, var(--border));
 }
 
 .chat-sources {
@@ -837,30 +837,30 @@
 }
 
 .chat-tool-search-preview-layout .chat-tool-search-result-node {
-  border-color: color-mix(in srgb, var(--accent) 16%, var(--border));
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent-cyan) 14%, var(--accent) 10%, var(--border));
+  background: color-mix(in srgb, var(--surface-floating) 76%, var(--bg));
   box-shadow: var(--shadow-sm);
 }
 
 .chat-tool-search-preview-layout .chat-tool-call-subagent .chat-tool-search-result-node,
 .chat-tool-call-subagent .chat-tool-search-preview-layout .chat-tool-search-result-node {
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: color-mix(in srgb, var(--accent-bg) 28%, var(--surface-floating));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--accent-cyan) 10%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 24%, var(--surface-current-line));
 }
 
 .chat-tool-search-preview-layout .chat-tool-search-excerpt {
-  border-color: color-mix(in srgb, var(--accent) 14%, var(--border));
-  background: color-mix(in srgb, var(--surface-floating) 88%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent-pink) 10%, var(--accent) 10%, var(--border));
+  background: color-mix(in srgb, var(--surface-floating) 84%, var(--bg));
   box-shadow: var(--shadow-sm);
 }
 
 .chat-tool-search-preview-layout .chat-tool-search-excerpt.active {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
-  background: color-mix(in srgb, var(--accent-bg) 24%, var(--surface-floating));
+  border-color: color-mix(in srgb, var(--accent-yellow) 24%, var(--accent) 20%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 20%, var(--surface-current-line));
 }
 
 .chat-tool-search-preview-layout .chat-tool-call-subagent .chat-tool-search-excerpt,
 .chat-tool-call-subagent .chat-tool-search-preview-layout .chat-tool-search-excerpt {
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: color-mix(in srgb, var(--accent-bg) 22%, var(--surface-floating));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--accent-pink) 10%, var(--border));
+  background: color-mix(in srgb, var(--accent-bg) 18%, var(--surface-current-line));
 }
