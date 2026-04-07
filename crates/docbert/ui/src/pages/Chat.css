@@ -548,13 +548,13 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 8px 10px;
-  min-height: 40px;
+  padding: 4px 8px;
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-secondary);
   color: var(--text-muted);
-  font-size: 0.95rem;
+  font-size: 0.75rem;
   line-height: 1.625;
   text-align: left;
   cursor: pointer;
@@ -592,7 +592,6 @@
 }
 
 .chat-tool-call-name {
-  font-family: var(--mono);
   font-weight: 600;
   color: var(--text-h);
   flex-shrink: 0;
@@ -603,7 +602,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  font-family: var(--mono);
 }
 
 .chat-tool-call-chevron {
