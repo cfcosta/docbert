@@ -45,6 +45,7 @@ export default function Documents() {
   const [uploadCollection, setUploadCollection] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const selectedDocRef = useRef<SelectedDocumentSummary | null>(null);
 
   const loadCollections = useCallback(async () => {
     try {
@@ -70,6 +71,10 @@ export default function Documents() {
     const timeoutId = window.setTimeout(() => setStatus(null), 4000);
     return () => window.clearTimeout(timeoutId);
   }, [status]);
+
+  useEffect(() => {
+    selectedDocRef.current = selectedDoc;
+  }, [selectedDoc]);
 
   const loadDocs = useCallback(async (collection: string) => {
     setLoadingCollections((previous) => new Set(previous).add(collection));
@@ -152,32 +157,33 @@ export default function Documents() {
     [openDocument],
   );
 
+  const routeCollection = params.collection?.trim();
+  const routePath = params["*"]?.trim();
+
   useEffect(() => {
-    const collection = params.collection?.trim();
-    const path = params["*"]?.trim();
-
-    if (!collection || !path) {
+    if (!routeCollection || !routePath) {
       return;
     }
 
-    setExpanded((previous) => new Set(previous).add(collection));
-    if (!docs[collection]) {
-      void loadDocs(collection);
+    setExpanded((previous) => new Set(previous).add(routeCollection));
+    if (!docs[routeCollection]) {
+      void loadDocs(routeCollection);
     }
 
-    if (selectedDoc?.collection === collection && selectedDoc.path === path) {
+    const currentSelection = selectedDocRef.current;
+    if (currentSelection?.collection === routeCollection && currentSelection.path === routePath) {
       return;
     }
 
-    const listedDoc = docs[collection]?.find((doc) => doc.path === path);
-    if (collection in docs && !listedDoc) {
+    const listedDoc = docs[routeCollection]?.find((doc) => doc.path === routePath);
+    if (routeCollection in docs && !listedDoc) {
       setSelectedDoc(null);
       setPreview(null);
       return;
     }
 
-    void openDocument(collection, path, listedDoc);
-  }, [docs, loadDocs, openDocument, params, selectedDoc]);
+    void openDocument(routeCollection, routePath, listedDoc);
+  }, [docs, loadDocs, openDocument, routeCollection, routePath]);
 
   const ingestFiles = useCallback(
     async (collection: string, files: File[]) => {

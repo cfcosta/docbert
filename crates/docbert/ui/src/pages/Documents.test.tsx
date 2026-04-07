@@ -3,7 +3,7 @@ import "../test/setup";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
 import {
   api,
@@ -22,9 +22,15 @@ type ApiTrackers = {
   deleted: Array<{ collection: string; path: string }>;
 };
 
+function LocationObserver() {
+  const location = useLocation();
+  return <div data-testid="location-path">{location.pathname}</div>;
+}
+
 function renderDocuments(route: string) {
   return render(
     <MemoryRouter initialEntries={[route]}>
+      <LocationObserver />
       <Routes>
         <Route path="/documents" element={<Documents />} />
         <Route path="/documents/:collection/*" element={<Documents />} />
@@ -98,6 +104,17 @@ function treeConfirmDeleteButton(container: HTMLElement): HTMLButtonElement {
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error("tree confirm delete button not found");
+  }
+  return button;
+}
+
+function treeFileButton(container: HTMLElement, fileName: string): HTMLButtonElement {
+  const buttons = Array.from(container.getElementsByTagName("button"));
+  const button = buttons.find(
+    (candidate) => candidate.className.includes("tree-file") && candidate.textContent?.includes(fileName),
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`document tree button not found for ${fileName}`);
   }
   return button;
 }
@@ -259,6 +276,78 @@ describe("Documents page", () => {
       () => view.container.textContent?.includes("uploaded.md") ?? false,
       () => `uploaded file never appeared in tree: ${JSON.stringify(view.container.textContent)}`,
     );
+  });
+
+  test("switching_from_one_selected_document_to_another_updates_preview_and_route", async () => {
+    installDocumentsApiStubs({
+      collections: [{ name: "notes" }],
+      docsByCollection: {
+        notes: [
+          { doc_id: "#aaa111", path: "alpha.md", title: "Alpha note" },
+          { doc_id: "#bbb222", path: "beta.md", title: "Beta note" },
+        ],
+      },
+      documentBodies: {
+        "notes:alpha.md": {
+          doc_id: "#aaa111",
+          collection: "notes",
+          path: "alpha.md",
+          title: "Alpha note",
+          content: "# Alpha note\n\nAlpha body",
+        },
+        "notes:beta.md": {
+          doc_id: "#bbb222",
+          collection: "notes",
+          path: "beta.md",
+          title: "Beta note",
+          content: "# Beta note\n\nBeta body",
+        },
+      },
+    });
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderDocuments("/documents");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("notes") ?? false,
+      () => `collection never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(collectionToggle(view.container, "notes"));
+    await waitForCondition(
+      () => view.container.textContent?.includes("alpha.md") ?? false,
+      () => `alpha document never rendered in tree: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("beta.md") ?? false,
+      () => `beta document never rendered in tree: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.click(treeFileButton(view.container, "alpha.md"));
+    await waitForCondition(
+      () => view.container.textContent?.includes("Alpha body") ?? false,
+      () => `alpha preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/alpha.md",
+      () => `alpha route never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+
+    await user.click(treeFileButton(view.container, "beta.md"));
+    await waitForCondition(
+      () => view.container.textContent?.includes("Beta note") ?? false,
+      () => `beta preview title never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("Beta body") ?? false,
+      () => `beta preview body never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md",
+      () => `beta route never updated: ${view.getByTestId("location-path").textContent}`,
+    );
+
+    expect(view.container.textContent).not.toContain("Alpha body");
   });
 
   test("deleting_selected_document_clears_preview_and_selection", async () => {
