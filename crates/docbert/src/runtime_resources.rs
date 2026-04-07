@@ -91,8 +91,8 @@ mod tests {
     fn runtime_resources_retries_tantivy_lock_classification() {
         let tmp = tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
-        let search_index = SearchIndex::open(&data_dir.tantivy_dir().unwrap())
-            .unwrap();
+        let search_index =
+            SearchIndex::open(&data_dir.tantivy_dir().unwrap()).unwrap();
         let _first = search_index.writer(15_000_000).unwrap();
 
         let err = match search_index.writer(15_000_000) {

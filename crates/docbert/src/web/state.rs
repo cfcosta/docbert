@@ -1,6 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex, error};
+use docbert_core::{
+    ConfigDb,
+    DataDir,
+    EmbeddingDb,
+    ModelManager,
+    SearchIndex,
+    error,
+};
 use tantivy::IndexWriter;
 
 use crate::runtime_resources;
@@ -37,7 +44,10 @@ impl Inner {
         &self,
         memory_budget: usize,
     ) -> error::Result<IndexWriter> {
-        runtime_resources::open_index_writer_blocking(&self.search_index, memory_budget)
+        runtime_resources::open_index_writer_blocking(
+            &self.search_index,
+            memory_budget,
+        )
     }
 }
 

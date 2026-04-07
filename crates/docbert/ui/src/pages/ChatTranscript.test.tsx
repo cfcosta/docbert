@@ -193,7 +193,9 @@ describe("ChatTranscript", () => {
     const view = renderTranscript(displayGroups(messageWithToolResult(results)));
 
     await user.click(view.getByRole("button", { name: /search_hybrid/i }));
-    await user.click(view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }));
+    await user.click(
+      view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }),
+    );
 
     await waitFor(() => {
       expect(view.getByRole("link", { name: "Permalink" })).toBeTruthy();

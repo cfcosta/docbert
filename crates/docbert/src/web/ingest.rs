@@ -195,11 +195,11 @@ fn collection_root(
     collection: &str,
 ) -> error::Result<std::path::PathBuf> {
     let root = config_db.get_collection(collection)?.ok_or_else(|| {
-            error::Error::NotFound {
-                kind: "collection",
-                name: collection.to_string(),
-            }
-        })?;
+        error::Error::NotFound {
+            kind: "collection",
+            name: collection.to_string(),
+        }
+    })?;
     Ok(std::path::PathBuf::from(root))
 }
 
@@ -257,9 +257,9 @@ fn restore_previous_collection_snapshot(
     previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
 ) -> error::Result<()> {
     match previous_snapshot {
-        Some(snapshot) => {
-            collection_snapshots::replace_collection_snapshot(config_db, snapshot)
-        }
+        Some(snapshot) => collection_snapshots::replace_collection_snapshot(
+            config_db, snapshot,
+        ),
         None => {
             config_db.remove_collection_merkle_snapshot(collection)?;
             Ok(())
@@ -324,7 +324,9 @@ fn restore_previous_metadata(
     previous_user_metadata: Option<&serde_json::Value>,
 ) -> error::Result<()> {
     match previous_metadata {
-        Some(metadata) => config_db.set_document_metadata_typed(doc_id, metadata)?,
+        Some(metadata) => {
+            config_db.set_document_metadata_typed(doc_id, metadata)?
+        }
         None => {
             config_db.remove_document_metadata(doc_id)?;
         }
@@ -390,7 +392,8 @@ mod tests {
     }
 
     fn test_embedding_db(state: &AppState) -> docbert_core::EmbeddingDb {
-        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db()).unwrap()
+        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db())
+            .unwrap()
     }
 
     fn seed_collection_root(

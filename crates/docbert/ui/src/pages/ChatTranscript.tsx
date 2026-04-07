@@ -201,7 +201,9 @@ function ToolCallInline({
         <span className="chat-tool-call-args">{argsStr}</span>
         <span className={`chat-tool-call-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
       </button>
-      {expanded && call.result && searchResults && <SearchToolResultsInline results={searchResults} />}
+      {expanded && call.result && searchResults && (
+        <SearchToolResultsInline results={searchResults} />
+      )}
       {expanded && call.result && !searchResults && (
         <pre className="chat-tool-call-result">{call.result}</pre>
       )}

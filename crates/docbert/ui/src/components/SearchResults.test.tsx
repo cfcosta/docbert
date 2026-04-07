@@ -80,7 +80,9 @@ describe("SearchResults", () => {
       },
     ]);
 
-    const excerptLink = view.getByRole("link", { name: /10\s*Rust ownership keeps memory safe\./i });
+    const excerptLink = view.getByRole("link", {
+      name: /10\s*Rust ownership keeps memory safe\./i,
+    });
     expect(excerptLink.getAttribute("href")).toBe("/documents/notes/nested/rust.md");
   });
 
@@ -114,7 +116,9 @@ describe("SearchResults", () => {
     expect(view.queryByRole("link", { name: "Rust Guide" })).toBeNull();
 
     await user.click(view.getByRole("button", { name: "Rust Guide" }));
-    await user.click(view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }));
+    await user.click(
+      view.getByRole("button", { name: /10\s*Rust ownership keeps memory safe\./i }),
+    );
 
     expect(onOpenDocument).toHaveBeenCalledTimes(2);
     expect(onOpenDocument).toHaveBeenNthCalledWith(1, results[0]);

@@ -82,9 +82,9 @@ describe("Settings page", () => {
 
     await waitForCondition(
       () =>
-        within(view.container).queryByRole("button", { name: /^save$/i })?.hasAttribute(
-          "disabled",
-        ) === false,
+        within(view.container)
+          .queryByRole("button", { name: /^save$/i })
+          ?.hasAttribute("disabled") === false,
       () => `save button never enabled: ${JSON.stringify(view.container.textContent)}`,
     );
 
@@ -106,9 +106,9 @@ describe("Settings page", () => {
 
     await waitForCondition(
       () =>
-        within(view.container).queryByRole("button", { name: /^save$/i })?.hasAttribute(
-          "disabled",
-        ) === false,
+        within(view.container)
+          .queryByRole("button", { name: /^save$/i })
+          ?.hasAttribute("disabled") === false,
       () => `save button never enabled: ${JSON.stringify(view.container.textContent)}`,
     );
 

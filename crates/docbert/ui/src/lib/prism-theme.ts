@@ -78,7 +78,7 @@ export const lightPrismTheme: Record<string, CSSProperties> = {
   selector: {
     color: "#14710a",
   },
-  'attr-name': {
+  "attr-name": {
     color: "#036a96",
   },
   string: {
@@ -109,13 +109,13 @@ export const lightPrismTheme: Record<string, CSSProperties> = {
   atrule: {
     color: "#a3144d",
   },
-  'attr-value': {
+  "attr-value": {
     color: "#846e15",
   },
   function: {
     color: "#14710a",
   },
-  'class-name': {
+  "class-name": {
     color: "#036a96",
   },
   keyword: {

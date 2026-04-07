@@ -93,7 +93,9 @@ pub(crate) async fn search(
 
     let items: Vec<SearchResultItem> = results
         .into_iter()
-        .map(|result| build_search_result_item(&state, &config_db, result, &body.query))
+        .map(|result| {
+            build_search_result_item(&state, &config_db, result, &body.query)
+        })
         .collect();
 
     Ok(Json(SearchResponse {
@@ -165,7 +167,10 @@ fn load_user_metadata(
     config_db: &docbert_core::ConfigDb,
     doc_numeric_id: u64,
 ) -> Option<serde_json::Value> {
-    config_db.get_document_user_metadata(doc_numeric_id).ok().flatten()
+    config_db
+        .get_document_user_metadata(doc_numeric_id)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

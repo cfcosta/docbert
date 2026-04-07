@@ -121,7 +121,8 @@ function treeConfirmDeleteButton(container: HTMLElement): HTMLButtonElement {
 function treeFileButton(container: HTMLElement, fileName: string): HTMLButtonElement {
   const buttons = Array.from(container.getElementsByTagName("button"));
   const button = buttons.find(
-    (candidate) => candidate.className.includes("tree-file") && candidate.textContent?.includes(fileName),
+    (candidate) =>
+      candidate.className.includes("tree-file") && candidate.textContent?.includes(fileName),
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error(`document tree button not found for ${fileName}`);
@@ -442,11 +443,13 @@ describe("Documents page", () => {
 
     await waitForCondition(
       () => view.getByTestId("location-path").textContent === "/documents/notes/beta.md",
-      () => `route regressed after stale alpha response: ${view.getByTestId("location-path").textContent}`,
+      () =>
+        `route regressed after stale alpha response: ${view.getByTestId("location-path").textContent}`,
     );
     await waitForCondition(
       () => view.container.textContent?.includes("Beta body") ?? false,
-      () => `beta preview body disappeared after stale alpha response: ${JSON.stringify(view.container.textContent)}`,
+      () =>
+        `beta preview body disappeared after stale alpha response: ${JSON.stringify(view.container.textContent)}`,
     );
 
     expect(view.container.textContent).not.toContain("Alpha body");

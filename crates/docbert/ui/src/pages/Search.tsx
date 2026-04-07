@@ -52,8 +52,7 @@ export default function Search() {
         }
         setSearchSession((previous) => ({
           ...previous,
-          collectionsError:
-            error instanceof Error ? error.message : "Could not load collections.",
+          collectionsError: error instanceof Error ? error.message : "Could not load collections.",
         }));
       })
       .finally(() => {
@@ -272,7 +271,9 @@ export default function Search() {
         {loadingCollections ? (
           <div className="search-state-card">
             <p className="search-state-title">Loading collections…</p>
-            <p className="search-state-text">Fetching available collections before search is enabled.</p>
+            <p className="search-state-text">
+              Fetching available collections before search is enabled.
+            </p>
           </div>
         ) : collectionsError ? (
           <div className="search-state-card search-state-card-error" role="alert">

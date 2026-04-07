@@ -69,7 +69,8 @@ mod tests {
         std::fs::create_dir_all(&notes).unwrap();
         std::fs::create_dir_all(&docs).unwrap();
         {
-            let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+            let config_db =
+                ConfigDb::open(&tmp.path().join("config.db")).unwrap();
             config_db
                 .set_collection("notes", notes.to_str().unwrap())
                 .unwrap();

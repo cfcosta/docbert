@@ -238,12 +238,7 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        build_search_tool_result(
-            &config_db,
-            results,
-            query,
-            include_snippet,
-        )
+        build_search_tool_result(&config_db, results, query, include_snippet)
     }
 
     /// Semantic-only search across all indexed documents.
@@ -287,12 +282,7 @@ impl DocbertMcpServer {
         .map_err(|e| mcp_error("semantic search failed", e))?;
 
         let include_snippet = params.include_snippet.unwrap_or(true);
-        build_search_tool_result(
-            &config_db,
-            results,
-            query,
-            include_snippet,
-        )
+        build_search_tool_result(&config_db, results, query, include_snippet)
     }
 
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
@@ -324,14 +314,13 @@ impl DocbertMcpServer {
             .map_err(|e| mcp_error("failed to open config db", e))?;
         let (collection, path) = resolve_reference(&config_db, &reference)?;
 
-        let full_path =
-            resolve_full_path(&config_db, &collection, &path)
-                .ok_or_else(|| {
-                    rmcp::ErrorData::resource_not_found(
-                        format!("collection not found: {collection}"),
-                        None,
-                    )
-                })?;
+        let full_path = resolve_full_path(&config_db, &collection, &path)
+            .ok_or_else(|| {
+                rmcp::ErrorData::resource_not_found(
+                    format!("collection not found: {collection}"),
+                    None,
+                )
+            })?;
 
         if let Some(max_bytes) = params.max_bytes {
             let size = std::fs::metadata(&full_path)
@@ -363,8 +352,7 @@ impl DocbertMcpServer {
             body = text_util::add_line_numbers(&body, start_line);
         }
 
-        if let Some(context) = context_for_doc(&config_db, &collection, &path)
-        {
+        if let Some(context) = context_for_doc(&config_db, &collection, &path) {
             body = format!("<!-- Context: {context} -->\n\n{body}");
         }
 
@@ -462,7 +450,8 @@ impl DocbertMcpServer {
                 body = text_util::add_line_numbers(&body, 1);
             }
 
-            if let Some(context) = context_for_doc(&config_db, &collection, &path)
+            if let Some(context) =
+                context_for_doc(&config_db, &collection, &path)
             {
                 body = format!("<!-- Context: {context} -->\n\n{body}");
             }
@@ -1284,8 +1273,11 @@ mod tests {
         let (server, _tmp, _doc_ids) =
             build_server(&[("space name.md", "Hello world\n")]);
         let uri = "bert://notes/space%20name.md";
-        let contents =
-            read_resource_contents(&server.state.open_config_db().unwrap(), uri).unwrap();
+        let contents = read_resource_contents(
+            &server.state.open_config_db().unwrap(),
+            uri,
+        )
+        .unwrap();
         match contents {
             ResourceContents::TextResourceContents { text, .. } => {
                 assert!(text.contains("1: Hello world"));

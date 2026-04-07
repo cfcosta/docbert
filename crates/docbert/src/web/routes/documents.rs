@@ -141,7 +141,8 @@ pub(crate) async fn ingest(
         }
 
         let full_path = {
-            let config_db = state.open_config_db_blocking().map_err(map_error)?;
+            let config_db =
+                state.open_config_db_blocking().map_err(map_error)?;
             paths::resolve_document_path(
                 &config_db,
                 &body.collection,
@@ -193,7 +194,8 @@ pub(crate) async fn list_by_collection(
     AxumPath(collection): AxumPath<String>,
 ) -> Result<Json<Vec<DocumentListItem>>, StatusCode> {
     let config_db = state.open_config_db().map_err(map_error)?;
-    paths::resolve_collection_root(&config_db, &collection).map_err(map_error)?;
+    paths::resolve_collection_root(&config_db, &collection)
+        .map_err(map_error)?;
 
     let all_meta = config_db
         .list_all_document_metadata_typed()
@@ -305,7 +307,8 @@ mod tests {
     }
 
     fn test_embedding_db(state: &AppState) -> docbert_core::EmbeddingDb {
-        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db()).unwrap()
+        docbert_core::EmbeddingDb::open(&state.data_dir.embeddings_db())
+            .unwrap()
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -612,7 +615,12 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(test_embedding_db(&state).load(did.numeric).unwrap().is_none());
+        assert!(
+            test_embedding_db(&state)
+                .load(did.numeric)
+                .unwrap()
+                .is_none()
+        );
         let updated_snapshot = test_config_db(&state)
             .get_collection_merkle_snapshot("notes")
             .unwrap()

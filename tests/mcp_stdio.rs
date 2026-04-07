@@ -112,7 +112,10 @@ async fn mcp_server_allows_sync_while_running()
         String::from_utf8_lossy(&sync.stdout),
         String::from_utf8_lossy(&sync.stderr)
     );
-    assert!(String::from_utf8_lossy(&sync.stderr).contains("No collections to sync."));
+    assert!(
+        String::from_utf8_lossy(&sync.stderr)
+            .contains("No collections to sync.")
+    );
 
     let tools_after = client.peer().list_all_tools().await?;
     assert_eq!(tools_after.len(), tools.len());
