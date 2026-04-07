@@ -173,13 +173,15 @@ mod tests {
     #[tokio::test]
     async fn web_conversations_list_sorts_by_updated_at_desc() {
         let (_tmp, state) = test_state();
-        let config_db = ConfigDb::open(&state.data_dir.config_db()).unwrap();
-        config_db
-            .set_conversation_typed(&conversation("older", 10))
-            .unwrap();
-        config_db
-            .set_conversation_typed(&conversation("newer", 20))
-            .unwrap();
+        {
+            let config_db = ConfigDb::open(&state.data_dir.config_db()).unwrap();
+            config_db
+                .set_conversation_typed(&conversation("older", 10))
+                .unwrap();
+            config_db
+                .set_conversation_typed(&conversation("newer", 20))
+                .unwrap();
+        }
 
         let response = list(State(state)).await.unwrap().0;
 
