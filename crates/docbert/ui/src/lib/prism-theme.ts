@@ -1,12 +1,31 @@
 import type { CSSProperties } from "react";
-import { dracula } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-export const darkPrismTheme = dracula;
-
-export const lightPrismTheme: Record<string, CSSProperties> = {
+const createPrismTheme = ({
+  foreground,
+  background,
+  comment,
+  red,
+  orange,
+  yellow,
+  green,
+  cyan,
+  purple,
+  pink,
+}: {
+  foreground: string;
+  background: string;
+  comment: string;
+  red: string;
+  orange: string;
+  yellow: string;
+  green: string;
+  cyan: string;
+  purple: string;
+  pink: string;
+}): Record<string, CSSProperties> => ({
   'code[class*="language-"]': {
-    color: "#1f1f1f",
-    background: "#efeddc",
+    color: foreground,
+    background,
     fontFamily: "var(--mono)",
     fontSize: "0.85em",
     textAlign: "left",
@@ -19,8 +38,8 @@ export const lightPrismTheme: Record<string, CSSProperties> = {
     hyphens: "none",
   },
   'pre[class*="language-"]': {
-    color: "#1f1f1f",
-    background: "#efeddc",
+    color: foreground,
+    background,
     fontFamily: "var(--mono)",
     fontSize: "0.85em",
     textAlign: "left",
@@ -36,97 +55,97 @@ export const lightPrismTheme: Record<string, CSSProperties> = {
     overflow: "auto",
   },
   comment: {
-    color: "#6c664b",
+    color: comment,
     fontStyle: "italic",
   },
   prolog: {
-    color: "#6c664b",
+    color: comment,
   },
   doctype: {
-    color: "#6c664b",
+    color: comment,
   },
   cdata: {
-    color: "#6c664b",
+    color: comment,
   },
   punctuation: {
-    color: "#6c664b",
+    color: comment,
   },
   namespace: {
     opacity: 0.7,
   },
   property: {
-    color: "#a3144d",
+    color: pink,
   },
   tag: {
-    color: "#a3144d",
+    color: pink,
   },
   boolean: {
-    color: "#a34d14",
+    color: orange,
   },
   number: {
-    color: "#a34d14",
+    color: orange,
   },
   constant: {
-    color: "#644ac9",
+    color: purple,
   },
   symbol: {
-    color: "#644ac9",
+    color: purple,
   },
   deleted: {
-    color: "#cb3a2a",
+    color: red,
   },
   selector: {
-    color: "#14710a",
+    color: green,
   },
   "attr-name": {
-    color: "#036a96",
+    color: cyan,
   },
   string: {
-    color: "#846e15",
+    color: yellow,
   },
   char: {
-    color: "#846e15",
+    color: yellow,
   },
   builtin: {
-    color: "#036a96",
+    color: cyan,
   },
   inserted: {
-    color: "#14710a",
+    color: green,
   },
   operator: {
-    color: "#6c664b",
+    color: comment,
   },
   entity: {
-    color: "#036a96",
+    color: cyan,
     cursor: "help",
   },
   url: {
-    color: "#036a96",
+    color: cyan,
   },
   variable: {
-    color: "#1f1f1f",
+    color: foreground,
   },
   atrule: {
-    color: "#a3144d",
+    color: pink,
   },
   "attr-value": {
-    color: "#846e15",
+    color: yellow,
   },
   function: {
-    color: "#14710a",
+    color: green,
   },
   "class-name": {
-    color: "#036a96",
+    color: cyan,
   },
   keyword: {
-    color: "#a3144d",
+    color: pink,
     fontWeight: 600,
   },
   regex: {
-    color: "#036a96",
+    color: cyan,
   },
   important: {
-    color: "#a3144d",
+    color: pink,
     fontWeight: 700,
   },
   bold: {
@@ -135,4 +154,30 @@ export const lightPrismTheme: Record<string, CSSProperties> = {
   italic: {
     fontStyle: "italic",
   },
-};
+});
+
+export const darkPrismTheme = createPrismTheme({
+  foreground: "#f8f8f2",
+  background: "#282a36",
+  comment: "#6272a4",
+  red: "#ff5555",
+  orange: "#ffb86c",
+  yellow: "#f1fa8c",
+  green: "#50fa7b",
+  cyan: "#8be9fd",
+  purple: "#bd93f9",
+  pink: "#ff79c6",
+});
+
+export const lightPrismTheme = createPrismTheme({
+  foreground: "#1f1f1f",
+  background: "#fffbeb",
+  comment: "#6c664b",
+  red: "#cb3a2a",
+  orange: "#a34d14",
+  yellow: "#846e15",
+  green: "#14710a",
+  cyan: "#036a96",
+  purple: "#644ac9",
+  pink: "#a3144d",
+});

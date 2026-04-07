@@ -1,7 +1,7 @@
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  background: var(--surface-floating);
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
@@ -30,8 +30,8 @@
 
 .sidebar-header {
   padding: 20px 16px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
-  background: color-mix(in srgb, var(--surface-selection) 14%, transparent);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
 }
 
 .sidebar-title-link {
@@ -91,16 +91,16 @@
 }
 
 .sidebar-link:hover {
-  background: color-mix(in srgb, var(--accent-bg) 62%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent-cyan) 24%, var(--accent) 16%, var(--border));
+  background: var(--surface-selection);
+  border-color: var(--accent-cyan);
   color: var(--text-h);
   text-decoration: none;
   box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active {
-  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-current-line));
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--accent-cyan) 18%, var(--border));
+  background: var(--surface-current-line);
+  border-color: var(--accent);
   color: var(--accent);
   box-shadow: var(--shadow);
 }
@@ -116,8 +116,8 @@
 .sidebar-footer {
   margin-top: auto;
   padding: 8px;
-  border-top: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
-  background: color-mix(in srgb, var(--surface-selection) 12%, transparent);
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
 }
 
 @media (max-width: 860px) {

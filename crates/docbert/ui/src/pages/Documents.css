@@ -15,9 +15,9 @@
   transform: translateX(-50%);
   z-index: 10;
   padding: 8px 20px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--accent-cyan) 14%, var(--border));
+  border: 1px solid var(--accent);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 70%, var(--surface-current-line));
+  background: var(--accent);
   color: var(--accent-text);
   font-size: 0.85rem;
   font-weight: 600;
@@ -26,8 +26,8 @@
 }
 
 .ingest-toast.error {
-  border-color: color-mix(in srgb, var(--error) 42%, var(--border));
-  background: color-mix(in srgb, var(--error) 72%, var(--surface-current-line));
+  border-color: var(--error);
+  background: var(--error);
   color: var(--accent-text);
 }
 
@@ -58,7 +58,7 @@
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--surface-floating) 84%, var(--bg));
+  background: var(--surface-floating);
   box-shadow:
     inset -1px 0 0 rgba(255, 255, 255, 0.05),
     10px 0 28px rgba(15, 16, 24, 0.18);
@@ -70,8 +70,8 @@
   justify-content: space-between;
   gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
-  background: color-mix(in srgb, var(--surface-selection) 16%, transparent);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
 }
 
 .file-tree-title {
@@ -162,12 +162,12 @@
 }
 
 .tree-item:hover {
-  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-selection));
+  background: var(--surface-selection);
 }
 
 .tree-file.selected {
-  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-current-line));
-  border-color: color-mix(in srgb, var(--accent-cyan) 20%, var(--accent) 30%, var(--border));
+  background: var(--surface-current-line);
+  border-color: var(--accent-cyan);
   color: var(--accent);
   box-shadow: var(--shadow);
 }
@@ -182,11 +182,11 @@
 }
 
 .tree-file-row:hover {
-  background: color-mix(in srgb, var(--accent-bg) 64%, var(--surface-selection));
+  background: var(--surface-selection);
 }
 
 .tree-file-row.selected {
-  background: color-mix(in srgb, var(--accent-bg) 78%, var(--surface-current-line));
+  background: var(--surface-current-line);
 }
 
 .tree-file-row .tree-file {
@@ -201,7 +201,7 @@
 }
 
 .tree-collection-head:hover {
-  background: color-mix(in srgb, var(--accent-bg) 64%, var(--surface-selection));
+  background: var(--surface-selection);
 }
 
 .tree-collection-header {
@@ -287,7 +287,7 @@
 
 .tree-upload-btn:hover {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent-bg) 74%, var(--surface-selection));
+  background: var(--surface-current-line);
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -329,8 +329,8 @@
 
 .tree-file-delete-btn:hover,
 .tree-delete-btn:hover {
-  color: var(--error, #b91c1c);
-  background: var(--error-bg, rgba(185, 28, 28, 0.1));
+  color: var(--error);
+  background: var(--error-bg);
 }
 
 .tree-confirm-delete,
@@ -345,7 +345,7 @@
   min-height: 32px;
   border: none;
   border-radius: var(--radius);
-  background: var(--error, #b91c1c);
+  background: var(--error);
   color: #fff;
   font-size: 0.75rem;
   font-weight: 600;
@@ -375,15 +375,15 @@
 /* ── Drag-and-drop ── */
 
 .tree-collection.drag-over > .tree-collection-head {
-  background: color-mix(in srgb, var(--accent-bg) 82%, var(--surface-selection));
+  background: var(--surface-current-line);
 }
 
 .tree-collection.drag-over {
   outline: 2px dashed var(--accent);
   outline-offset: -2px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent-bg) 28%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  background: var(--surface-selection);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .drop-badge {
@@ -391,8 +391,8 @@
   font-size: 0.7rem;
   font-weight: 700;
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 84%, var(--surface-floating));
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: var(--accent);
+  border: 1px solid var(--accent);
   padding: 2px 8px;
   border-radius: 999px;
 }
@@ -409,8 +409,8 @@
 
 .preview-header {
   padding: 16px 24px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border-strong));
-  background: color-mix(in srgb, var(--surface-floating) 74%, var(--bg));
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -447,9 +447,9 @@
   align-items: center;
   min-height: 32px;
   padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  background: var(--surface-floating);
   color: var(--text);
   text-decoration: none;
   font-size: 0.8rem;
@@ -461,8 +461,8 @@
 }
 
 .preview-permalink:hover {
-  background: color-mix(in srgb, var(--accent-bg) 72%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: var(--surface-selection);
+  border-color: var(--accent);
   color: var(--accent);
   box-shadow: var(--shadow-sm);
 }
@@ -482,8 +482,8 @@
 .preview-frontmatter {
   margin: 10px 0 0;
   padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
-  background: color-mix(in srgb, var(--surface-floating) 78%, var(--bg-tertiary));
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -517,16 +517,16 @@
   flex: 1;
   overflow-y: auto;
   padding: 24px;
-  background: color-mix(in srgb, var(--bg) 92%, var(--surface-selection));
+  background: var(--bg);
 }
 
 .preview-content {
   max-width: 720px;
   margin: 0 auto;
   padding: 24px 28px 28px;
-  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  border: 1px solid var(--border);
   border-radius: calc(var(--radius-lg) + 2px);
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  background: var(--surface-floating);
   box-shadow: var(--shadow-sm);
   font-size: 0.9rem;
   line-height: 1.65;
@@ -570,8 +570,8 @@
 .preview-content pre {
   margin: 0.6em 0;
   padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--accent-cyan) 16%, var(--accent) 10%, var(--border));
-  background: color-mix(in srgb, var(--code-bg) 82%, var(--surface-current-line));
+  border: 1px solid var(--accent-cyan);
+  background: var(--code-bg);
   border-radius: var(--radius);
   overflow-x: auto;
   box-shadow: var(--shadow-sm);
@@ -592,7 +592,7 @@
   margin: 0.6em 0;
   padding: 10px 14px;
   border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--accent-bg) 42%, var(--surface-floating));
+  background: var(--bg-secondary);
   border-radius: 0 var(--radius) var(--radius) 0;
   color: var(--text-muted);
 }
@@ -616,7 +616,7 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   overflow: hidden;
-  background: color-mix(in srgb, var(--surface-floating) 82%, var(--bg));
+  background: var(--surface-floating);
   box-shadow: var(--shadow-sm);
   font-size: 0.9em;
 }
@@ -640,7 +640,7 @@
 .preview-content th {
   font-weight: 600;
   color: var(--text-h);
-  background: color-mix(in srgb, var(--surface-selection) 72%, var(--surface-floating));
+  background: var(--surface-selection);
 }
 
 .preview-loading {
@@ -707,7 +707,7 @@
 }
 
 .btn:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: var(--accent);
 }
 
 .btn:disabled {
@@ -716,24 +716,24 @@
 }
 
 .btn-primary {
-  background: color-mix(in srgb, var(--accent) 88%, var(--surface-floating));
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: var(--accent);
+  border-color: var(--accent);
   color: var(--accent-text);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-hover) 90%, var(--surface-floating));
-  border-color: color-mix(in srgb, var(--accent-hover) 52%, var(--border));
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-secondary {
-  background: color-mix(in srgb, var(--surface-floating) 86%, var(--bg));
+  background: var(--bg-tertiary);
   color: var(--text-h);
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  border: 1px solid var(--border);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-bg) 60%, var(--surface-selection));
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--surface-selection);
+  border-color: var(--accent);
   color: var(--accent);
 }

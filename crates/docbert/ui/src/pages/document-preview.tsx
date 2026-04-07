@@ -56,11 +56,33 @@ export default function DocumentPreview({
     );
   }
 
+  return (
+    <LoadedDocumentPreview
+      selectedDoc={selectedDoc}
+      preview={preview}
+      resolverDocuments={resolverDocuments}
+      activeFragment={activeFragment}
+      onOpenResolvedDocument={onOpenResolvedDocument}
+    />
+  );
+}
+
+function LoadedDocumentPreview({
+  selectedDoc,
+  preview,
+  resolverDocuments,
+  activeFragment,
+  onOpenResolvedDocument,
+}: {
+  selectedDoc: SelectedDocumentSummary;
+  preview: string | null;
+  resolverDocuments: Pick<DocumentListItem, "path">[];
+  activeFragment: string | null;
+  onOpenResolvedDocument?: (target: ResolvedDocumentTarget) => void;
+}) {
   const permalink = buildDocumentTabHref(selectedDoc.collection, selectedDoc.path);
   const parsed = preview ? parseDocumentFrontmatter(preview) : null;
   const body = parsed?.body ?? preview ?? "";
-  const headingIds = useMemo(() => buildHeadingTargetIds(extractHeadingTexts(body)), [body]);
-  let headingIndex = 0;
   const markdownSource = useMemo(
     () =>
       rewriteObsidianLinksToMarkdown(body, {
@@ -68,6 +90,10 @@ export default function DocumentPreview({
         documents: resolverDocuments,
       }),
     [body, resolverDocuments, selectedDoc],
+  );
+  const headingIdsByOffset = useMemo(
+    () => new Map(extractHeadingEntries(markdownSource)),
+    [markdownSource],
   );
 
   useEffect(() => {
@@ -88,9 +114,14 @@ export default function DocumentPreview({
   }, [activeFragment, preview, selectedDoc.path]);
 
   const renderHeading = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
-    return function Heading({ children, ...props }: ComponentProps<typeof Tag>) {
-      const id = headingIds[headingIndex];
-      headingIndex += 1;
+    return function Heading({
+      children,
+      node,
+      ...props
+    }: ComponentProps<typeof Tag> & {
+      node?: { position?: { start?: { offset?: number } } };
+    }) {
+      const id = headingIdsByOffset.get(node?.position?.start?.offset ?? -1);
       return (
         <Tag id={id} {...props}>
           {children}
@@ -292,11 +323,10 @@ function parseResolvedDocumentHref(href: string): ResolvedDocumentTarget | null 
   }
 }
 
-function extractHeadingTexts(markdown: string) {
-  return markdown
-    .split(/\r?\n/)
-    .map((line) => line.match(/^#{1,6}\s+(.*)$/)?.[1]?.trim() ?? null)
-    .filter((value): value is string => !!value);
+function extractHeadingEntries(markdown: string) {
+  const matches = Array.from(markdown.matchAll(/^#{1,6}\s+(.*)$/gm));
+  const ids = buildHeadingTargetIds(matches.map((match) => match[1]?.trim() ?? ""));
+  return matches.map((match, index) => [match.index ?? -1, ids[index] ?? ""] as const);
 }
 
 function textContent(node: ReactNode): string {
@@ -318,7 +348,7 @@ function textContent(node: ReactNode): string {
 }
 
 function escapeMarkdownLabel(text: string) {
-  return text.replace(/[\[\]\\]/g, "\\$&");
+  return text.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
 }
 
 function escapeRegExp(value: string) {
