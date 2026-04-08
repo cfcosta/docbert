@@ -1,11 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { getProviders, getModels } from "@mariozechner/pi-ai";
-import { api } from "../lib/api";
+import { getModels, getProviders } from "@mariozechner/pi-ai";
+import { api, type LlmSettings } from "../lib/api";
 import "./Settings.css";
+
+type ProviderAuthMode = "api_key" | "oauth";
+
+type ProviderEntry = {
+  label: string;
+  authMode: ProviderAuthMode;
+  models: { id: string; name: string }[];
+};
+
+function providerAuthMode(provider: string): ProviderAuthMode {
+  return provider === "openai-codex" ? "oauth" : "api_key";
+}
 
 // Build the provider/model list from pi-ai's registry at module load.
 function buildProviderMap() {
-  const map: Record<string, { label: string; models: { id: string; name: string }[] }> = {};
+  const map: Record<string, ProviderEntry> = {};
 
   for (const provider of getProviders()) {
     const models = getModels(provider);
@@ -13,6 +25,7 @@ function buildProviderMap() {
 
     map[provider] = {
       label: formatProviderLabel(provider),
+      authMode: providerAuthMode(provider),
       models: models.map((m) => ({ id: m.id, name: m.name || m.id })),
     };
   }
@@ -34,7 +47,7 @@ function formatProviderLabel(provider: string): string {
     openrouter: "OpenRouter",
     "amazon-bedrock": "Amazon Bedrock",
     "azure-openai-responses": "Azure OpenAI",
-    "openai-codex": "OpenAI Codex",
+    "openai-codex": "ChatGPT Plus/Pro (Codex)",
     "github-copilot": "GitHub Copilot",
     "vercel-ai-gateway": "Vercel AI Gateway",
     minimax: "MiniMax",
@@ -44,23 +57,36 @@ function formatProviderLabel(provider: string): string {
 
 const PROVIDERS = buildProviderMap();
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function Settings() {
   const [provider, setProvider] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState("");
+  const [oauthConnected, setOauthConnected] = useState(false);
+  const [oauthExpiresAt, setOauthExpiresAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const applyLoadedSettings = (settings: LlmSettings) => {
+    setProvider(settings.provider);
+    setModel(settings.model);
+    setApiKey(settings.provider === "openai-codex" ? "" : (settings.api_key ?? ""));
+    setOauthConnected(Boolean(settings.oauth_connected));
+    setOauthExpiresAt(settings.oauth_expires_at ?? null);
+  };
+
   useEffect(() => {
     api
       .getLlmSettings()
-      .then((s) => {
-        setProvider(s.provider);
-        setModel(s.model);
-        setApiKey(s.api_key ?? "");
+      .then((settings) => {
+        applyLoadedSettings(settings);
         setLoadError(null);
       })
       .catch((error) => {
@@ -69,16 +95,19 @@ export default function Settings() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleProviderChange = (p: string) => {
-    setProvider(p);
-    const models = PROVIDERS[p]?.models ?? [];
+  const handleProviderChange = (nextProvider: string) => {
+    setProvider(nextProvider);
+    const models = PROVIDERS[nextProvider]?.models ?? [];
     setModel(models[0]?.id ?? null);
+    if (providerAuthMode(nextProvider) === "api_key") {
+      setApiKey("");
+    }
     setSaved(false);
     setSaveError(null);
   };
 
-  const handleModelChange = (m: string) => {
-    setModel(m);
+  const handleModelChange = (nextModel: string) => {
+    setModel(nextModel);
     setSaved(false);
     setSaveError(null);
   };
@@ -88,11 +117,12 @@ export default function Settings() {
     setSaved(false);
     setSaveError(null);
     try {
-      await api.updateLlmSettings({
+      const next = await api.updateLlmSettings({
         provider,
         model,
-        api_key: apiKey || null,
+        api_key: provider && providerAuthMode(provider) === "api_key" ? apiKey || null : null,
       });
+      applyLoadedSettings(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (error) {
@@ -102,9 +132,82 @@ export default function Settings() {
     }
   };
 
-  const models = useMemo(() => (provider ? (PROVIDERS[provider]?.models ?? []) : []), [provider]);
+  const handleOpenAICodexLogin = async () => {
+    if (!provider || !model) return;
 
+    setOauthBusy(true);
+    setSaved(false);
+    setSaveError(null);
+
+    try {
+      await api.updateLlmSettings({
+        provider,
+        model,
+        api_key: null,
+      });
+
+      const { authorization_url } = await api.startOpenAICodexOAuth();
+      const popup = window.open(authorization_url, "_blank", "noopener,noreferrer");
+      if (!popup) {
+        throw new Error("Popup blocked. Allow popups for docbert and try again.");
+      }
+
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        await sleep(1000);
+        const next = await api.getLlmSettings();
+        if (next.oauth_connected) {
+          applyLoadedSettings(next);
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+          return;
+        }
+      }
+
+      throw new Error(
+        "Sign-in is still pending. Finish the ChatGPT browser flow, then reload Settings.",
+      );
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not start ChatGPT sign-in.");
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const handleOpenAICodexLogout = async () => {
+    setOauthBusy(true);
+    setSaved(false);
+    setSaveError(null);
+    try {
+      await api.logoutOpenAICodexOAuth();
+      setOauthConnected(false);
+      setOauthExpiresAt(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Could not disconnect ChatGPT.");
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const selectedProvider = useMemo(
+    () => (provider ? (PROVIDERS[provider] ?? null) : null),
+    [provider],
+  );
+  const models = useMemo(
+    () => (selectedProvider ? selectedProvider.models : []),
+    [selectedProvider],
+  );
   const providerEntries = useMemo(() => Object.entries(PROVIDERS), []);
+  const usesOAuth = selectedProvider?.authMode === "oauth";
+  const oauthExpiryText =
+    oauthConnected && oauthExpiresAt
+      ? new Date(oauthExpiresAt).toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })
+      : null;
 
   if (loading) {
     return (
@@ -168,16 +271,55 @@ export default function Settings() {
                 value={model ?? ""}
                 onChange={(e) => handleModelChange(e.target.value)}
               >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
+                {models.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name}
                   </option>
                 ))}
               </select>
             </div>
           )}
 
-          {provider && (
+          {provider && usesOAuth && (
+            <div className="settings-field">
+              <label className="settings-label">ChatGPT subscription</label>
+              <div className="settings-oauth-card">
+                <p className="settings-oauth-copy">
+                  Use your ChatGPT Plus or Pro subscription through OAuth instead of an API key.
+                </p>
+                <div className="settings-oauth-status-row">
+                  <span className={oauthConnected ? "settings-saved" : "settings-oauth-pending"}>
+                    {oauthConnected ? "Connected" : "Not connected"}
+                  </span>
+                  {oauthExpiryText && (
+                    <span className="settings-hint">
+                      Session refresh deadline: {oauthExpiryText}
+                    </span>
+                  )}
+                </div>
+                <div className="settings-actions settings-oauth-actions">
+                  <button
+                    className="settings-save"
+                    onClick={handleOpenAICodexLogin}
+                    disabled={oauthBusy || saving || !provider || !model}
+                  >
+                    {oauthBusy ? "Waiting for ChatGPT..." : "Sign in with ChatGPT"}
+                  </button>
+                  {oauthConnected && (
+                    <button
+                      className="settings-secondary"
+                      onClick={handleOpenAICodexLogout}
+                      disabled={oauthBusy}
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {provider && !usesOAuth && (
             <div className="settings-field">
               <label className="settings-label" htmlFor="api-key">
                 API Key
@@ -186,7 +328,7 @@ export default function Settings() {
                 id="api-key"
                 type="password"
                 className="settings-input"
-                placeholder={`Enter ${PROVIDERS[provider]?.label ?? provider} API key`}
+                placeholder={`Enter ${selectedProvider?.label ?? provider} API key`}
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
@@ -202,7 +344,7 @@ export default function Settings() {
             <button
               className="settings-save"
               onClick={handleSave}
-              disabled={saving || !provider || !model}
+              disabled={saving || oauthBusy || !provider || !model}
             >
               {saving ? "Saving..." : "Save"}
             </button>

@@ -24,21 +24,23 @@ The web process also serves the browser UI, but UI routes are not part of this A
 
 ## Route summary
 
-| Method   | Route                                | Purpose                                                                  |
-| -------- | ------------------------------------ | ------------------------------------------------------------------------ |
-| `GET`    | `/v1/collections`                    | List registered collection names.                                        |
-| `GET`    | `/v1/conversations`                  | List saved conversations.                                                |
-| `POST`   | `/v1/conversations`                  | Create a conversation.                                                   |
-| `GET`    | `/v1/conversations/{id}`             | Get one conversation.                                                    |
-| `PUT`    | `/v1/conversations/{id}`             | Replace one conversation.                                                |
-| `DELETE` | `/v1/conversations/{id}`             | Delete one conversation.                                                 |
-| `POST`   | `/v1/documents`                      | Upload and ingest Markdown or PDF documents into an existing collection. |
-| `GET`    | `/v1/collections/{name}/documents`   | List documents in one collection.                                        |
-| `GET`    | `/v1/documents/{collection}/{*path}` | Read one document and its stored metadata.                               |
-| `DELETE` | `/v1/documents/{collection}/{*path}` | Delete one document from disk and from indexed state.                    |
-| `POST`   | `/v1/search`                         | Run semantic or hybrid search.                                           |
-| `GET`    | `/v1/settings/llm`                   | Read persisted LLM settings, with env-key fallback.                      |
-| `PUT`    | `/v1/settings/llm`                   | Update persisted LLM settings.                                           |
+| Method   | Route                                        | Purpose                                                                  |
+| -------- | -------------------------------------------- | ------------------------------------------------------------------------ |
+| `GET`    | `/v1/collections`                            | List registered collection names.                                        |
+| `GET`    | `/v1/conversations`                          | List saved conversations.                                                |
+| `POST`   | `/v1/conversations`                          | Create a conversation.                                                   |
+| `GET`    | `/v1/conversations/{id}`                     | Get one conversation.                                                    |
+| `PUT`    | `/v1/conversations/{id}`                     | Replace one conversation.                                                |
+| `DELETE` | `/v1/conversations/{id}`                     | Delete one conversation.                                                 |
+| `POST`   | `/v1/documents`                              | Upload and ingest Markdown or PDF documents into an existing collection. |
+| `GET`    | `/v1/collections/{name}/documents`           | List documents in one collection.                                        |
+| `GET`    | `/v1/documents/{collection}/{*path}`         | Read one document and its stored metadata.                               |
+| `DELETE` | `/v1/documents/{collection}/{*path}`         | Delete one document from disk and from indexed state.                    |
+| `POST`   | `/v1/search`                                 | Run semantic or hybrid search.                                           |
+| `GET`    | `/v1/settings/llm`                           | Read persisted LLM settings, including effective auth state.             |
+| `PUT`    | `/v1/settings/llm`                           | Update persisted LLM settings.                                           |
+| `POST`   | `/v1/settings/llm/oauth/openai-codex/start`  | Start ChatGPT Plus/Pro (Codex) OAuth login.                              |
+| `POST`   | `/v1/settings/llm/oauth/openai-codex/logout` | Clear the stored ChatGPT Plus/Pro (Codex) OAuth session.                 |
 
 ## Unsupported and absent routes
 
@@ -472,19 +474,24 @@ Status codes:
 
 ## LLM settings
 
-### Settings shape
+### Settings response shape
 
-`GET` and `PUT` use this JSON shape:
+`GET /v1/settings/llm` and the response from `PUT /v1/settings/llm` use this JSON shape:
 
 ```json
 {
   "provider": "openai",
   "model": "gpt-4.1",
-  "api_key": "sk-..."
+  "api_key": "sk-...",
+  "oauth_connected": false
 }
 ```
 
-All three fields may also be `null`.
+`provider`, `model`, and `api_key` may also be `null`.
+
+`oauth_connected` is always present and is `true` only when the current provider is using a live OAuth-backed ChatGPT Codex session.
+
+`oauth_expires_at` is omitted unless an OAuth-backed ChatGPT Codex session is currently available.
 
 ### `GET /v1/settings/llm`
 
@@ -492,11 +499,14 @@ Read persisted LLM settings.
 
 Behavior notes:
 
-- `provider`, `model`, and `api_key` come from persisted settings when present.
-- If the stored API key is absent, the server may substitute an environment variable based on `provider`:
+- `provider` and `model` come from persisted settings when present.
+- For API-key-backed providers, `api_key` comes from persisted settings when present.
+- If a stored API key is absent, the server may substitute an environment variable based on `provider`:
   - `openai` → `OPENAI_API_KEY`
   - `anthropic` → `ANTHROPIC_API_KEY`
-- Unknown providers do not get environment fallback.
+- Unknown API-key providers do not get environment fallback.
+- For `provider = "openai-codex"`, the route does not use `llm_api_key` or env fallback. Instead it resolves a stored OAuth session, refreshes it when needed, and returns the current access token as `api_key`.
+- If no valid ChatGPT Codex OAuth session is available, `oauth_connected` is `false` and `api_key` is `null`.
 
 Example response:
 
@@ -504,7 +514,20 @@ Example response:
 {
   "provider": "anthropic",
   "model": "claude-sonnet",
-  "api_key": "env-or-stored-key"
+  "api_key": "env-or-stored-key",
+  "oauth_connected": false
+}
+```
+
+Example response for a connected ChatGPT Codex session:
+
+```json
+{
+  "provider": "openai-codex",
+  "model": "gpt-5.1-codex-mini",
+  "api_key": "oauth-access-token",
+  "oauth_connected": true,
+  "oauth_expires_at": 1715003600000
 }
 ```
 
@@ -530,8 +553,9 @@ Request body:
 Behavior notes:
 
 - Empty-string `api_key` is stored as absent in the persisted settings.
-- The HTTP response echoes the request body shape, even if the empty key is normalized away in storage.
 - `provider` and `model` may be cleared by sending `null`.
+- If `provider = "openai-codex"`, the server ignores any supplied `api_key` field and persists only the provider/model selection. OAuth state is managed separately.
+- The HTTP response returns the normalized effective settings shape, including `oauth_connected`.
 
 Example request that clears settings:
 
@@ -546,6 +570,43 @@ Example request that clears settings:
 Status codes:
 
 - `200 OK`
+- `500 Internal Server Error`
+
+### `POST /v1/settings/llm/oauth/openai-codex/start`
+
+Start the ChatGPT Plus/Pro (Codex) OAuth flow.
+
+Response body:
+
+```json
+{
+  "authorization_url": "https://auth.openai.com/oauth/authorize?..."
+}
+```
+
+Behavior notes:
+
+- The route spins up a temporary localhost callback listener on `http://localhost:1455/auth/callback`.
+- If that callback port is already busy, the route returns `409 Conflict`.
+- The returned URL is intended to be opened in the user's browser.
+
+Status codes:
+
+- `200 OK`
+- `409 Conflict` when the temporary callback listener cannot bind to port `1455`
+- `500 Internal Server Error`
+
+### `POST /v1/settings/llm/oauth/openai-codex/logout`
+
+Remove the stored ChatGPT Codex OAuth session.
+
+Behavior notes:
+
+- This clears the stored OAuth credential blob but leaves the selected `provider` and `model` unchanged.
+
+Status codes:
+
+- `204 No Content`
 - `500 Internal Server Error`
 
 ## Notes for integrators

@@ -37,5 +37,13 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/v1/search", routing::post(search::search))
         .route("/v1/settings/llm", routing::get(settings::get))
         .route("/v1/settings/llm", routing::put(settings::update))
+        .route(
+            "/v1/settings/llm/oauth/openai-codex/start",
+            routing::post(settings::start_openai_codex_oauth),
+        )
+        .route(
+            "/v1/settings/llm/oauth/openai-codex/logout",
+            routing::post(settings::logout_openai_codex_oauth),
+        )
         .fallback(ui::serve)
 }

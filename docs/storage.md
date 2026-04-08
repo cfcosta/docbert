@@ -240,6 +240,8 @@ Current implementation-visible keys include:
   - persisted chat/model setting
 - `llm_api_key`
   - persisted chat API key, if stored in docbert instead of coming from environment variables
+- `llm_oauth:openai-codex`
+  - structured JSON blob holding the local ChatGPT Plus/Pro (Codex) OAuth session when that provider is used
 
 ### Document-scoped settings entries
 
@@ -279,12 +281,16 @@ Stored keys:
 - `llm_provider`
 - `llm_model`
 - `llm_api_key`
+- `llm_oauth:openai-codex`
+  - JSON-encoded OAuth credentials for the ChatGPT Plus/Pro (Codex) flow
 
-Read behavior is slightly broader than write behavior:
+Read behavior is broader than write behavior:
 
-- if `llm_api_key` is stored, docbert returns that value
+- if `llm_api_key` is stored, docbert returns that value for API-key-backed providers
 - if it is not stored and the provider is `openai`, docbert falls back to `OPENAI_API_KEY`
 - if it is not stored and the provider is `anthropic`, docbert falls back to `ANTHROPIC_API_KEY`
+- if the provider is `openai-codex`, docbert resolves the separate OAuth blob instead of `llm_api_key`
+- if that OAuth blob is close to expiry, docbert refreshes it before returning `/v1/settings/llm`
 
 So the persisted settings record and the effective runtime value are not always identical.
 
@@ -424,7 +430,7 @@ Then refreshes:
 Write to:
 
 - `conversations`
-- `settings` (`llm_provider`, `llm_model`, `llm_api_key`)
+- `settings` (`llm_provider`, `llm_model`, `llm_api_key`, `llm_oauth:openai-codex`)
 
 ## Operational notes
 

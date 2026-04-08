@@ -146,6 +146,18 @@ export interface LlmSettings {
   provider: string | null;
   model: string | null;
   api_key: string | null;
+  oauth_connected?: boolean;
+  oauth_expires_at?: number | null;
+}
+
+export interface LlmSettingsUpdate {
+  provider: string | null;
+  model: string | null;
+  api_key: string | null;
+}
+
+export interface LlmOauthStartResponse {
+  authorization_url: string;
 }
 
 export function buildDocumentTabHref(collection: string, path: string): string {
@@ -164,11 +176,22 @@ export function buildDocumentTabHrefWithFragment(
 export const api = {
   getLlmSettings: () => request<LlmSettings>("/settings/llm"),
 
-  updateLlmSettings: (settings: LlmSettings) =>
+  updateLlmSettings: (settings: LlmSettingsUpdate) =>
     request<LlmSettings>("/settings/llm", {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  startOpenAICodexOAuth: () =>
+    request<LlmOauthStartResponse>("/settings/llm/oauth/openai-codex/start", {
+      method: "POST",
+    }),
+
+  logoutOpenAICodexOAuth: () =>
+    request<void>("/settings/llm/oauth/openai-codex/logout", {
+      method: "POST",
+    }),
+
   listCollections: () => request<Collection[]>("/collections"),
 
   listDocuments: (collection: string) =>

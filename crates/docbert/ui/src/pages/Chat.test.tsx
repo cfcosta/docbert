@@ -361,7 +361,7 @@ describe("Chat page", () => {
     await waitForCondition(
       () =>
         view.container.textContent?.includes(
-          "No LLM provider configured. Go to Settings to select a provider, model, and API key.",
+          "No LLM provider configured. Go to Settings to select a provider, model, and API key or complete the required OAuth sign-in.",
         ) ?? false,
       () =>
         `missing config message not rendered; text=${JSON.stringify(view.container.textContent)}`,

@@ -366,33 +366,45 @@ The chat UI depends on LLM settings served from `/v1/settings/llm`.
 
 ### HTTP shape
 
-Both `GET` and `PUT` use this shape:
+`GET /v1/settings/llm` and the response from `PUT /v1/settings/llm` use this shape:
 
 ```json
 {
   "provider": "openai",
   "model": "gpt-4.1",
-  "api_key": "sk-..."
+  "api_key": "sk-...",
+  "oauth_connected": false
 }
 ```
 
-Each field may also be `null`.
+`provider`, `model`, and `api_key` may also be `null`.
+
+`oauth_connected` is always present and indicates whether the current provider is backed by an active ChatGPT Codex OAuth session.
+
+`oauth_expires_at` appears only when a live ChatGPT Codex OAuth session is currently available.
 
 ### Storage mapping
 
-The backend stores those values in `config.db` via `PersistedLlmSettings` using these keys:
+The backend stores the base provider/model/API-key values in `config.db` via `PersistedLlmSettings` using these keys:
 
 - `llm_provider`
 - `llm_model`
 - `llm_api_key`
 
+The ChatGPT Codex OAuth session, when present, is stored separately as structured JSON under:
+
+- `llm_oauth:openai-codex`
+
 ### `GET /v1/settings/llm`
 
 Behavior:
 
-- loads persisted values from `config.db`
-- if a stored API key exists, it is returned directly
+- loads persisted provider/model values from `config.db`
+- for API-key-backed providers, if a stored API key exists, it is returned directly
 - if no stored API key exists, the server may fall back to an environment variable based on `provider`
+- for `provider = "openai-codex"`, the server resolves a stored OAuth session instead of using `llm_api_key`
+- if the stored ChatGPT Codex session is close to expiry, the server refreshes it before returning settings
+- if no valid ChatGPT Codex session exists, `oauth_connected` is `false` and `api_key` is `null`
 
 Current environment fallback rules:
 
@@ -406,7 +418,8 @@ Example response using a stored key:
 {
   "provider": "openai",
   "model": "gpt-4.1",
-  "api_key": "stored-key"
+  "api_key": "stored-key",
+  "oauth_connected": false
 }
 ```
 
@@ -416,7 +429,20 @@ Example response using env fallback:
 {
   "provider": "anthropic",
   "model": "claude-sonnet",
-  "api_key": "env-key"
+  "api_key": "env-key",
+  "oauth_connected": false
+}
+```
+
+Example response using a connected ChatGPT Codex session:
+
+```json
+{
+  "provider": "openai-codex",
+  "model": "gpt-5.1-codex-mini",
+  "api_key": "oauth-access-token",
+  "oauth_connected": true,
+  "oauth_expires_at": 1715003600000
 }
 ```
 
@@ -429,10 +455,11 @@ Status codes:
 
 Behavior:
 
-- replaces the persisted settings in one write transaction
+- replaces the persisted provider/model/API-key settings in one write transaction
 - empty-string `api_key` is normalized to absent in storage
-- the HTTP response echoes the request body shape, even if storage normalized the key away
 - `provider` and `model` can be cleared by sending `null`
+- if `provider = "openai-codex"`, any supplied `api_key` is ignored and OAuth state remains managed separately
+- the HTTP response returns the normalized effective settings shape, including `oauth_connected`
 
 Example request:
 
@@ -458,6 +485,16 @@ Status codes:
 
 - `200 OK`
 - `500 Internal Server Error`
+
+### `POST /v1/settings/llm/oauth/openai-codex/start`
+
+Starts the ChatGPT Plus/Pro (Codex) OAuth flow and returns an authorization URL.
+
+The server temporarily binds `http://localhost:1455/auth/callback` and expects the browser to complete the OAuth redirect there.
+
+### `POST /v1/settings/llm/oauth/openai-codex/logout`
+
+Clears the stored ChatGPT Codex OAuth session without removing the selected provider/model.
 
 ## What the backend guarantees
 
@@ -517,7 +554,7 @@ Not guaranteed by the backend:
 ## Practical integration notes
 
 - If you need durable history, use the conversation routes; they are the persistence boundary.
-- If you need to inspect whether chat can run at all, check `/v1/settings/llm` and whether provider/model/api key are effectively available.
+- If you need to inspect whether chat can run at all, check `/v1/settings/llm` and whether provider/model plus either an API key or `oauth_connected = true` are effectively available.
 - If you are building tooling against stored conversation data, target the modern `parts`-based schema and support optional `actor` and `sources`.
 - If you are reasoning about answer quality, distinguish between:
   - what the backend stores and returns

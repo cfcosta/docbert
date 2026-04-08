@@ -21,7 +21,7 @@ The current implementation works against local files and local state. Registered
 - semantic-only search with `docbert ssearch`
 - Markdown, plain text, and PDF ingestion
 - local web UI and JSON API via `docbert web`
-- persisted conversations and LLM settings for chat in the web UI
+- persisted conversations and LLM settings for chat in the web UI, including ChatGPT Codex OAuth
 - MCP tools, prompt, and `bert://...` resources via `docbert mcp`
 - CPU, CUDA, Metal, Accelerate, and MKL build options through feature flags
 
@@ -204,6 +204,11 @@ The chat experience in the web UI is built from:
 - web API routes for conversations and settings
 - browser/runtime orchestration on top of docbert search and retrieval tools
 
+Current auth options for chat include:
+
+- API-key-backed providers such as OpenAI and Anthropic
+- ChatGPT Plus/Pro via the `openai-codex` provider and local OAuth sign-in in Settings
+
 Important boundary:
 
 - conversation persistence and settings storage are backend behavior
@@ -270,6 +275,8 @@ Useful environment variables:
 - `DOCBERT_DATA_DIR`
 - `DOCBERT_MODEL`
 - `DOCBERT_LOG`
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
 
 ## Data and storage
 

@@ -121,7 +121,7 @@ export function createMissingConfigMessage(id: string): Message {
     id,
     role: "assistant",
     content:
-      "No LLM provider configured. Go to **Settings** to select a provider, model, and API key.",
+      "No LLM provider configured. Go to **Settings** to select a provider, model, and API key or complete the required OAuth sign-in.",
   };
 }
 

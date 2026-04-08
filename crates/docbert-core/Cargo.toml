@@ -18,7 +18,7 @@ rkyv = "0.8.15"
 pdf_oxide = "0.3.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tantivy = "0.25"
+tantivy = "=0.25.0"
 thiserror = "2"
 
 [features]

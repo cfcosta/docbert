@@ -87,10 +87,9 @@ fn web_settings_route_responds() -> Result<(), Box<dyn std::error::Error>> {
         response.starts_with("HTTP/1.1 200 OK\r\n"),
         "unexpected response: {response}"
     );
-    assert!(
-        response
-            .contains("{\"provider\":null,\"model\":null,\"api_key\":null}")
-    );
+    assert!(response.contains(
+        "{\"provider\":null,\"model\":null,\"api_key\":null,\"oauth_connected\":false}"
+    ));
 
     child.kill()?;
     child.wait()?;
