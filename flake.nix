@@ -220,6 +220,7 @@
 
                   bacon
                   bun
+                  cargo-deny
                   cargo-mutants
                   cargo-nextest
                 ]
