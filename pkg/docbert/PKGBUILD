@@ -1,0 +1,56 @@
+# Maintainer: Cainã Costa <cfcosta@gmail.com>
+pkgname=docbert
+pkgver=0.2.1
+pkgrel=1
+pkgdesc='A powerful semantic search CLI for your documents'
+arch=('x86_64')
+url='https://github.com/cfcosta/docbert'
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs')
+makedepends=('git' 'cargo' 'mold')
+conflicts=('docbert-cuda')
+source=("git+https://github.com/cfcosta/docbert.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  # Use mold instead of rust-lld (which mislinks native static archives)
+  # and drop target-cpu=native for portable binaries.
+  printf '#!/bin/sh\nexec cc "$@" -fuse-ld=mold\n' > cc-mold
+  chmod +x cc-mold
+  cat > .cargo/config.toml <<EOF
+[target.x86_64-unknown-linux-gnu]
+linker = "$PWD/cc-mold"
+EOF
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --package docbert
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release --package docbert
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 "target/release/docbert" "$pkgdir/usr/bin/docbert"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+
+  # Shell completions
+  target/release/docbert completions bash | install -Dm644 /dev/stdin \
+    "$pkgdir/usr/share/bash-completion/completions/docbert"
+  target/release/docbert completions zsh | install -Dm644 /dev/stdin \
+    "$pkgdir/usr/share/zsh/site-functions/_docbert"
+  target/release/docbert completions fish | install -Dm644 /dev/stdin \
+    "$pkgdir/usr/share/fish/vendor_completions.d/docbert.fish"
+}
