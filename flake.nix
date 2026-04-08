@@ -103,6 +103,7 @@
                   buildInputs ? [ ],
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
+                  extraPreBuild ? "",
                 }:
                 rustPlatform.buildRustPackage (
                   {
@@ -121,15 +122,17 @@
                     cargoLock = {
                       lockFile = ./Cargo.lock;
                       outputHashes = {
-                        "pylate-rs-1.0.4" = "sha256-l2bmTgAbxHa5ivdFqMrLts5O+MZSSWXKRK/rsVjeCzs=";
+                        "pylate-rs-1.0.4" = "sha256-UaqO4GsYaJ15zqIKA8f4LHwOEXy+/v8C3E7qrL11sXk=";
                       };
                     };
                     RUSTFLAGS = "-C target-cpu=native";
-                    preBuild = pkgs.lib.optionalString (uiPath != null) ''
-                      rm -rf crates/docbert/ui/dist
-                      mkdir -p crates/docbert/ui
-                      cp -r ${uiPath} crates/docbert/ui/dist
-                    '';
+                    preBuild =
+                      pkgs.lib.optionalString (uiPath != null) ''
+                        rm -rf crates/docbert/ui/dist
+                        mkdir -p crates/docbert/ui
+                        cp -r ${uiPath} crates/docbert/ui/dist
+                      ''
+                      + extraPreBuild;
 
                     postInstall = ''
                       # Generate shell completions
@@ -176,6 +179,17 @@
             CUDA_COMPUTE_CAP = "80";
             CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
           };
+
+          # Pre-fetch NVIDIA CUTLASS for candle-flash-attn (cudaforge).
+          # The Nix sandbox blocks network access, so we fetch it here and
+          # populate cudaforge's cache directory in preBuild.
+          cutlassSrc = pkgs.fetchgit {
+            url = "https://github.com/NVIDIA/cutlass.git";
+            rev = "7d49e6c7e2f8896c47f586706e67e1fb215529dc";
+            hash = "sha256-aOfw4x3efNOFUNL4LNL0+p28TYYGrd1t9/UTZAfzrEM=";
+            leaveDotGit = true;
+            fetchSubmodules = false;
+          };
         in
         {
           default = mkPackage { name = "docbert"; };
@@ -185,9 +199,16 @@
           docbert-cuda = mkPackage {
             name = "docbert-cuda";
             buildFeatures = [ "cuda" ];
-            nativeBuildInputs = cudaNativeBuildInputs;
+            nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
             buildInputs = cudaBuildInputs;
-            extraEnv = cudaEnv;
+            extraEnv = cudaEnv // {
+              CUDAFORGE_HOME = "/tmp/cudaforge-cache";
+            };
+            extraPreBuild = ''
+              mkdir -p $CUDAFORGE_HOME/git/checkouts
+              cp -r ${cutlassSrc} $CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
+              chmod -R u+w $CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
+            '';
           };
 
           docbert-metal = mkPackage {
