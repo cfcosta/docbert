@@ -3427,7 +3427,7 @@ checksum = "40e24eee682d89fb193496edf918a7f407d30175b2e785fe057e4392dfd182e0"
 [[package]]
 name = "pylate-rs"
 version = "1.0.4"
-source = "git+https://github.com/cfcosta/pylate-rs#ca517dbb2cca85b4a9c8c5b311cb2fd23bde7965"
+source = "git+https://github.com/cfcosta/pylate-rs#20cba8834830e42cad131db0ceb618332ded26bb"
 dependencies = [
  "anyhow",
  "candle-core",
