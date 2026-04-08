@@ -404,7 +404,8 @@ impl SearchIndex {
         let fields = self.fields();
         self.reader.reload()?;
         let searcher = self.reader.searcher();
-        let top_docs = searcher.search(query, &TopDocs::with_limit(limit))?;
+        let top_docs = searcher
+            .search(query, &TopDocs::with_limit(limit).order_by_score())?;
         collect_search_results(&searcher, top_docs, fields)
     }
 
