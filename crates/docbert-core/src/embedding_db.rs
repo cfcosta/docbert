@@ -30,6 +30,19 @@ fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
     })
 }
 
+fn serialize_embedding_matrix(
+    num_tokens: u32,
+    dimension: u32,
+    data: &[f32],
+) -> Vec<u8> {
+    let byte_len = HEADER_SIZE + std::mem::size_of_val(data);
+    let mut bytes = vec![0; byte_len];
+    bytes[0..4].copy_from_slice(&num_tokens.to_le_bytes());
+    bytes[4..8].copy_from_slice(&dimension.to_le_bytes());
+    bytes[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
+    bytes
+}
+
 /// Stores ColBERT token embedding matrices keyed by numeric document ID.
 ///
 /// Each entry is packed like this:
@@ -64,8 +77,7 @@ impl EmbeddingDb {
 
     /// Store an embedding matrix for a document.
     ///
-    /// Uses `insert_reserve` for zero-copy writes. Overwrites any
-    /// existing embedding for this `doc_id`.
+    /// Overwrites any existing embedding for this `doc_id`.
     ///
     /// # Panics
     ///
@@ -95,17 +107,12 @@ impl EmbeddingDb {
             "data length must equal num_tokens * dimension"
         );
 
-        let byte_len = HEADER_SIZE + std::mem::size_of_val(data);
+        let bytes = serialize_embedding_matrix(num_tokens, dimension, data);
 
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(EMBEDDINGS)?;
-            let mut guard = table.insert_reserve(doc_id, byte_len)?;
-            let dest = guard.as_mut();
-
-            dest[0..4].copy_from_slice(&num_tokens.to_le_bytes());
-            dest[4..8].copy_from_slice(&dimension.to_le_bytes());
-            dest[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
+            table.insert(doc_id, bytes.as_slice())?;
         }
         txn.commit()?;
         Ok(())
@@ -280,14 +287,9 @@ impl EmbeddingDb {
                     "data length must equal num_tokens * dimension"
                 );
 
-                let byte_len =
-                    HEADER_SIZE + std::mem::size_of_val(data.as_slice());
-                let mut guard = table.insert_reserve(*doc_id, byte_len)?;
-                let dest = guard.as_mut();
-
-                dest[0..4].copy_from_slice(&num_tokens.to_le_bytes());
-                dest[4..8].copy_from_slice(&dimension.to_le_bytes());
-                dest[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
+                let bytes =
+                    serialize_embedding_matrix(*num_tokens, *dimension, data);
+                table.insert(*doc_id, bytes.as_slice())?;
             }
         }
         txn.commit()?;

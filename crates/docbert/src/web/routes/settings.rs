@@ -434,10 +434,10 @@ pub(crate) async fn update(
 fn send_oauth_shutdown(
     shutdown: &Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
 ) {
-    if let Ok(mut guard) = shutdown.lock() {
-        if let Some(sender) = guard.take() {
-            let _ = sender.send(());
-        }
+    if let Ok(mut guard) = shutdown.lock()
+        && let Some(sender) = guard.take()
+    {
+        let _ = sender.send(());
     }
 }
 
@@ -833,10 +833,7 @@ mod tests {
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
 
-        assert_eq!(
-            parsed.as_str().starts_with(OPENAI_CODEX_AUTHORIZE_URL),
-            true
-        );
+        assert!(parsed.as_str().starts_with(OPENAI_CODEX_AUTHORIZE_URL));
         assert_eq!(
             query.get("client_id"),
             Some(&OPENAI_CODEX_CLIENT_ID.into())
