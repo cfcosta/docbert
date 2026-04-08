@@ -11,7 +11,7 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.10.2"
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
 ignore = "0.4"
-pylate-rs = { version = "1.0.4", git = "https://github.com/cfcosta/pylate-rs", rev = "ca517dbb2cca85b4a9c8c5b311cb2fd23bde7965" }
+pylate-rs = { version = "1.0.4", git = "https://github.com/cfcosta/pylate-rs" }
 rayon = "1.11.0"
 redb = "4.0.0"
 rkyv = "0.8.15"

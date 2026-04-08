@@ -3427,7 +3427,7 @@ checksum = "40e24eee682d89fb193496edf918a7f407d30175b2e785fe057e4392dfd182e0"
 [[package]]
 name = "pylate-rs"
 version = "1.0.4"
-source = "git+https://github.com/cfcosta/pylate-rs?rev=ca517dbb2cca85b4a9c8c5b311cb2fd23bde7965#ca517dbb2cca85b4a9c8c5b311cb2fd23bde7965"
+source = "git+https://github.com/cfcosta/pylate-rs#ca517dbb2cca85b4a9c8c5b311cb2fd23bde7965"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -4709,9 +4709,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "libc",
