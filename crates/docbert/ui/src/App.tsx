@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Outlet } from "react-router";
 import Sidebar from "./components/Sidebar";
 import { SearchSessionProvider } from "./pages/search-session";
@@ -8,7 +9,9 @@ export default function App() {
     <SearchSessionProvider>
       <Sidebar />
       <main className="main-content">
-        <Outlet />
+        <Suspense fallback={<div className="main-loading">Loading workspace…</div>}>
+          <Outlet />
+        </Suspense>
       </main>
     </SearchSessionProvider>
   );

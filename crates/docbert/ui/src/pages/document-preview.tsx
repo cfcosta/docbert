@@ -11,7 +11,7 @@ import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { PrismAsyncLight as SyntaxHighlighter } from "react-syntax-highlighter";
 
 import { buildDocumentTabHref, type DocumentListItem } from "../lib/api";
 import { resolveObsidianLink, type ResolvedObsidianLinkTarget } from "../lib/obsidian-links";

@@ -7,3 +7,13 @@
   background: var(--workspace-backdrop);
   isolation: isolate;
 }
+
+.main-loading {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--space-xl);
+  color: var(--text-muted);
+  font-size: var(--text-meta);
+  line-height: var(--leading-ui);
+}
