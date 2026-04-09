@@ -262,15 +262,7 @@ export default function Chat() {
 
   return (
     <div className="chat-page">
-      <aside className="chat-sidebar">
-        <div className="chat-sidebar-header">
-          <div className="chat-sidebar-copy">
-            <h2 className="chat-sidebar-title">Conversations</h2>
-          </div>
-          <button type="button" className="chat-new-btn" onClick={startNewChat}>
-            New chat
-          </button>
-        </div>
+      <aside className="chat-sidebar" aria-label="Conversations">
         <div className="chat-conv-list">
           {conversations.length === 0 && (
             <div className="chat-conv-empty">No conversations yet.</div>
@@ -321,6 +313,11 @@ export default function Chat() {
               )}
             </div>
           ))}
+        </div>
+        <div className="chat-sidebar-footer">
+          <button type="button" className="chat-new-btn" onClick={startNewChat}>
+            New chat
+          </button>
         </div>
       </aside>
 

@@ -15,47 +15,32 @@
   background: var(--surface-floating);
 }
 
-.chat-sidebar-header {
-  display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-lg) var(--space-md) var(--space-md);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in oklab, var(--bg-tertiary) 84%, var(--bg) 16%);
-}
-
-.chat-sidebar-copy {
-  display: grid;
-}
-
-.chat-sidebar-title {
-  font-family: var(--font-display);
-  font-size: var(--text-subhead);
-  font-weight: var(--weight-semibold);
-  line-height: var(--leading-heading);
-  letter-spacing: var(--tracking-heading);
-}
-
 .chat-new-btn {
-  width: 100%;
-  padding: 0.625rem 0.875rem;
-  min-height: 2.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  min-width: min(11rem, 100%);
+  padding: 0.75rem 1.5rem;
+  min-height: 3rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
   background: var(--bg-secondary);
   color: var(--text-h);
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-ui);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
   transition:
     background 0.15s,
     border-color 0.15s,
-    color 0.15s;
+    color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s;
 }
 
 .chat-new-btn:hover {
   background: var(--surface-selection);
-  border-color: var(--border-strong);
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .chat-conv-list {
@@ -65,6 +50,17 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2xs);
+}
+
+.chat-sidebar-footer {
+  padding: var(--space-sm) var(--space-md) var(--space-lg);
+  display: flex;
+  justify-content: center;
+  background: linear-gradient(
+    to top,
+    color-mix(in oklab, var(--surface-floating) 96%, var(--bg) 4%),
+    color-mix(in oklab, var(--surface-floating) 68%, transparent)
+  );
 }
 
 .chat-conv-empty {

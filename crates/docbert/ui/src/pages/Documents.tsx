@@ -514,16 +514,8 @@ export default function Documents() {
       )}
 
       <div className="file-manager">
-        <section className="file-tree-panel" aria-labelledby="collections-heading">
-          <div className="file-tree-header">
-            <div>
-              <span id="collections-heading" className="file-tree-title">
-                Collections
-              </span>
-              <p className="file-tree-subtitle">Drop files or folders onto a collection.</p>
-            </div>
-          </div>
-
+        <section className="file-tree-panel" aria-label="Collections">
+          <p className="sr-only">Drop files or folders onto a collection.</p>
           <DocumentsTree
             collections={collections}
             docs={docs}
