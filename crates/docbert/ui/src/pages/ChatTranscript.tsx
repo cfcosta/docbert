@@ -352,7 +352,7 @@ export default function ChatTranscript({
             </svg>
           </div>
           <h3>Start a conversation</h3>
-          <p>Ask a question and the assistant will search your documents for context.</p>
+          <p>Ask a question to search your documents and start a thread.</p>
         </div>
       )}
 

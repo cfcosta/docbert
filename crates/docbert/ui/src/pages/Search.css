@@ -14,31 +14,16 @@
 .search-header-inner {
   max-width: var(--workspace-width);
   margin: 0 auto;
-  padding: var(--page-block-start) var(--page-gutter) var(--space-lg);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
-
-.search-eyebrow {
-  font-size: var(--text-caption);
-  font-weight: var(--weight-bold);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-  color: var(--accent-cyan);
-}
-
-.search-header-copy {
+  padding: var(--page-block-start) var(--page-gutter) var(--space-md);
   display: grid;
-  gap: var(--space-xs);
-  max-width: 42rem;
+  gap: var(--space-2xs);
 }
 
 .search-subtitle {
   color: var(--text-muted);
   font-size: var(--text-meta);
   line-height: var(--leading-body);
-  max-width: 56ch;
+  max-width: 42ch;
 }
 
 .search-body {
@@ -73,20 +58,18 @@
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: var(--surface-floating);
-  box-shadow: var(--shadow-sm);
   transition:
     border-color 0.15s,
-    box-shadow 0.15s,
-    transform 0.15s;
+    background 0.15s;
 }
 
 .search-query-shell:hover {
-  box-shadow: var(--shadow);
+  background: color-mix(in oklab, var(--surface-floating) 72%, var(--bg) 28%);
 }
 
 .search-query-shell:focus-within {
   border-color: var(--border-focus);
-  box-shadow: var(--shadow);
+  background: color-mix(in oklab, var(--surface-floating) 84%, var(--bg) 16%);
 }
 
 .search-query-icon {
@@ -114,7 +97,6 @@
 .search-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-sm);
   flex-wrap: wrap;
   padding: var(--space-md) var(--space-xs) 0;
@@ -147,13 +129,6 @@
   min-width: 11rem;
 }
 
-.search-toolbar-hint {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-ui);
-}
-
 .search-state-card {
   margin-top: var(--space-2xl);
   padding: 0;
@@ -172,7 +147,6 @@
   border: 1px solid var(--error-border);
   border-radius: var(--radius-lg);
   background: color-mix(in oklab, var(--surface-selection) 82%, var(--error) 18%);
-  box-shadow: var(--shadow-sm);
 }
 
 .search-state-title {

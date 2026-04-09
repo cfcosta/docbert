@@ -7,25 +7,6 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
-  box-shadow:
-    inset -1px 0 0 rgba(205, 214, 244, 0.05),
-    8px 0 24px rgba(17, 17, 27, 0.14);
-}
-
-@media (prefers-color-scheme: dark) {
-  .sidebar {
-    box-shadow:
-      inset -1px 0 0 rgba(205, 214, 244, 0.04),
-      10px 0 28px rgba(17, 17, 27, 0.32);
-  }
-}
-
-@media (prefers-color-scheme: light) {
-  .sidebar {
-    box-shadow:
-      inset -1px 0 0 rgba(239, 241, 245, 0.35),
-      8px 0 22px rgba(76, 79, 105, 0.08);
-  }
 }
 
 .sidebar-header {
@@ -89,24 +70,20 @@
   transition:
     background 0.15s ease-out,
     border-color 0.15s ease-out,
-    color 0.15s ease-out,
-    transform 0.15s ease-out,
-    box-shadow 0.15s ease-out;
+    color 0.15s ease-out;
 }
 
 .sidebar-link:hover {
   background: var(--surface-selection);
-  border-color: color-mix(in oklab, var(--accent-cyan-border) 52%, transparent);
+  border-color: var(--border);
   color: var(--text-h);
   text-decoration: none;
-  box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active {
   background: color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%);
   border-color: var(--accent-border);
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active svg {

@@ -29,19 +29,16 @@
   padding: var(--space-sm) var(--space-md);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: color-mix(in oklab, var(--surface-floating) 76%, var(--bg) 24%);
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in oklab, var(--surface-floating) 82%, var(--bg) 18%);
   min-width: 0;
   transition:
     border-color 0.15s,
-    background 0.15s,
-    box-shadow 0.15s;
+    background 0.15s;
 }
 
 .chat-tool-search-result-node.active {
   border-color: var(--accent-border);
   background: color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%);
-  box-shadow: var(--shadow-sm);
 }
 
 .chat-tool-call-subagent .chat-tool-search-result-node {
@@ -121,13 +118,11 @@
   padding: var(--space-sm) var(--space-md);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: color-mix(in oklab, var(--bg-tertiary) 78%, var(--bg) 22%);
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in oklab, var(--bg-tertiary) 82%, var(--bg) 18%);
   min-width: 0;
   transition:
     border-color 0.15s,
-    background 0.15s,
-    box-shadow 0.15s;
+    background 0.15s;
 }
 
 .chat-tool-call-subagent .chat-tool-search-excerpt {
@@ -137,7 +132,6 @@
 .chat-tool-search-excerpt.active {
   border-color: var(--accent-border);
   background: color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%);
-  box-shadow: var(--shadow-sm);
 }
 
 .chat-tool-search-excerpt-link,
@@ -218,7 +212,6 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
-  box-shadow: var(--shadow-sm);
   font-size: var(--text-meta);
   line-height: var(--leading-body);
   color: var(--text);

@@ -13,14 +13,11 @@
   flex-direction: column;
   min-width: 0;
   background: var(--surface-floating);
-  box-shadow:
-    inset -1px 0 0 rgba(205, 214, 244, 0.05),
-    10px 0 28px rgba(17, 17, 27, 0.2);
 }
 
 .chat-sidebar-header {
   display: grid;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   padding: var(--space-lg) var(--space-md) var(--space-md);
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--bg-tertiary) 84%, var(--bg) 16%);
@@ -28,15 +25,6 @@
 
 .chat-sidebar-copy {
   display: grid;
-  gap: var(--space-2xs);
-}
-
-.chat-sidebar-eyebrow {
-  font-size: var(--text-caption);
-  font-weight: var(--weight-bold);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-  color: var(--accent-cyan);
 }
 
 .chat-sidebar-title {
@@ -47,22 +35,14 @@
   letter-spacing: var(--tracking-heading);
 }
 
-.chat-sidebar-subtitle {
-  color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-body);
-  max-width: 28ch;
-}
-
 .chat-new-btn {
   width: 100%;
   padding: 0.625rem 0.875rem;
   min-height: 2.75rem;
-  border: 1px solid var(--accent-cyan-border);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-h);
-  box-shadow: var(--shadow-sm);
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-ui);
@@ -70,15 +50,12 @@
   transition:
     background 0.15s,
     border-color 0.15s,
-    color 0.15s,
-    box-shadow 0.15s;
+    color 0.15s;
 }
 
 .chat-new-btn:hover {
   background: var(--surface-selection);
-  border-color: var(--accent-cyan-border);
-  color: var(--accent);
-  box-shadow: var(--shadow);
+  border-color: var(--border-strong);
 }
 
 .chat-conv-list {
@@ -226,22 +203,6 @@
 
 .chat-conv-confirm-no:hover {
   background: var(--bg-tertiary);
-}
-
-@media (prefers-color-scheme: dark) {
-  .chat-sidebar {
-    box-shadow:
-      inset -1px 0 0 rgba(205, 214, 244, 0.04),
-      12px 0 30px rgba(17, 17, 27, 0.34);
-  }
-}
-
-@media (prefers-color-scheme: light) {
-  .chat-sidebar {
-    box-shadow:
-      inset -1px 0 0 rgba(239, 241, 245, 0.35),
-      8px 0 22px rgba(76, 79, 105, 0.08);
-  }
 }
 
 /* ── Main chat area ── */

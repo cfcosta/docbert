@@ -13,29 +13,16 @@
 .settings-header-inner {
   max-width: 44rem;
   margin: 0 auto;
-  padding: var(--page-block-start) var(--page-gutter) var(--space-lg);
+  padding: var(--page-block-start) var(--page-gutter) var(--space-md);
   display: grid;
-  gap: var(--space-xs);
-}
-
-.settings-eyebrow {
-  font-size: var(--text-caption);
-  font-weight: var(--weight-bold);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-  color: var(--accent-cyan);
-}
-
-.settings-header-copy {
-  display: grid;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
 }
 
 .settings-header-description {
   color: var(--text-muted);
   font-size: var(--text-meta);
   line-height: var(--leading-body);
-  max-width: 54ch;
+  max-width: 42ch;
 }
 
 .settings-body {
@@ -100,19 +87,16 @@
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
   transition:
     background 0.15s,
     color 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color 0.15s;
 }
 
 .settings-radio:hover {
   background: var(--surface-selection);
-  border-color: var(--accent-border);
+  border-color: var(--border-strong);
   color: var(--text-h);
-  box-shadow: var(--shadow);
 }
 
 .settings-radio.active {
@@ -126,19 +110,17 @@
   width: 100%;
   padding: 0.75rem 0.875rem;
   min-height: 2.875rem;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-h);
-  box-shadow: var(--shadow-sm);
   outline: none;
   transition:
     border-color 0.15s,
-    background 0.15s,
-    box-shadow 0.15s;
+    background 0.15s;
 }
 
 .settings-select {
-  border: 1px solid var(--accent-cyan-border);
   font-family: var(--font-body);
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
@@ -146,7 +128,6 @@
 }
 
 .settings-input {
-  border: 1px solid var(--accent-pink-border);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
 }
@@ -159,7 +140,6 @@
 .settings-select:focus,
 .settings-input:focus {
   border-color: var(--border-focus);
-  box-shadow: var(--shadow);
 }
 
 .settings-hint {
@@ -180,11 +160,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  padding: var(--space-md);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--surface-floating) 76%, var(--bg) 24%);
-  box-shadow: var(--shadow-sm);
+  padding: var(--space-md) 0 0;
+  border-top: 1px solid var(--border);
 }
 
 .settings-oauth-copy {
@@ -213,7 +190,6 @@
   justify-content: center;
   min-height: 2.75rem;
   border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-ui);
@@ -221,7 +197,6 @@
   transition:
     background 0.15s,
     border-color 0.15s,
-    box-shadow 0.15s,
     opacity 0.15s;
 }
 
@@ -235,7 +210,6 @@
 .settings-save:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover-border);
-  box-shadow: var(--shadow);
 }
 
 .settings-secondary {
@@ -248,7 +222,6 @@
 .settings-secondary:hover:not(:disabled) {
   background: var(--surface-selection);
   border-color: var(--border-strong);
-  box-shadow: var(--shadow);
 }
 
 .settings-save:disabled,
@@ -267,7 +240,6 @@
   border-radius: 999px;
   font-size: 0.85rem;
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
 }
 
 .settings-saved {

@@ -214,13 +214,10 @@ export default function Settings() {
       <div className="settings-page">
         <header className="settings-header">
           <div className="settings-header-inner">
-            <p className="settings-eyebrow">Configuration</p>
-            <div className="settings-header-copy">
-              <h2>Settings</h2>
-              <p className="settings-header-description">
-                Manage the model provider used by docbert chat and agent workflows.
-              </p>
-            </div>
+            <h2>Settings</h2>
+            <p className="settings-header-description">
+              Manage the model provider used by chat and agent workflows.
+            </p>
           </div>
         </header>
         <div className="settings-body">
@@ -234,13 +231,10 @@ export default function Settings() {
     <div className="settings-page">
       <header className="settings-header">
         <div className="settings-header-inner">
-          <p className="settings-eyebrow">Configuration</p>
-          <div className="settings-header-copy">
-            <h2>Settings</h2>
-            <p className="settings-header-description">
-              Manage the model provider used by docbert chat and agent workflows.
-            </p>
-          </div>
+          <h2>Settings</h2>
+          <p className="settings-header-description">
+            Manage the model provider used by chat and agent workflows.
+          </p>
         </div>
       </header>
       <div className="settings-body">

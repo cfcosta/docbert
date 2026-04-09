@@ -55,10 +55,7 @@ export default function DocumentPreview({
           <FileIcon size={48} />
         </div>
         <h3>No document selected</h3>
-        <p>
-          Select a file from the tree to preview it, or upload Markdown or PDF files into any
-          docbert collection.
-        </p>
+        <p>Select a file from the tree to preview it.</p>
       </div>
     );
   }

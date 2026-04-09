@@ -265,14 +265,10 @@ export default function Chat() {
       <aside className="chat-sidebar">
         <div className="chat-sidebar-header">
           <div className="chat-sidebar-copy">
-            <p className="chat-sidebar-eyebrow">Workspace</p>
             <h2 className="chat-sidebar-title">Conversations</h2>
-            <p className="chat-sidebar-subtitle">
-              Keep active threads close while you work through local research material.
-            </p>
           </div>
           <button type="button" className="chat-new-btn" onClick={startNewChat}>
-            + New chat
+            New chat
           </button>
         </div>
         <div className="chat-conv-list">

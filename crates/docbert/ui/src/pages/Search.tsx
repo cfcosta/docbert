@@ -199,13 +199,8 @@ export default function Search() {
     <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
       <header className="search-header">
         <div className="search-header-inner">
-          <p className="search-eyebrow">Discovery</p>
-          <div className="search-header-copy">
-            <h2>Search</h2>
-            <p className="search-subtitle">
-              Run lexical and semantic queries across your indexed collections.
-            </p>
-          </div>
+          <h2>Search</h2>
+          <p className="search-subtitle">Search across your indexed collections.</p>
         </div>
       </header>
 
@@ -277,12 +272,6 @@ export default function Search() {
                 </select>
               </div>
             </div>
-
-            <p className="search-toolbar-hint">
-              {mode === "hybrid" ? "Hybrid ranking" : "Semantic ranking"}
-              <span aria-hidden="true"> · </span>
-              {selectedCollection || "All collections"}
-            </p>
           </div>
         </section>
 

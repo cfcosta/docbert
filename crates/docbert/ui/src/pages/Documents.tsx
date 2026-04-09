@@ -520,10 +520,7 @@ export default function Documents() {
               <span id="collections-heading" className="file-tree-title">
                 Collections
               </span>
-              <p className="file-tree-subtitle">
-                Drop files or folders onto a collection. Browse indexed sources, then pull new
-                Markdown or PDF material straight into the workspace.
-              </p>
+              <p className="file-tree-subtitle">Drop files or folders onto a collection.</p>
             </div>
           </div>
 
