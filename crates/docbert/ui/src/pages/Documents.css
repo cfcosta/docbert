@@ -73,17 +73,17 @@
 }
 
 .file-tree-title {
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
   color: var(--accent-cyan);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-label);
 }
 
 .file-tree-subtitle {
   max-width: 26ch;
-  font-size: 0.84rem;
-  line-height: 1.5;
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
   color: var(--text-muted);
 }
 
@@ -446,16 +446,18 @@
 }
 
 .preview-kicker {
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
   color: var(--accent-cyan);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-label);
   margin-bottom: 2px;
 }
 
 .preview-title {
   margin-bottom: 4px;
+  line-height: var(--leading-tight);
+  max-width: 22ch;
 }
 
 .preview-kind-badge {
@@ -466,9 +468,9 @@
   border: 1px solid var(--accent-border);
   background: var(--surface-floating);
   color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-ui);
 }
 
 .preview-permalink {
@@ -482,7 +484,9 @@
   background: var(--surface-floating);
   color: var(--text);
   text-decoration: none;
-  font-size: 0.85rem;
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-ui);
   transition:
     background 0.15s,
     border-color 0.15s,
@@ -503,12 +507,13 @@
   align-items: center;
   flex-wrap: wrap;
   margin-top: var(--space-sm);
-  font-size: 0.825rem;
+  font-size: var(--text-caption);
+  line-height: var(--leading-ui);
   color: var(--text-muted);
 }
 
 .preview-meta code {
-  font-size: 0.75rem;
+  font-size: var(--text-caption);
 }
 
 .preview-frontmatter {
@@ -525,7 +530,8 @@
   display: flex;
   gap: var(--space-xs);
   align-items: baseline;
-  font-size: 0.82rem;
+  font-size: var(--text-caption);
+  line-height: var(--leading-ui);
 }
 
 .preview-fm-field dt {
@@ -540,8 +546,8 @@
 .preview-fm-field dd {
   margin: 0;
   color: var(--text-h);
-  font-family: var(--mono);
-  font-size: 0.76rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
 }
 
 .preview-body {
@@ -553,8 +559,8 @@
 
 .preview-content {
   max-width: var(--reading-width);
-  font-size: 1rem;
-  line-height: 1.68;
+  font-size: var(--text-body);
+  line-height: var(--leading-relaxed);
   color: var(--text-h);
 }
 
@@ -565,19 +571,23 @@
 .preview-content h1,
 .preview-content h2,
 .preview-content h3 {
-  margin: 1.3em 0 0.45em;
+  margin: 1.25em 0 0.42em;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-heading);
+  letter-spacing: var(--tracking-heading);
 }
 
 .preview-content h1 {
-  font-size: 1.4em;
+  font-size: 1.55em;
 }
 
 .preview-content h2 {
-  font-size: 1.2em;
+  font-size: 1.3em;
 }
 
 .preview-content h3 {
-  font-size: 1.05em;
+  font-size: 1.12em;
 }
 
 .preview-content p {
@@ -673,7 +683,8 @@
 .preview-loading {
   max-width: var(--reading-width);
   color: var(--text-muted);
-  font-size: 0.95rem;
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
 }
 
 .preview-empty {
@@ -695,12 +706,14 @@
 
 .preview-empty h3 {
   color: var(--text-h);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
 }
 
 .preview-empty p {
   max-width: 30rem;
-  font-size: 1rem;
-  line-height: 1.6;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
 }
 
 /* ── Shared button styles (kept for search/chat pages) ── */

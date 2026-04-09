@@ -5,8 +5,8 @@
   padding: 0;
   background: transparent;
   border-top: none;
-  font-size: 0.95rem;
-  line-height: 1.625;
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
 }
 
 .chat-tool-call-subagent .chat-tool-search-results {
@@ -56,7 +56,7 @@
 
 .chat-tool-search-result-title {
   font-size: inherit;
-  font-weight: 620;
+  font-weight: var(--weight-semibold);
   color: var(--text-h);
 }
 
@@ -90,8 +90,8 @@
 
 .chat-tool-search-result-path {
   margin-top: 2px;
-  font-size: 0.875rem;
-  font-family: var(--mono);
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -102,7 +102,7 @@
   display: flex;
   gap: var(--space-sm);
   margin-top: var(--space-xs);
-  font-size: 0.825rem;
+  font-size: var(--text-caption);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -161,9 +161,9 @@
 }
 
 .chat-tool-search-excerpt-range {
-  font-size: 0.8rem;
-  line-height: 1.5;
-  font-family: var(--mono);
+  font-size: var(--text-caption);
+  line-height: var(--leading-ui);
+  font-family: var(--font-mono);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -188,8 +188,8 @@
 
 .chat-tool-search-results-tool-inline .chat-tool-search-result-node {
   padding: 0.625rem 0.75rem;
-  font-size: 0.8rem;
-  line-height: 1.55;
+  font-size: var(--text-caption);
+  line-height: var(--leading-ui);
   color: var(--text-muted);
 }
 
@@ -208,8 +208,8 @@
 
 .chat-tool-search-results-tool-inline .chat-tool-search-result-path,
 .chat-tool-search-results-tool-inline .chat-tool-search-result-meta {
-  font-size: 0.75rem;
-  line-height: 1.55;
+  font-size: var(--text-caption);
+  line-height: var(--leading-ui);
 }
 
 .chat-tool-search-results-tool-inline .chat-tool-search-result-children {
@@ -219,8 +219,8 @@
   border-radius: var(--radius);
   background: var(--bg-secondary);
   box-shadow: var(--shadow-sm);
-  font-size: 0.85rem;
-  line-height: 1.6;
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
   color: var(--text);
 }
 

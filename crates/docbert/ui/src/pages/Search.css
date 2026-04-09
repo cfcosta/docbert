@@ -21,9 +21,9 @@
 }
 
 .search-eyebrow {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
   color: var(--accent-cyan);
 }
@@ -36,8 +36,8 @@
 
 .search-subtitle {
   color: var(--text-muted);
-  font-size: 0.95rem;
-  line-height: 1.6;
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
   max-width: 56ch;
 }
 
@@ -150,7 +150,8 @@
 .search-toolbar-hint {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.875rem;
+  font-size: var(--text-meta);
+  line-height: var(--leading-ui);
 }
 
 .search-state-card {
@@ -176,14 +177,17 @@
 
 .search-state-title {
   color: var(--text-h);
-  font-size: 1.125rem;
-  font-weight: 620;
+  font-family: var(--font-display);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-heading);
 }
 
 .search-state-text {
   margin-top: var(--space-xs);
   color: var(--text-muted);
-  line-height: 1.7;
+  font-size: var(--text-body);
+  line-height: var(--leading-relaxed);
   max-width: 60ch;
 }
 
@@ -206,15 +210,16 @@
 
 .search-results-title {
   color: var(--text-h);
-  font-size: 1rem;
-  font-weight: 620;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-ui);
 }
 
 .search-results-meta {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.9rem;
-  line-height: 1.6;
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
 }
 
 .search-results-panel .chat-tool-search-results {
@@ -247,9 +252,11 @@
 
 .search-results-panel .chat-tool-search-result-title {
   display: inline-block;
-  font-size: 1.1rem;
-  font-weight: 560;
-  line-height: 1.5;
+  font-family: var(--font-display);
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-heading);
+  letter-spacing: var(--tracking-heading);
   color: var(--accent);
 }
 
@@ -260,14 +267,15 @@
 
 .search-results-panel .chat-tool-search-result-path {
   margin-top: var(--space-xs);
-  font-size: 0.875rem;
+  font-size: var(--text-caption);
   color: var(--accent-green);
+  letter-spacing: var(--tracking-ui);
 }
 
 .search-results-panel .chat-tool-search-result-meta {
   gap: var(--space-sm);
   margin-top: var(--space-sm);
-  font-size: 0.875rem;
+  font-size: var(--text-caption);
   color: var(--text-muted);
 }
 

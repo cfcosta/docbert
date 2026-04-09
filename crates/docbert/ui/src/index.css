@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap");
+
 *,
 *::before,
 *::after {
@@ -127,18 +129,48 @@
   --page-block-end: clamp(2rem, 4vw, 4rem);
   --workspace-width: 74rem;
   --workspace-wide-width: 84rem;
-  --reading-width: 74ch;
+  --reading-width: 68ch;
 
-  --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: "Berkeley Mono", "SFMono-Regular", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --font-body: "Public Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Source Serif 4", Iowan Old Style, Georgia, serif;
+  --font-mono:
+    "Berkeley Mono", "SFMono-Regular", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: var(--font-body);
+  --display: var(--font-display);
+  --mono: var(--font-mono);
 
-  font-family: var(--sans);
-  font-size: 16px;
-  line-height: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --text-caption: 0.75rem;
+  --text-meta: 0.875rem;
+  --text-body: 1rem;
+  --text-lead: 1.125rem;
+  --text-subhead: 1.25rem;
+  --text-title: 1.5625rem;
+  --text-display: 1.9375rem;
+
+  --leading-tight: 1.12;
+  --leading-heading: 1.2;
+  --leading-ui: 1.45;
+  --leading-body: 1.65;
+  --leading-relaxed: 1.72;
+
+  --tracking-label: 0.08em;
+  --tracking-ui: 0.01em;
+  --tracking-tight: -0.03em;
+  --tracking-heading: -0.024em;
+
+  font-family: var(--font-body);
+  font-size: 100%;
+  line-height: var(--leading-body);
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
   font-optical-sizing: auto;
+  font-kerning: normal;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -205,6 +237,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
 }
 
 h1,
@@ -212,26 +247,28 @@ h2,
 h3,
 h4 {
   color: var(--text-h);
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-heading);
   margin: 0;
   text-wrap: balance;
 }
 
 h1 {
-  font-size: clamp(1.6rem, 1.2rem + 1vw, 2rem);
+  font-size: var(--text-display);
 }
 
 h2 {
-  font-size: clamp(1.35rem, 1.1rem + 0.8vw, 1.75rem);
+  font-size: var(--text-title);
 }
 
 h3 {
-  font-size: 1.125rem;
+  font-size: var(--text-subhead);
 }
 
 h4 {
-  font-size: 1rem;
+  font-size: var(--text-lead);
 }
 
 p {
@@ -244,6 +281,7 @@ textarea,
 select {
   font: inherit;
   color: inherit;
+  font-family: var(--font-body);
 }
 
 button,
@@ -293,11 +331,13 @@ p,
 }
 
 code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.875em;
   background: var(--code-bg);
   padding: 2px 6px;
   border-radius: 6px;
+  font-variant-ligatures: none;
+  font-variant-numeric: lining-nums slashed-zero;
 }
 
 :where(a, button, input, textarea, select, [tabindex]):focus-visible {

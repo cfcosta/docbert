@@ -50,10 +50,12 @@
 }
 
 .sidebar-title {
-  font-size: 1rem;
-  font-weight: 760;
+  font-family: var(--font-display);
+  font-size: var(--text-lead);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
   color: var(--text-h);
-  letter-spacing: -0.03em;
+  letter-spacing: var(--tracking-tight);
   transition: color 0.15s ease-out;
 }
 
@@ -81,8 +83,9 @@
   border: 1px solid transparent;
   color: var(--text);
   text-decoration: none;
-  font-size: 0.9rem;
-  font-weight: 560;
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-ui);
   transition:
     background 0.15s ease-out,
     border-color 0.15s ease-out,
