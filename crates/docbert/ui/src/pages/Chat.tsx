@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { getModel } from "@mariozechner/pi-ai";
 import "katex/dist/katex.min.css";
@@ -34,6 +34,18 @@ import {
 } from "./chat-session";
 import "./Chat.css";
 
+const STARTER_PROMPTS = [
+  "Summarize the documents about ",
+  "Find the files that explain ",
+  "Compare what my notes say about ",
+] as const;
+
+const MIN_COMPOSER_HEIGHT = 56;
+const MAX_COMPOSER_HEIGHT = 220;
+
+type GetModelProvider = Parameters<typeof getModel>[0];
+type GetModelId = Parameters<typeof getModel>[1];
+
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -63,6 +75,16 @@ function chatScrollBehavior(): ScrollBehavior {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }
 
+function resizeComposer(node: HTMLTextAreaElement | null) {
+  if (!node) {
+    return;
+  }
+
+  node.style.height = "0px";
+  const nextHeight = Math.min(node.scrollHeight, MAX_COMPOSER_HEIGHT);
+  node.style.height = `${Math.max(nextHeight, MIN_COMPOSER_HEIGHT)}px`;
+}
+
 export default function Chat() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
@@ -73,6 +95,8 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [isComposing, setIsComposing] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -86,28 +110,58 @@ export default function Chat() {
   }, [reloadConversations]);
 
   useEffect(() => {
-    if (conversationId && conversationId !== activeId) {
-      void (async () => {
-        const loadedConversation = await loadConversationById(conversationId);
-        if (!loadedConversation) {
-          navigate("/chat", { replace: true });
-          return;
-        }
+    let cancelled = false;
 
-        setActiveId(conversationId);
-        setActiveConversation(loadedConversation.conversation);
-        setMessages(loadedConversation.messages);
-      })();
-    } else if (!conversationId && activeId) {
-      setActiveId(null);
-      setActiveConversation(null);
-      setMessages([]);
-    }
-  }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+    const syncConversation = async () => {
+      if (!conversationId) {
+        setActiveId(null);
+        setActiveConversation(null);
+        setMessages([]);
+        setConfirmDelete(null);
+        return;
+      }
+
+      if (conversationId === activeId) {
+        setConfirmDelete(null);
+        return;
+      }
+
+      const loadedConversation = await loadConversationById(conversationId);
+      if (cancelled) {
+        return;
+      }
+
+      if (!loadedConversation) {
+        navigate("/chat", { replace: true });
+        return;
+      }
+
+      setActiveId(conversationId);
+      setActiveConversation(loadedConversation.conversation);
+      setMessages(loadedConversation.messages);
+      setConfirmDelete(null);
+    };
+
+    void syncConversation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, activeId, navigate]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: chatScrollBehavior() });
   }, [messages]);
+
+  useEffect(() => {
+    resizeComposer(composerRef.current);
+  }, [input]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const selectConversation = useCallback(
     async (id: string) => {
@@ -119,6 +173,8 @@ export default function Chat() {
       setActiveId(id);
       setActiveConversation(loadedConversation.conversation);
       setMessages(loadedConversation.messages);
+      setInput("");
+      setConfirmDelete(null);
       navigate(`/chat/${id}`);
     },
     [navigate],
@@ -129,6 +185,7 @@ export default function Chat() {
     setActiveConversation(null);
     setMessages([]);
     setInput("");
+    setConfirmDelete(null);
     navigate("/chat");
   }, [navigate]);
 
@@ -203,8 +260,7 @@ export default function Chat() {
       }
 
       const settings = maybeReadySettings;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const model = getModel(settings.provider as any, settings.model as any);
+      const model = getModel(settings.provider as GetModelProvider, settings.model as GetModelId);
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -242,12 +298,11 @@ export default function Chat() {
           break;
         }
       }
-
-      abortRef.current = null;
     } catch (error) {
       setMessages((previous) => [...previous, createRuntimeErrorMessage(uuid(), error)]);
     } finally {
       setLoading(false);
+      abortRef.current = null;
 
       if (conversationIdToSave && conversation) {
         setMessages((latest) => {
@@ -258,14 +313,54 @@ export default function Chat() {
     }
   }, [input, loading, messages, activeId, activeConversation, saveConversation, navigate]);
 
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const handleStarterPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    composerRef.current?.focus();
+  }, []);
+
+  const handleComposerKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key !== "Enter" || event.shiftKey || isComposing || event.nativeEvent.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+      void sendMessage();
+    },
+    [isComposing, sendMessage],
+  );
+
   const displayMessageGroups = groupMessagesForDisplay(messages);
+  const conversationCountLabel =
+    conversations.length === 0
+      ? "No saved threads yet"
+      : `${conversations.length} saved ${conversations.length === 1 ? "thread" : "threads"}`;
+  const composerStatus = loading
+    ? "Assistant is working. You can stop the response at any time."
+    : "Enter to send · Shift+Enter for newline";
+  const composerHint = activeId
+    ? "Messages save to this conversation automatically."
+    : "Your first message will create a new conversation automatically.";
 
   return (
     <div className="chat-page">
       <aside className="chat-sidebar" aria-label="Conversations">
-        <div className="chat-conv-list">
+        <div className="chat-conv-list-header">
+          <div>
+            <p className="chat-sidebar-kicker">Recent conversations</p>
+            <p className="chat-sidebar-summary">{conversationCountLabel}</p>
+          </div>
+        </div>
+
+        <div className="chat-conv-list" aria-label="Conversation history">
           {conversations.length === 0 && (
-            <div className="chat-conv-empty">No conversations yet.</div>
+            <div className="chat-conv-empty">
+              Start a thread to build up a searchable conversation history.
+            </div>
           )}
           {conversations.map((conversation) => (
             <div
@@ -297,7 +392,7 @@ export default function Chat() {
                     className="chat-conv-confirm-no"
                     onClick={() => setConfirmDelete(null)}
                   >
-                    Cancel
+                    Keep
                   </button>
                 </div>
               ) : (
@@ -316,17 +411,20 @@ export default function Chat() {
         </div>
         <div className="chat-sidebar-footer">
           <button type="button" className="chat-new-btn" onClick={startNewChat}>
-            New chat
+            <PlusIcon />
+            <span>New chat</span>
           </button>
         </div>
       </aside>
 
-      <div className="chat-main">
+      <div className="chat-main" aria-busy={loading}>
         <ChatTranscript
           displayMessageGroups={displayMessageGroups}
           loading={loading}
           lastMessageRole={messages[messages.length - 1]?.role}
           bottomRef={bottomRef}
+          starterPrompts={[...STARTER_PROMPTS]}
+          onPickStarter={handleStarterPrompt}
         />
 
         <div className="chat-input-wrap">
@@ -337,39 +435,80 @@ export default function Chat() {
               void sendMessage();
             }}
           >
-            <input
-              type="text"
-              placeholder="Ask a question..."
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              className="chat-input"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              className="chat-send"
-              disabled={loading || !input.trim()}
-              aria-label="Send message"
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+            <div className="chat-input-shell">
+              <label className="sr-only" htmlFor="chat-composer">
+                Message
+              </label>
+              <textarea
+                id="chat-composer"
+                ref={composerRef}
+                placeholder="Ask about your notes, docs, or PDFs…"
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                className="chat-input"
+                rows={1}
+                disabled={loading}
+              />
+              <div className="chat-input-meta" aria-live="polite">
+                <span className={`chat-input-status${loading ? " is-loading" : ""}`}>
+                  {composerStatus}
+                </span>
+                <span className="chat-input-hint">{composerHint}</span>
+              </div>
+            </div>
+            {loading ? (
+              <button type="button" className="chat-stop" onClick={handleStop}>
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="chat-send"
+                disabled={!input.trim()}
+                aria-label="Send message"
               >
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
-            </button>
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            )}
           </form>
         </div>
       </div>
     </div>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
   );
 }
 

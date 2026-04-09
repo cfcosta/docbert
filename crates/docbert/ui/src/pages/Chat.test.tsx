@@ -174,10 +174,10 @@ function renderChat(route: string) {
   );
 }
 
-function chatInput(container: HTMLElement): HTMLInputElement {
-  const input = container.getElementsByTagName("input")[0];
-  if (!(input instanceof HTMLInputElement)) {
-    throw new Error("chat input not found");
+function chatInput(container: HTMLElement): HTMLTextAreaElement {
+  const input = container.getElementsByTagName("textarea")[0];
+  if (!(input instanceof HTMLTextAreaElement)) {
+    throw new Error("chat textarea not found");
   }
   return input;
 }
@@ -368,6 +368,66 @@ describe("Chat page", () => {
     );
     expect(streamCallCount).toBe(0);
     expect(getModelCallCount).toBe(0);
+  });
+
+  test("starter_prompt_chip_prefills_the_composer", async () => {
+    installApiStubs({ conversation: makeConversation("starter-1", []), settings: NO_SETTINGS });
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderChat("/chat");
+
+    await user.click(view.getByRole("button", { name: /summarize the documents about/i }));
+
+    expect(chatInput(view.container).value).toBe("Summarize the documents about ");
+  });
+
+  test("enter_submits_while_shift_enter_keeps_multiline_input", async () => {
+    const conversation = makeConversation("multiline-1", [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "Loaded answer",
+        actor: { type: "parent" },
+        parts: [{ type: "text", text: "Loaded answer" }],
+      },
+    ]);
+    installApiStubs({ conversation, settings: NO_SETTINGS });
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderChat("/chat/multiline-1");
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("Loaded answer") ?? false,
+      () => `loaded answer never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await user.type(chatInput(view.container), "First line");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    await user.type(chatInput(view.container), "Second line");
+
+    expect(chatInput(view.container).value).toBe("First line\nSecond line");
+
+    await user.keyboard("{Enter}");
+    await waitForCondition(
+      () => getLlmSettingsCallCount > 0,
+      () =>
+        `enter submit never reached settings lookup: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("First line") ?? false,
+      () => `first line never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("Second line") ?? false,
+      () => `second line never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () =>
+        view.container.textContent?.includes(
+          "No LLM provider configured. Go to Settings to select a provider, model, and API key or complete the required OAuth sign-in.",
+        ) ?? false,
+      () => `missing config message never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
   });
 
   test("send_message_persists_latest_messages_after_successful_round", async () => {

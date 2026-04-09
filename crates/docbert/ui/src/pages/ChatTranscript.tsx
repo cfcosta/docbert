@@ -20,6 +20,8 @@ type ChatTranscriptProps = {
   loading: boolean;
   lastMessageRole?: Message["role"];
   bottomRef: RefObject<HTMLDivElement | null>;
+  starterPrompts?: string[];
+  onPickStarter?: (prompt: string) => void;
 };
 
 function isSearchExcerpt(value: unknown): value is SearchExcerpt {
@@ -331,6 +333,8 @@ export default function ChatTranscript({
   loading,
   lastMessageRole,
   bottomRef,
+  starterPrompts = [],
+  onPickStarter,
 }: ChatTranscriptProps) {
   return (
     <div className="chat-messages">
@@ -352,7 +356,25 @@ export default function ChatTranscript({
             </svg>
           </div>
           <h3>Start a conversation</h3>
-          <p>Ask a question to search your documents and start a thread.</p>
+          <p>
+            Ask across your notes, docs, and PDFs. docbert will search first, then answer inside the
+            same thread.
+          </p>
+          {starterPrompts.length > 0 && onPickStarter && (
+            <div className="chat-empty-starters" aria-label="Suggested prompts">
+              {starterPrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="chat-starter-chip"
+                  onClick={() => onPickStarter(prompt)}
+                >
+                  {prompt}
+                  <span aria-hidden="true">…</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -377,10 +399,11 @@ export default function ChatTranscript({
       {loading && lastMessageRole !== "assistant" && (
         <div className="chat-msg chat-msg-assistant">
           <div className="chat-msg-bubble">
-            <div className="chat-typing">
-              <span />
-              <span />
-              <span />
+            <div className="chat-typing" role="status" aria-live="polite">
+              <span className="sr-only">Assistant is thinking</span>
+              <span className="chat-typing-dot chat-typing-dot-1" aria-hidden="true" />
+              <span className="chat-typing-dot chat-typing-dot-2" aria-hidden="true" />
+              <span className="chat-typing-dot chat-typing-dot-3" aria-hidden="true" />
             </div>
           </div>
         </div>
