@@ -9,14 +9,14 @@
   overflow-y: auto;
   box-shadow:
     inset -1px 0 0 rgba(205, 214, 244, 0.05),
-    8px 0 24px rgba(17, 17, 27, 0.12);
+    8px 0 24px rgba(17, 17, 27, 0.14);
 }
 
 @media (prefers-color-scheme: dark) {
   .sidebar {
     box-shadow:
       inset -1px 0 0 rgba(205, 214, 244, 0.04),
-      10px 0 28px rgba(17, 17, 27, 0.34);
+      10px 0 28px rgba(17, 17, 27, 0.32);
   }
 }
 
@@ -29,9 +29,9 @@
 }
 
 .sidebar-header {
-  padding: 20px 16px 12px;
+  padding: var(--space-lg) var(--space-md) var(--space-sm);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: color-mix(in oklab, var(--bg-tertiary) 84%, var(--bg) 16%);
 }
 
 .sidebar-title-link {
@@ -50,19 +50,20 @@
 }
 
 .sidebar-title {
-  font-size: 1.125rem;
-  font-weight: 750;
+  font-size: 1rem;
+  font-weight: 760;
   color: var(--text-h);
+  letter-spacing: -0.03em;
   transition: color 0.15s ease-out;
 }
 
 .sidebar-nav {
   list-style: none;
   margin: 0;
-  padding: 10px 8px;
+  padding: var(--space-sm) var(--space-xs);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
 }
 
 .sidebar-nav li,
@@ -73,15 +74,15 @@
 .sidebar-link {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 10px 12px;
+  gap: var(--space-sm);
+  min-height: 2.75rem;
+  padding: 0.625rem 0.75rem;
   border-radius: var(--radius);
   border: 1px solid transparent;
   color: var(--text);
   text-decoration: none;
-  font-size: 0.875rem;
-  font-weight: 550;
+  font-size: 0.9rem;
+  font-weight: 560;
   transition:
     background 0.15s ease-out,
     border-color 0.15s ease-out,
@@ -92,17 +93,17 @@
 
 .sidebar-link:hover {
   background: var(--surface-selection);
-  border-color: var(--accent-cyan-border);
+  border-color: color-mix(in oklab, var(--accent-cyan-border) 52%, transparent);
   color: var(--text-h);
   text-decoration: none;
   box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active {
-  background: var(--surface-current-line);
+  background: color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%);
   border-color: var(--accent-border);
   color: var(--accent);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-sm);
 }
 
 .sidebar-link.active svg {
@@ -115,9 +116,9 @@
 
 .sidebar-footer {
   margin-top: auto;
-  padding: 8px;
+  padding: var(--space-xs);
   border-top: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: color-mix(in oklab, var(--bg-tertiary) 88%, var(--bg) 12%);
 }
 
 @media (max-width: 860px) {
@@ -131,30 +132,30 @@
   }
 
   .sidebar-header {
-    padding: 14px 16px 10px;
+    padding: var(--space-md) var(--space-md) var(--space-sm);
   }
 
   .sidebar-nav {
     flex-direction: row;
     flex-wrap: wrap;
-    padding: 8px 12px 6px;
+    padding: var(--space-xs) var(--space-sm) var(--space-xs);
   }
 
   .sidebar-nav li {
-    flex: 1 1 160px;
+    flex: 1 1 10rem;
   }
 
   .sidebar-footer {
     margin-top: 0;
     border-top: none;
-    padding: 0 12px 12px;
+    padding: 0 var(--space-sm) var(--space-sm);
   }
 }
 
 @media (max-width: 560px) {
   .sidebar-nav,
   .sidebar-footer {
-    padding-inline: 10px;
+    padding-inline: var(--space-xs);
   }
 
   .sidebar-nav li,

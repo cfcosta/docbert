@@ -199,8 +199,13 @@ export default function Search() {
     <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
       <header className="search-header">
         <div className="search-header-inner">
-          <h2>Search</h2>
-          <p className="search-subtitle">Find documents across your indexed collections.</p>
+          <p className="search-eyebrow">Discovery</p>
+          <div className="search-header-copy">
+            <h2>Search</h2>
+            <p className="search-subtitle">
+              Run lexical and semantic queries across your indexed collections.
+            </p>
+          </div>
         </div>
       </header>
 
