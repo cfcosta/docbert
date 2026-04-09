@@ -24,6 +24,11 @@
   margin: 0 auto;
 }
 
+.search-controls {
+  display: flex;
+  flex-direction: column;
+}
+
 .search-page:not(.search-page-has-query) .search-body {
   justify-content: center;
 }
@@ -34,32 +39,46 @@
 }
 
 .search-query-shell {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: var(--space-sm);
-  min-height: 3.75rem;
-  padding: 0 var(--space-lg);
+  padding: var(--space-sm);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--surface-control);
+  border-radius: calc(var(--radius-lg) + 2px);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-secondary) 90%, white 10%) 0%,
+    color-mix(in oklab, var(--bg-secondary) 94%, var(--bg) 6%) 78%,
+    color-mix(in oklab, var(--bg-secondary) 78%, var(--bg-tertiary) 22%) 100%
+  );
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 46%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--bg-tertiary) 46%, transparent),
     0 8px 20px color-mix(in oklab, var(--bg) 92%, transparent);
   transition:
     border-color 0.15s,
-    background 0.15s,
-    box-shadow 0.15s;
-}
-
-.search-query-shell:hover {
-  background: var(--surface-control-hover);
+    box-shadow 0.15s,
+    transform 0.15s;
 }
 
 .search-query-shell:focus-within {
   border-color: var(--border-focus);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 52%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--bg-tertiary) 52%, transparent),
     0 10px 24px color-mix(in oklab, var(--bg) 88%, transparent);
+}
+
+.search-query-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 3.5rem;
+  padding: 0 var(--space-md);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: calc(var(--radius-lg) - 2px);
+  background: color-mix(in oklab, var(--surface-floating) 68%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 26%, transparent);
 }
 
 .search-query-icon {
@@ -69,7 +88,8 @@
 }
 
 .search-input.search-input-query {
-  min-height: 3.5rem;
+  min-width: 0;
+  min-height: 3rem;
   padding: 0;
   border: none;
   border-radius: 0;
@@ -84,18 +104,11 @@
   box-shadow: none;
 }
 
-.search-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
-  padding: var(--space-md) var(--space-xs) 0;
-}
-
-.search-toolbar-group {
+.search-query-filters {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
+  padding: 0 var(--space-xs);
 }
 
 .search-field-inline {
@@ -108,16 +121,113 @@
   max-width: 100%;
   padding: 0.5rem 0.875rem;
   border-radius: 999px;
-  background: var(--surface-control);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 42%, transparent);
+  border-color: color-mix(in oklab, var(--border) 78%, transparent);
+  background: color-mix(in oklab, var(--surface-floating) 74%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 28%, transparent);
 }
 
 .search-select.search-filter:hover:not(:disabled) {
-  background: var(--surface-selection);
+  background: color-mix(in oklab, var(--surface-selection) 84%, var(--surface-floating) 16%);
 }
 
 .search-filter-collection {
   min-width: 11rem;
+}
+
+.search-submit-button {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: min(11rem, 100%);
+  min-height: 3rem;
+  margin: var(--space-md) auto 0;
+  padding: 0.75rem 1.5rem;
+  border: 1px solid color-mix(in oklab, var(--accent-cyan) 14%, var(--border-strong));
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 76%, white 24%),
+    color-mix(in oklab, var(--bg-secondary) 88%, var(--surface-selection) 12%) 58%,
+    color-mix(in oklab, var(--bg-secondary) 88%, var(--accent) 12%)
+  );
+  color: var(--text-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-ui);
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 58%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--accent) 14%, transparent),
+    0 6px 16px color-mix(in oklab, var(--bg) 88%, transparent);
+  transition:
+    border-color 0.18s,
+    color 0.18s,
+    box-shadow 0.18s,
+    transform 0.18s,
+    filter 0.18s;
+}
+
+.search-submit-button::before,
+.search-submit-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.search-submit-button::before {
+  background: linear-gradient(
+    120deg,
+    transparent 24%,
+    color-mix(in oklab, white 54%, transparent) 40%,
+    transparent 56%
+  );
+  opacity: 0.34;
+  transform: translateX(-34%);
+  transition:
+    transform 0.3s ease,
+    opacity 0.2s ease;
+}
+
+.search-submit-button::after {
+  inset: 1px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent-cyan) 8%, transparent),
+    transparent 42%,
+    color-mix(in oklab, var(--accent) 8%, transparent)
+  );
+  opacity: 0.68;
+  z-index: -1;
+}
+
+.search-submit-button:hover {
+  border-color: color-mix(in oklab, var(--accent-cyan) 24%, var(--border-focus) 76%);
+  color: color-mix(in oklab, var(--text-h) 90%, var(--accent) 10%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 64%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--accent) 18%, transparent),
+    0 10px 20px color-mix(in oklab, var(--bg) 82%, transparent);
+  transform: translateY(-1px);
+  filter: saturate(1.02);
+}
+
+.search-submit-button:hover::before {
+  transform: translateX(16%);
+  opacity: 0.42;
+}
+
+.search-submit-button:active {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 52%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--accent) 12%, transparent),
+    0 4px 12px color-mix(in oklab, var(--bg) 90%, transparent);
 }
 
 .search-state-card {
@@ -298,15 +408,22 @@
     padding: var(--space-lg) var(--space-md) var(--space-3xl);
   }
 
-  .search-toolbar {
-    padding-inline: 0;
+  .search-query-shell {
+    padding: var(--space-xs);
   }
 
-  .search-filter-collection {
-    min-width: 0;
+  .search-query-row {
+    padding-inline: var(--space-sm);
   }
 
-  .search-toolbar-hint {
+  .search-query-filters {
+    flex-direction: column;
+    padding: 0;
+  }
+
+  .search-select.search-filter,
+  .search-filter-collection,
+  .search-submit-button {
     width: 100%;
   }
 }

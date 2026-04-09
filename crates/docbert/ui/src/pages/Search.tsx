@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type FormEvent } from "react";
 
 import SearchResults from "../components/SearchResults";
 import { api } from "../lib/api";
@@ -6,7 +6,6 @@ import { useSearchSession } from "./search-session";
 import "./Search.css";
 
 const ALL_COLLECTIONS_VALUE = "";
-const SEARCH_DEBOUNCE_MS = 200;
 
 export default function Search() {
   const { searchSession, setSearchSession } = useSearchSession();
@@ -75,151 +74,148 @@ export default function Search() {
     }
 
     const trimmedQuery = query.trim();
-    if (!trimmedQuery) {
-      const shouldResetBlankState =
-        searching ||
-        searchError !== null ||
-        resultCount !== null ||
-        results.length > 0 ||
-        lastIssuedQuery !== null ||
-        lastIssuedMode !== null ||
-        lastIssuedCollection !== null;
-
-      if (shouldResetBlankState) {
-        setSearchSession((previous) => ({
-          ...previous,
-          latestSearchRequestId: previous.latestSearchRequestId + 1,
-          searching: false,
-          searchError: null,
-          resultCount: null,
-          results: [],
-          lastIssuedQuery: null,
-          lastIssuedMode: null,
-          lastIssuedCollection: null,
-        }));
-      }
+    if (trimmedQuery) {
       return;
     }
 
-    const selectedCollectionValue = selectedCollection || null;
-    const shouldSkipSearch =
-      lastIssuedQuery === trimmedQuery &&
-      lastIssuedMode === mode &&
-      lastIssuedCollection === selectedCollectionValue;
+    const shouldResetBlankState =
+      searching ||
+      searchError !== null ||
+      resultCount !== null ||
+      results.length > 0 ||
+      lastIssuedQuery !== null ||
+      lastIssuedMode !== null ||
+      lastIssuedCollection !== null;
 
-    if (shouldSkipSearch) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      const requestId = latestSearchRequestId + 1;
+    if (shouldResetBlankState) {
       setSearchSession((previous) => ({
         ...previous,
-        latestSearchRequestId: requestId,
-        searching: true,
+        latestSearchRequestId: previous.latestSearchRequestId + 1,
+        searching: false,
         searchError: null,
-        lastIssuedQuery: trimmedQuery,
-        lastIssuedMode: previous.mode,
-        lastIssuedCollection: previous.selectedCollection || null,
+        resultCount: null,
+        results: [],
+        lastIssuedQuery: null,
+        lastIssuedMode: null,
+        lastIssuedCollection: null,
       }));
-
-      api
-        .search({
-          query: trimmedQuery,
-          mode,
-          collection: selectedCollection || undefined,
-        })
-        .then((response) => {
-          let shouldApply = false;
-          setSearchSession((previous) => {
-            if (previous.latestSearchRequestId !== requestId) {
-              return previous;
-            }
-            shouldApply = true;
-            return {
-              ...previous,
-              resultCount: response.result_count,
-              results: response.results,
-              searchError: null,
-            };
-          });
-          if (!shouldApply) {
-            return;
-          }
-        })
-        .catch((error) => {
-          setSearchSession((previous) => {
-            if (previous.latestSearchRequestId !== requestId) {
-              return previous;
-            }
-            return {
-              ...previous,
-              searchError: error instanceof Error ? error.message : "Search failed.",
-              resultCount: null,
-              results: [],
-            };
-          });
-        })
-        .finally(() => {
-          setSearchSession((previous) => {
-            if (previous.latestSearchRequestId !== requestId) {
-              return previous;
-            }
-            return {
-              ...previous,
-              searching: false,
-            };
-          });
-        });
-    }, SEARCH_DEBOUNCE_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
+    }
   }, [
     collectionsError,
     lastIssuedCollection,
     lastIssuedMode,
     lastIssuedQuery,
-    latestSearchRequestId,
     loadingCollections,
-    mode,
     query,
     resultCount,
     results,
     searchError,
     searching,
-    selectedCollection,
     setSearchSession,
   ]);
 
   const trimmedQuery = query.trim();
+  const selectedCollectionValue = selectedCollection || null;
+  const hasPendingChanges =
+    Boolean(trimmedQuery) &&
+    (lastIssuedQuery !== trimmedQuery ||
+      lastIssuedMode !== mode ||
+      lastIssuedCollection !== selectedCollectionValue);
+
+  const submitBlocked =
+    loadingCollections || searching || collectionsError !== null || !trimmedQuery;
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (submitBlocked) {
+      return;
+    }
+
+    const requestId = latestSearchRequestId + 1;
+
+    setSearchSession((previous) => ({
+      ...previous,
+      latestSearchRequestId: requestId,
+      searching: true,
+      searchError: null,
+      resultCount: null,
+      results: [],
+      lastIssuedQuery: trimmedQuery,
+      lastIssuedMode: previous.mode,
+      lastIssuedCollection: previous.selectedCollection || null,
+    }));
+
+    api
+      .search({
+        query: trimmedQuery,
+        mode,
+        collection: selectedCollection || undefined,
+      })
+      .then((response) => {
+        setSearchSession((previous) => {
+          if (previous.latestSearchRequestId !== requestId) {
+            return previous;
+          }
+          return {
+            ...previous,
+            resultCount: response.result_count,
+            results: response.results,
+            searchError: null,
+          };
+        });
+      })
+      .catch((error) => {
+        setSearchSession((previous) => {
+          if (previous.latestSearchRequestId !== requestId) {
+            return previous;
+          }
+          return {
+            ...previous,
+            searchError: error instanceof Error ? error.message : "Search failed.",
+            resultCount: null,
+            results: [],
+          };
+        });
+      })
+      .finally(() => {
+        setSearchSession((previous) => {
+          if (previous.latestSearchRequestId !== requestId) {
+            return previous;
+          }
+          return {
+            ...previous,
+            searching: false,
+          };
+        });
+      });
+  };
 
   return (
     <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
       <div className="search-body">
-        <section className="search-controls" aria-label="Search controls">
+        <form className="search-controls" aria-label="Search controls" onSubmit={handleSubmit}>
           <div className="search-query-shell">
-            <label className="search-label sr-only" htmlFor="search-query">
-              Query
-            </label>
-            <span className="search-query-icon" aria-hidden="true">
-              ⌕
-            </span>
-            <input
-              id="search-query"
-              className="search-input search-input-query"
-              type="search"
-              placeholder="Search your documents..."
-              value={query}
-              onChange={(event) =>
-                setSearchSession((previous) => ({ ...previous, query: event.target.value }))
-              }
-            />
-          </div>
+            <div className="search-query-row">
+              <label className="search-label sr-only" htmlFor="search-query">
+                Query
+              </label>
+              <span className="search-query-icon" aria-hidden="true">
+                ⌕
+              </span>
+              <input
+                id="search-query"
+                className="search-input search-input-query"
+                type="search"
+                placeholder="Search your documents..."
+                value={query}
+                onChange={(event) =>
+                  setSearchSession((previous) => ({ ...previous, query: event.target.value }))
+                }
+              />
+            </div>
 
-          <div className="search-toolbar">
-            <div className="search-toolbar-group">
+            <div className="search-query-filters">
               <div className="search-field search-field-inline">
                 <label className="search-label sr-only" htmlFor="search-mode">
                   Mode
@@ -266,7 +262,11 @@ export default function Search() {
               </div>
             </div>
           </div>
-        </section>
+
+          <button type="submit" className="search-submit-button" aria-disabled={submitBlocked}>
+            {searching ? "Searching…" : "Run search"}
+          </button>
+        </form>
 
         {loadingCollections ? (
           <div className="search-state-card">
@@ -280,12 +280,11 @@ export default function Search() {
             <p className="search-state-title">Could not load collections</p>
             <p className="search-state-text">{collectionsError}</p>
           </div>
-        ) : !trimmedQuery ? (
+        ) : !trimmedQuery ? null : hasPendingChanges ? (
           <div className="search-state-card search-state-card-blank">
-            <p className="search-state-title">Start with a search query</p>
+            <p className="search-state-title">Ready to search</p>
             <p className="search-state-text">
-              Enter a query above to search across all collections or narrow the scope with the
-              collection filter.
+              Review the query and filters above, then run search to refresh the results.
             </p>
           </div>
         ) : searching ? (

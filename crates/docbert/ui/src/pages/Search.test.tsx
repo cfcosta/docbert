@@ -96,7 +96,7 @@ describe("Search page", () => {
     const view = renderSearchRoute();
 
     await waitFor(() => {
-      expect(view.getByText("Start with a search query")).toBeTruthy();
+      expect(view.getByLabelText("Query")).toBeTruthy();
     });
 
     expect(view.getByLabelText("Query")).toBeTruthy();
@@ -107,11 +107,7 @@ describe("Search page", () => {
     const collection = view.getByLabelText("Collection") as HTMLSelectElement;
     const optionLabels = Array.from(collection.options).map((option) => option.textContent);
     expect(optionLabels).toEqual(["All collections", "notes", "docs"]);
-    expect(
-      view.getByText(
-        "Enter a query above to search across all collections or narrow the scope with the collection filter.",
-      ),
-    ).toBeTruthy();
+    expect(view.getByRole("button", { name: "Run search" })).toBeTruthy();
   });
 
   test("shows collection loading state before collections are available", async () => {
@@ -140,7 +136,7 @@ describe("Search page", () => {
     expect((view.getByLabelText("Collection") as HTMLSelectElement).disabled).toBe(true);
   });
 
-  test("debounces api calls while typing and shows a minimal success summary", async () => {
+  test("submits api calls explicitly and shows a minimal success summary", async () => {
     const user = userEvent.setup();
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
@@ -152,10 +148,12 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
     expect(searchCalls).toHaveLength(0);
+
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
       expect(searchCalls).toHaveLength(1);
@@ -174,9 +172,10 @@ describe("Search page", () => {
       ]);
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
       expect(view.getByText("Rust Guide")).toBeTruthy();
@@ -199,9 +198,10 @@ describe("Search page", () => {
     api.search = async () => searchResponse(1, [result({ path: "nested/rust.md" })]);
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
       expect(
@@ -227,16 +227,15 @@ describe("Search page", () => {
     api.search = searchSpy;
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "   ");
-    await new Promise((resolve) => setTimeout(resolve, 260));
 
     expect(searchSpy).toHaveBeenCalledTimes(0);
-    expect(view.getByText("Start with a search query")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Run search" })).toBeTruthy();
   });
 
-  test("reruns search when the collection changes", async () => {
+  test("resubmits search when the collection changes", async () => {
     const user = userEvent.setup();
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
@@ -245,18 +244,20 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(1));
 
     await user.selectOptions(view.getByLabelText("Collection"), "notes");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(2));
 
     expect(searchCalls[1]).toMatchObject({ query: "rust", collection: "notes", mode: "hybrid" });
   });
 
-  test("reruns search when the mode changes", async () => {
+  test("resubmits search when the mode changes", async () => {
     const user = userEvent.setup();
     const searchCalls: Array<{ query: string; mode?: string; collection?: string }> = [];
     api.search = async (params) => {
@@ -265,12 +266,14 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(1));
 
     await user.selectOptions(view.getByLabelText("Mode"), "semantic");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(2));
 
     expect(searchCalls[1]).toMatchObject({
@@ -286,12 +289,13 @@ describe("Search page", () => {
     api.search = () => pending.promise;
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
-      expect(view.getByText("Searching…")).toBeTruthy();
+      expect(view.getAllByText("Searching…")).toHaveLength(2);
     });
 
     pending.resolve(
@@ -310,9 +314,10 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
       expect(view.getByRole("alert").textContent).toContain("Search failed");
@@ -325,9 +330,10 @@ describe("Search page", () => {
     api.search = async () => searchResponse(0);
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
       expect(view.getByText("No results")).toBeTruthy();
@@ -347,13 +353,15 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(calls).toEqual(["rust"]));
 
     await user.clear(view.getByLabelText("Query"));
     await user.type(view.getByLabelText("Query"), "rust async");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(calls).toEqual(["rust", "rust async"]));
 
     second.resolve({
@@ -389,15 +397,18 @@ describe("Search page", () => {
     };
 
     const view = renderSearchRoute();
-    await waitFor(() => expect(view.getByText("Start with a search query")).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
 
     await user.type(view.getByLabelText("Query"), "rust");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(1));
 
     await user.selectOptions(view.getByLabelText("Mode"), "semantic");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(2));
 
     await user.selectOptions(view.getByLabelText("Collection"), "notes");
+    await user.click(view.getByRole("button", { name: "Run search" }));
     await waitFor(() => expect(searchCalls).toHaveLength(3));
     await waitFor(() => expect(view.getByText("Rust Guide")).toBeTruthy());
 
