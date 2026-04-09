@@ -11,20 +11,26 @@
 }
 
 .sidebar-header {
-  padding: var(--space-lg) var(--space-md) var(--space-sm);
+  padding: var(--space-lg) var(--space-md) var(--space-md);
   border-bottom: 1px solid var(--border);
   background: var(--surface-panel-strong);
 }
 
-.sidebar-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-sm) var(--space-xs) var(--space-xs);
+.sidebar-kicker,
+.sidebar-section-label {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.sidebar-kicker {
+  color: color-mix(in oklab, var(--text-muted) 86%, var(--accent) 14%);
 }
 
 .sidebar-title-link {
   display: inline-flex;
+  margin-top: 0.35rem;
   color: inherit;
   text-decoration: none;
 }
@@ -48,13 +54,37 @@
   transition: color 0.15s ease-out;
 }
 
+.sidebar-subtitle {
+  margin-top: var(--space-xs);
+  max-width: 25ch;
+  color: var(--text-muted);
+  font-size: var(--text-meta);
+  line-height: var(--leading-body);
+}
+
+.sidebar-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md) var(--space-sm) var(--space-sm);
+}
+
+.sidebar-section-label {
+  margin: 0 0 var(--space-xs) var(--space-xs);
+  color: color-mix(in oklab, var(--text-muted) 92%, var(--accent-cyan) 8%);
+}
+
+.sidebar-section-label-footer {
+  margin-bottom: var(--space-sm);
+}
+
 .sidebar-nav {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2xs);
+  gap: 2px;
   min-width: 0;
 }
 
@@ -64,18 +94,20 @@
 }
 
 .sidebar-link {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-sm);
-  min-height: 2.75rem;
+  column-gap: var(--space-sm);
+  min-height: 2.875rem;
   width: 100%;
-  padding: 0.625rem 0.75rem;
-  border-radius: var(--radius);
+  padding: 0.6875rem 0.75rem;
+  border-radius: calc(var(--radius) - 1px);
   border: 1px solid transparent;
-  color: var(--text);
+  color: color-mix(in oklab, var(--text) 92%, var(--text-muted) 8%);
   text-decoration: none;
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
+  line-height: 1.2;
   letter-spacing: var(--tracking-ui);
   transition:
     background 0.15s ease-out,
@@ -85,37 +117,73 @@
 }
 
 .sidebar-link:hover {
-  background: var(--surface-panel-soft);
-  border-color: var(--border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 48%, transparent),
+    color-mix(in oklab, var(--surface-floating) 74%, transparent)
+  );
+  border-color: color-mix(in oklab, var(--border) 80%, transparent);
   color: var(--text-h);
   text-decoration: none;
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 32%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 24%, transparent);
+}
+
+.sidebar-link:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklab, var(--border-focus) 70%, var(--border) 30%);
+  color: var(--text-h);
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--focus-ring) 14%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 24%, transparent);
+}
+
+.sidebar-link:active {
+  background: color-mix(in oklab, var(--surface-current-line) 20%, var(--surface-floating) 80%);
 }
 
 .sidebar-link.active {
   background: linear-gradient(
     180deg,
-    color-mix(in oklab, var(--surface-current-line) 78%, white 22%),
-    color-mix(in oklab, var(--surface-current-line) 88%, var(--accent) 12%) 62%,
-    color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%)
+    color-mix(in oklab, var(--surface-floating) 62%, white 38%),
+    color-mix(in oklab, var(--surface-current-line) 90%, var(--accent) 10%)
   );
-  border-color: var(--accent-border);
-  color: var(--accent);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 26%, transparent);
+  border-color: color-mix(in oklab, var(--accent-border) 72%, var(--border) 28%);
+  color: var(--text-h);
+  font-weight: var(--weight-semibold);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 24%, transparent),
+    0 1px 0 color-mix(in oklab, white 14%, transparent);
 }
 
 .sidebar-link.active svg {
-  color: var(--accent);
+  color: color-mix(in oklab, var(--accent) 82%, var(--accent-cyan) 18%);
+}
+
+.sidebar-link span {
+  min-width: 0;
 }
 
 .sidebar-link svg {
+  width: 1rem;
+  height: 1rem;
   flex-shrink: 0;
+  color: color-mix(in oklab, var(--text) 84%, var(--accent-cyan) 16%);
+  transition: color 0.15s ease-out;
 }
 
 .sidebar-footer {
   margin-top: auto;
-  padding-top: var(--space-sm);
-  border-top: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  padding-top: var(--space-md);
+  border-top: 1px solid color-mix(in oklab, var(--border) 74%, transparent);
+}
+
+.sidebar-footer .sidebar-link {
+  color: var(--text-muted);
+}
+
+.sidebar-footer .sidebar-link:hover,
+.sidebar-footer .sidebar-link:focus-visible {
+  color: var(--text);
 }
 
 @media (max-width: 860px) {
@@ -132,8 +200,12 @@
     padding: var(--space-md) var(--space-md) var(--space-sm);
   }
 
+  .sidebar-subtitle {
+    max-width: 42ch;
+  }
+
   .sidebar-body {
-    padding: var(--space-xs) var(--space-sm) var(--space-sm);
+    padding: var(--space-sm) var(--space-sm) var(--space-sm);
   }
 
   .sidebar-nav {
@@ -153,6 +225,10 @@
 @media (max-width: 560px) {
   .sidebar-body {
     padding-inline: var(--space-xs);
+  }
+
+  .sidebar-subtitle {
+    max-width: none;
   }
 
   .sidebar-nav li,

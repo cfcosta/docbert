@@ -2,21 +2,26 @@ import { NavLink } from "react-router";
 import "./Sidebar.css";
 
 const NAV_ITEMS = [
-  { to: "/documents", label: "Documents", icon: DocIcon },
-  { to: "/search", label: "Search", icon: SearchIcon },
   { to: "/chat", label: "Chat", icon: ChatIcon },
+  { to: "/search", label: "Search", icon: SearchIcon },
+  { to: "/documents", label: "Documents", icon: DocIcon },
 ] as const;
 
 export default function Sidebar() {
   return (
     <nav className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-header">
+        <p className="sidebar-kicker">Local research workspace</p>
         <NavLink to="/documents" className="sidebar-title-link">
           <h1 className="sidebar-title">docbert</h1>
         </NavLink>
+        <p className="sidebar-subtitle">
+          Search, chat, and read your indexed collections without leaving the same workspace.
+        </p>
       </div>
 
       <div className="sidebar-body">
+        <p className="sidebar-section-label">Workspace</p>
         <ul className="sidebar-nav">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
@@ -33,6 +38,7 @@ export default function Sidebar() {
         </ul>
 
         <div className="sidebar-footer">
+          <p className="sidebar-section-label sidebar-section-label-footer">Preferences</p>
           <NavLink
             to="/settings"
             className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
