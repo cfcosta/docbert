@@ -197,13 +197,6 @@ export default function Search() {
 
   return (
     <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
-      <header className="search-header">
-        <div className="search-header-inner">
-          <h2>Search</h2>
-          <p className="search-subtitle">Search across your indexed collections.</p>
-        </div>
-      </header>
-
       <div className="search-body">
         <section className="search-controls" aria-label="Search controls">
           <div className="search-query-shell">

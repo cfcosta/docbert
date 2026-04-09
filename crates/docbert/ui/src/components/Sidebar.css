@@ -13,10 +13,17 @@
 .sidebar-header {
   padding: var(--space-lg) var(--space-md) var(--space-md);
   border-bottom: 1px solid var(--border);
-  background: var(--surface-panel-strong);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-secondary) 90%, white 10%) 0%,
+    color-mix(in oklab, var(--bg-secondary) 94%, var(--bg) 6%) 78%,
+    color-mix(in oklab, var(--bg-secondary) 78%, var(--bg-tertiary) 22%) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
+    inset 0 -1px 0 color-mix(in oklab, var(--bg-tertiary) 46%, transparent);
 }
 
-.sidebar-kicker,
 .sidebar-section-label {
   font-size: var(--text-caption);
   font-weight: var(--weight-semibold);
@@ -24,13 +31,8 @@
   text-transform: uppercase;
 }
 
-.sidebar-kicker {
-  color: color-mix(in oklab, var(--text-muted) 86%, var(--accent) 14%);
-}
-
 .sidebar-title-link {
   display: inline-flex;
-  margin-top: 0.35rem;
   color: inherit;
   text-decoration: none;
 }
@@ -52,14 +54,6 @@
   color: var(--text-h);
   letter-spacing: var(--tracking-tight);
   transition: color 0.15s ease-out;
-}
-
-.sidebar-subtitle {
-  margin-top: var(--space-xs);
-  max-width: 25ch;
-  color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-body);
 }
 
 .sidebar-body {
@@ -198,10 +192,6 @@
 
   .sidebar-header {
     padding: var(--space-md) var(--space-md) var(--space-sm);
-  }
-
-  .sidebar-subtitle {
-    max-width: 42ch;
   }
 
   .sidebar-body {

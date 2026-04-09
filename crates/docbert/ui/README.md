@@ -1,5 +1,21 @@
 # React + TypeScript + Vite
 
+## Docbert UI surface tokens
+
+The shared design-system entrypoint is `src/index.css`. Use semantic surface tokens there before introducing new one-off gradients in page CSS.
+
+Current extracted tokens:
+
+- `--surface-control`: default interactive control surface
+- `--surface-control-hover`: hover state for text inputs and neutral controls
+- `--surface-emphasis-hover`: richer hover state for toggles and secondary actions
+- `--surface-selected`: selected/active neutral card surface
+- `--surface-accent-strong`: primary accent action surface
+- `--surface-accent-hover`: hover state for primary accent actions
+- `--surface-danger-soft`: soft error surface for inline alert cards
+
+Recent consumers include Search, Settings, Chat, and shared `SearchResults` styles.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

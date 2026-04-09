@@ -6,30 +6,13 @@
   background: var(--workspace-backdrop);
 }
 
-.search-header {
-  border-bottom: 1px solid var(--border-strong);
-  background: var(--surface-panel-strong);
-}
-
-.search-header-inner {
-  max-width: var(--workspace-width);
-  margin: 0 auto;
-  padding: var(--page-block-start) var(--page-gutter) var(--space-md);
-  display: grid;
-  gap: var(--space-2xs);
-}
-
-.search-subtitle {
-  color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-body);
-  max-width: 42ch;
-}
-
 .search-body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
   overflow-y: auto;
-  padding: var(--space-xl) var(--page-gutter) var(--page-block-end);
+  padding: var(--page-block-start) var(--page-gutter) var(--page-block-end);
   background: transparent;
 }
 
@@ -41,12 +24,13 @@
   margin: 0 auto;
 }
 
-.search-page:not(.search-page-has-query) .search-controls {
-  margin-top: clamp(1.5rem, 7vh, 4rem);
+.search-page:not(.search-page-has-query) .search-body {
+  justify-content: center;
 }
 
-.search-page.search-page-has-query .search-controls {
-  margin-top: 0;
+.search-page:not(.search-page-has-query) .search-controls,
+.search-page:not(.search-page-has-query) .search-state-card {
+  flex-shrink: 0;
 }
 
 .search-query-shell {
@@ -57,7 +41,7 @@
   padding: 0 var(--space-lg);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: var(--surface-panel-soft);
+  background: var(--surface-control);
   box-shadow:
     inset 0 1px 0 color-mix(in oklab, white 46%, transparent),
     0 8px 20px color-mix(in oklab, var(--bg) 92%, transparent);
@@ -68,12 +52,7 @@
 }
 
 .search-query-shell:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
-    color-mix(in oklab, var(--surface-floating) 95%, var(--bg) 5%) 62%,
-    color-mix(in oklab, var(--surface-floating) 92%, var(--accent-cyan) 8%)
-  );
+  background: var(--surface-control-hover);
 }
 
 .search-query-shell:focus-within {
@@ -129,7 +108,7 @@
   max-width: 100%;
   padding: 0.5rem 0.875rem;
   border-radius: 999px;
-  background: var(--surface-panel-soft);
+  background: var(--surface-control);
   box-shadow: inset 0 1px 0 color-mix(in oklab, white 42%, transparent);
 }
 
@@ -158,7 +137,7 @@
   padding: var(--space-md) var(--space-lg);
   border: 1px solid var(--error-border);
   border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--surface-selection) 82%, var(--error) 18%);
+  background: var(--surface-danger-soft);
 }
 
 .search-state-title {
@@ -317,14 +296,6 @@
 @media (max-width: 720px) {
   .search-body {
     padding: var(--space-lg) var(--space-md) var(--space-3xl);
-  }
-
-  .search-header-inner {
-    padding: var(--space-lg) var(--space-md) var(--space-md);
-  }
-
-  .search-page:not(.search-page-has-query) .search-controls {
-    margin-top: var(--space-lg);
   }
 
   .search-toolbar {

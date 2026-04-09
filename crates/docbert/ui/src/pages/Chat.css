@@ -440,12 +440,7 @@
 
 .chat-msg-user .chat-msg-bubble {
   max-width: min(34rem, calc(100% - 4rem));
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 88%, white 12%),
-    color-mix(in oklab, var(--accent) 94%, var(--accent-cyan) 6%) 62%,
-    var(--accent)
-  );
+  background: var(--surface-accent-strong);
   border: 1px solid var(--accent-border);
   color: var(--accent-text);
   box-shadow:
@@ -505,12 +500,7 @@
 }
 
 .chat-subagent-toggle:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
-    color-mix(in oklab, var(--surface-floating) 94%, var(--accent-cyan) 6%) 62%,
-    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%)
-  );
+  background: var(--surface-emphasis-hover);
   border-color: var(--accent-border);
   box-shadow:
     inset 0 1px 0 color-mix(in oklab, white 28%, transparent),

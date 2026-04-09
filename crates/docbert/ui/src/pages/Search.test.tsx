@@ -99,7 +99,6 @@ describe("Search page", () => {
       expect(view.getByText("Start with a search query")).toBeTruthy();
     });
 
-    expect(view.getByRole("heading", { name: "Search" })).toBeTruthy();
     expect(view.getByLabelText("Query")).toBeTruthy();
 
     const mode = view.getByLabelText("Mode") as HTMLSelectElement;
@@ -408,7 +407,7 @@ describe("Search page", () => {
 
     await user.click(view.getByRole("link", { name: /^Search$/i }));
 
-    await waitFor(() => expect(view.getByRole("heading", { name: "Search" })).toBeTruthy());
+    await waitFor(() => expect(view.getByLabelText("Query")).toBeTruthy());
     expect(view.getByTestId("location-path").textContent).toBe("/search");
     expect((view.getByLabelText("Query") as HTMLInputElement).value).toBe("rust");
     expect((view.getByLabelText("Mode") as HTMLSelectElement).value).toBe("semantic");

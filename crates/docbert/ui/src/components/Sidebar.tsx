@@ -11,13 +11,9 @@ export default function Sidebar() {
   return (
     <nav className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-header">
-        <p className="sidebar-kicker">Local research workspace</p>
         <NavLink to="/documents" className="sidebar-title-link">
           <h1 className="sidebar-title">docbert</h1>
         </NavLink>
-        <p className="sidebar-subtitle">
-          Search, chat, and read your indexed collections without leaving the same workspace.
-        </p>
       </div>
 
       <div className="sidebar-body">
