@@ -497,6 +497,262 @@ describe("Chat page", () => {
     expect(getModelCallCount).toBe(1);
   });
 
+  test("final_result_content_without_deltas_still_renders_and_persists", async () => {
+    const conversation = makeConversation("success-2", []);
+    const trackers = installApiStubs({
+      conversation,
+      settings: {
+        provider: "openai",
+        model: "gpt-4.1",
+        api_key: "test-key",
+      },
+    });
+    nextStream = () =>
+      makeStream(
+        [],
+        assistantMessage("stop", [
+          { type: "thinking", thinking: "Plan first" },
+          { type: "text", text: "Docbert is a local-first document retrieval system." },
+        ]),
+      );
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderChat("/chat/success-2");
+
+    await user.type(chatInput(view.container), "What is docbert?");
+    await waitForCondition(
+      () => sendButton(view.container).disabled === false,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await user.click(sendButton(view.container));
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("Plan first") ?? false,
+      () => `thinking never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () =>
+        view.container.textContent?.includes(
+          "Docbert is a local-first document retrieval system.",
+        ) ?? false,
+      () => `assistant text never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+
+    await waitForCondition(
+      () => trackers.updatedConversations.length > 0,
+      () => `conversation was never persisted; text=${JSON.stringify(view.container.textContent)}`,
+    );
+
+    const persisted = trackers.updatedConversations.at(-1)!;
+    expect(persisted.messages.at(-1)?.parts).toEqual([
+      { type: "thinking", text: "Plan first" },
+      { type: "text", text: "Docbert is a local-first document retrieval system." },
+    ]);
+    expect(persisted.messages.at(-1)?.content).toBe(
+      "Docbert is a local-first document retrieval system.",
+    );
+  });
+
+  test("new_chat_persists_the_first_user_message_and_keeps_the_assistant_reply_visible", async () => {
+    const callOrder: string[] = [];
+    let storedConversation: ConversationFull | null = null;
+
+    api.listConversations = async () =>
+      storedConversation ? [summaryFromConversation(storedConversation)] : [];
+    api.getConversation = async (id: string) => {
+      callOrder.push(`get:${id}:${storedConversation?.messages.length ?? 0}`);
+      if (!storedConversation || storedConversation.id !== id) {
+        throw new Error(`conversation ${id} not found`);
+      }
+      return { ...storedConversation, messages: [...storedConversation.messages] };
+    };
+    api.getLlmSettings = async () => {
+      getLlmSettingsCallCount += 1;
+      return {
+        provider: "openai",
+        model: "gpt-4.1",
+        api_key: "test-key",
+      };
+    };
+    api.createConversation = async (id: string, title?: string) => {
+      callOrder.push(`create:${id}`);
+      storedConversation = {
+        id,
+        title: title ?? "New conversation",
+        created_at: 1,
+        updated_at: 2,
+        messages: [],
+      };
+      return storedConversation;
+    };
+    api.updateConversation = async (id: string, nextConversation: ConversationFull) => {
+      callOrder.push(`update:${id}:${nextConversation.messages.length}`);
+      storedConversation = {
+        ...nextConversation,
+        id,
+        messages: [...nextConversation.messages],
+      };
+      return storedConversation;
+    };
+    api.deleteConversation = async () => {};
+    api.listCollections = async () => [];
+    api.listDocuments = async () => [];
+    api.createCollection = async () => ({ name: "notes" });
+    api.deleteCollection = async () => {};
+    api.ingestDocuments = async () => ({ ingested: 0, documents: [] });
+    api.getDocument = async () => ({
+      doc_id: "#abc123",
+      collection: "notes",
+      path: "hello.md",
+      title: "Hello",
+      content: "# Hello",
+    });
+    api.search = async () => ({
+      query: "",
+      mode: "semantic",
+      result_count: 0,
+      results: [],
+    });
+    api.updateLlmSettings = async (nextSettings) => nextSettings;
+
+    nextStream = () =>
+      makeStream(
+        [{ type: "text_delta", delta: "Docbert is a local document assistant." }],
+        assistantMessage("stop", [
+          { type: "text", text: "Docbert is a local document assistant." },
+        ]),
+      );
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderChat("/chat");
+
+    await user.type(chatInput(view.container), "What is docbert?");
+    await waitForCondition(
+      () => sendButton(view.container).disabled === false,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await user.click(sendButton(view.container));
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("What is docbert?") ?? false,
+      () => `first user message never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => view.container.textContent?.includes("Docbert is a local document assistant.") ?? false,
+      () => `assistant reply never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => callOrder.some((entry) => entry.startsWith("update:")),
+      () => `conversation was never updated; calls=${JSON.stringify(callOrder)}`,
+    );
+
+    expect(callOrder.findIndex((entry) => entry.startsWith("create:"))).toBeGreaterThanOrEqual(0);
+    expect(callOrder.findIndex((entry) => entry.startsWith("update:"))).toBeGreaterThanOrEqual(0);
+    expect(storedConversation?.messages.map((message) => message.content)).toEqual([
+      "What is docbert?",
+      "Docbert is a local document assistant.",
+    ]);
+  });
+
+  test("new_chat_route_sync_does_not_clobber_the_in_flight_assistant_message", async () => {
+    let storedConversation: ConversationFull | null = null;
+    let releaseGetConversation: (() => void) | null = null;
+    const getConversationReleased = new Promise<void>((resolve) => {
+      releaseGetConversation = resolve;
+    });
+
+    api.listConversations = async () =>
+      storedConversation ? [summaryFromConversation(storedConversation)] : [];
+    api.getConversation = async (id: string) => {
+      await getConversationReleased;
+      if (!storedConversation || storedConversation.id !== id) {
+        throw new Error(`conversation ${id} not found`);
+      }
+      return { ...storedConversation, messages: [...storedConversation.messages] };
+    };
+    api.getLlmSettings = async () => {
+      getLlmSettingsCallCount += 1;
+      return {
+        provider: "openai",
+        model: "gpt-4.1",
+        api_key: "test-key",
+      };
+    };
+    api.createConversation = async (id: string, title?: string) => {
+      storedConversation = {
+        id,
+        title: title ?? "New conversation",
+        created_at: 1,
+        updated_at: 2,
+        messages: [],
+      };
+      return storedConversation;
+    };
+    api.updateConversation = async (id: string, nextConversation: ConversationFull) => {
+      storedConversation = {
+        ...nextConversation,
+        id,
+        messages: [...nextConversation.messages],
+      };
+      return storedConversation;
+    };
+    api.deleteConversation = async () => {};
+    api.listCollections = async () => [];
+    api.listDocuments = async () => [];
+    api.createCollection = async () => ({ name: "notes" });
+    api.deleteCollection = async () => {};
+    api.ingestDocuments = async () => ({ ingested: 0, documents: [] });
+    api.getDocument = async () => ({
+      doc_id: "#abc123",
+      collection: "notes",
+      path: "hello.md",
+      title: "Hello",
+      content: "# Hello",
+    });
+    api.search = async () => ({
+      query: "",
+      mode: "semantic",
+      result_count: 0,
+      results: [],
+    });
+    api.updateLlmSettings = async (nextSettings) => nextSettings;
+
+    nextStream = () => {
+      releaseGetConversation?.();
+      return makeStream(
+        [{ type: "text_delta", delta: "Docbert answers survive route sync." }],
+        assistantMessage("stop", [{ type: "text", text: "Docbert answers survive route sync." }]),
+      );
+    };
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const view = renderChat("/chat");
+
+    await user.type(chatInput(view.container), "What is docbert?");
+    await waitForCondition(
+      () => sendButton(view.container).disabled === false,
+      () =>
+        `send button stayed disabled after typing: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await user.click(sendButton(view.container));
+
+    await waitForCondition(
+      () => view.container.textContent?.includes("Docbert answers survive route sync.") ?? false,
+      () => `assistant reply never rendered: ${JSON.stringify(view.container.textContent)}`,
+    );
+    await waitForCondition(
+      () => (storedConversation?.messages.length ?? 0) >= 2,
+      () => `conversation was never persisted: ${JSON.stringify(storedConversation)}`,
+    );
+
+    expect(storedConversation?.messages.map((message) => message.content)).toEqual([
+      "What is docbert?",
+      "Docbert answers survive route sync.",
+    ]);
+  });
+
   test("interrupted_stream_appends_stop_note_once_and_still_persists", async () => {
     const conversation = makeConversation("aborted-1", [
       {

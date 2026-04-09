@@ -1,10 +1,21 @@
 import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
-import type { Context, Message as PiMessage, Tool, UserMessage } from "@mariozechner/pi-ai";
+import type {
+  AssistantMessage,
+  Context,
+  Message as PiMessage,
+  Tool,
+  UserMessage,
+} from "@mariozechner/pi-ai";
 
 import { api } from "../lib/api";
 import type { DocumentResponse, LlmSettings } from "../lib/api";
 import { applyInterruptedStopReason, createToolResultMessage } from "./chat-context";
-import type { Message, ToolCallInfo } from "./chat-message-codec";
+import {
+  contentFromParts,
+  type ContentPart,
+  type Message,
+  type ToolCallInfo,
+} from "./chat-message-codec";
 import {
   insertOrUpdateSubagentMessage,
   setSubagentStatus,
@@ -237,6 +248,74 @@ function applyStreamError(message: Message, provider: string, error: unknown): M
   };
 }
 
+function resultContentParts(result: Pick<AssistantMessage, "content">): ContentPart[] {
+  const parts: ContentPart[] = [];
+
+  for (const block of result.content) {
+    if (block.type === "text") {
+      parts.push({ type: "text", text: block.text });
+      continue;
+    }
+
+    if (block.type === "thinking") {
+      parts.push({ type: "thinking", text: block.thinking });
+    }
+  }
+
+  return parts;
+}
+
+function partsEndWith(parts: ContentPart[], suffix: ContentPart[]): boolean {
+  if (suffix.length === 0 || suffix.length > parts.length) {
+    return false;
+  }
+
+  const offset = parts.length - suffix.length;
+  for (let index = 0; index < suffix.length; index += 1) {
+    const left = parts[offset + index];
+    const right = suffix[index];
+    if (left.type !== right.type) {
+      return false;
+    }
+
+    if (left.type === "tool_call" || right.type === "tool_call") {
+      return false;
+    }
+
+    if (left.text !== right.text) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function appendResultContentIfMissing(
+  message: Message,
+  result: Pick<AssistantMessage, "content">,
+): Message {
+  const suffix = resultContentParts(result);
+  if (suffix.length === 0) {
+    return message;
+  }
+
+  const parts = [...(message.parts ?? [])];
+  if (partsEndWith(parts, suffix)) {
+    return {
+      ...message,
+      content: contentFromParts(parts),
+      parts,
+    };
+  }
+
+  const nextParts = [...parts, ...suffix];
+  return {
+    ...message,
+    content: contentFromParts(nextParts),
+    parts: nextParts,
+  };
+}
+
 function startSubagentMessage(message: Message): Message {
   return {
     ...setSubagentStatus(message, "running"),
@@ -338,6 +417,8 @@ async function runFileSubagent({
         });
       },
     });
+
+    updateMessage((message) => appendResultContentIfMissing(message, consumed.result));
 
     if (streamError) {
       updateMessage((message) => finalizeSubagentMessage(message, "error"));
@@ -504,6 +585,7 @@ export async function runParentAgentRound({
   });
 
   const result = consumed.result;
+  updateAssistantMessage((message) => appendResultContentIfMissing(message, result));
   piContext.messages.push(result);
 
   if (isInterruptedAssistantResult(result)) {

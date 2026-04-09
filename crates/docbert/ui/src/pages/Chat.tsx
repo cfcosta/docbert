@@ -99,6 +99,7 @@ export default function Chat() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pendingLocalConversationIdRef = useRef<string | null>(null);
 
   const reloadConversations = useCallback(async () => {
     const nextConversations = await loadConversationSummaries();
@@ -114,6 +115,11 @@ export default function Chat() {
 
     const syncConversation = async () => {
       if (!conversationId) {
+        if (pendingLocalConversationIdRef.current || activeId) {
+          setConfirmDelete(null);
+          return;
+        }
+
         setActiveId(null);
         setActiveConversation(null);
         setMessages([]);
@@ -138,7 +144,20 @@ export default function Chat() {
 
       setActiveId(conversationId);
       setActiveConversation(loadedConversation.conversation);
-      setMessages(loadedConversation.messages);
+      setMessages((current) => {
+        if (
+          pendingLocalConversationIdRef.current === conversationId &&
+          current.length > loadedConversation.messages.length
+        ) {
+          pendingLocalConversationIdRef.current = null;
+          return current;
+        }
+
+        if (pendingLocalConversationIdRef.current === conversationId) {
+          pendingLocalConversationIdRef.current = null;
+        }
+        return loadedConversation.messages;
+      });
       setConfirmDelete(null);
     };
 
@@ -241,6 +260,8 @@ export default function Chat() {
       if (createdConversation) {
         conversation = createdConversation;
         conversationIdToSave = id;
+        await saveConversation(id, createdConversation, nextMessages);
+        pendingLocalConversationIdRef.current = id;
         setActiveId(id);
         setActiveConversation(createdConversation);
         navigate(`/chat/${id}`, { replace: true });
