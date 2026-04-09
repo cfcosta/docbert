@@ -4,6 +4,7 @@
   height: 100%;
   overflow: hidden;
   position: relative;
+  background: var(--workspace-backdrop);
 }
 
 /* ── Toast notification ── */
@@ -17,10 +18,13 @@
   padding: 0.625rem 1rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: var(--surface-floating);
+  background: var(--surface-panel-soft);
   color: var(--text-h);
   font-size: 0.875rem;
   font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 42%, transparent),
+    0 10px 24px color-mix(in oklab, var(--bg) 88%, transparent);
   animation: toast-in 0.2s ease-out;
 }
 
@@ -56,7 +60,8 @@
   border-right: 1px solid var(--border-strong);
   display: flex;
   flex-direction: column;
-  background: var(--surface-floating);
+  background: var(--surface-panel-sidebar);
+  box-shadow: inset -1px 0 0 color-mix(in oklab, white 22%, transparent);
 }
 
 .file-tree-header {
@@ -64,7 +69,7 @@
   gap: var(--space-2xs);
   padding: var(--space-lg) var(--space-md) var(--space-md);
   border-bottom: 1px solid var(--border);
-  background: color-mix(in oklab, var(--bg-tertiary) 84%, var(--bg) 16%);
+  background: var(--surface-panel-sidebar-strong);
 }
 
 .file-tree-title {
@@ -93,11 +98,14 @@
   min-height: 2rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--surface-panel-soft);
   color: var(--text-h);
   font-size: 0.75rem;
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 28%, transparent);
   outline: none;
-  transition: border-color 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
 }
 
 .collection-add-btn {
@@ -106,22 +114,30 @@
   min-height: 2rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--surface-panel-soft);
   color: var(--text);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 28%, transparent);
   transition:
     background 0.15s,
     color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .collection-add-btn:hover:not(:disabled) {
-  background: var(--accent-bg);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 82%, white 18%),
+    color-mix(in oklab, var(--surface-floating) 92%, var(--accent) 8%) 62%,
+    color-mix(in oklab, var(--surface-floating) 88%, var(--accent-cyan) 12%)
+  );
   color: var(--accent);
   border-color: var(--accent-border);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 32%, transparent);
 }
 
 .collection-add-btn:disabled {
@@ -137,6 +153,11 @@
   flex: 1;
   overflow-y: auto;
   padding: var(--space-sm) 0 var(--space-md);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-tertiary) 24%, transparent),
+    transparent 10rem
+  );
 }
 
 /* ── Tree items ── */
@@ -163,14 +184,22 @@
 }
 
 .tree-item:hover {
-  background: var(--surface-selection);
+  background: var(--surface-panel-soft);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 22%, transparent);
 }
 
 .tree-file.selected {
-  background: color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-current-line) 78%, white 22%),
+    color-mix(in oklab, var(--surface-current-line) 88%, var(--accent) 12%) 62%,
+    color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%)
+  );
   border-color: var(--accent-cyan-border);
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
+    var(--shadow-sm);
 }
 
 .tree-file.selected svg {
@@ -185,11 +214,17 @@
 }
 
 .tree-file-row:hover {
-  background: var(--surface-selection);
+  background: var(--surface-panel-soft);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 18%, transparent);
 }
 
 .tree-file-row.selected {
-  background: color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-current-line) 78%, white 22%),
+    color-mix(in oklab, var(--surface-current-line) 88%, var(--accent) 12%) 62%,
+    color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%)
+  );
 }
 
 .tree-file-row .tree-file {
@@ -210,7 +245,8 @@
 }
 
 .tree-collection-head:hover {
-  background: var(--surface-selection);
+  background: var(--surface-panel-soft);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 18%, transparent);
 }
 
 .tree-collection-header {
@@ -380,15 +416,27 @@
 /* ── Drag-and-drop ── */
 
 .tree-collection.drag-over > .tree-collection-head {
-  background: var(--surface-current-line);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-current-line) 76%, white 24%),
+    color-mix(in oklab, var(--surface-current-line) 88%, var(--accent-cyan) 12%) 62%,
+    color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%)
+  );
 }
 
 .tree-collection.drag-over {
   outline: 2px dashed var(--accent-border);
   outline-offset: -2px;
   border-radius: var(--radius);
-  background: var(--surface-selection);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-selection) 82%, white 18%),
+    color-mix(in oklab, var(--surface-selection) 90%, var(--accent-cyan) 10%) 62%,
+    color-mix(in oklab, var(--surface-selection) 86%, var(--accent) 14%)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 18%, transparent),
+    inset 0 0 0 1px var(--accent-border);
 }
 
 .drop-badge {
@@ -396,8 +444,14 @@
   font-size: 0.72rem;
   font-weight: 700;
   color: var(--accent-text);
-  background: var(--accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent) 86%, white 14%),
+    color-mix(in oklab, var(--accent) 92%, var(--accent-cyan) 8%) 62%,
+    var(--accent)
+  );
   border: 1px solid var(--accent-border);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 24%, transparent);
   padding: 2px 8px;
   border-radius: 999px;
 }
@@ -410,13 +464,18 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg) 72%, transparent),
+    color-mix(in oklab, var(--bg) 92%, var(--bg-secondary) 8%)
+  );
 }
 
 .preview-header {
   padding: var(--page-block-start) var(--page-gutter-wide) var(--space-lg);
   border-bottom: 1px solid var(--border-strong);
-  background: color-mix(in oklab, var(--bg-secondary) 90%, var(--bg) 10%);
+  background: var(--surface-panel-strong);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 38%, transparent);
   display: flex;
   flex-direction: column;
 }
@@ -461,7 +520,13 @@
   padding: 3px 10px;
   border-radius: 999px;
   border: 1px solid var(--accent-border);
-  background: var(--surface-floating);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 82%, white 18%),
+    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%) 62%,
+    color-mix(in oklab, var(--surface-floating) 86%, var(--accent-cyan) 14%)
+  );
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 22%, transparent);
   color: var(--accent);
   font-size: var(--text-caption);
   font-weight: var(--weight-bold);

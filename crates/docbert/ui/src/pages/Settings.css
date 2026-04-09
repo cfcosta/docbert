@@ -3,11 +3,13 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  background: var(--workspace-backdrop);
 }
 
 .settings-header {
   border-bottom: 1px solid var(--border-strong);
-  background: color-mix(in oklab, var(--bg) 86%, var(--bg-secondary) 14%);
+  background: var(--surface-panel-strong);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 28%, transparent);
 }
 
 .settings-header-inner {
@@ -29,7 +31,7 @@
   flex: 1;
   overflow-y: auto;
   padding: var(--space-xl) var(--page-gutter) var(--page-block-end);
-  background: var(--bg);
+  background: transparent;
 }
 
 .settings-loading,
@@ -82,27 +84,40 @@
   min-height: 2.5rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-tertiary);
+  background: var(--surface-panel-soft);
   color: var(--text);
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 30%, transparent);
   cursor: pointer;
   transition:
     background 0.15s,
     color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .settings-radio:hover {
-  background: var(--surface-selection);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
+    color-mix(in oklab, var(--surface-floating) 94%, var(--accent-cyan) 6%) 62%,
+    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%)
+  );
   border-color: var(--border-strong);
   color: var(--text-h);
 }
 
 .settings-radio.active {
-  background: var(--accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent) 88%, white 12%),
+    color-mix(in oklab, var(--accent) 94%, var(--accent-cyan) 6%) 62%,
+    var(--accent)
+  );
   color: var(--accent-text);
   border-color: var(--accent-border);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
 }
 
 .settings-select,
@@ -112,12 +127,14 @@
   min-height: 2.875rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-secondary);
+  background: var(--surface-panel-soft);
   color: var(--text-h);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 38%, transparent);
   outline: none;
   transition:
     border-color 0.15s,
-    background 0.15s;
+    background 0.15s,
+    box-shadow 0.15s;
 }
 
 .settings-select {
@@ -134,12 +151,18 @@
 
 .settings-select:hover,
 .settings-input:hover {
-  background: var(--surface-selection);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
+    color-mix(in oklab, var(--surface-floating) 95%, var(--bg) 5%) 62%,
+    color-mix(in oklab, var(--surface-floating) 92%, var(--accent-cyan) 8%)
+  );
 }
 
 .settings-select:focus,
 .settings-input:focus {
   border-color: var(--border-focus);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 46%, transparent);
 }
 
 .settings-hint {
@@ -203,24 +226,41 @@
 .settings-save {
   padding: 0.625rem 1.5rem;
   border: 1px solid var(--accent-border);
-  background: var(--accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent) 88%, white 12%),
+    color-mix(in oklab, var(--accent) 94%, var(--accent-cyan) 6%) 62%,
+    var(--accent)
+  );
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
   color: var(--accent-text);
 }
 
 .settings-save:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent-hover) 88%, white 12%),
+    color-mix(in oklab, var(--accent-hover) 94%, var(--accent-cyan) 6%) 62%,
+    var(--accent-hover)
+  );
   border-color: var(--accent-hover-border);
 }
 
 .settings-secondary {
   padding: 0.625rem 1rem;
   border: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: var(--surface-panel-soft);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 26%, transparent);
   color: var(--text);
 }
 
 .settings-secondary:hover:not(:disabled) {
-  background: var(--surface-selection);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
+    color-mix(in oklab, var(--surface-floating) 94%, var(--accent-cyan) 6%) 62%,
+    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%)
+  );
   border-color: var(--border-strong);
 }
 

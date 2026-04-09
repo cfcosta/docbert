@@ -109,6 +109,49 @@
   --shadow-sm: 0 1px 2px rgba(76, 79, 105, 0.09), 0 1px 1px rgba(76, 79, 105, 0.06);
   --shadow: 0 14px 34px rgba(76, 79, 105, 0.12), 0 5px 14px rgba(76, 79, 105, 0.08);
 
+  --workspace-backdrop:
+    radial-gradient(
+      circle at top left,
+      color-mix(in oklab, var(--accent-cyan) 8%, transparent),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at 82% -10%,
+      color-mix(in oklab, var(--accent) 7%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(180deg, color-mix(in oklab, var(--bg) 86%, var(--bg-secondary) 14%), var(--bg));
+  --surface-panel: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 82%, white 18%),
+    color-mix(in oklab, var(--surface-floating) 94%, var(--bg) 6%) 58%,
+    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%)
+  );
+  --surface-panel-sidebar: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-secondary) 90%, var(--bg-tertiary) 10%),
+    color-mix(in oklab, var(--surface-floating) 95%, var(--bg) 5%) 56%,
+    color-mix(in oklab, var(--surface-floating) 90%, var(--accent) 10%)
+  );
+  --surface-panel-sidebar-strong: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-tertiary) 86%, var(--bg-secondary) 14%),
+    color-mix(in oklab, var(--surface-floating) 94%, var(--bg) 6%) 52%,
+    color-mix(in oklab, var(--surface-floating) 88%, var(--accent-cyan) 12%)
+  );
+  --surface-panel-soft: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 88%, white 12%),
+    color-mix(in oklab, var(--surface-floating) 96%, var(--bg) 4%) 62%,
+    color-mix(in oklab, var(--surface-floating) 93%, var(--accent-cyan) 7%)
+  );
+  --surface-panel-strong: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-secondary) 84%, white 16%),
+    color-mix(in oklab, var(--bg-secondary) 92%, var(--bg) 8%) 54%,
+    color-mix(in oklab, var(--bg-secondary) 86%, var(--accent) 14%)
+  );
+
   --radius: 12px;
   --radius-lg: 18px;
   --sidebar-width: 16rem;
@@ -235,7 +278,7 @@ body,
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--workspace-backdrop);
   color: var(--text);
   font-family: var(--font-body);
   font-size: var(--text-body);

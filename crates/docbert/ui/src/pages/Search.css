@@ -3,12 +3,12 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--workspace-backdrop);
 }
 
 .search-header {
   border-bottom: 1px solid var(--border-strong);
-  background: color-mix(in oklab, var(--bg) 88%, var(--bg-secondary) 12%);
+  background: var(--surface-panel-strong);
 }
 
 .search-header-inner {
@@ -30,7 +30,7 @@
   flex: 1;
   overflow-y: auto;
   padding: var(--space-xl) var(--page-gutter) var(--page-block-end);
-  background: var(--bg);
+  background: transparent;
 }
 
 .search-controls,
@@ -57,19 +57,30 @@
   padding: 0 var(--space-lg);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: var(--surface-floating);
+  background: var(--surface-panel-soft);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 46%, transparent),
+    0 8px 20px color-mix(in oklab, var(--bg) 92%, transparent);
   transition:
     border-color 0.15s,
-    background 0.15s;
+    background 0.15s,
+    box-shadow 0.15s;
 }
 
 .search-query-shell:hover {
-  background: color-mix(in oklab, var(--surface-floating) 72%, var(--bg) 28%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--surface-floating) 84%, white 16%),
+    color-mix(in oklab, var(--surface-floating) 95%, var(--bg) 5%) 62%,
+    color-mix(in oklab, var(--surface-floating) 92%, var(--accent-cyan) 8%)
+  );
 }
 
 .search-query-shell:focus-within {
   border-color: var(--border-focus);
-  background: color-mix(in oklab, var(--surface-floating) 84%, var(--bg) 16%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 52%, transparent),
+    0 10px 24px color-mix(in oklab, var(--bg) 88%, transparent);
 }
 
 .search-query-icon {
@@ -118,7 +129,8 @@
   max-width: 100%;
   padding: 0.5rem 0.875rem;
   border-radius: 999px;
-  background: var(--surface-floating);
+  background: var(--surface-panel-soft);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 42%, transparent);
 }
 
 .search-select.search-filter:hover:not(:disabled) {

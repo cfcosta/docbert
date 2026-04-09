@@ -16,29 +16,31 @@ export default function Sidebar() {
         </NavLink>
       </div>
 
-      <ul className="sidebar-nav">
-        {NAV_ITEMS.map((item) => (
-          <li key={item.to}>
-            <NavLink
-              to={item.to}
-              className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
-              end={item.to === "/documents"}
-            >
-              <item.icon />
-              <span>{item.label}</span>
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+      <div className="sidebar-body">
+        <ul className="sidebar-nav">
+          {NAV_ITEMS.map((item) => (
+            <li key={item.to}>
+              <NavLink
+                to={item.to}
+                className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+                end={item.to === "/documents"}
+              >
+                <item.icon />
+                <span>{item.label}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ul>
 
-      <div className="sidebar-footer">
-        <NavLink
-          to="/settings"
-          className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
-        >
-          <SettingsIcon />
-          <span>Settings</span>
-        </NavLink>
+        <div className="sidebar-footer">
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+          >
+            <SettingsIcon />
+            <span>Settings</span>
+          </NavLink>
+        </div>
       </div>
     </nav>
   );
