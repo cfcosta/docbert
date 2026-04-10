@@ -184,7 +184,7 @@
           cutlassSrc = pkgs.fetchgit {
             url = "https://github.com/NVIDIA/cutlass.git";
             rev = "7d49e6c7e2f8896c47f586706e67e1fb215529dc";
-            hash = "sha256-GR9GeR8xjyr6GPX/O2qXaAlIek4QzKxn/hjAUe6fIQU=";
+            hash = "sha256-cSWVzyuDC8EidTAZzHbVz0jUNK4zx5AAwfUV6lUXTXs=";
             leaveDotGit = true;
             fetchSubmodules = false;
           };
