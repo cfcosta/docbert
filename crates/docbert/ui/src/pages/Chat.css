@@ -13,7 +13,6 @@
   flex-direction: column;
   min-width: 0;
   background: var(--surface-panel-sidebar);
-  box-shadow: inset -1px 0 0 color-mix(in oklab, white 22%, transparent);
 }
 
 .chat-new-btn {
