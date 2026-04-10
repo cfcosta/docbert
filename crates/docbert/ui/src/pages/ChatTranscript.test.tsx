@@ -421,7 +421,8 @@ describe("ChatTranscript", () => {
     expect(view.getByText("No results")).toBeTruthy();
   });
 
-  test("search tool calls reuse the file-analysis chrome", () => {
+  test("search tool calls reuse the file-analysis chrome", async () => {
+    const user = userEvent.setup();
     const results = JSON.stringify([]);
     const view = renderTranscript(displayGroups(messageWithToolResult(results)));
 
@@ -431,6 +432,49 @@ describe("ChatTranscript", () => {
     expect(button).toBeTruthy();
     expect(button?.textContent).toContain("Search");
     expect(button?.textContent).toContain("rust");
+
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+    expect(shell?.querySelector(".chat-subagent-body")).toBeNull();
+    const layout = shell?.querySelector(".chat-tool-search-preview-layout");
+    expect(layout).toBeTruthy();
+    expect(layout?.className).not.toContain("has-preview");
+  });
+
+  test("search tool calls use the full width until a preview opens", async () => {
+    const user = userEvent.setup();
+    const results = JSON.stringify([
+      {
+        rank: 1,
+        score: 0.914,
+        doc_id: "#abc123",
+        collection: "notes",
+        path: "rust.md",
+        title: "Rust Guide",
+        excerpts: [
+          {
+            text: "Rust ownership keeps memory safe.",
+            start_line: 10,
+            end_line: 10,
+          },
+        ],
+      },
+    ]);
+
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+
+    await user.click(view.getByRole("button", { name: /search_hybrid/i }));
+
+    const layout = view.container.querySelector(".chat-tool-search-preview-layout");
+    expect(layout).toBeTruthy();
+    expect(layout?.className).not.toContain("has-preview");
+
+    await user.click(view.getByRole("button", { name: "Rust Guide" }));
+
+    await waitFor(() => {
+      expect(
+        view.container.querySelector(".chat-tool-search-preview-layout.has-preview"),
+      ).toBeTruthy();
+    });
   });
 
   test("falls back to preformatted output for non-search tools", async () => {

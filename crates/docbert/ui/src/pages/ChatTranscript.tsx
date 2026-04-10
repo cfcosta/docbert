@@ -186,7 +186,7 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
   );
 
   return (
-    <div className="chat-tool-search-preview-layout">
+    <div className={`chat-tool-search-preview-layout${selectedDoc ? " has-preview" : ""}`}>
       <SearchResults
         results={results}
         onOpenDocument={openPreview}
@@ -244,7 +244,9 @@ function ToolCallInline({
 
   if (isSearchTool) {
     return (
-      <div className={`chat-subagent-inline chat-tool-call-search${call.isError ? " error" : ""}`}>
+      <div
+        className={`chat-subagent-inline chat-tool-call-search${expanded ? " expanded" : ""}${call.isError ? " error" : ""}`}
+      >
         <button
           type="button"
           className="chat-subagent-header chat-subagent-toggle"
@@ -261,9 +263,7 @@ function ToolCallInline({
           <span className={`chat-subagent-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
         </button>
         {expanded && call.result && searchResults && (
-          <div className="chat-subagent-body">
-            <SearchToolResultsInline results={searchResults} />
-          </div>
+          <SearchToolResultsInline results={searchResults} />
         )}
         {expanded && call.result && !searchResults && (
           <div className="chat-subagent-body">
