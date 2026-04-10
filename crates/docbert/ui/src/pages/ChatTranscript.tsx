@@ -209,38 +209,18 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
 }
 
 function ThinkingInline({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(true);
-
   if (text.trim().length === 0) {
     return null;
   }
 
   return (
-    <div className={`chat-subagent-inline chat-reasoning-inline${expanded ? " expanded" : ""}`}>
-      <button
-        type="button"
-        className="chat-subagent-header chat-subagent-toggle"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        aria-label="Toggle reasoning"
+    <div className="chat-thinking" aria-label="Assistant reasoning">
+      <Markdown
+        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
       >
-        <span className="chat-subagent-icon">◌</span>
-        <span className="chat-subagent-label">Reasoning</span>
-        <span className="chat-subagent-path">assistant</span>
-        <span className={`chat-subagent-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
-      </button>
-      {expanded && (
-        <div className="chat-reasoning-body">
-          <div className="chat-thinking">
-            <Markdown
-              remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-              rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-            >
-              {text}
-            </Markdown>
-          </div>
-        </div>
-      )}
+        {text}
+      </Markdown>
     </div>
   );
 }
