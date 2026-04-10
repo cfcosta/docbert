@@ -36,6 +36,15 @@ function messageWithToolResult(result: string, name = "search_hybrid"): Message 
   };
 }
 
+function messageWithThinking(text: string): Message {
+  return {
+    id: "assistant-thinking-1",
+    role: "assistant",
+    content: "",
+    parts: [{ type: "thinking", text }],
+  };
+}
+
 function displayGroups(message: Message): DisplayMessageGroup[] {
   return [{ message, nestedSubagents: [] }];
 }
@@ -475,6 +484,28 @@ describe("ChatTranscript", () => {
         view.container.querySelector(".chat-tool-search-preview-layout.has-preview"),
       ).toBeTruthy();
     });
+  });
+
+  test("reasoning uses the same expanded card treatment as search", async () => {
+    const user = userEvent.setup();
+    const view = renderTranscript(displayGroups(messageWithThinking("Plan first")));
+
+    const shell = view.container.querySelector(".chat-reasoning-inline.chat-subagent-inline");
+    const header = shell?.querySelector(".chat-subagent-header");
+    const body = shell?.querySelector(".chat-reasoning-body");
+
+    expect(shell?.className).toContain("expanded");
+    expect(header).toBeTruthy();
+    expect(body).toBeTruthy();
+    expect(view.getByText("Plan first")).toBeTruthy();
+
+    await user.click(view.getByRole("button", { name: /toggle reasoning/i }));
+    expect(view.queryByText("Plan first")).toBeNull();
+    expect(shell?.className).not.toContain("expanded");
+
+    await user.click(view.getByRole("button", { name: /toggle reasoning/i }));
+    expect(view.getByText("Plan first")).toBeTruthy();
+    expect(shell?.className).toContain("expanded");
   });
 
   test("falls back to preformatted output for non-search tools", async () => {
