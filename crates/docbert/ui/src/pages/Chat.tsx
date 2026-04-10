@@ -360,12 +360,7 @@ export default function Chat() {
     conversations.length === 0
       ? "No saved threads yet"
       : `${conversations.length} saved ${conversations.length === 1 ? "thread" : "threads"}`;
-  const composerStatus = loading
-    ? "Assistant is working. You can stop the response at any time."
-    : "Enter to send · Shift+Enter for newline";
-  const composerHint = activeId
-    ? "Messages save to this conversation automatically."
-    : "Your first message will create a new conversation automatically.";
+  const hasDraft = input.trim().length > 0;
 
   return (
     <div className="chat-page">
@@ -456,7 +451,9 @@ export default function Chat() {
               void sendMessage();
             }}
           >
-            <div className="chat-input-shell">
+            <div
+              className={`chat-input-shell${hasDraft ? " has-draft" : ""}${loading ? " is-loading" : ""}`}
+            >
               <label className="sr-only" htmlFor="chat-composer">
                 Message
               </label>
@@ -473,12 +470,6 @@ export default function Chat() {
                 rows={1}
                 disabled={loading}
               />
-              <div className="chat-input-meta" aria-live="polite">
-                <span className={`chat-input-status${loading ? " is-loading" : ""}`}>
-                  {composerStatus}
-                </span>
-                <span className="chat-input-hint">{composerHint}</span>
-              </div>
             </div>
             {loading ? (
               <button type="button" className="chat-stop" onClick={handleStop}>
@@ -487,8 +478,8 @@ export default function Chat() {
             ) : (
               <button
                 type="submit"
-                className="chat-send"
-                disabled={!input.trim()}
+                className={`chat-send${hasDraft ? " ready" : ""}`}
+                disabled={!hasDraft}
                 aria-label="Send message"
               >
                 <svg
