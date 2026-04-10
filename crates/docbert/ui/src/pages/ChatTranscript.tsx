@@ -237,6 +237,42 @@ function ToolCallInline({
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
     .join(", ");
   const searchResults = parseToolSearchResults(call);
+  const isSearchTool = call.name === "search_hybrid" || call.name === "search_semantic";
+  const query = typeof call.args.query === "string" ? call.args.query.trim() : "";
+  const searchSummary = query || argsStr || call.name;
+  const searchStatus = call.result == null ? "running" : call.isError ? "error" : "done";
+
+  if (isSearchTool) {
+    return (
+      <div className={`chat-subagent-inline chat-tool-call-search${call.isError ? " error" : ""}`}>
+        <button
+          type="button"
+          className="chat-subagent-header chat-subagent-toggle"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          aria-label={`${call.name} ${searchSummary}`}
+        >
+          <span className="chat-subagent-icon">⌕</span>
+          <span className="chat-subagent-label">Search</span>
+          <code className="chat-subagent-path">{searchSummary}</code>
+          <span className={`chat-subagent-status chat-subagent-status-${searchStatus}`}>
+            {searchStatus}
+          </span>
+          <span className={`chat-subagent-chevron${expanded ? " open" : ""}`}>{"\u25B8"}</span>
+        </button>
+        {expanded && call.result && searchResults && (
+          <div className="chat-subagent-body">
+            <SearchToolResultsInline results={searchResults} />
+          </div>
+        )}
+        {expanded && call.result && !searchResults && (
+          <div className="chat-subagent-body">
+            <pre className="chat-tool-call-result">{call.result}</pre>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`chat-tool-call chat-tool-call-${tone}${call.isError ? " error" : ""}`}>

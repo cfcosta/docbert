@@ -421,6 +421,18 @@ describe("ChatTranscript", () => {
     expect(view.getByText("No results")).toBeTruthy();
   });
 
+  test("search tool calls reuse the file-analysis chrome", () => {
+    const results = JSON.stringify([]);
+    const view = renderTranscript(displayGroups(messageWithToolResult(results)));
+
+    const shell = view.container.querySelector(".chat-tool-call-search.chat-subagent-inline");
+    const button = shell?.querySelector(".chat-subagent-header");
+    expect(shell).toBeTruthy();
+    expect(button).toBeTruthy();
+    expect(button?.textContent).toContain("Search");
+    expect(button?.textContent).toContain("rust");
+  });
+
   test("falls back to preformatted output for non-search tools", async () => {
     const user = userEvent.setup();
     const view = renderTranscript(

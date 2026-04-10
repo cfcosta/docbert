@@ -834,6 +834,15 @@
   box-shadow: var(--shadow-sm);
 }
 
+.chat-tool-call-search .chat-tool-search-preview-layout {
+  margin-top: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .chat-tool-search-preview-shell {
   border: 1px solid var(--border);
   border-radius: var(--radius);
