@@ -147,7 +147,8 @@ mod tests {
         let resolved =
             resolve_document_path(&db, "notes", "nested/deep/file.md").unwrap();
 
-        assert_eq!(resolved, root.join("nested/deep/file.md"));
+        let canonical_root = root.canonicalize().unwrap();
+        assert_eq!(resolved, canonical_root.join("nested/deep/file.md"));
     }
 
     #[test]
