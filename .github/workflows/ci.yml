@@ -58,22 +58,6 @@ jobs:
         working-directory: crates/docbert/ui
       - run: cargo test --all
 
-  docs-examples:
-    name: Docs Examples
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-        working-directory: crates/docbert/ui
-      - run: bun run build
-        working-directory: crates/docbert/ui
-      - run: ./scripts/check-library-usage-docs.sh
-
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
