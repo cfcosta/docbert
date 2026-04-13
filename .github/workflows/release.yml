@@ -115,6 +115,15 @@ jobs:
               fh.write(f"tag=v{new_version}\n")
           PY
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build UI
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+        working-directory: crates/docbert/ui
+
       - name: Verify release
         run: |
           cargo fmt --check
