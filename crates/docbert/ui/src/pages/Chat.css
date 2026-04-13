@@ -443,9 +443,9 @@
   max-width: min(34rem, calc(100% - 4rem));
   background: linear-gradient(
     180deg,
-    color-mix(in oklab, var(--surface-accent-strong) 82%, white 18%),
-    color-mix(in oklab, var(--surface-accent-strong) 94%, var(--accent-cyan) 6%) 58%,
-    color-mix(in oklab, var(--surface-accent-strong) 90%, var(--bg) 10%)
+    color-mix(in oklab, var(--accent) 72%, white 28%),
+    color-mix(in oklab, var(--accent) 90%, var(--accent-cyan) 10%) 58%,
+    var(--accent)
   );
   border: 1px solid color-mix(in oklab, var(--accent-border) 82%, white 18%);
   color: var(--accent-text);
