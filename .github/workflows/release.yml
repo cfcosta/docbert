@@ -50,7 +50,7 @@ jobs:
 
           # All crate Cargo.toml files in the workspace.
           crate_tomls = [
-              pathlib.Path("Cargo.toml"),
+              pathlib.Path("crates/docbert/Cargo.toml"),
               pathlib.Path("crates/docbert-core/Cargo.toml"),
           ]
 
@@ -139,7 +139,7 @@ jobs:
 
       - name: Create release commit and tag
         run: |
-          git add Cargo.toml Cargo.lock crates/docbert-core/Cargo.toml
+          git add Cargo.lock crates/docbert/Cargo.toml crates/docbert-core/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
           git tag "${{ steps.version.outputs.tag }}"
 
