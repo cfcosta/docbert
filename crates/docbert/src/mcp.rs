@@ -148,7 +148,13 @@ fn build_search_result_item(
     let context = context_for_doc(config_db, &result.collection, &result.path);
     let snippet = if include_snippet {
         resolve_full_path(config_db, &result.collection, &result.path)
-            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|full_path| {
+                docbert_core::preparation::load_preview_content(
+                    std::path::Path::new(&result.path),
+                    &full_path,
+                )
+                .ok()
+            })
             .and_then(|content| text_util::extract_snippet(&content, query))
             .map(|(snippet, start_line)| {
                 text_util::add_line_numbers(&snippet, start_line)
@@ -338,8 +344,11 @@ impl DocbertMcpServer {
             }
         }
 
-        let content = std::fs::read_to_string(&full_path)
-            .map_err(|e| mcp_error("failed to read document", e))?;
+        let content = docbert_core::preparation::load_preview_content(
+            std::path::Path::new(&path),
+            &full_path,
+        )
+        .map_err(|e| mcp_error("failed to read document", e))?;
 
         let start_line = from_line.unwrap_or(1);
         let mut body = text_util::apply_line_limits(
@@ -438,7 +447,10 @@ impl DocbertMcpServer {
                 continue;
             }
 
-            let Ok(mut body) = std::fs::read_to_string(&full_path) else {
+            let Ok(mut body) = docbert_core::preparation::load_preview_content(
+                std::path::Path::new(&path),
+                &full_path,
+            ) else {
                 content.push(Content::text(format!(
                     "[SKIPPED: {collection}:{path} - failed to read]"
                 )));
@@ -834,8 +846,11 @@ fn read_resource_contents(
             )
         })?;
 
-    let mut text = std::fs::read_to_string(&full_path)
-        .map_err(|e| mcp_error("failed to read resource", e))?;
+    let mut text = docbert_core::preparation::load_preview_content(
+        std::path::Path::new(&path),
+        &full_path,
+    )
+    .map_err(|e| mcp_error("failed to read resource", e))?;
     text = text_util::add_line_numbers(&text, 1);
 
     if let Some(context) = context_for_doc(config_db, &collection, &path) {

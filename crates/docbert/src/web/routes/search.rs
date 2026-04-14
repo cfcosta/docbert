@@ -145,7 +145,10 @@ fn load_title_and_excerpts(
     else {
         return (fallback_title.to_string(), Vec::new());
     };
-    let Ok(content) = std::fs::read_to_string(&full_path) else {
+    let Ok(content) = docbert_core::preparation::load_preview_content(
+        Path::new(path),
+        &full_path,
+    ) else {
         return (fallback_title.to_string(), Vec::new());
     };
 

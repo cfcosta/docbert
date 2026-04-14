@@ -139,13 +139,19 @@ pub(crate) fn cmd_get(
         println!("path: {path}");
         println!("file: {}", full_path.display());
     } else if args.json {
-        let content = std::fs::read_to_string(&full_path)?;
+        let content = docbert_core::preparation::load_preview_content(
+            std::path::Path::new(&path),
+            &full_path,
+        )?;
         println!(
             "{}",
             get_json_string(&collection, &path, &full_path, Some(&content))?
         );
     } else {
-        let content = std::fs::read_to_string(&full_path)?;
+        let content = docbert_core::preparation::load_preview_content(
+            std::path::Path::new(&path),
+            &full_path,
+        )?;
         print!("{content}");
     }
 

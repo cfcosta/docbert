@@ -368,4 +368,72 @@ mod tests {
             document_length: None,
         }
     }
+
+    #[test]
+    fn load_preview_content_reads_markdown_as_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("note.md");
+        std::fs::write(&path, "# Hello\n\nWorld").unwrap();
+
+        let content =
+            load_preview_content(Path::new("note.md"), &path).unwrap();
+        assert_eq!(content, "# Hello\n\nWorld");
+    }
+
+    #[test]
+    fn load_preview_content_extracts_pdf_as_markdown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pdf = pdf_oxide::api::Pdf::from_markdown("# PDF Title\n\nPDF body")
+            .unwrap();
+        let path = tmp.path().join("doc.pdf");
+        std::fs::write(&path, pdf.into_bytes()).unwrap();
+
+        let content =
+            load_preview_content(Path::new("doc.pdf"), &path).unwrap();
+        assert!(!content.is_empty());
+        assert!(
+            content.contains("PDF"),
+            "PDF content should be extracted: {content}"
+        );
+    }
+
+    #[hegel::test(test_cases = 50)]
+    fn prop_load_preview_content_returns_nonempty_for_nonempty_markdown(
+        tc: hegel::TestCase,
+    ) {
+        use hegel::generators as gs;
+
+        let body: String = tc.draw(gs::text().min_size(1).max_size(200));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("note.md");
+        std::fs::write(&path, &body).unwrap();
+
+        let content =
+            load_preview_content(Path::new("note.md"), &path).unwrap();
+        assert_eq!(content, body);
+    }
+
+    #[hegel::test(test_cases = 30)]
+    fn prop_load_preview_content_is_idempotent(tc: hegel::TestCase) {
+        use hegel::generators as gs;
+
+        let body: String = tc.draw(
+            gs::text()
+                .min_size(1)
+                .max_size(100)
+                .alphabet("abcdefghijklmnopqrstuvwxyz \n#012345689"),
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("note.md");
+        std::fs::write(&path, &body).unwrap();
+
+        let first = load_preview_content(Path::new("note.md"), &path).unwrap();
+        let second = load_preview_content(Path::new("note.md"), &path).unwrap();
+        assert_eq!(
+            first, second,
+            "load_preview_content should be deterministic"
+        );
+    }
 }

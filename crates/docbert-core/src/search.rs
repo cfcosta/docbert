@@ -536,8 +536,11 @@ fn document_has_semantic_body(
         return false;
     }
 
-    let full_path = Path::new(collection_path).join(&meta.relative_path);
-    let Ok(content) = std::fs::read_to_string(full_path) else {
+    let relative = Path::new(&meta.relative_path);
+    let full_path = Path::new(collection_path).join(relative);
+    let Ok(content) =
+        crate::preparation::load_preview_content(relative, &full_path)
+    else {
         return false;
     };
 
@@ -568,12 +571,15 @@ fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
             continue;
         }
 
-        let full_path = Path::new(collection_path).join(&r.path);
-        let content = std::fs::read_to_string(&full_path).unwrap_or_default();
+        let relative = Path::new(&r.path);
+        let full_path = Path::new(collection_path).join(relative);
+        let content =
+            crate::preparation::load_preview_content(relative, &full_path)
+                .unwrap_or_default();
         let title = if content.is_empty() {
             fallback
         } else {
-            ingestion::extract_title(&content, Path::new(&r.path))
+            ingestion::extract_title(&content, relative)
         };
         r.title = title;
     }
