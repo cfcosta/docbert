@@ -147,7 +147,7 @@ jobs:
             features: ""
             artifact: docbert-aarch64-unknown-linux-musl
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-latest
             features: metal
             artifact: docbert-aarch64-apple-darwin
     steps:
@@ -158,6 +158,9 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Remove local cargo config
+        run: rm -f .cargo/config.toml
 
       - name: Add musl target
         if: contains(matrix.target, 'musl')
