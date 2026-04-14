@@ -147,7 +147,7 @@ jobs:
             features: ""
             artifact: docbert-aarch64-unknown-linux-musl
           - target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: macos-14
             features: metal
             artifact: docbert-aarch64-apple-darwin
     steps:
@@ -158,6 +158,10 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Add musl target
+        if: contains(matrix.target, 'musl')
+        run: rustup target add ${{ matrix.target }}
 
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
