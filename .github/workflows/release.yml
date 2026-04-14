@@ -142,7 +142,7 @@ jobs:
             features: ""
             artifact: docbert-x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             features: ""
             artifact: docbert-aarch64-unknown-linux-musl
           - target: aarch64-apple-darwin
@@ -150,7 +150,7 @@ jobs:
             features: metal
             artifact: docbert-aarch64-apple-darwin
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             features: ""
             artifact: docbert-x86_64-apple-darwin
     steps:
@@ -167,13 +167,6 @@ jobs:
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Install cross-compilation tools for aarch64 musl
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
