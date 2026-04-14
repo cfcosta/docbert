@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/unix_events.py
+# hypothesis_version: 6.151.14
+
+[100, 255, 256, 1024, '\x00', '%r pauses reading', '%r resumes reading', '%r: %s', '<{}>', 'AbstractChildWatcher', 'EventLoop', 'FastChildWatcher', 'PidfdChildWatcher', 'SafeChildWatcher', 'SelectorEventLoop', 'ThreadedChildWatcher', '_selector', 'aix', 'closed', 'closing', 'exception', 'get_child_watcher', 'idle', 'ignore', 'message', 'not a regular file', 'open', 'pidfd_open', 'pipe', 'polling', 'protocol', 'set_child_watcher', 'transport', 'wb', 'win32']

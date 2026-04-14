@@ -157,6 +157,9 @@ pub(crate) async fn ingest(
             )
             .map_err(map_error)?
         };
+
+        let existed_before = full_path.exists();
+
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -177,30 +180,44 @@ pub(crate) async fn ingest(
             _ => return Err(StatusCode::BAD_REQUEST),
         }
 
-        let mtime = document_mtime(&full_path)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let document = ingest::load_document(
-            &body.collection,
-            &uploaded.path,
-            &full_path,
-            uploaded.metadata.clone(),
-            mtime,
-        )
-        .map_err(map_error)?;
-        let embedding_entries = compute_embedding_entries(&state, &document)?;
-        let result = ingest::ingest_prepared_document(
-            &state,
-            &body.collection,
-            &document,
-            &embedding_entries,
-        )
-        .map_err(map_error)?;
-        ingested.push(IngestedDoc {
-            doc_id: result.doc_id,
-            path: result.path,
-            title: result.title,
-            metadata: result.metadata,
-        });
+        let ingest_result = (|| -> Result<IngestedDoc, StatusCode> {
+            let mtime = document_mtime(&full_path)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let document = ingest::load_document(
+                &body.collection,
+                &uploaded.path,
+                &full_path,
+                uploaded.metadata.clone(),
+                mtime,
+            )
+            .map_err(map_error)?;
+            let embedding_entries =
+                compute_embedding_entries(&state, &document)?;
+            let result = ingest::ingest_prepared_document(
+                &state,
+                &body.collection,
+                &document,
+                &embedding_entries,
+            )
+            .map_err(map_error)?;
+            Ok(IngestedDoc {
+                doc_id: result.doc_id,
+                path: result.path,
+                title: result.title,
+                metadata: result.metadata,
+            })
+        })();
+
+        match ingest_result {
+            Ok(doc) => ingested.push(doc),
+            Err(status) => {
+                // Clean up the file we wrote if it didn't exist before
+                if !existed_before {
+                    let _ = std::fs::remove_file(&full_path);
+                }
+                return Err(status);
+            }
+        }
     }
 
     Ok(Json(IngestResponse {
@@ -262,6 +279,12 @@ pub(crate) async fn delete(
         paths::resolve_document_path(&config_db, &collection, &path)
             .map_err(map_error)?
     };
+
+    // Remove the file first so the subsequent snapshot refresh sees it gone.
+    // Then clean up index/embeddings/metadata. If the cleanup fails, the
+    // file is gone but orphaned metadata is safe - a future sync will clear
+    // it. The `delete_document` function already has snapshot rollback
+    // logic for partial failures.
     std::fs::remove_file(&full_path).map_err(|_| StatusCode::NOT_FOUND)?;
     ingest::delete_document(&state, &collection, &path).map_err(map_error)?;
 
@@ -835,5 +858,71 @@ mod tests {
         assert_eq!(item.title, "Disk Title");
         assert_eq!(item.content, "# Disk Title\n\nDisk body");
         assert_eq!(item.metadata, Some(serde_json::json!({ "topic": "rust" })));
+    }
+
+    #[tokio::test]
+    async fn web_documents_delete_removes_metadata_before_file() {
+        let _guard = env_lock().await;
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        test_config_db(&state)
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        // Upload a document
+        let upload_response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Hello\n\nBody","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload_response.status(), StatusCode::OK);
+
+        let did = DocumentId::new("notes", "hello.md");
+
+        // Delete it
+        let response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/hello.md")
+                    .method("DELETE")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // Metadata, index, and embeddings should all be gone
+        assert!(
+            test_config_db(&state)
+                .get_document_metadata_typed(did.numeric)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .search_index
+                .find_by_collection_path("notes", "hello.md")
+                .unwrap()
+                .is_none()
+        );
+        // File should also be gone
+        assert!(!root.join("hello.md").exists());
     }
 }

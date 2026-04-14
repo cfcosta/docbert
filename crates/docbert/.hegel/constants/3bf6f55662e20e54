@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/ssl.py
+# hypothesis_version: 6.151.14
+
+[0.0, 100, 109, 110, 111, 112, 113, 114, 115, 116, 120, 254, 255, 256, 257, 1024, ' %d %H:%M:%S %Y GMT', '*', '.', '1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2', '<unknown>', 'ALERT_DESCRIPTION_', 'ASCII', 'AlertDescription', 'Apr', 'Aug', 'B', 'CA', 'CERT_', 'Dec', 'DefaultVerifyPaths', 'Feb', 'Jan', 'Jul', 'Jun', 'Mar', 'May', 'Nov', 'OP_', 'Oct', 'Options', 'PROTOCOL_', 'PROTOCOL_SSLv2', 'PROTOCOL_SSLv23', 'ROOT', 'SSLErrorNumber', 'SSLKEYLOGFILE', 'SSL_ERROR_', 'Sep', 'VERIFY_', 'VerifyFlags', 'VerifyMode', '_ASN1Object', '_SSLMethod', '__call__', 'ascii', 'idna', 'keylog_filename', 'minimum_version', 'strict', 'tls-unique', 'win32', 'x509_asn']

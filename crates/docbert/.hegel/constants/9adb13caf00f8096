@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/genericpath.py
+# hypothesis_version: 6.151.14
+
+['ALLOW_MISSING', 'commonprefix', 'exists', 'getatime', 'getctime', 'getmtime', 'getsize', 'isdevdrive', 'isdir', 'isfile', 'isjunction', 'islink', 'lexists', 'samefile', 'sameopenfile', 'samestat']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/coroutines.py
+# hypothesis_version: 6.151.14
+
+[100, '<empty co_filename>', 'PYTHONASYNCIODEBUG', '__name__', '__qualname__', '_is_coroutine', 'cr_code', 'cr_frame', 'gi_code', 'gi_frame', 'iscoroutine', 'iscoroutinefunction']

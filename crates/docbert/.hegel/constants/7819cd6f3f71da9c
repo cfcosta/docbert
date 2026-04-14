@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/resources/__init__.py
+# hypothesis_version: 6.151.14
+
+['Anchor', 'Package', 'ResourceReader', 'as_file', 'contents', 'files', 'is_resource', 'open_binary', 'open_text', 'path', 'read_binary', 'read_text']

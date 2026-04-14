@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/quoprimime.py
+# hypothesis_version: 6.151.14
+
+[b'\r\n', b'-!*+/', 256, '=', '=%02X', '=?%s?q?%s?=', '=[a-fA-F0-9]{2}', '_', 'ascii', 'body_decode', 'body_encode', 'body_length', 'decode', 'decodestring', 'header_decode', 'header_encode', 'header_length', 'iso-8859-1', 'latin1', 'quote', 'unquote']

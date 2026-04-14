@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/reprlib.py
+# hypothesis_version: 6.151.14
+
+['%s%s%s', '%s: %s', '(', ')', ',', ',\n', ', ', '...', '<%s instance at %#x>', 'Repr', '[', ']', '])', '_', '__annotations__', '__doc__', '__module__', '__name__', '__qualname__', '__type_params__', 'array', "array('%s')", "array('%s', [", 'builtins', 'collections', 'deque', 'deque([', 'dict', 'frozenset', 'frozenset()', 'frozenset({', 'int', 'list', 'recursive_repr', 'repr', 'repr_', 'set', 'set()', 'str', 'tuple', '{', '{%s}', '{}', '}', '})']

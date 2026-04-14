@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/base_events.py
+# hypothesis_version: 6.151.14
+
+[0.1, 0.5, 100, 3600, 16384, '\x00', '%', '%r handled: (%r, %r)', '%r is serving', '%s: %r', ', ', '2-tuple is expected', '<pipe>', '<stdout>', 'AF_INET6', 'AF_UNIX', 'BaseEventLoop', 'Close %r', 'Event loop is closed', 'Get address info %s', 'IPPROTO_IPV6', 'SO_REUSEPORT', 'Server', 'TCP_NODELAY', 'Transport is closing', '__self__', '_sendfile_compatible', 'asyncgen', 'asyncio', 'b', 'bufsize must be 0', 'call_at', 'call_soon', 'call_soon_threadsafe', 'cmd must be a string', 'context', 'cygwin', 'errors must be None', 'exception', 'future', 'get_context', 'handle', 'handle_traceback', 'idna', 'inet_pton', 'message', 'mode', 'monotonic', 'posix', 'run', 'run shell command %r', 'run_in_executor', 'seek', 'shell must be False', 'shell must be True', 'socket', 'source_traceback', 'string is expected', 'task', 'text must be False', 'when cannot be None']

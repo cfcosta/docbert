@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/copyreg.py
+# hypothesis_version: 6.151.14
+
+[2147483647, '_', '_%s%s', '__', '__dict__', '__flags__', '__slotnames__', '__slots__', '__weakref__', 'add_extension', 'code out of range', 'constructor', 'pickle', 'remove_extension']

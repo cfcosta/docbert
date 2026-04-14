@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/pathlib/_local.py
+# hypothesis_version: 6.151.14
+
+[438, 511, '**', '.', '..', '/', '///', '//localhost/', ':', ':|', '<{}.parents>', '?.', 'Path', 'PosixPath', 'PurePath', 'PurePosixPath', 'PureWindowsPath', 'WindowsPath', '_drv', '_hash', '_path', '_raw_paths', '_root', '_str', '_str_normcase_cached', '_tail', '_tail_cached', 'b', 'file:', 'file://', 'file:///', 'link', 'nt', 'pathlib.Path.glob', 'pathlib.Path.rglob', 'pathlib.Path.walk', 'r', 'readlink', 'symlink', '{}({!r})', '|', '~']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/gzip.py
+# hypothesis_version: 6.151.14
+
+[b'\x00', b'\x02', b'\x04', b'\x08', b'\x1f\x8b', b'.gz', b'\xff', 128, 255, 1024, 4294967295, '*', '-', '--best', '--decompress', '--fast', '-d', '.gz', '<4sLBB', '<BBIxx', '<H', '<II', '<L', '<gzip ', '>', 'BadGzipFile', 'CRC check failed', 'GzipFile', 'Invalid mode: %r', 'Invalid mode: {!r}', 'U', '__main__', 'a', 'args', 'b', 'compress', 'compress better', 'compress faster', 'decompress', 'file', 'latin-1', 'lost gzip_file', 'mode', 'name', 'open', 'r', 'rb', 'read', 'store_true', 't', 'w', 'wb', 'write', 'x']

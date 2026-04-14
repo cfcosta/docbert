@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/charset.py
+# hypothesis_version: 6.151.14
+
+['Charset', 'add_alias', 'add_charset', 'add_codec', 'ascii', 'base64', 'big5', 'big5_tw', 'cp949', 'euc-jp', 'euc-kr', 'euc_jp', 'euc_kr', 'eucgb2312_cn', 'gb2312', 'iso-2022-jp', 'iso-8859-1', 'iso-8859-10', 'iso-8859-13', 'iso-8859-14', 'iso-8859-15', 'iso-8859-16', 'iso-8859-2', 'iso-8859-3', 'iso-8859-4', 'iso-8859-9', 'koi8-r', 'ks_c_5601-1987', 'latin-1', 'latin-10', 'latin-2', 'latin-3', 'latin-4', 'latin-5', 'latin-6', 'latin-7', 'latin-8', 'latin-9', 'latin1', 'latin_1', 'latin_10', 'latin_2', 'latin_3', 'latin_4', 'latin_5', 'latin_6', 'latin_7', 'latin_8', 'latin_9', 'quoted-printable', 'shift_jis', 'surrogateescape', 'unknown-8bit', 'us-ascii', 'utf-8', 'viscii', 'windows-1252']

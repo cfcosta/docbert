@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/encoders.py
+# hypothesis_version: 6.151.14
+
+[b' ', b'=20', '7bit', '8bit', 'ascii', 'base64', 'encode_7or8bit', 'encode_base64', 'encode_noop', 'encode_quopri', 'quoted-printable']

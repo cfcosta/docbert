@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/iterators.py
+# hypothesis_version: 6.151.14
+
+[' [%s]', 'body_line_iterator', 'text', 'walk']

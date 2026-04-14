@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/zoneinfo/_tzpath.py
+# hypothesis_version: 6.151.14
+
+[b'TZif', '/', 'PYTHONTZPATH', 'TZPATH', '_', 'posix', 'posixrules', 'r', 'rb', 'right', 'tzdata', 'utf-8', 'zones']

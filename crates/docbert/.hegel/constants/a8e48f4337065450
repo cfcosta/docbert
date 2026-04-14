@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/opcode.py
+# hypothesis_version: 6.151.14
+
+['!=', '<', '<%r>', '<=', '==', '>', '>=', 'BINARY_OP', 'BINARY_SUBSCR', 'CALL', 'COMPARE_OP', 'CONTAINS_OP', 'EXTENDED_ARG', 'FOR_ITER', 'HAVE_ARGUMENT', 'JUMP_BACKWARD', 'LOAD_ATTR', 'LOAD_GLOBAL', 'LOAD_SUPER_ATTR', 'POP_JUMP_IF_FALSE', 'POP_JUMP_IF_NONE', 'POP_JUMP_IF_NOT_NONE', 'POP_JUMP_IF_TRUE', 'SEND', 'STORE_ATTR', 'STORE_SUBSCR', 'TO_BOOL', 'UNPACK_SEQUENCE', 'builtin_keys_version', 'cmp_op', 'counter', 'descr', 'func_version', 'hasarg', 'hascompare', 'hasconst', 'hasexc', 'hasfree', 'hasjabs', 'hasjrel', 'hasjump', 'haslocal', 'hasname', 'index', 'keys_version', 'module_keys_version', 'opmap', 'opname', 'stack_effect', 'version']

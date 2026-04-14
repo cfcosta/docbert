@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/fractions.py
+# hypothesis_version: 6.151.14
+
+[0.0, 1000000, '%', '%s(%s, %s)', '%s/%s', '-', '.', '0', '6', '<', '=', '>', 'E', 'EFG', 'Fraction', 'Fraction(%s, 0)', '^', '_', '__', '__r', '_denominator', '_numerator', 'align', 'alt', 'decimal', 'denom', 'e', 'eE', 'exp', 'fF%', 'fill', 'gG', 'minimumwidth', 'no_neg_zero', 'num', 'precision', 'presentation_type', 'sign', 'thousands_sep', 'zeropad']

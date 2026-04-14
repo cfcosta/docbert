@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/bz2.py
+# hypothesis_version: 6.151.14
+
+['BZ2Compressor', 'BZ2Decompressor', 'BZ2File', 'Invalid mode: %r', '__index__', 'a', 'ab', 'b', 'compress', 'decompress', 'open', 'r', 'rb', 'read', 't', 'w', 'wb', 'write', 'x', 'xb']

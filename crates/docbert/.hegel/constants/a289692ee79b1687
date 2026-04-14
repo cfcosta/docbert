@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/pprint.py
+# hypothesis_version: 6.151.14
+
+['%s(%s,\n%s', '%s: %s', '(', '(%s)', '(%s,)', '()', '({', ')', ',\n', ', ', ',)', '...', ': ', '<', '=', 'PrettyPrinter', '[', '[%s]', '[]', '\\S*\\s*', ']', '])', '],\n%smaxlen=%s)', '__create_fn__', '__repr__', '__wrapped__', 'bytearray(', 'depth must be > 0', 'indent must be >= 0', 'isreadable', 'isrecursive', 'mappingproxy(', 'namespace', 'obj', 'pformat', 'pp', 'pprint', 'saferepr', 'width must be != 0', '{', '{%s}', '{...}', '{}', '}', '})']

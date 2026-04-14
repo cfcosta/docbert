@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/tempfile.py
+# hypothesis_version: 6.151.14
+
+[b'blat', 100, 384, 448, 10000, '%SYSTEMROOT%\\Temp', '/tmp', '/usr/tmp', '/var/tmp', '<{} {!r}>', 'NamedTemporaryFile', 'O_BINARY', 'O_NOFOLLOW', 'O_TMPFILE', 'SpooledTemporaryFile', 'TEMP', 'TMP', 'TMPDIR', 'TMP_MAX', 'TemporaryDirectory', 'TemporaryFile', 'Unclosed file {!r}', '\\temp', '\\tmp', '__call__', '_rng_pid', 'b', 'buffer', 'buffering', 'c:\\temp', 'c:\\tmp', 'cygwin', 'dir', 'encoding', 'errors', 'file', 'gettempdir', 'gettempdirb', 'gettempprefix', 'gettempprefixb', 'mkdtemp', 'mkstemp', 'mktemp', 'mode', 'newline', 'nt', 'posix', 'prefix', 'raw', 'suffix', 'tempdir', 'tempfile.mkdtemp', 'tempfile.mkstemp', 'tmp', 'w+b', '~\\AppData\\Local\\Temp']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/glob.py
+# hypothesis_version: 6.151.14
+
+[b'([*?[])', b'**', b'.', b'[\\1]', 512, '(?!\\.)', '([*?[])', '*', '**', '*?', '.', '.*', '..', '/', 'ASCII', 'O_DIRECTORY', '[\\1]', '\\/', 'escape', 'glob', 'glob.glob', 'glob.glob/2', 'glob.glob0', 'glob.glob1', 'iglob', 'joinpath', 'lstat', 'nt', 'path', 'translate']

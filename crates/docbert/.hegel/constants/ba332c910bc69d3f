@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/random.py
+# hypothesis_version: 6.151.14
+
+[-2.0, -1.0, -0.5, -0.0873, 0.0, 1e-07, 1e-06, 0.01, 0.0248, 0.07, 0.1, 0.5, 0.6, 0.75, 0.9, 0.92, 0.9999999, 1.0, 1.15, 2.0, 2.53, 2.83, 3.0, 4.0, 4.2, 4.5, 5.1, 10.0, 20.0, 200.0, 100, 10000, 1000003, 18446744073709551615, '*', '+', '--choice', '--float', '--integer', '--test', '-c', '-f', '-i', '?', 'N', 'Random', 'SystemRandom', '__main__', '_randbelow', 'betavariate', 'binomialvariate', 'choice', 'choices', 'expovariate', 'fork', 'gammavariate', 'gauss', 'getrandbits', 'getstate', 'input', 'latin-1', 'little', 'lognormvariate', 'normalvariate', 'paretovariate', 'randbytes', 'randint', 'random', 'randrange', 'sample', 'seed', 'setstate', 'shuffle', 'triangular', 'uniform', 'vonmisesvariate', 'weibullvariate']

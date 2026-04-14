@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/lzma.py
+# hypothesis_version: 6.151.14
+
+['CHECK_CRC32', 'CHECK_CRC64', 'CHECK_ID_MAX', 'CHECK_NONE', 'CHECK_SHA256', 'CHECK_UNKNOWN', 'FILTER_ARM', 'FILTER_ARMTHUMB', 'FILTER_DELTA', 'FILTER_IA64', 'FILTER_LZMA1', 'FILTER_LZMA2', 'FILTER_POWERPC', 'FILTER_SPARC', 'FILTER_X86', 'FORMAT_ALONE', 'FORMAT_AUTO', 'FORMAT_RAW', 'FORMAT_XZ', 'Invalid mode: %r', 'Invalid mode: {!r}', 'LZMACompressor', 'LZMADecompressor', 'LZMAError', 'LZMAFile', 'MF_BT2', 'MF_BT3', 'MF_BT4', 'MF_HC3', 'MF_HC4', 'MODE_FAST', 'MODE_NORMAL', 'PRESET_DEFAULT', 'PRESET_EXTREME', 'a', 'ab', 'b', 'compress', 'decompress', 'is_check_supported', 'open', 'r', 'rb', 'read', 't', 'w', 'wb', 'write', 'x', 'xb']

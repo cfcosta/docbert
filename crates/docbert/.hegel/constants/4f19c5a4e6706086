@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/re/_parser.py
+# hypothesis_version: 6.151.14
+
+[255, '\x07', '\x08', '#', '$', '&', '(', ')', ')-:', '*', '*+?{', '+', ',', '-', '-&~|', '.', '.\\[{()*+?^$|', '0', '01234567', '0123456789', ':', '<', '=', '=!', '=!<', '>', '?', 'ELSE', 'L', 'N', 'OR', 'P', 'U', '[', '\\', '\\A', '\\B', '\\D', '\\N{}', '\\S', '\\W', '\\Z', '\\\\', '\\a', '\\b', '\\d', '\\f', '\\n', '\\r', '\\s', '\\t', '\\v', '\\w', ']', '^', 'a', 'ascii', 'backslashreplace', 'bad escape %s', 'bad group number', 'character name', 'difference', 'g', 'group name', 'i', 'incomplete escape %s', 'intersection', 'latin-1', 'latin1', 'm', 'missing ', 'missing -, : or )', 'missing :', 'missing <', 'missing flag', 'missing {', 'multiple repeat', 'nothing to repeat', 's', 'symmetric difference', 'too many groups', 'u', 'union', 'unknown extension ?', 'unknown extension ?<', 'unknown extension ?P', 'unknown flag', 'x', '{', '|', '|)', '}', '~']

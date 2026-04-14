@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/linecache.py
+# hypothesis_version: 6.151.14
+
+['<', '>', '__loader__', '__name__', '__spec__', 'checkcache', 'clearcache', 'get_source', 'getline', 'lazycache', 'loader', 'name']

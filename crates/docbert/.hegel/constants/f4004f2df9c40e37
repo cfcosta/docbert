@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/datetime.py
+# hypothesis_version: 6.151.14
+
+['MAXYEAR', 'MINYEAR', 'UTC', 'date', 'datetime', 'time', 'timedelta', 'timezone', 'tzinfo']

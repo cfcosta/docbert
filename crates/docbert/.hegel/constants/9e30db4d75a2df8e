@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/base64.py
+# hypothesis_version: 6.151.14
+
+[b'\x00', b'\x00\x00\x00\x00', b'\n', b' \t\n\r\x0b', b'    ', b'!', b'+/', b'-_', b'01', b'0123456789ABCDEFGHIJKLMNOPQRSTUV', b';_`|~', b'<~', b'=', b'===', b'====', b'======', b'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', b'O', b'[^0-9A-F]', b'u', b'y', b'z', b'~', b'~>', 118, 256, 1023, 7225, 614125, 538976288, '!%dI', '!I', '-', '-d', '-e', '-h', '-u', 'Ascii85 overflow', 'B', 'Incorrect padding', '__main__', 'a85decode', 'a85encode', 'ascii', 'b', 'b16decode', 'b16encode', 'b32decode', 'b32encode', 'b32hexdecode', 'b32hexencode', 'b64decode', 'b64encode', 'b85decode', 'b85encode', 'base32', 'base32hex', 'base85', 'c', 'decode', 'decodebytes', 'encode', 'encodebytes', 'hdeu', 'rb', 'standard_b64decode', 'standard_b64encode', 'urlsafe_b64decode', 'urlsafe_b64encode', 'z85', 'z85decode', 'z85encode']

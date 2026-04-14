@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/fnmatch.py
+# hypothesis_version: 6.151.14
+
+[32768, '!', '(?!)', '([&~|])', '*', '-', '.', '.*', '?', 'ISO-8859-1', '[', '\\', '\\-', '\\[', '\\\\', '\\\\\\1', ']', '^', 'filter', 'fnmatch', 'fnmatchcase', 'translate']

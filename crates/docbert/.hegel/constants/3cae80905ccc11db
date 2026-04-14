@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/re/_compiler.py
+# hypothesis_version: 6.151.14
+
+[b'\x00', b'0', b'1', 255, 256, 65280, 65535, 65536, '  overlap', '  prefix', '  prefix_skip', '%#0*x', '%#02x', '%#02x %#02x (%r-%r)', '%#02x (%r)', '%*d%s ', '(%r)', '(to %d)', ', ', '.', ':', 'AT_', 'CATEGORY_', 'I', 'MAXREPEAT', 'SRE module mismatch', '[%s]', 'branch', 'in']

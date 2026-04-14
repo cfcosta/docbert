@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/io.py
+# hypothesis_version: 6.151.14
+
+['BlockingIOError', 'BufferedIOBase', 'BufferedRWPair', 'BufferedRandom', 'BufferedReader', 'BufferedWriter', 'BytesIO', 'DEFAULT_BUFFER_SIZE', 'FileIO', 'IOBase', 'RawIOBase', 'SEEK_CUR', 'SEEK_END', 'SEEK_SET', 'StringIO', 'TextIOBase', 'TextIOWrapper', 'UnsupportedOperation', 'io', 'open', 'open_code', 'text_encoding']

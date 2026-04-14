@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/events.py
+# hypothesis_version: 6.151.14
+
+[100, '<{}>', 'AbstractEventLoop', 'AbstractServer', 'Handle', 'TimerHandle', '__name__', '__weakref__', '_args', '_callback', '_cancelled', '_context', '_get_running_loop', '_loop', '_repr', '_scheduled', '_set_running_loop', '_source_traceback', '_when', 'asyncio', 'asyncio.', 'cancelled', 'exception', 'fork', 'get_child_watcher', 'get_event_loop', 'get_running_loop', 'handle', 'message', 'new_event_loop', 'set_child_watcher', 'set_event_loop', 'source_traceback']

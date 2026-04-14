@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/metadata/_adapters.py
+# hypothesis_version: 6.151.14
+
+['-', 'Classifier', 'Description', 'Dynamic', 'Keywords', 'Obsoletes-Dist', 'Platform', 'Project-URL', 'Provides-Dist', 'Provides-Extra', 'Requires-Dist', 'Requires-External', 'Supported-Platform', '\\s+', '_', '_headers']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/uuid.py
+# hypothesis_version: 6.151.14
+
+[b'.', b'0', b':', b'Address', b'address:', b'ether', b'hwaddr', b'lan0', b'link/ether', b'lladdr', 100, 128, 255, 4095, 8192, 16384, 32768, 49152, 61440, 65535, 4294967295, 281474976710655, 122192928000000000, '%032x', '%s(%r)', '%s-%s-%s-%s-%s', '(%s)', '-', '--name', '--namespace', '--uuid', '-N', '-a', '-ai', '-an', '-av', '-ian', '-n', '-u', '/sbin', '/usr/sbin', '@dns', '@oid', '@url', '@x500', 'AIX', 'Android', 'C', 'LC_ALL', 'Linux', 'PATH', 'UuidCreate', '__main__', '__weakref__', 'arp', 'darwin', 'emscripten', 'generate_time_safe', 'gethostbyname', 'ifconfig', 'int', 'ip', 'is_safe', 'lanscan', 'link', 'linux', 'netstat', 'nt', 'posix', 'urn:', 'urn:uuid:', 'utf-8', 'uuid1', 'uuid3', 'uuid4', 'uuid5', 'uuid:', 'wasi', 'win32', '{}']

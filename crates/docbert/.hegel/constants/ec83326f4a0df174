@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/json/decoder.py
+# hypothesis_version: 6.151.14
+
+[55296, 56319, 56320, 57343, 65536, '\x08', '"', ',', '-Infinity', '-inf', '/', ':', 'Expecting value', 'Extra data', 'Infinity', 'JSONDecodeError', 'JSONDecoder', 'NaN', '[ \\t\\n\\r]*', '[0-9A-Fa-f]{4}', '\\', '\\u', ']', 'b', 'f', 'inf', 'n', 'nan', 'r', 't', 'u', '}']

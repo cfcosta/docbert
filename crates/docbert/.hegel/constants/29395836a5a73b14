@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/queue.py
+# hypothesis_version: 6.151.14
+
+[0.0, 'Empty', 'Full', 'LifoQueue', 'PriorityQueue', 'Queue', 'ShutDown', 'SimpleQueue']

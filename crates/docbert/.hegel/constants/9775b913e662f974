@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/site.py
+# hypothesis_version: 6.151.14
+
+['    %r,', '#', '%d.%d', '--user-base', '--user-site', '.', '.local', '.pth', '.python_history', '/', '=', 'APPDATA', 'Ctrl-D (i.e. EOF)', 'Ctrl-Z plus Return', 'LICENSE', 'LICENSE.txt', 'Lib', 'Library', 'PYTHONUSERBASE', 'PYTHON_BASIC_REPL', 'PYTHON_HISTORY', 'Python', '\\', ']', '__PYVENV_LAUNCHER__', '__file__', '__main__', '_frozen_importlib', '_stdlib_dir', 'abiflags', 'bind ^I rl_complete', 'copyright', 'credits', 'darwin', "doesn't exist", 'editline', 'emscripten', 'exists', 'exit', 'getegid', 'geteuid', 'getgid', 'getuid', 'home', 'import\t', 'import ', 'ios', 'lib', 'license', 'nt', 'pyvenv.cfg', 'quit', 'site-packages', 'sitecustomize', 'st_file_attributes', 'st_flags', 'sys.path = [', 't', 'tab: complete', 'true', 'tvos', 'usercustomize', 'utf-8', 'utf-8-sig', 'vxworks', 'wasi', 'watchos', '~']
