@@ -122,17 +122,9 @@ fn process_document_batch(
 ) -> error::Result<()> {
     log_load_failures(&document_batch.failures);
 
-    if index_documents {
-        let mut writer = runtime.search_index.writer(15_000_000)?;
-        let count = ingestion::ingest_prepared_documents(
-            &runtime.search_index,
-            &mut writer,
-            collection,
-            &document_batch.documents,
-        )?;
-        eprintln!("  Indexed {count} documents");
-    }
-
+    // Step 1: Compute embeddings first (expensive, most likely to fail).
+    // We do this before touching the Tantivy index so a model/embedding
+    // failure doesn't leave committed index entries without embeddings.
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
@@ -161,11 +153,26 @@ fn process_document_batch(
         }
     }
 
+    // Step 2: Store metadata (cheap, rarely fails).
     incremental::batch_store_metadata(
         config_db,
         collection,
         &document_batch.metadata_files,
     )?;
+
+    // Step 3: Commit to Tantivy last — this is the visible "point of no
+    // return".  If steps 1 or 2 failed we never reach here, so the index
+    // stays consistent with embeddings and metadata.
+    if index_documents {
+        let mut writer = runtime.search_index.writer(15_000_000)?;
+        let count = ingestion::ingest_prepared_documents(
+            &runtime.search_index,
+            &mut writer,
+            collection,
+            &document_batch.documents,
+        )?;
+        eprintln!("  Indexed {count} documents");
+    }
 
     Ok(())
 }
@@ -324,13 +331,12 @@ pub(crate) fn cmd_sync(
         // succeeded.
         let sync_result = (|| {
             if !selection.deleted_ids.is_empty() {
-                let mut writer = runtime.search_index.writer(15_000_000)?;
-                for &doc_id in &selection.deleted_ids {
-                    let display = search::short_doc_id(doc_id);
-                    runtime.search_index.delete_document(&writer, &display);
-                }
-                writer.commit()?;
-
+                // Remove embeddings and metadata first, then commit the
+                // Tantivy deletion last.  This way, if embedding/metadata
+                // removal fails the index still has entries for those
+                // documents (safe — they just won't be cleaned up until
+                // the next sync).  The reverse would leave dangling
+                // index holes.
                 remove_document_embeddings_for_ids(
                     &runtime.embedding_db,
                     &selection.deleted_ids,
@@ -339,6 +345,13 @@ pub(crate) fn cmd_sync(
                     config_db,
                     &selection.deleted_ids,
                 )?;
+
+                let mut writer = runtime.search_index.writer(15_000_000)?;
+                for &doc_id in &selection.deleted_ids {
+                    let display = search::short_doc_id(doc_id);
+                    runtime.search_index.delete_document(&writer, &display);
+                }
+                writer.commit()?;
                 eprintln!(
                     "  Removed {} documents",
                     selection.deleted_ids.len()
@@ -507,5 +520,149 @@ mod tests {
                 "user metadata was deleted during embeddings-only rebuild"
             );
         }
+    }
+
+    #[test]
+    fn process_batch_stores_metadata_before_tantivy_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n\nContent A").unwrap();
+
+        let files = walker::discover_files(&root).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+        let chunking_config = chunking::ChunkingConfig {
+            chunk_size: 100,
+            overlap: 0,
+            document_length: None,
+        };
+
+        let mut runtime = IndexingRuntime {
+            search_index,
+            embedding_db,
+            model,
+            chunking_config,
+        };
+
+        let batch = indexing_workflow::load_rebuild_batch(
+            "notes",
+            &files,
+            &crate::cli::RebuildArgs {
+                collection: Some("notes".to_string()),
+                embeddings_only: false,
+                index_only: true,
+            },
+        );
+
+        // index_documents=true, embed_documents=false
+        process_document_batch(
+            &config_db,
+            &mut runtime,
+            "notes",
+            &batch,
+            true,
+            false,
+        )
+        .unwrap();
+
+        // Metadata should be stored
+        let did = docbert_core::DocumentId::new("notes", "a.md");
+        let meta = config_db.get_document_metadata_typed(did.numeric).unwrap();
+        assert!(meta.is_some(), "metadata should be stored after batch");
+
+        // And the document should be in the index
+        let results = runtime.search_index.search("content", 10).unwrap();
+        assert!(!results.is_empty(), "document should be searchable");
+    }
+
+    #[hegel::test(test_cases = 30)]
+    fn prop_process_batch_metadata_and_index_are_consistent(
+        tc: hegel::TestCase,
+    ) {
+        use hegel::generators as gs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Generate random number of documents
+        let doc_count: u8 =
+            tc.draw(gs::integers().min_value(1_u8).max_value(5));
+        for i in 0..doc_count {
+            let name = format!("doc_{i}.md");
+            std::fs::write(
+                root.join(&name),
+                format!("# Doc {i}\n\nContent for document {i}"),
+            )
+            .unwrap();
+        }
+
+        let files = walker::discover_files(&root).unwrap();
+        let search_index = SearchIndex::open_in_ram().unwrap();
+        let embedding_db =
+            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let model = ModelManager::new();
+        let chunking_config = chunking::ChunkingConfig {
+            chunk_size: 100,
+            overlap: 0,
+            document_length: None,
+        };
+
+        let mut runtime = IndexingRuntime {
+            search_index,
+            embedding_db,
+            model,
+            chunking_config,
+        };
+
+        let batch = indexing_workflow::load_rebuild_batch(
+            "notes",
+            &files,
+            &crate::cli::RebuildArgs {
+                collection: Some("notes".to_string()),
+                embeddings_only: false,
+                index_only: true,
+            },
+        );
+
+        process_document_batch(
+            &config_db,
+            &mut runtime,
+            "notes",
+            &batch,
+            true,
+            false,
+        )
+        .unwrap();
+
+        // Every document should have both metadata and index entry
+        for i in 0..doc_count {
+            let name = format!("doc_{i}.md");
+            let did = docbert_core::DocumentId::new("notes", &name);
+            assert!(
+                config_db
+                    .get_document_metadata_typed(did.numeric)
+                    .unwrap()
+                    .is_some(),
+                "metadata missing for {name}"
+            );
+        }
+
+        // Index should have all documents
+        let all_meta = config_db.list_all_document_metadata_typed().unwrap();
+        let notes_meta: Vec<_> = all_meta
+            .iter()
+            .filter(|(_, m)| m.collection == "notes")
+            .collect();
+        assert_eq!(
+            notes_meta.len(),
+            doc_count as usize,
+            "metadata count mismatch"
+        );
     }
 }
