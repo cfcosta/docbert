@@ -27,6 +27,7 @@ jobs:
       old_version: ${{ steps.version.outputs.old_version }}
       new_version: ${{ steps.version.outputs.new_version }}
       tag: ${{ steps.version.outputs.tag }}
+      commit_sha: ${{ steps.push.outputs.commit_sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -118,16 +119,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Create release commit and tag
+      - name: Create release commit
         run: |
           git add Cargo.lock crates/docbert/Cargo.toml crates/docbert-core/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
-          git tag "${{ steps.version.outputs.tag }}"
 
-      - name: Push release commit and tag
+      - name: Push release commit
+        id: push
         run: |
           git push origin HEAD:${{ github.ref_name }}
-          git push origin "${{ steps.version.outputs.tag }}"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.target }})
@@ -157,7 +158,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.bump.outputs.tag }}
+          ref: ${{ needs.bump.outputs.commit_sha }}
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -209,6 +210,18 @@ jobs:
     needs: [bump, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.bump.outputs.commit_sha }}
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.bump.outputs.tag }}"
+          git push origin "${{ needs.bump.outputs.tag }}"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
