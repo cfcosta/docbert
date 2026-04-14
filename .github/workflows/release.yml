@@ -160,8 +160,8 @@ jobs:
         with:
           ref: ${{ needs.bump.outputs.commit_sha }}
 
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
