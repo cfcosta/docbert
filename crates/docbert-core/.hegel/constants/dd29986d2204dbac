@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/struct.py
+# hypothesis_version: 6.151.14
+
+['Struct', 'calcsize', 'error', 'iter_unpack', 'pack', 'pack_into', 'unpack', 'unpack_from']

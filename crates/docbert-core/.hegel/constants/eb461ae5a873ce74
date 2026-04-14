@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/util.py
+# hypothesis_version: 6.151.14
+
+['.', '__class__', '__dict__', '__path__', '__spec__', 'exec_module', 'is_loading', 'lock']

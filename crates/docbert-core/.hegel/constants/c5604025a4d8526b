@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/collections/__init__.py
+# hypothesis_version: 6.151.14
+
+['%s(%r)', '%s()', '(', ')', ',', ', ', 'ChainMap', 'Counter', 'OrderedDict', 'UserDict', 'UserList', 'UserString', '_', '__builtins__', '__doc__', '__getnewargs__', '__main__', '__match_args__', '__missing__', '__name__', '__new__', '__replace__', '__repr__', '__slots__', '__weakref__', '_asdict', '_field_defaults', '_fields', '_make', '_replace', '_tuple_new', 'collections.abc', 'data', 'defaultdict', 'deque', 'dictionary is empty', 'key', 'namedtuple', 'next', 'prev', 'strict', 'utf-8']

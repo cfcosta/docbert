@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/pkgutil.py
+# hypothesis_version: 6.151.14
+
+['#', '.', '.pkg', '/', "Can't open %s: %s\n", 'ModuleInfo', '__file__', '__init__', '__init__.py', '__loader__', '__path__', '__spec__', 'cln', 'extend_path', 'find_loader', 'find_spec', 'get_data', 'get_importer', 'get_loader', 'iter_importers', 'iter_modules', 'obj', 'pkg', 'pkgutil.find_loader', 'pkgutil.get_loader', 'read_code', 'walk_packages']

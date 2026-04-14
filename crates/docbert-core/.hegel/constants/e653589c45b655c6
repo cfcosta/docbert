@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/functools.py
+# hypothesis_version: 6.151.14
+
+[128, 'CacheInfo', 'WRAPPER_ASSIGNMENTS', 'WRAPPER_UPDATES', '__abstractmethods__', '__annotations__', '__dict__', '__doc__', '__ge__', '__get__', '__gt__', '__isabstractmethod__', '__le__', '__lt__', '__module__', '__mro__', '__name__', '__partialmethod__', '__qualname__', '__type_params__', '__weakref__', 'args', 'cache', 'cached_property', 'cmp_to_key', 'currsize', 'func', 'hashvalue', 'hits', 'keywords', 'lru_cache', 'maxsize', 'misses', 'obj', 'partial', 'partialmethod', 'reduce', 'singledispatch', 'singledispatchmethod', 'total_ordering', 'typed', 'update_wrapper', 'wraps']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/tokenize.py
+# hypothesis_version: 6.151.14
+
+[b'^[ \\t\\f]*(?:[#\\r\\n]|$)', '"', '"""', '#[^\\r\\n]*', '%-20s%-15s%-15r', '%d (%s)', '%d,%d-%d,%d:', '%s: error: %s', '%s:%d:%d: error: %s', "'", "'''", '(', ')', '*', '-', '--exact', '-e', '-sig', '0[bB](?:_?[01])+', '0[oO](?:_?[0-7])+', '<stdin>', '?', 'N', 'TokenError', 'TokenInfo', '[ \\f\\t]*', '[0-9](?:_?[0-9])*', '[jJ]', '\\', '\\\r\n', '\\.[0-9](?:_?[0-9])*', '\\\\\\r?\\n', '\\\\\\r?\\n|\\Z', '\\r?\\n', '\\w+', '_', '__main__', 'b', 'br', 'detect_encoding', 'error: %s', 'exact', 'f', 'filename', 'filename.py', 'fr', 'generate_tokens', 'interrupted\n', 'iso-8859-1', 'iso-8859-1-', 'iso-latin-1', 'iso-latin-1-', 'latin-1', 'latin-1-', 'open', 'python -m tokenize', 'r', 'rb', 'store_true', 'tokenize', 'u', 'unexpected error: %s', 'unknown encoding: ', 'untokenize', 'utf-8', 'utf-8-', 'utf-8-sig', '{', '{{', '{} for {!r}', '|', '}', '}}']

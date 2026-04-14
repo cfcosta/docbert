@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/json/encoder.py
+# hypothesis_version: 6.151.14
+
+[b'[\x80-\xff]', 1023, 55296, 56320, 65536, '\x08', '"', '([\\\\"]|[^\\ -~])', ',', ', ', '-Infinity', ': ', 'Infinity', 'NaN', '[', '[]', '\\', '\\"', '\\\\', '\\b', '\\f', '\\n', '\\r', '\\t', '\\u{0:04x}', '\\u{0:04x}\\u{1:04x}', ']', 'false', 'inf', 'null', 'true', '{', '{}', '}']

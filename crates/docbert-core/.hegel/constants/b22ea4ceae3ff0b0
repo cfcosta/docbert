@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/timeouts.py
+# hypothesis_version: 6.151.14
+
+['Timeout', 'active', 'created', 'expired', 'expiring', 'finished', 'timeout', 'timeout_at']

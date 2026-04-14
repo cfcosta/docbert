@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/_collections_abc.py
+# hypothesis_version: 6.151.14
+
+[1000, 69069, 89869747, 590923713, 907133923, 1927868237, 3644798167, '...', 'AsyncGenerator', 'AsyncIterable', 'AsyncIterator', 'Awaitable', 'Buffer', 'ByteString', 'Callable', 'Collection', 'Container', 'Coroutine', 'Generator', 'Hashable', 'ItemsView', 'Iterable', 'Iterator', 'KeysView', 'Mapping', 'MappingView', 'MutableMapping', 'MutableSequence', 'MutableSet', 'ParamSpec', 'Reversible', 'Sequence', 'Set', 'Sized', 'ValuesView', '__aiter__', '__anext__', '__await__', '__buffer__', '__call__', '__contains__', '__hash__', '__iter__', '__len__', '__next__', '__reversed__', '_mapping', 'aclose', 'asend', 'athrow', 'builtins', 'close', 'collections.abc', 'keys', 'send', 'throw', 'typing']

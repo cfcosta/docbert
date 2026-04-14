@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/zipfile/_path/__init__.py
+# hypothesis_version: 6.151.14
+
+['/', "Can't listdir a file", 'Path', 'b', 'pypy', 'r', 'rb']

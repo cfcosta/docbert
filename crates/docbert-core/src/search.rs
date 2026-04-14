@@ -465,7 +465,15 @@ pub fn resolve_reference(
     }
 
     if let Some((collection, path)) = reference.split_once(':') {
-        return Some((collection.to_string(), path.to_string()));
+        // Validate the path component to reject traversal attacks
+        if let Ok(sanitized) = crate::path_safety::sanitize_relative_path(path)
+        {
+            return Some((
+                collection.to_string(),
+                sanitized.to_string_lossy().to_string(),
+            ));
+        }
+        return None;
     }
 
     if reference.len() == 6

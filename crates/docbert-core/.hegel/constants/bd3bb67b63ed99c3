@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/feedparser.py
+# hypothesis_version: 6.151.14
+
+['(\\r\\n|\\r|\\n)', '(\\r\\n|\\r|\\n)\\Z', '--', '7bit', '8bit', ':', 'BytesFeedParser', 'FeedParser', 'From ', 'Missing header name.', '\\r\\n|\\r|\\n', 'ascii', 'binary', 'end', 'linesep', 'message', 'message/rfc822', 'multipart', 'multipart/digest', 'surrogateescape']

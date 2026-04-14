@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/pathlib/_abc.py
+# hypothesis_version: 6.151.14
+
+[123, 438, 511, 1921, '**', '.', '..', '/', 'Aa', 'Not a directory', 'UnsupportedOperation', '_raw_path', '_resolving', '_supported', 'absolute()', 'as_uri()', 'chmod()', 'empty pattern', 'errno', 'expanduser()', 'from_uri()', 'group()', 'hardlink_to()', 'isabs()', 'iterdir()', 'join()', 'mkdir()', 'normcase()', 'open()', 'owner()', 'r', 'rb', 'readlink()', 'rename()', 'replace()', 'rmdir()', 'sep', 'split()', 'splitdrive()', 'stat()', 'symlink_to()', 'touch()', 'unlink()', 'w', 'wb', 'winerror', '~']

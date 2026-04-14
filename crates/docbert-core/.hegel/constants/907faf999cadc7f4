@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/zoneinfo/_common.py
+# hypothesis_version: 6.151.14
+
+[b'\x00', b'\n', b'TZif', '.', '/', '>6l', '>lbb', 'charcnt', 'isstdcnt', 'isutcnt', 'l', 'leapcnt', 'q', 'rb', 'timecnt', 'typecnt', 'tzdata.zoneinfo', 'version']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/textwrap.py
+# hypothesis_version: 6.151.14
+
+[' [...]', '(%s+)', '(?m)^', '(^[ \t]*)(?:[^ \t\n])', '-', 'TextWrapper', '[%s]', '[\\w!"\\\'&.,?]', '[^', '[^\\d\\W]', '^[ \t]+$', '__main__', 'dedent', 'fill', 'indent', 'lt', 'nws', 'shorten', 'wp', 'wrap', 'ws']

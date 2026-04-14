@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/base_futures.py
+# hypothesis_version: 6.151.14
+
+['CANCELLED', 'FINISHED', 'PENDING', '{}, <{} more>, {}', '{}, {}']

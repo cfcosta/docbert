@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/header.py
+# hypothesis_version: 6.151.14
+
+[b' ', 1000000, '(', '([', ')', ';, \t', '===', 'Header', '[\\041-\\176]+:$', '\\', '\\n[^ \\t]+:', ']+)', '_chunks', 'ascii', 'b', 'decode_header', 'make_header', 'q', 'raw-unicode-escape', 'replace', 'strict', 'surrogateescape', 'us-ascii', 'utf-8']

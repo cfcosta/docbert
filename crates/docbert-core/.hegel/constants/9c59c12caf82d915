@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/codecs.py
+# hypothesis_version: 6.151.14
+
+[b'\x00\x00\xfe\xff', b'\r', b'\xef\xbb\xbf', b'\xfe\xff', b'\xff\xfe', b'\xff\xfe\x00\x00', 8000, 'BOM', 'BOM32_BE', 'BOM32_LE', 'BOM64_BE', 'BOM64_LE', 'BOM_BE', 'BOM_LE', 'BOM_UTF16', 'BOM_UTF16_BE', 'BOM_UTF16_LE', 'BOM_UTF32', 'BOM_UTF32_BE', 'BOM_UTF32_LE', 'BOM_UTF8', 'Codec', 'CodecInfo', 'EncodedFile', 'IncrementalDecoder', 'IncrementalEncoder', 'StreamReader', 'StreamReaderWriter', 'StreamRecoder', 'StreamWriter', 'b', 'backslashreplace', "can't serialize %s", 'decode', 'encode', 'getdecoder', 'getencoder', 'getreader', 'getwriter', 'ignore', 'ignore_errors', 'iterdecode', 'iterencode', 'little', 'lookup', 'lookup_error', 'namereplace', 'namereplace_errors', 'open', 'r', 'register', 'register_error', 'replace', 'replace_errors', 'strict', 'strict_errors', 'unknown', 'xmlcharrefreplace']

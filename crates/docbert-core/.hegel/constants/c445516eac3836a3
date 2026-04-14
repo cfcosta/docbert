@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/unittest/case.py
+# hypothesis_version: 6.151.14
+
+['%s != %s', '%s (%s)', '%s (%s.%s)', '%s : %s', '%s == %s', '%s is not %s', '%s is not None', '%s is not false', '%s is not true', '%s not found in %s', '%s not less than %s', '%s.%s', '(<subtest>)', '({})', ', ', '<%s tec=%s>', '<%s testMethod=%s>', 'No test', '[{}]', '__unittest_skip__', '__warningregistry__', '_assertNotWarns', 'addSkip', 'addSubTest', 'always', 'assertDictEqual', 'assertListEqual', 'assertMultiLineEqual', 'assertRaises', 'assertRaisesRegex', 'assertSetEqual', 'assertTupleEqual', 'assertWarns', 'assertWarnsRegex', 'msg', 'runTest', 'sequence', 'startTestRun', 'stopTestRun', 'unexpectedly None', '{} not raised', '{} not raised by {}', '{} not triggered', '{} {}', '{}={!r}']

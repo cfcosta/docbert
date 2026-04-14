@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/constants.py
+# hypothesis_version: 6.151.14
+
+[30.0, 60.0, 256, 300, 512, 1024]

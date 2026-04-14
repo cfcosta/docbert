@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/_bootstrap_external.py
+# hypothesis_version: 6.151.14
+
+[b'\r\n', b'PYTHONCASEOK', 128, 438, 3571, 16384, 32768, 61440, 4294967295, '%d.%d', '.', '.fwork', '.origin', '.py', '.pyc', '.pyw', '.so', '/', ':', '<string>', '<unknown>', 'PYTHONCASEOK', '\\', '\\\\', '__cached__', '__doc__', '__file__', '__init__', '__loader__', '__module__', '__name__', '__path__', '__pycache__', '__qualname__', '__spec__', '_d.pyd', 'always', 'code object from {}', 'create_dynamic', 'created {!r}', 'cygwin', 'darwin', 'exec', 'get_filename', 'invalidate_caches', 'ios', 'is_package', 'little', 'loader', 'mtime', 'name', 'never', 'opt-', 'path', 'py', 'r', 'size', 'spec missing loader', 'sys', 'trying {}', 'tvos', 'watchos', 'wb', 'win', 'win32', '{}', '{} matches {}']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/metadata/__init__.py
+# hypothesis_version: 6.151.14
+
+[' and ', '"{}"', '#', '%s(%r)', '-', '.', '.dist-info', '.egg', '.egg-info', ':', '; ', '=', '@', 'Distribution', 'DistributionFinder', 'METADATA', 'Name', 'PKG-INFO', 'PackageMetadata', 'PackageNotFoundError', 'RECORD', 'Requires-Dist', 'SOURCES.txt', 'Version', '[', '[-_.]+', '[]', '\\w+', ']', '_', '__isabstractmethod__', '_normalized_name', '_path', 'attr', 'direct_url.json', 'distribution', 'distributions', 'egg-info', 'entry_points', 'entry_points.txt', 'extras', 'files', 'find_distributions', 'installed-files.txt', 'metadata', 'module', 'path', 'requires', 'requires.txt', 'top_level.txt', 'utf-8', 'version']

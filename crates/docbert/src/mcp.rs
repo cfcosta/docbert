@@ -856,7 +856,8 @@ fn resolve_full_path(
     path: &str,
 ) -> Option<PathBuf> {
     let base = config_db.get_collection(collection).ok()??;
-    Some(PathBuf::from(base).join(path))
+    let root = PathBuf::from(base);
+    docbert_core::path_safety::resolve_safe_document_path(&root, path).ok()
 }
 
 fn context_for_doc(

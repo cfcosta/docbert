@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/warnings.py
+# hypothesis_version: 6.151.14
+
+['    %s\n', '  %s\n', '%s(%s)', ', ', '.', '.py', ':', '<string>', '<sys>', '<unknown>', '\\Z', '__init_subclass__', '__main__', '__name__', '__warningregistry__', '_bootstrap', 'all', 'alpha', 'always', 'catch_warnings', 'category', 'default', 'deprecated', 'error', 'file', 'filename', 'filterwarnings', 'formatwarning', 'gettotalrefcount', 'ignore', 'importlib', 'invalid action: %r', 'invalid lineno %r', 'line', 'lineno', 'message', 'module', 'module=%r', 'once', 'record=True', 'resetwarnings', 'showwarning', 'simplefilter', 'source', 'version', 'warn', 'warn_explicit', 'warnings']

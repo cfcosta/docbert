@@ -129,7 +129,10 @@ pub(crate) fn cmd_get(
             }
         })?;
 
-    let full_path = std::path::Path::new(&collection_path).join(&path);
+    let full_path = docbert_core::path_safety::resolve_safe_document_path(
+        std::path::Path::new(&collection_path),
+        &path,
+    )?;
 
     if args.meta {
         println!("collection: {collection}");

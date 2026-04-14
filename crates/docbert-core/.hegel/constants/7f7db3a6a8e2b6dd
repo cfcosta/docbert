@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/_encoded_words.py
+# hypothesis_version: 6.151.14
+
+[b' ', b'-!*+/', b'=([a-fA-F0-9]{2})', b'==', b'===', b'_', '*', '=?{}{}?{}?{}?=', '={:02X}', '?', '_', 'ascii', 'b', 'decode', 'decode_b', 'decode_q', 'encode', 'encode_b', 'encode_q', 'len_b', 'len_q', 'q', 'surrogateescape', 'unknown-8bit', 'utf-8']

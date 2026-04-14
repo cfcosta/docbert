@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/unittest/loader.py
+# hypothesis_version: 6.151.14
+
+['.', '..', 'ModuleSkipped', '[_a-z]\\w*\\.py$', '__file__', '__init__.py', '__path__', 'load_tests', 'runTest', 'test', 'test*.py']

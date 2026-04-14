@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/json/scanner.py
+# hypothesis_version: 6.151.14
+
+['"', '-', '-Infinity', 'I', 'Infinity', 'N', 'NaN', '[', 'f', 'false', 'make_scanner', 'n', 'null', 't', 'true', '{']

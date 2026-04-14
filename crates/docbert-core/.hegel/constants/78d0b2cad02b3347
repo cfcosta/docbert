@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/base_tasks.py
+# hypothesis_version: 6.151.14
+
+['ag_frame', 'cancelling', 'cr_frame', 'gi_frame', 'name=%r']

@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/asyncio/transports.py
+# hypothesis_version: 6.151.14
+
+[1024, 'BaseTransport', 'DatagramTransport', 'ReadTransport', 'SubprocessTransport', 'Transport', 'WriteTransport', '_extra', '_high_water', '_loop', '_low_water', '_protocol_paused', 'exception', 'message', 'protocol', 'transport']

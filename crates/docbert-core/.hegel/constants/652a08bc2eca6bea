@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/importlib/_bootstrap.py
+# hypothesis_version: 6.151.14
+
+['#', '# ', '*', '.', '.__all__', '/', '<', '?', 'Empty module name', 'No module named ', '\\', '_ORIGIN', '__all__', '__cached__', '__doc__', '__file__', '__loader__', '__module__', '__name__', '__origname__', '__package__', '__path__', '__qualname__', '__spec__', '__weakref__', '_initializing', '_stdlib_dir', '_thread', '_warnings', '_weakref', "``from list''", 'built-in', 'create_module', 'exec_module', 'filename', 'frozen', 'get_filename', 'import ', 'import {!r} # {!r}', 'is_package', 'key', 'level must be >= 0', 'missing loader', 'origname', 'win32', '{!r}']

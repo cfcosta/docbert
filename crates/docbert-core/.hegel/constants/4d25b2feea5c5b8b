@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/posixpath.py
+# hypothesis_version: 6.151.14
+
+[b'$', b'.', b'..', b'/', b'{', b'}', b'~', '$', '.', '..', '/', '/bin:/usr/bin', '/dev/null', ':', 'ALLOW_MISSING', 'HOME', '\\$(\\w+|\\{[^}]*\\}?)', 'abspath', 'altsep', 'basename', 'commonpath', 'commonprefix', 'curdir', 'darwin', 'defpath', 'devnull', 'dirname', 'environb', 'exists', 'expanduser', 'expandvars', 'extsep', 'getatime', 'getctime', 'getmtime', 'getsize', 'isabs', 'isdevdrive', 'isdir', 'isfile', 'isjunction', 'islink', 'ismount', 'join', 'lexists', 'no path specified', 'normcase', 'normpath', 'pardir', 'pathsep', 'realpath', 'relpath', 'samefile', 'sameopenfile', 'samestat', 'sep', 'split', 'splitdrive', 'splitext', 'splitroot', 'vxworks', '{', '}', '~']

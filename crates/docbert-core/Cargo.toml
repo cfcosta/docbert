@@ -29,4 +29,5 @@ metal = ["pylate-rs/metal"]
 cuda = ["pylate-rs/cuda"]
 
 [dev-dependencies]
+hegeltest = "0.5"
 tempfile = "3"

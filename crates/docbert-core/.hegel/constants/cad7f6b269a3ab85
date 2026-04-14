@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/threading.py
+# hypothesis_version: 6.151.14
+
+[' %s', ' daemon', '<%s(%s, %s)>', '<Condition(%s, %d)>', 'Barrier', 'BoundedSemaphore', 'BrokenBarrierError', 'Condition', 'Dummy-%d', 'Event', 'ExceptHookArgs', 'Lock', 'MainThread', 'RLock', 'Semaphore', 'TIMEOUT_MAX', 'Thread', 'Thread-%d', 'ThreadError', 'Timer', '_acquire_restore', '_is_owned', '_release_save', 'active_count', 'current_thread', 'enumerate', 'excepthook', 'get_ident', 'get_native_id', 'getprofile', 'gettrace', 'initial', 'local', 'locked', 'main_thread', 'parties must be >= 1', 'register_at_fork', 'set', 'setprofile', 'settrace', 'settrace_all_threads', 'stack_size', 'started', 'stopped', 'thread is not alive', 'unlocked', 'unset']

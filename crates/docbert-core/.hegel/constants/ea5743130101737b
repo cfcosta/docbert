@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/email/base64mime.py
+# hypothesis_version: 6.151.14
+
+['=?%s?b?%s?=', 'ascii', 'body_decode', 'body_encode', 'decode', 'decodestring', 'header_encode', 'header_length', 'iso-8859-1', 'raw-unicode-escape']

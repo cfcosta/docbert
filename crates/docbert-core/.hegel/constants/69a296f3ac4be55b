@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/numbers.py
+# hypothesis_version: 6.151.14
+
+['Complex', 'Integral', 'Number', 'Rational', 'Real']

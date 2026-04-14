@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 
-use docbert_core::{ConfigDb, error};
+use docbert_core::{ConfigDb, error, path_safety};
 
 pub(crate) fn resolve_collection_root(
     config_db: &ConfigDb,
@@ -38,91 +38,7 @@ pub(crate) fn resolve_document_path(
     relative_path: &str,
 ) -> error::Result<PathBuf> {
     let root = resolve_collection_root(config_db, collection)?;
-    let relative = sanitize_relative_path(relative_path)?;
-    let candidate = root.join(&relative);
-
-    ensure_path_stays_within_root(&root, &candidate)?;
-
-    Ok(candidate)
-}
-
-fn sanitize_relative_path(relative_path: &str) -> error::Result<PathBuf> {
-    if relative_path.trim().is_empty() {
-        return Err(error::Error::Config(
-            "document path cannot be empty".to_string(),
-        ));
-    }
-
-    let mut cleaned = PathBuf::new();
-    for component in Path::new(relative_path).components() {
-        match component {
-            Component::Normal(part) => cleaned.push(part),
-            Component::CurDir => {}
-            Component::ParentDir
-            | Component::RootDir
-            | Component::Prefix(_) => {
-                return Err(error::Error::Config(format!(
-                    "document path must stay within the collection root: {relative_path}"
-                )));
-            }
-        }
-    }
-
-    if cleaned.as_os_str().is_empty() {
-        return Err(error::Error::Config(
-            "document path cannot be empty".to_string(),
-        ));
-    }
-
-    Ok(cleaned)
-}
-
-fn ensure_path_stays_within_root(
-    root: &Path,
-    candidate: &Path,
-) -> error::Result<()> {
-    if candidate.exists() {
-        let resolved = candidate.canonicalize()?;
-        if !resolved.starts_with(root) {
-            return Err(error::Error::Config(format!(
-                "document path resolves outside the collection root: {}",
-                candidate.display()
-            )));
-        }
-        return Ok(());
-    }
-
-    let parent = candidate.parent().ok_or_else(|| {
-        error::Error::Config(format!(
-            "document path has no parent directory: {}",
-            candidate.display()
-        ))
-    })?;
-    let existing_parent = nearest_existing_ancestor(parent)?;
-    let resolved_parent = existing_parent.canonicalize()?;
-    if !resolved_parent.starts_with(root) {
-        return Err(error::Error::Config(format!(
-            "document path resolves outside the collection root: {}",
-            candidate.display()
-        )));
-    }
-
-    Ok(())
-}
-
-fn nearest_existing_ancestor(path: &Path) -> error::Result<PathBuf> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Ok(current);
-        }
-        if !current.pop() {
-            return Err(error::Error::Config(format!(
-                "document path has no existing ancestor: {}",
-                path.display()
-            )));
-        }
-    }
+    path_safety::resolve_safe_document_path(&root, relative_path)
 }
 
 #[cfg(test)]
@@ -161,7 +77,11 @@ mod tests {
         let err =
             resolve_document_path(&db, "notes", "../secret.md").unwrap_err();
 
-        assert!(err.to_string().contains("collection root"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parent traversal") || msg.contains("absolute"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

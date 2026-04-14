@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/selectors.py
+# hypothesis_version: 6.151.14
+
+[0.001, 1000.0, 'Invalid events: {!r}', 'Selector is closed', 'SelectorKey', 'data', 'devpoll', 'epoll', 'events', 'fd', 'fileobj', 'kqueue', 'poll', 'win32']

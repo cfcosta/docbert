@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/urllib/error.py
+# hypothesis_version: 6.151.14
+
+['<HTTPError %s: %r>', '<urlopen error %s>', 'ContentTooShortError', 'HTTP Error %s: %s', 'HTTPError', 'URLError']

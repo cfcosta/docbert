@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/unittest/util.py
+# hypothesis_version: 6.151.14
+
+[' [truncated]...', '%s.%s', '%s[%d chars]%s', 'Mismatch']

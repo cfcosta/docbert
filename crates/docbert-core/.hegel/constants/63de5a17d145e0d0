@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/quopri.py
+# hypothesis_version: 6.151.14
+
+[b'\n', b' ', b' \t', b' \t\r', b'.', b'0', b'0123456789ABCDEF', b'9', b'=', b'=\n', b'A', b'F', b'_', b'a', b'f', b'~', "%s: can't open (%s)\n", '-', '-d', '-t', '-t: quote tabs', '0', '__main__', 'a', 'decode', 'decodestring', 'encode', 'encodestring', 'non-hex digit ', 'rb', 'td']

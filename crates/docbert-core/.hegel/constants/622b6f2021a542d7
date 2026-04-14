@@ -1,0 +1,4 @@
+# file: /run/current-system/sw/lib/python3.13/concurrent/futures/thread.py
+# hypothesis_version: 6.151.14
+
+['%s_%d', 'Exception in worker', 'register_at_fork']
