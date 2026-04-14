@@ -150,10 +150,6 @@ jobs:
             runner: macos-latest
             features: metal
             artifact: docbert-aarch64-apple-darwin
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-            features: ""
-            artifact: docbert-x86_64-apple-darwin
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -162,9 +158,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Add compilation target
-        run: rustup target add ${{ matrix.target }}
 
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
