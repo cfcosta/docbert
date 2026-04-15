@@ -158,7 +158,8 @@ pub(crate) async fn ingest(
             .map_err(map_error)?
         };
 
-        let existed_before = full_path.exists();
+        // Snapshot old contents so we can restore on failure (overwrite safety).
+        let previous_bytes = std::fs::read(&full_path).ok();
 
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)
@@ -211,9 +212,15 @@ pub(crate) async fn ingest(
         match ingest_result {
             Ok(doc) => ingested.push(doc),
             Err(status) => {
-                // Clean up the file we wrote if it didn't exist before
-                if !existed_before {
-                    let _ = std::fs::remove_file(&full_path);
+                // Restore the file to its pre-upload state so disk stays
+                // consistent with the (unchanged) index/metadata/embeddings.
+                match previous_bytes {
+                    Some(old) => {
+                        let _ = std::fs::write(&full_path, old);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(&full_path);
+                    }
                 }
                 return Err(status);
             }
@@ -928,5 +935,140 @@ mod tests {
         );
         // File should also be gone
         assert!(!root.join("hello.md").exists());
+    }
+
+    #[tokio::test]
+    async fn web_documents_overwrite_failure_restores_original_file() {
+        // Regression test for overwrite rollback: if the ingest pipeline
+        // fails after the file has been overwritten, the original file
+        // contents must be restored so disk stays consistent with
+        // index/metadata.
+        let _guard = env_lock().await;
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        test_config_db(&state)
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        // First upload succeeds
+        let first = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"# Original\n\nBody v1","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(root.join("hello.md")).unwrap(),
+            "# Original\n\nBody v1"
+        );
+
+        // Remove the collection root so the next upload's snapshot
+        // refresh will fail, triggering the rollback path.
+        std::fs::remove_dir_all(&root).unwrap();
+        // Re-create directory so path resolution works but snapshot
+        // computation will diverge.
+        // Actually: we need the file write to succeed, then ingest to
+        // fail. The simplest trigger: point the collection at a
+        // non-existent path so ingest_prepared_document's snapshot
+        // refresh fails.
+        //
+        // Better approach: write the file manually, then try to upload
+        // with the collection root gone — but resolve_collection_root
+        // will fail first. Let me use a different approach.
+        //
+        // Simplest: write original, re-create root, then make the
+        // second upload use empty body so embedding_chunks returns
+        // empty and compute_embedding_entries fails.
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("hello.md"), "# Original\n\nBody v1").unwrap();
+
+        // Upload with empty body — this produces a document whose
+        // searchable_body is empty after frontmatter strip, causing
+        // compute_embedding_entries to return BAD_REQUEST.
+        let second = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"hello.md","content":"---\ntitle: only frontmatter\n---\n","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+
+        // The upload should have failed (empty body after frontmatter)
+        assert_ne!(
+            second.status(),
+            StatusCode::OK,
+            "overwrite with empty body should fail"
+        );
+
+        // The original file must be restored
+        assert_eq!(
+            std::fs::read_to_string(root.join("hello.md")).unwrap(),
+            "# Original\n\nBody v1",
+            "original file contents should be restored on failed overwrite"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_documents_new_file_removed_on_failure() {
+        // When a brand-new file fails to ingest, the file should be
+        // removed from disk entirely (not left as an orphan).
+        let _guard = env_lock().await;
+        unsafe {
+            std::env::set_var(TEST_FAKE_EMBEDDINGS_ENV, "1");
+        }
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        test_config_db(&state)
+            .set_collection("notes", root.to_str().unwrap())
+            .unwrap();
+
+        // Upload with empty body (frontmatter only) so embedding fails
+        let response = documents_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r##"{"collection":"notes","documents":[{"path":"new.md","content":"---\ntitle: empty\n---\n","content_type":"text/markdown"}]}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var(TEST_FAKE_EMBEDDINGS_ENV);
+        }
+
+        assert_ne!(response.status(), StatusCode::OK);
+        // The new file should not exist on disk
+        assert!(
+            !root.join("new.md").exists(),
+            "orphaned file should be removed on failed new upload"
+        );
     }
 }
