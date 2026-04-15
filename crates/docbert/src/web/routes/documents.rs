@@ -145,86 +145,123 @@ pub(crate) async fn ingest(
             .map_err(map_error)?;
     }
 
+    // Track committed docs and their file snapshots for batch rollback.
+    struct CommittedFile {
+        path: std::path::PathBuf,
+        previous_bytes: Option<Vec<u8>>,
+        relative_path: String,
+    }
+
     let mut ingested = Vec::with_capacity(body.documents.len());
-    for uploaded in &body.documents {
-        let full_path = {
-            let config_db =
-                state.open_config_db_blocking().map_err(map_error)?;
-            paths::resolve_document_path(
-                &config_db,
-                &body.collection,
-                &uploaded.path,
-            )
-            .map_err(map_error)?
-        };
+    let mut committed_files: Vec<CommittedFile> = Vec::new();
 
-        // Snapshot old contents so we can restore on failure (overwrite safety).
-        let previous_bytes = std::fs::read(&full_path).ok();
+    let batch_result: Result<(), StatusCode> = (|| {
+        for uploaded in &body.documents {
+            let full_path = {
+                let config_db =
+                    state.open_config_db_blocking().map_err(map_error)?;
+                paths::resolve_document_path(
+                    &config_db,
+                    &body.collection,
+                    &uploaded.path,
+                )
+                .map_err(map_error)?
+            };
 
-        if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
+            let previous_bytes = std::fs::read(&full_path).ok();
 
-        match uploaded.content_type.as_str() {
-            "text/markdown" => {
-                std::fs::write(&full_path, uploaded.content.as_bytes())
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             }
-            "application/pdf" => {
-                let pdf_bytes = BASE64_STANDARD
-                    .decode(&uploaded.content)
-                    .map_err(|_| StatusCode::BAD_REQUEST)?;
-                std::fs::write(&full_path, pdf_bytes)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            }
-            _ => return Err(StatusCode::BAD_REQUEST),
-        }
 
-        let ingest_result = (|| -> Result<IngestedDoc, StatusCode> {
-            let mtime = document_mtime(&full_path)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let document = ingest::load_document(
-                &body.collection,
-                &uploaded.path,
-                &full_path,
-                uploaded.metadata.clone(),
-                mtime,
-            )
-            .map_err(map_error)?;
-            let embedding_entries =
-                compute_embedding_entries(&state, &document)?;
-            let result = ingest::ingest_prepared_document(
+            match uploaded.content_type.as_str() {
+                "text/markdown" => {
+                    std::fs::write(&full_path, uploaded.content.as_bytes())
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                }
+                "application/pdf" => {
+                    let pdf_bytes = BASE64_STANDARD
+                        .decode(&uploaded.content)
+                        .map_err(|_| StatusCode::BAD_REQUEST)?;
+                    std::fs::write(&full_path, pdf_bytes)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                }
+                _ => return Err(StatusCode::BAD_REQUEST),
+            }
+
+            let ingest_result = (|| -> Result<IngestedDoc, StatusCode> {
+                let mtime = document_mtime(&full_path)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let document = ingest::load_document(
+                    &body.collection,
+                    &uploaded.path,
+                    &full_path,
+                    uploaded.metadata.clone(),
+                    mtime,
+                )
+                .map_err(map_error)?;
+                let embedding_entries =
+                    compute_embedding_entries(&state, &document)?;
+                let result = ingest::ingest_prepared_document(
+                    &state,
+                    &body.collection,
+                    &document,
+                    &embedding_entries,
+                )
+                .map_err(map_error)?;
+                Ok(IngestedDoc {
+                    doc_id: result.doc_id,
+                    path: result.path,
+                    title: result.title,
+                    metadata: result.metadata,
+                })
+            })();
+
+            match ingest_result {
+                Ok(doc) => {
+                    committed_files.push(CommittedFile {
+                        path: full_path,
+                        previous_bytes,
+                        relative_path: uploaded.path.clone(),
+                    });
+                    ingested.push(doc);
+                }
+                Err(status) => {
+                    // Restore the current file
+                    match previous_bytes {
+                        Some(old) => {
+                            let _ = std::fs::write(&full_path, old);
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(&full_path);
+                        }
+                    }
+                    return Err(status);
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(status) = batch_result {
+        // Roll back all previously committed docs in this batch.
+        for committed in committed_files {
+            let _ = ingest::delete_document(
                 &state,
                 &body.collection,
-                &document,
-                &embedding_entries,
-            )
-            .map_err(map_error)?;
-            Ok(IngestedDoc {
-                doc_id: result.doc_id,
-                path: result.path,
-                title: result.title,
-                metadata: result.metadata,
-            })
-        })();
-
-        match ingest_result {
-            Ok(doc) => ingested.push(doc),
-            Err(status) => {
-                // Restore the file to its pre-upload state so disk stays
-                // consistent with the (unchanged) index/metadata/embeddings.
-                match previous_bytes {
-                    Some(old) => {
-                        let _ = std::fs::write(&full_path, old);
-                    }
-                    None => {
-                        let _ = std::fs::remove_file(&full_path);
-                    }
+                &committed.relative_path,
+            );
+            match committed.previous_bytes {
+                Some(old) => {
+                    let _ = std::fs::write(&committed.path, old);
                 }
-                return Err(status);
+                None => {
+                    let _ = std::fs::remove_file(&committed.path);
+                }
             }
         }
+        return Err(status);
     }
 
     Ok(Json(IngestResponse {
