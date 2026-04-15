@@ -609,14 +609,24 @@ impl ConfigDb {
     }
 
     /// Look up a document by its relative path across all collections.
+    ///
+    /// Returns `Some` when exactly one document matches. Returns `None`
+    /// when zero or more than one collection contains the path
+    /// (ambiguous — the caller should require `collection:path`).
     pub fn find_document_by_path(
         &self,
         path: &str,
     ) -> Result<Option<(u64, DocumentMetadata)>> {
         let entries = self.list_all_document_metadata_typed()?;
-        Ok(entries
+        let mut matches: Vec<(u64, DocumentMetadata)> = entries
             .into_iter()
-            .find(|(_doc_id, meta)| meta.relative_path == path))
+            .filter(|(_doc_id, meta)| meta.relative_path == path)
+            .collect();
+        if matches.len() == 1 {
+            Ok(matches.pop())
+        } else {
+            Ok(None)
+        }
     }
 
     // -- Collection Merkle Snapshots --
