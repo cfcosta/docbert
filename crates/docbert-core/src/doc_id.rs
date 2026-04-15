@@ -1,13 +1,9 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
-
 /// Stable document ID built from a collection name and relative path.
 ///
-/// The hash is deterministic, so the same `(collection, path)` pair always gets
-/// the same ID. docbert uses it as the primary key in the metadata and embedding
-/// databases.
+/// Uses a blake3 hash for collision resistance. The full hex digest is
+/// stored in Tantivy and used for upsert/delete operations. A short
+/// prefix (minimum 6 hex chars) is used for human display, extended
+/// when needed to disambiguate — just like git commit SHAs.
 ///
 /// # Examples
 ///
@@ -19,16 +15,23 @@ use std::{
 /// assert!(id.numeric > 0);
 /// assert!(id.to_string().starts_with('#'));
 ///
+/// // Full hex is 64 chars (blake3 = 32 bytes)
+/// assert_eq!(id.full_hex().len(), 64);
+/// assert!(id.full_hex().starts_with(&id.short));
+///
 /// // Same inputs always produce the same ID
 /// let id2 = DocumentId::new("notes", "hello.md");
 /// assert_eq!(id, id2);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentId {
-    /// The numeric ID used as the key in redb tables.
+    /// The numeric ID used as the key in redb tables and embedding DB.
+    /// Derived from the first 8 bytes of the blake3 hash.
     pub numeric: u64,
-    /// The short hex string for human display (e.g. "a1b2c3").
+    /// The short hex string for human display (first 6 hex chars).
     pub short: String,
+    /// The full blake3 hash (32 bytes).
+    hash: [u8; 32],
 }
 
 /// Strip a leading `#` from a user-facing document reference.
@@ -41,11 +44,11 @@ pub fn format_document_ref(short_id: &str) -> String {
     format!("#{}", strip_document_ref_prefix(short_id))
 }
 
+/// Minimum display prefix length (hex chars).
+const MIN_SHORT_LEN: usize = 6;
+
 impl DocumentId {
     /// Build a stable document ID from a collection name and relative path.
-    ///
-    /// You can regenerate the ID at any time. If the inputs are the same, the
-    /// result is the same too.
     ///
     /// # Examples
     ///
@@ -56,34 +59,51 @@ impl DocumentId {
     /// assert_eq!(id.short.len(), 6);
     /// assert!(id.numeric > 0);
     ///
-    /// // Deterministic: same inputs -> same ID
+    /// // Deterministic
     /// assert_eq!(id, DocumentId::new("notes", "hello.md"));
     ///
     /// // Different inputs -> different ID
     /// assert_ne!(id, DocumentId::new("notes", "other.md"));
     /// ```
     pub fn new(collection: &str, relative_path: &str) -> Self {
-        let numeric = Self::hash_pair(collection, relative_path);
-        let short = Self::short_hex(numeric, 6);
-        Self { numeric, short }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(collection.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(relative_path.as_bytes());
+        let hash: [u8; 32] = *hasher.finalize().as_bytes();
+
+        let numeric = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        let full = hex_encode(&hash);
+        let short = full[..MIN_SHORT_LEN].to_string();
+
+        Self {
+            numeric,
+            short,
+            hash,
+        }
     }
 
-    fn hash_pair(collection: &str, relative_path: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        collection.hash(&mut hasher);
-        relative_path.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    fn short_hex(value: u64, len: usize) -> String {
-        let full = format!("{value:016x}");
-        full[..len].to_string()
-    }
-
-    /// Extend the short ID to avoid collisions.
+    /// The full hex digest (64 chars).
     ///
-    /// Returns a new `DocumentId` with a longer short hex string.
-    /// The length is clamped to `[6, 16]`.
+    /// Used as the Tantivy `doc_id` field for collision-safe upsert and
+    /// delete operations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use docbert_core::DocumentId;
+    ///
+    /// let id = DocumentId::new("notes", "hello.md");
+    /// assert_eq!(id.full_hex().len(), 64);
+    /// assert!(id.full_hex().starts_with(&id.short));
+    /// ```
+    pub fn full_hex(&self) -> String {
+        hex_encode(&self.hash)
+    }
+
+    /// Extend the short display ID to `len` hex chars.
+    ///
+    /// The length is clamped to `[6, 64]`.
     ///
     /// # Examples
     ///
@@ -97,10 +117,12 @@ impl DocumentId {
     /// assert_eq!(extended.numeric, id.numeric);
     /// ```
     pub fn extend_short(&self, len: usize) -> Self {
-        let len = len.clamp(6, 16);
+        let len = len.clamp(MIN_SHORT_LEN, 64);
+        let full = hex_encode(&self.hash);
         Self {
             numeric: self.numeric,
-            short: Self::short_hex(self.numeric, len),
+            short: full[..len].to_string(),
+            hash: self.hash,
         }
     }
 }
@@ -109,6 +131,16 @@ impl std::fmt::Display for DocumentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", format_document_ref(&self.short))
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[cfg(test)]
@@ -120,6 +152,7 @@ mod tests {
         let a = DocumentId::new("notes", "hello.md");
         let b = DocumentId::new("notes", "hello.md");
         assert_eq!(a, b);
+        assert_eq!(a.full_hex(), b.full_hex());
     }
 
     #[test]
@@ -127,12 +160,26 @@ mod tests {
         let a = DocumentId::new("notes", "hello.md");
         let b = DocumentId::new("notes", "world.md");
         assert_ne!(a.numeric, b.numeric);
+        assert_ne!(a.full_hex(), b.full_hex());
     }
 
     #[test]
     fn short_id_is_six_chars() {
         let id = DocumentId::new("notes", "hello.md");
         assert_eq!(id.short.len(), 6);
+    }
+
+    #[test]
+    fn full_hex_is_64_chars() {
+        let id = DocumentId::new("notes", "hello.md");
+        assert_eq!(id.full_hex().len(), 64);
+        assert!(id.full_hex().chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn full_hex_starts_with_short() {
+        let id = DocumentId::new("notes", "hello.md");
+        assert!(id.full_hex().starts_with(&id.short));
     }
 
     #[test]
@@ -158,7 +205,7 @@ mod tests {
         let too_small = id.extend_short(2);
         assert_eq!(too_small.short.len(), 6);
         let too_big = id.extend_short(100);
-        assert_eq!(too_big.short.len(), 16);
+        assert_eq!(too_big.short.len(), 64);
     }
 
     #[test]
@@ -167,5 +214,44 @@ mod tests {
         assert_eq!(strip_document_ref_prefix("#abc123"), "abc123");
         assert_eq!(format_document_ref("abc123"), "#abc123");
         assert_eq!(format_document_ref("#abc123"), "#abc123");
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_full_hex_always_starts_with_short(tc: hegel::TestCase) {
+        use hegel::generators as gs;
+
+        let collection: String = tc.draw(gs::text().min_size(1).max_size(20));
+        let path: String = tc.draw(gs::text().min_size(1).max_size(40));
+
+        let id = DocumentId::new(&collection, &path);
+        assert!(
+            id.full_hex().starts_with(&id.short),
+            "full_hex {} does not start with short {}",
+            id.full_hex(),
+            id.short
+        );
+        assert_eq!(id.full_hex().len(), 64);
+        assert_eq!(id.short.len(), 6);
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_different_inputs_produce_different_full_hex(tc: hegel::TestCase) {
+        use hegel::generators as gs;
+
+        let c1: String = tc.draw(gs::text().min_size(1).max_size(20));
+        let p1: String = tc.draw(gs::text().min_size(1).max_size(40));
+        let c2: String = tc.draw(gs::text().min_size(1).max_size(20));
+        let p2: String = tc.draw(gs::text().min_size(1).max_size(40));
+
+        tc.assume(c1 != c2 || p1 != p2);
+
+        let a = DocumentId::new(&c1, &p1);
+        let b = DocumentId::new(&c2, &p2);
+        // With blake3, full hex collision is astronomically unlikely
+        assert_ne!(
+            a.full_hex(),
+            b.full_hex(),
+            "collision between ({c1}, {p1}) and ({c2}, {p2})"
+        );
     }
 }

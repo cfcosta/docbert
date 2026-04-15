@@ -119,7 +119,7 @@ pub fn ingest_prepared_documents(
     for doc in documents {
         index.add_document(
             writer,
-            &doc.did.to_string(),
+            &doc.did.full_hex(),
             doc.did.numeric,
             collection,
             &doc.relative_path,

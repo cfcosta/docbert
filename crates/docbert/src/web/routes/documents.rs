@@ -254,8 +254,12 @@ pub(crate) async fn list_by_collection(
             &full_path,
         )
         .map_err(map_error)?;
+        let did = DocumentId::new(&meta.collection, &meta.relative_path);
         items.push(DocumentListItem {
-            doc_id: docbert_core::search::short_doc_id(*doc_id),
+            doc_id: docbert_core::search::short_doc_id(
+                *doc_id,
+                &did.full_hex(),
+            ),
             path: meta.relative_path.clone(),
             title: title_from_disk(&meta.relative_path, &content),
         });
@@ -790,7 +794,7 @@ mod tests {
             .search_index
             .add_document(
                 &writer,
-                &did.to_string(),
+                &did.full_hex(),
                 did.numeric,
                 "notes",
                 "nested/hello.md",

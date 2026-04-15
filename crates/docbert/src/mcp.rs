@@ -972,7 +972,7 @@ mod tests {
             search_index
                 .add_document(
                     &writer,
-                    &doc_id.short,
+                    &doc_id.full_hex(),
                     doc_id.numeric,
                     "notes",
                     path,

@@ -357,7 +357,7 @@ impl SearchIndex {
         writer.delete_term(term);
     }
 
-    /// Delete a single document by its short doc_id.
+    /// Delete a single document by its full-hex doc_id.
     ///
     /// The deletion is staged; call `writer.commit()` to apply it.
     pub fn delete_document(&self, writer: &IndexWriter, doc_id: &str) {

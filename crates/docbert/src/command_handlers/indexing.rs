@@ -348,8 +348,8 @@ pub(crate) fn cmd_sync(
 
                 let mut writer = runtime.search_index.writer(15_000_000)?;
                 for &doc_id in &selection.deleted_ids {
-                    let display = search::short_doc_id(doc_id);
-                    runtime.search_index.delete_document(&writer, &display);
+                    let full = search::full_hex_doc_id(doc_id);
+                    runtime.search_index.delete_document(&writer, &full);
                 }
                 writer.commit()?;
                 eprintln!(

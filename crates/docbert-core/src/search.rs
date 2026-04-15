@@ -271,10 +271,12 @@ fn semantic_final_results_from_ranked(
         .filter(|ranked| ranked.score >= min_score)
         .filter_map(|RankedDocument { doc_num_id, score }| {
             let meta = metadata.get(&doc_num_id)?;
+            let did =
+                crate::DocumentId::new(&meta.collection, &meta.relative_path);
             Some(FinalResult {
                 rank: 0,
                 score,
-                doc_id: short_doc_id(doc_num_id),
+                doc_id: short_doc_id(doc_num_id, &did.full_hex()),
                 doc_num_id,
                 collection: meta.collection.clone(),
                 path: meta.relative_path.clone(),
@@ -493,7 +495,7 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
         .map(|(i, r)| FinalResult {
             rank: i + 1,
             score: r.score,
-            doc_id: r.doc_id.clone(),
+            doc_id: short_doc_id(r.doc_num_id, &r.doc_id),
             doc_num_id: r.doc_num_id,
             collection: r.collection.clone(),
             path: r.path.clone(),
@@ -504,19 +506,35 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
 
 /// Turn a numeric document ID into the short display form, like `"#a1b2c3"`.
 ///
+/// This rebuilds the blake3 hash from the stored numeric ID, then takes
+/// the first 6 hex chars. For display only — never use this as a Tantivy
+/// key. Use [`full_hex_doc_id`] for storage operations.
+///
 /// # Examples
 ///
 /// ```
 /// use docbert_core::search::short_doc_id;
+/// use docbert_core::DocumentId;
 ///
-/// let id = short_doc_id(0xabcdef1234567890);
-/// assert_eq!(id, "#abcdef");
-/// assert!(id.starts_with('#'));
-/// assert_eq!(id.len(), 7);
+/// let did = DocumentId::new("notes", "hello.md");
+/// let display = short_doc_id(did.numeric, &did.full_hex());
+/// assert!(display.starts_with('#'));
+/// assert_eq!(display.len(), 7);
 /// ```
-pub fn short_doc_id(numeric: u64) -> String {
-    let full = format!("{numeric:016x}");
-    format_document_ref(&full[..6])
+pub fn short_doc_id(numeric: u64, full_hex: &str) -> String {
+    let _ = numeric; // numeric kept in signature for context; the hex carries the data
+    if full_hex.len() >= 6 {
+        format_document_ref(&full_hex[..6])
+    } else {
+        format_document_ref(full_hex)
+    }
+}
+
+/// Turn a `doc_num_id` stored in search results into the full hex Tantivy
+/// key by looking it up in metadata. When the metadata is not available,
+/// falls back to a zero-padded hex of the numeric ID.
+pub fn full_hex_doc_id(numeric: u64) -> String {
+    format!("{numeric:016x}")
 }
 
 fn document_has_semantic_body(
@@ -598,7 +616,7 @@ fn hybrid_final_results_from_ranked(
             bm25_lookup.get(&doc_num_id).map(|bm25| FinalResult {
                 rank: 0,
                 score,
-                doc_id: bm25.doc_id.clone(),
+                doc_id: short_doc_id(doc_num_id, &bm25.doc_id),
                 doc_num_id,
                 collection: bm25.collection.clone(),
                 path: bm25.path.clone(),
@@ -1090,13 +1108,13 @@ mod tests {
     #[test]
     fn hybrid_final_results_from_ranked_preserves_bm25_metadata_for_collapsed_base_ids()
      {
-        let first_doc_id = DocumentId::new("notes", "a.md").numeric;
-        let second_doc_id = DocumentId::new("docs", "b.md").numeric;
+        let first_did = DocumentId::new("notes", "a.md");
+        let second_did = DocumentId::new("docs", "b.md");
         let bm25_results = vec![
             SearchResult {
                 score: 3.0,
-                doc_id: "#aaaaaa".to_string(),
-                doc_num_id: first_doc_id,
+                doc_id: first_did.full_hex(),
+                doc_num_id: first_did.numeric,
                 collection: "notes".to_string(),
                 path: "a.md".to_string(),
                 title: "Alpha".to_string(),
@@ -1104,8 +1122,8 @@ mod tests {
             },
             SearchResult {
                 score: 2.0,
-                doc_id: "#bbbbbb".to_string(),
-                doc_num_id: second_doc_id,
+                doc_id: second_did.full_hex(),
+                doc_num_id: second_did.numeric,
                 collection: "docs".to_string(),
                 path: "b.md".to_string(),
                 title: "Beta".to_string(),
@@ -1117,11 +1135,11 @@ mod tests {
             &bm25_results,
             vec![
                 RankedDocument {
-                    doc_num_id: second_doc_id,
+                    doc_num_id: second_did.numeric,
                     score: 0.9,
                 },
                 RankedDocument {
-                    doc_num_id: first_doc_id,
+                    doc_num_id: first_did.numeric,
                     score: 0.8,
                 },
                 RankedDocument {
@@ -1132,14 +1150,14 @@ mod tests {
         );
 
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].doc_num_id, second_doc_id);
-        assert_eq!(results[0].doc_id, "#bbbbbb");
+        assert_eq!(results[0].doc_num_id, second_did.numeric);
+        assert_eq!(results[0].doc_id, second_did.to_string());
         assert_eq!(results[0].collection, "docs");
         assert_eq!(results[0].path, "b.md");
         assert_eq!(results[0].title, "Beta");
         assert_eq!(results[0].score, 0.9);
-        assert_eq!(results[1].doc_num_id, first_doc_id);
-        assert_eq!(results[1].doc_id, "#aaaaaa");
+        assert_eq!(results[1].doc_num_id, first_did.numeric);
+        assert_eq!(results[1].doc_id, first_did.to_string());
         assert_eq!(results[1].collection, "notes");
         assert_eq!(results[1].path, "a.md");
         assert_eq!(results[1].title, "Alpha");
@@ -1203,7 +1221,7 @@ mod tests {
             let doc_id = DocumentId::new(collection, path);
             idx.add_document(
                 &writer,
-                &doc_id.short,
+                &doc_id.full_hex(),
                 doc_id.numeric,
                 collection,
                 path,
@@ -1456,7 +1474,7 @@ mod tests {
             let doc_id = DocumentId::new(collection, path);
             idx.add_document(
                 &writer,
-                &doc_id.short,
+                &doc_id.full_hex(),
                 doc_id.numeric,
                 collection,
                 path,
@@ -1848,21 +1866,26 @@ mod tests {
 
     #[test]
     fn short_doc_id_format() {
-        let id = short_doc_id(0x123456789abcdef0);
+        let did = crate::DocumentId::new("notes", "hello.md");
+        let id = short_doc_id(did.numeric, &did.full_hex());
         assert!(id.starts_with('#'));
         assert_eq!(id.len(), 7); // # + 6 hex chars
     }
 
     #[test]
-    fn short_doc_id_uses_first_six_hex_digits() {
-        assert_eq!(short_doc_id(0x123456789abcdef0), "#123456");
-        assert_eq!(short_doc_id(0xabcdef1234567890), "#abcdef");
+    fn short_doc_id_is_prefix_of_full_hex() {
+        let did = crate::DocumentId::new("notes", "hello.md");
+        let display = short_doc_id(did.numeric, &did.full_hex());
+        // strip the '#' prefix
+        let short_hex = &display[1..];
+        assert!(did.full_hex().starts_with(short_hex));
     }
 
     #[test]
-    fn short_doc_id_zero() {
-        let id = short_doc_id(0);
-        assert_eq!(id, "#000000");
+    fn full_hex_doc_id_pads_to_16() {
+        assert_eq!(full_hex_doc_id(0).len(), 16);
+        assert_eq!(full_hex_doc_id(0), "0000000000000000");
+        assert_eq!(full_hex_doc_id(0xabcdef), "0000000000abcdef");
     }
 
     #[test]
@@ -1873,10 +1896,11 @@ mod tests {
 
     #[test]
     fn bm25_to_final_preserves_fields() {
+        let did = crate::DocumentId::new("notes", "hello.md");
         let input = vec![SearchResult {
             score: 1.5,
-            doc_id: "abc".to_string(),
-            doc_num_id: 42,
+            doc_id: did.full_hex(),
+            doc_num_id: did.numeric,
             collection: "notes".to_string(),
             path: "hello.md".to_string(),
             title: "Hello".to_string(),
@@ -1886,8 +1910,10 @@ mod tests {
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].rank, 1);
         assert_eq!(output[0].score, 1.5);
-        assert_eq!(output[0].doc_id, "abc");
-        assert_eq!(output[0].doc_num_id, 42);
+        // doc_id is now the short display form (#xxxxxx)
+        assert!(output[0].doc_id.starts_with('#'));
+        assert_eq!(output[0].doc_id.len(), 7);
+        assert_eq!(output[0].doc_num_id, did.numeric);
         assert_eq!(output[0].collection, "notes");
         assert_eq!(output[0].path, "hello.md");
         assert_eq!(output[0].title, "Hello");

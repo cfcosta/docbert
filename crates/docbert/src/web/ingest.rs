@@ -72,7 +72,7 @@ pub(crate) fn ingest_prepared_document(
 
     state.search_index.add_document(
         &writer,
-        &document.did.to_string(),
+        &document.did.full_hex(),
         document.did.numeric,
         collection,
         &document.relative_path,
@@ -165,9 +165,7 @@ pub(crate) fn delete_document(
     let did = DocumentId::new(collection, relative_path);
     let mut writer = state.open_index_writer_blocking(50_000_000)?;
 
-    state
-        .search_index
-        .delete_document(&writer, &did.to_string());
+    state.search_index.delete_document(&writer, &did.full_hex());
     writer.commit()?;
 
     let embedding_db = state.open_embedding_db_blocking()?;
