@@ -9,7 +9,6 @@ use docbert_core::{
     error,
     incremental,
     ingestion,
-
     walker,
 };
 use kdam::{BarExt, Spinner, tqdm};
