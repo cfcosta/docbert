@@ -547,6 +547,40 @@ impl ConfigDb {
         Ok(result)
     }
 
+    /// Compute the shortest unique hex prefix for a document ID.
+    ///
+    /// Returns a `#`-prefixed string with at least 6 hex chars, extended
+    /// as needed to avoid collisions with other documents in the corpus.
+    pub fn disambiguated_short_id(
+        &self,
+        did: &crate::doc_id::DocumentId,
+    ) -> Result<String> {
+        let target_hex = did.full_hex();
+        let all = self.list_all_document_metadata_typed()?;
+        let mut min_len = 6usize;
+
+        for (_doc_id, meta) in &all {
+            let other = crate::doc_id::DocumentId::new(
+                &meta.collection,
+                &meta.relative_path,
+            );
+            if other.numeric == did.numeric {
+                continue;
+            }
+            let other_hex = other.full_hex();
+            let shared = target_hex
+                .chars()
+                .zip(other_hex.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if shared >= min_len {
+                min_len = (shared + 1).min(64);
+            }
+        }
+
+        Ok(crate::doc_id::format_document_ref(&target_hex[..min_len]))
+    }
+
     /// Look up a document by a hex prefix of its ID (git-style).
     ///
     /// Returns `Some` when exactly one document matches the prefix.

@@ -263,10 +263,9 @@ pub(crate) async fn list_by_collection(
         .map_err(map_error)?;
         let did = DocumentId::new(&meta.collection, &meta.relative_path);
         items.push(DocumentListItem {
-            doc_id: docbert_core::search::short_doc_id(
-                *doc_id,
-                &did.full_hex(),
-            ),
+            doc_id: config_db
+                .disambiguated_short_id(&did)
+                .unwrap_or_else(|_| did.to_string()),
             path: meta.relative_path.clone(),
             title: title_from_disk(&meta.relative_path, &content),
         });
@@ -324,7 +323,9 @@ pub(crate) async fn get(
         .map_err(map_error)?;
 
     Ok(Json(DocumentResponse {
-        doc_id: did.to_string(),
+        doc_id: config_db
+            .disambiguated_short_id(&did)
+            .unwrap_or_else(|_| did.to_string()),
         collection,
         path: path.clone(),
         title: title_from_disk(&path, &content),
