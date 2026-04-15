@@ -289,14 +289,14 @@ mod tests {
 
         match resolve_safe_document_path(&root, &path_str) {
             Ok(resolved) => {
-                // If the file existed, canonicalize would confirm it's under root.
-                // Since it doesn't exist, at minimum the path must start with root.
-                let canonical_root = root.canonicalize().unwrap();
+                // resolve_safe_document_path returns a non-canonicalized join,
+                // so compare against the non-canonical root. The real safety
+                // check (ensure_path_within_root) canonicalizes both sides.
                 assert!(
-                    resolved.starts_with(&canonical_root),
+                    resolved.starts_with(&root),
                     "resolved path {:?} escapes root {:?}",
                     resolved,
-                    canonical_root,
+                    root,
                 );
             }
             Err(_) => {
