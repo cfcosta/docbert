@@ -502,4 +502,127 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn removing_snapshot_makes_sync_rediscover_all_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n\nAlpha").unwrap();
+        std::fs::write(root.join("b.md"), "# B\n\nBeta").unwrap();
+
+        // Seed metadata + snapshot as if a sync already happened
+        let initial_files =
+            docbert_core::walker::discover_files(&root).unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &initial_files)
+            .unwrap();
+        seed_snapshot(&config_db, "notes", &root);
+
+        // Simulate what collection_remove does: clear metadata + snapshot
+        let doc_ids: Vec<u64> = config_db
+            .list_all_document_metadata_typed()
+            .unwrap()
+            .into_iter()
+            .filter_map(|(doc_id, meta)| {
+                (meta.collection == "notes").then_some(doc_id)
+            })
+            .collect();
+        config_db.batch_remove_document_state(&doc_ids).unwrap();
+        config_db
+            .remove_collection_merkle_snapshot("notes")
+            .unwrap();
+
+        // Now sync should see all files as new (not "up to date")
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        assert_eq!(
+            selection.new_files.len(),
+            2,
+            "sync should rediscover all files after snapshot removal"
+        );
+        assert!(selection.changed_files.is_empty());
+        assert!(selection.deleted_ids.is_empty());
+    }
+
+    #[test]
+    fn stale_snapshot_without_fix_would_skip_sync() {
+        // Demonstrates the bug: if the snapshot is NOT removed, sync
+        // sees no work even though all metadata is gone.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n\nAlpha").unwrap();
+
+        let initial_files =
+            docbert_core::walker::discover_files(&root).unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &initial_files)
+            .unwrap();
+        seed_snapshot(&config_db, "notes", &root);
+
+        // Clear metadata but KEEP the stale snapshot (the bug scenario)
+        let doc_ids: Vec<u64> = config_db
+            .list_all_document_metadata_typed()
+            .unwrap()
+            .into_iter()
+            .map(|(doc_id, _)| doc_id)
+            .collect();
+        config_db.batch_remove_document_state(&doc_ids).unwrap();
+        // NOTE: NOT removing snapshot here — simulating the old buggy code
+
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        // With the stale snapshot, sync thinks nothing changed
+        assert!(
+            selection.new_files.is_empty()
+                && selection.changed_files.is_empty()
+                && selection.deleted_ids.is_empty(),
+            "stale snapshot should cause sync to see no work (demonstrating the bug)"
+        );
+    }
+
+    #[hegel::test(test_cases = 30)]
+    fn prop_removing_snapshot_always_causes_full_rediscovery(
+        tc: hegel::TestCase,
+    ) {
+        use hegel::generators as gs;
+
+        let file_count: u8 =
+            tc.draw(gs::integers().min_value(1_u8).max_value(8));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+
+        for i in 0..file_count {
+            std::fs::write(
+                root.join(format!("doc_{i}.md")),
+                format!("# Doc {i}\n\nContent {i}"),
+            )
+            .unwrap();
+        }
+
+        let files = docbert_core::walker::discover_files(&root).unwrap();
+        incremental::batch_store_metadata(&config_db, "notes", &files).unwrap();
+        seed_snapshot(&config_db, "notes", &root);
+
+        // Simulate collection removal: clear state + snapshot
+        let doc_ids: Vec<u64> = config_db
+            .list_all_document_metadata_typed()
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        config_db.batch_remove_document_state(&doc_ids).unwrap();
+        config_db
+            .remove_collection_merkle_snapshot("notes")
+            .unwrap();
+
+        let selection = select_sync_work(&config_db, "notes", &root).unwrap();
+        assert_eq!(
+            selection.new_files.len(),
+            file_count as usize,
+            "sync should rediscover all {file_count} files"
+        );
+    }
 }

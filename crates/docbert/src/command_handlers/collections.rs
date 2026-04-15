@@ -73,6 +73,7 @@ pub(crate) fn collection_remove(
     remove_document_embeddings_for_ids(&embedding_db, &doc_ids)?;
     remove_document_artifacts_for_ids(config_db, &doc_ids)?;
 
+    config_db.remove_collection_merkle_snapshot(name)?;
     config_db.remove_collection(name)?;
 
     println!("Removed collection '{name}'");
