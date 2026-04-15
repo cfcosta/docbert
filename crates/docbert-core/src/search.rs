@@ -508,7 +508,7 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
 ///
 /// This rebuilds the blake3 hash from the stored numeric ID, then takes
 /// the first 6 hex chars. For display only — never use this as a Tantivy
-/// key. Use [`full_hex_doc_id`] for storage operations.
+/// key. Use `DocumentId::full_hex()` for storage operations.
 ///
 /// # Examples
 ///
@@ -528,13 +528,6 @@ pub fn short_doc_id(numeric: u64, full_hex: &str) -> String {
     } else {
         format_document_ref(full_hex)
     }
-}
-
-/// Turn a `doc_num_id` stored in search results into the full hex Tantivy
-/// key by looking it up in metadata. When the metadata is not available,
-/// falls back to a zero-padded hex of the numeric ID.
-pub fn full_hex_doc_id(numeric: u64) -> String {
-    format!("{numeric:016x}")
 }
 
 fn document_has_semantic_body(
@@ -1879,13 +1872,6 @@ mod tests {
         // strip the '#' prefix
         let short_hex = &display[1..];
         assert!(did.full_hex().starts_with(short_hex));
-    }
-
-    #[test]
-    fn full_hex_doc_id_pads_to_16() {
-        assert_eq!(full_hex_doc_id(0).len(), 16);
-        assert_eq!(full_hex_doc_id(0), "0000000000000000");
-        assert_eq!(full_hex_doc_id(0xabcdef), "0000000000abcdef");
     }
 
     #[test]

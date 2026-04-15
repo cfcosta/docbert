@@ -347,12 +347,25 @@ pub(crate) fn cmd_sync(
         // succeeded.
         let sync_result = (|| {
             if !selection.deleted_ids.is_empty() {
-                // Remove embeddings and metadata first, then commit the
-                // Tantivy deletion last.  This way, if embedding/metadata
-                // removal fails the index still has entries for those
-                // documents (safe — they just won't be cleaned up until
-                // the next sync).  The reverse would leave dangling
-                // index holes.
+                // Build Tantivy keys from metadata BEFORE deleting it.
+                let tantivy_keys: Vec<String> = selection
+                    .deleted_ids
+                    .iter()
+                    .filter_map(|&doc_id| {
+                        config_db
+                            .get_document_metadata_typed(doc_id)
+                            .ok()
+                            .flatten()
+                            .map(|meta| {
+                                docbert_core::DocumentId::new(
+                                    &meta.collection,
+                                    &meta.relative_path,
+                                )
+                                .full_hex()
+                            })
+                    })
+                    .collect();
+
                 remove_document_embeddings_for_ids(
                     &runtime.embedding_db,
                     &selection.deleted_ids,
@@ -363,9 +376,8 @@ pub(crate) fn cmd_sync(
                 )?;
 
                 let mut writer = runtime.search_index.writer(15_000_000)?;
-                for &doc_id in &selection.deleted_ids {
-                    let full = search::full_hex_doc_id(doc_id);
-                    runtime.search_index.delete_document(&writer, &full);
+                for key in &tantivy_keys {
+                    runtime.search_index.delete_document(&writer, key);
                 }
                 writer.commit()?;
                 eprintln!(
