@@ -282,7 +282,7 @@ pub(crate) async fn list_by_collection(
         .list_all_document_metadata_typed()
         .map_err(map_error)?;
     let mut items = Vec::new();
-    for (doc_id, meta) in &all_meta {
+    for (_doc_id, meta) in &all_meta {
         if meta.collection != collection {
             continue;
         }

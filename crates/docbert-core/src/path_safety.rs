@@ -217,7 +217,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret.md"), "secret").unwrap();
-        symlink(&outside.join("secret.md"), root.join("linked.md")).unwrap();
+        symlink(outside.join("secret.md"), root.join("linked.md")).unwrap();
 
         assert!(resolve_safe_document_path(&root, "linked.md").is_err());
     }
