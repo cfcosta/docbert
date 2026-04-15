@@ -119,7 +119,11 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
 fn is_supported(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| SUPPORTED_EXTENSIONS.contains(&ext))
+        .is_some_and(|ext| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(ext))
+        })
 }
 
 fn make_discovered(
