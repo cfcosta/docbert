@@ -79,14 +79,21 @@ pub fn discover_files(root: &Path) -> Result<Vec<DiscoveredFile>> {
         }
 
         if file_type.is_symlink() {
-            // Resolve symlink and check for cycles.
+            // Resolve symlink; skip broken links.
             let resolved = match path.canonicalize() {
                 Ok(p) => p,
-                Err(_) => continue, // Skip broken symlinks
+                Err(_) => continue,
             };
-            // Skip if the symlink points back into or above the root
-            // (cycle prevention).
-            if resolved.starts_with(&canonical_root) && resolved.is_dir() {
+            // Only accept symlinks whose target is inside the
+            // collection root.  Targets outside the root would be
+            // indexed but then rejected by safe path resolution on
+            // read/delete, creating ghost documents.
+            if !resolved.starts_with(&canonical_root) {
+                continue;
+            }
+            // Skip directory symlinks that point inside the root
+            // (the walker will visit the real directory anyway).
+            if resolved.is_dir() {
                 continue;
             }
             if resolved.is_file() && is_supported(&resolved) {
@@ -274,5 +281,121 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let files = discover_files(tmp.path()).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_inside_root_is_accepted() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("col");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real.md"), "# Real").unwrap();
+        symlink(root.join("real.md"), root.join("link.md")).unwrap();
+
+        let files = discover_files(&root).unwrap();
+        let names: Vec<_> = files
+            .iter()
+            .map(|f| f.relative_path.to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"real.md".to_string()));
+        assert!(names.contains(&"link.md".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_outside_root_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("col");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), "# Secret").unwrap();
+        symlink(outside.join("secret.md"), root.join("escape.md")).unwrap();
+        std::fs::write(root.join("legit.md"), "# Legit").unwrap();
+
+        let files = discover_files(&root).unwrap();
+        let names: Vec<_> = files
+            .iter()
+            .map(|f| f.relative_path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.contains(&"legit.md".to_string()),
+            "real file should be discovered"
+        );
+        assert!(
+            !names.contains(&"escape.md".to_string()),
+            "symlink escaping root must be rejected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_is_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("col");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink("/nonexistent/path.md", root.join("broken.md")).unwrap();
+        std::fs::write(root.join("ok.md"), "# OK").unwrap();
+
+        let files = discover_files(&root).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path.to_string_lossy(), "ok.md");
+    }
+
+    #[cfg(unix)]
+    #[hegel::test(test_cases = 30)]
+    fn prop_discover_never_returns_paths_outside_root(tc: hegel::TestCase) {
+        use std::os::unix::fs::symlink;
+
+        use hegel::generators as gs;
+
+        let file_count: u8 =
+            tc.draw(gs::integers().min_value(0_u8).max_value(5));
+        let external_link_count: u8 =
+            tc.draw(gs::integers().min_value(0_u8).max_value(3));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("col");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        for i in 0..file_count {
+            std::fs::write(
+                root.join(format!("doc_{i}.md")),
+                format!("# Doc {i}"),
+            )
+            .unwrap();
+        }
+
+        for i in 0..external_link_count {
+            let target = outside.join(format!("ext_{i}.md"));
+            std::fs::write(&target, format!("# External {i}")).unwrap();
+            let _ = symlink(&target, root.join(format!("link_{i}.md")));
+        }
+
+        let canonical_root = root.canonicalize().unwrap();
+        let files = discover_files(&root).unwrap();
+
+        for file in &files {
+            assert!(
+                file.absolute_path.starts_with(&canonical_root),
+                "discovered file {:?} escapes root {:?}",
+                file.absolute_path,
+                canonical_root,
+            );
+        }
+
+        assert_eq!(
+            files.len(),
+            file_count as usize,
+            "should discover only real files, not external symlinks"
+        );
     }
 }
