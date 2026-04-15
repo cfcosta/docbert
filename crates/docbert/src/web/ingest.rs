@@ -163,17 +163,21 @@ pub(crate) fn delete_document(
     let previous_snapshot =
         collection_snapshots::load_collection_snapshot(&config_db, collection)?;
     let did = DocumentId::new(collection, relative_path);
-    let mut writer = state.open_index_writer_blocking(50_000_000)?;
 
-    state.search_index.delete_document(&writer, &did.full_hex());
-    writer.commit()?;
-
+    // Remove embeddings and metadata first (cheap, idempotent).
+    // If this fails the document is still intact and can be retried.
     let embedding_db = state.open_embedding_db_blocking()?;
     embedding_db.remove_document_family(did.numeric)?;
     config_db.remove_document_metadata(did.numeric)?;
     config_db.remove_document_user_metadata(did.numeric)?;
-    // Delete updates the stored collection snapshot only after index and
-    // metadata cleanup succeeds end to end.
+
+    // Commit the Tantivy deletion last — it's the visible "point of no
+    // return".  All metadata/embeddings are already gone, so no orphan
+    // state is possible on Tantivy failure.
+    let mut writer = state.open_index_writer_blocking(50_000_000)?;
+    state.search_index.delete_document(&writer, &did.full_hex());
+    writer.commit()?;
+
     refresh_collection_snapshot(
         &config_db,
         collection,
