@@ -52,6 +52,20 @@ pub(crate) async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let config_db = state
+        .open_config_db()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Reject duplicate IDs so POST never silently overwrites an
+    // existing conversation.  Use PUT for intentional updates.
+    if config_db
+        .get_conversation_typed(&body.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .is_some()
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+
     let now = now_millis();
     let conv = Conversation {
         id: body.id,
@@ -60,9 +74,8 @@ pub(crate) async fn create(
         updated_at: now,
         messages: vec![],
     };
-    state
-        .open_config_db()
-        .and_then(|config_db| config_db.set_conversation_typed(&conv))
+    config_db
+        .set_conversation_typed(&conv)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED, Json(conv)))
 }
@@ -215,6 +228,46 @@ mod tests {
             .unwrap();
         assert_eq!(stored.title, "New conversation");
         assert_eq!(stored.messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn web_conversations_create_rejects_duplicate_id() {
+        let (_tmp, state) = test_state();
+
+        // First create succeeds
+        let first = create(
+            State(state.clone()),
+            Json(CreateRequest {
+                id: "conv-1".to_string(),
+                title: Some("Original".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        // Second create with same ID must fail with CONFLICT
+        match create(
+            State(state.clone()),
+            Json(CreateRequest {
+                id: "conv-1".to_string(),
+                title: Some("Duplicate".to_string()),
+            }),
+        )
+        .await
+        {
+            Err(status) => assert_eq!(status, StatusCode::CONFLICT),
+            Ok(_) => panic!("expected CONFLICT for duplicate ID"),
+        }
+
+        // Original conversation must be untouched
+        let stored = ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
+            .get_conversation_typed("conv-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "Original");
     }
 
     #[tokio::test]

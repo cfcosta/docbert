@@ -122,9 +122,17 @@ fn process_document_batch(
 ) -> error::Result<()> {
     log_load_failures(&document_batch.failures);
 
-    // Step 1: Compute embeddings first (expensive, most likely to fail).
-    // We do this before touching the Tantivy index so a model/embedding
-    // failure doesn't leave committed index entries without embeddings.
+    // Collect the doc IDs we're about to process so we can roll back on
+    // failure.
+    let batch_doc_ids: Vec<u64> = document_batch
+        .documents
+        .iter()
+        .map(|d| d.did.numeric)
+        .collect();
+
+    // Step 1: Compute and store embeddings (expensive, most likely to fail).
+    // Done before Tantivy so a model failure doesn't leave committed index
+    // entries without embeddings.
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
@@ -160,18 +168,26 @@ fn process_document_batch(
         &document_batch.metadata_files,
     )?;
 
-    // Step 3: Commit to Tantivy last — this is the visible "point of no
-    // return".  If steps 1 or 2 failed we never reach here, so the index
-    // stays consistent with embeddings and metadata.
+    // Step 3: Commit to Tantivy last. If this fails, roll back the
+    // embeddings and metadata we persisted in steps 1-2 so all three
+    // stores stay consistent.
     if index_documents {
         let mut writer = runtime.search_index.writer(15_000_000)?;
-        let count = ingestion::ingest_prepared_documents(
+        if let Err(err) = ingestion::ingest_prepared_documents(
             &runtime.search_index,
             &mut writer,
             collection,
             &document_batch.documents,
-        )?;
-        eprintln!("  Indexed {count} documents");
+        ) {
+            let _ = remove_document_embeddings_for_ids(
+                &runtime.embedding_db,
+                &batch_doc_ids,
+            );
+            let _ =
+                remove_document_artifacts_for_ids(config_db, &batch_doc_ids);
+            return Err(err);
+        }
+        eprintln!("  Indexed {} documents", document_batch.documents.len());
     }
 
     Ok(())
