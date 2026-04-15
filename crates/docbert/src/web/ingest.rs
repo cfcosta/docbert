@@ -153,6 +153,149 @@ pub(crate) fn ingest_prepared_document(
     })
 }
 
+/// Saved state of a document before a batch ingest overwrote it.
+///
+/// Collected per-document so that a batch-level rollback can restore the
+/// previous metadata, embeddings, and Tantivy entry instead of
+/// destructively deleting everything.
+#[derive(Debug)]
+pub(crate) struct PreviousDocumentState {
+    pub(crate) did: DocumentId,
+    pub(crate) metadata: Option<incremental::DocumentMetadata>,
+    pub(crate) user_metadata: Option<serde_json::Value>,
+    pub(crate) embeddings: Vec<EmbeddingEntry>,
+}
+
+/// Capture the full pre-existing state of a document before overwriting it.
+///
+/// Returns `None` when the document is entirely new (no metadata stored).
+pub(crate) fn capture_previous_state(
+    state: &AppState,
+    collection: &str,
+    relative_path: &str,
+) -> error::Result<Option<PreviousDocumentState>> {
+    let config_db = state.open_config_db_blocking()?;
+    let did = DocumentId::new(collection, relative_path);
+
+    let metadata = config_db.get_document_metadata_typed(did.numeric)?;
+    if metadata.is_none() {
+        return Ok(None);
+    }
+
+    let user_metadata = config_db.get_document_user_metadata(did.numeric)?;
+    let embedding_db = state.open_embedding_db_blocking()?;
+    let embeddings =
+        load_document_family_embeddings(&embedding_db, did.numeric)?;
+
+    Ok(Some(PreviousDocumentState {
+        did,
+        metadata,
+        user_metadata,
+        embeddings,
+    }))
+}
+
+/// Roll back a single document to its previous state after a batch failure.
+///
+/// If `previous` is `Some`, the document's metadata, embeddings, and Tantivy
+/// entry are restored to their pre-ingest values. If `None`, the document
+/// is deleted outright (it was newly created by this batch).
+pub(crate) fn rollback_document(
+    state: &AppState,
+    collection: &str,
+    relative_path: &str,
+    previous: Option<&PreviousDocumentState>,
+) -> error::Result<()> {
+    match previous {
+        None => delete_document(state, collection, relative_path),
+        Some(prev) => {
+            let config_db = state.open_config_db_blocking()?;
+            let embedding_db = state.open_embedding_db_blocking()?;
+            let collection_root = collection_root(&config_db, collection)?;
+            let previous_snapshot =
+                collection_snapshots::load_collection_snapshot(
+                    &config_db, collection,
+                )?;
+
+            // Remove the current (bad) embeddings for this document family.
+            embedding_db.remove_document_family(prev.did.numeric)?;
+
+            // Restore previous embeddings.
+            if !prev.embeddings.is_empty() {
+                embedding_db.batch_store(&prev.embeddings)?;
+            }
+
+            // Restore previous metadata.
+            restore_previous_metadata(
+                &config_db,
+                prev.did.numeric,
+                prev.metadata.as_ref(),
+                prev.user_metadata.as_ref(),
+            )?;
+
+            // Re-index in Tantivy: delete the current entry and, if
+            // metadata existed, re-add the old version. If there was
+            // previous metadata the document was already in Tantivy and
+            // we need to restore it.
+            let mut writer = state.open_index_writer_blocking(50_000_000)?;
+            state
+                .search_index
+                .delete_document(&writer, &prev.did.full_hex());
+            if let Some(meta) = &prev.metadata {
+                let full_path = std::path::Path::new(
+                    collection_root.to_str().unwrap_or(""),
+                )
+                .join(&meta.relative_path);
+                let title = if full_path.exists() {
+                    let content = preparation::load_preview_content(
+                        std::path::Path::new(&meta.relative_path),
+                        &full_path,
+                    )
+                    .unwrap_or_default();
+                    docbert_core::ingestion::extract_title(
+                        &content,
+                        std::path::Path::new(&meta.relative_path),
+                    )
+                } else {
+                    docbert_core::ingestion::extract_title(
+                        "",
+                        std::path::Path::new(&meta.relative_path),
+                    )
+                };
+                let searchable_body = if full_path.exists() {
+                    preparation::load_preview_content(
+                        std::path::Path::new(&meta.relative_path),
+                        &full_path,
+                    )
+                    .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                state.search_index.add_document(
+                    &writer,
+                    &prev.did.full_hex(),
+                    prev.did.numeric,
+                    &meta.collection,
+                    &meta.relative_path,
+                    &title,
+                    &searchable_body,
+                    meta.mtime,
+                )?;
+            }
+            writer.commit()?;
+
+            refresh_collection_snapshot(
+                &config_db,
+                collection,
+                &collection_root,
+                previous_snapshot.as_ref(),
+            )?;
+
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn delete_document(
     state: &AppState,
     collection: &str,
@@ -678,6 +821,185 @@ mod tests {
                 .get_collection_merkle_snapshot("notes")
                 .unwrap(),
             Some(original_snapshot)
+        );
+    }
+
+    #[test]
+    fn capture_previous_state_returns_none_for_new_document() {
+        let (_tmp, state) = test_state();
+        let result =
+            capture_previous_state(&state, "notes", "nonexistent.md").unwrap();
+        assert!(
+            result.is_none(),
+            "new document should have no previous state"
+        );
+    }
+
+    #[test]
+    fn capture_previous_state_returns_full_state_for_existing_document() {
+        let (tmp, state) = test_state();
+        let root = seed_collection_root(&tmp, &state, "notes");
+        let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
+
+        let document = load_document(
+            "notes",
+            "hello.md",
+            &full_path,
+            Some(serde_json::json!({"tag": "important"})),
+            7,
+        )
+        .unwrap();
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &document,
+            &fake_embedding_entries(document.did.numeric, 2),
+        )
+        .unwrap();
+
+        let prev = capture_previous_state(&state, "notes", "hello.md").unwrap();
+        let prev = prev.expect("existing document should have previous state");
+        assert!(prev.metadata.is_some());
+        assert_eq!(
+            prev.user_metadata,
+            Some(serde_json::json!({"tag": "important"}))
+        );
+        assert!(
+            !prev.embeddings.is_empty(),
+            "should capture existing embeddings"
+        );
+    }
+
+    #[test]
+    fn rollback_document_restores_metadata_and_embeddings_for_overwrite() {
+        let (tmp, state) = test_state();
+        let root = seed_collection_root(&tmp, &state, "notes");
+        let full_path = write_markdown(&root, "hello.md", "# Original\n\nBody");
+
+        let original = load_document(
+            "notes",
+            "hello.md",
+            &full_path,
+            Some(serde_json::json!({"version": 1})),
+            5,
+        )
+        .unwrap();
+        let original_embeddings =
+            fake_embedding_entries(original.did.numeric, 2);
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &original,
+            &original_embeddings,
+        )
+        .unwrap();
+
+        // Capture state before overwrite
+        let prev = capture_previous_state(&state, "notes", "hello.md").unwrap();
+
+        // Overwrite
+        write_markdown(&root, "hello.md", "# Updated\n\nNew body");
+        let updated = load_document(
+            "notes",
+            "hello.md",
+            &full_path,
+            Some(serde_json::json!({"version": 2})),
+            10,
+        )
+        .unwrap();
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &updated,
+            &fake_embedding_entries(updated.did.numeric, 3),
+        )
+        .unwrap();
+
+        // Verify updated state
+        assert_eq!(
+            test_config_db(&state)
+                .get_document_user_metadata(original.did.numeric)
+                .unwrap(),
+            Some(serde_json::json!({"version": 2}))
+        );
+
+        // Restore original file bytes
+        std::fs::write(&full_path, "# Original\n\nBody").unwrap();
+
+        // Rollback
+        rollback_document(&state, "notes", "hello.md", prev.as_ref()).unwrap();
+
+        // Metadata should be restored
+        let restored_meta = test_config_db(&state)
+            .get_document_metadata_typed(original.did.numeric)
+            .unwrap()
+            .expect("metadata should be restored");
+        assert_eq!(restored_meta.mtime, 5);
+        assert_eq!(
+            test_config_db(&state)
+                .get_document_user_metadata(original.did.numeric)
+                .unwrap(),
+            Some(serde_json::json!({"version": 1}))
+        );
+
+        // Embeddings should be restored (original had 2 chunks)
+        assert!(
+            test_embedding_db(&state)
+                .load(original.did.numeric)
+                .unwrap()
+                .is_some(),
+            "base embedding should be restored"
+        );
+        assert!(
+            test_embedding_db(&state)
+                .load(chunk_doc_id(original.did.numeric, 1))
+                .unwrap()
+                .is_some(),
+            "chunk embedding should be restored"
+        );
+        // Third chunk from the overwrite should be gone
+        assert!(
+            test_embedding_db(&state)
+                .load(chunk_doc_id(original.did.numeric, 2))
+                .unwrap()
+                .is_none(),
+            "overwrite chunk should be removed"
+        );
+    }
+
+    #[test]
+    fn rollback_document_deletes_new_document() {
+        let (tmp, state) = test_state();
+        let root = seed_collection_root(&tmp, &state, "notes");
+        let full_path = write_markdown(&root, "new.md", "# New\n\nBody");
+
+        let document =
+            load_document("notes", "new.md", &full_path, None, 1).unwrap();
+        ingest_prepared_document(
+            &state,
+            "notes",
+            &document,
+            &fake_embedding_entries(document.did.numeric, 1),
+        )
+        .unwrap();
+
+        // Rollback with no previous state (new document)
+        rollback_document(&state, "notes", "new.md", None).unwrap();
+
+        // Document should be fully deleted
+        assert!(
+            test_config_db(&state)
+                .get_document_metadata_typed(document.did.numeric)
+                .unwrap()
+                .is_none(),
+            "metadata should be deleted"
+        );
+        assert!(
+            test_embedding_db(&state)
+                .load(document.did.numeric)
+                .unwrap()
+                .is_none(),
+            "embeddings should be deleted"
         );
     }
 

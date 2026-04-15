@@ -80,7 +80,7 @@ pub(crate) async fn search(
         .model
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let results = search::execute_search_mode(
+    let mut results = search::execute_search_mode(
         mode,
         &request,
         &state.search_index,
@@ -90,6 +90,8 @@ pub(crate) async fn search(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     drop(model);
+
+    search::disambiguate_doc_ids(&mut results, &config_db);
 
     let items: Vec<SearchResultItem> = results
         .into_iter()

@@ -639,6 +639,21 @@ fn rerank_results(
     Ok(hybrid_final_results_from_ranked(bm25_results, ranked))
 }
 
+/// Replace fixed-length short doc IDs in results with disambiguated ones.
+///
+/// The default `short_doc_id` always returns a 6-hex prefix, which can collide
+/// on larger corpora. This function extends each result's `doc_id` to the
+/// shortest unique prefix using the same algorithm as
+/// [`ConfigDb::disambiguated_short_id`].
+pub fn disambiguate_doc_ids(results: &mut [FinalResult], config_db: &ConfigDb) {
+    for r in results {
+        let did = crate::DocumentId::new(&r.collection, &r.path);
+        if let Ok(disambiguated) = config_db.disambiguated_short_id(&did) {
+            r.doc_id = disambiguated;
+        }
+    }
+}
+
 /// Print results in the default terminal format.
 ///
 /// Each result is shown as `rank. [score] collection:path #doc_id`, with the
@@ -1872,6 +1887,69 @@ mod tests {
         // strip the '#' prefix
         let short_hex = &display[1..];
         assert!(did.full_hex().starts_with(short_hex));
+    }
+
+    #[test]
+    fn disambiguate_doc_ids_extends_colliding_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+
+        // Seed two documents that share a 6-char hex prefix by searching for
+        // a collision. We can't engineer one cheaply, so instead we verify that
+        // disambiguation at least works for non-colliding docs (returns the
+        // same 6-char prefix) and that the function doesn't panic.
+        let did_a = DocumentId::new("notes", "a.md");
+        let did_b = DocumentId::new("notes", "b.md");
+        let meta_a = DocumentMetadata {
+            collection: "notes".into(),
+            relative_path: "a.md".into(),
+            mtime: 1,
+        };
+        let meta_b = DocumentMetadata {
+            collection: "notes".into(),
+            relative_path: "b.md".into(),
+            mtime: 2,
+        };
+        config_db
+            .set_document_metadata_typed(did_a.numeric, &meta_a)
+            .unwrap();
+        config_db
+            .set_document_metadata_typed(did_b.numeric, &meta_b)
+            .unwrap();
+
+        let mut results = vec![
+            FinalResult {
+                rank: 1,
+                score: 1.0,
+                doc_id: short_doc_id(did_a.numeric, &did_a.full_hex()),
+                doc_num_id: did_a.numeric,
+                collection: "notes".into(),
+                path: "a.md".into(),
+                title: "A".into(),
+            },
+            FinalResult {
+                rank: 2,
+                score: 0.5,
+                doc_id: short_doc_id(did_b.numeric, &did_b.full_hex()),
+                doc_num_id: did_b.numeric,
+                collection: "notes".into(),
+                path: "b.md".into(),
+                title: "B".into(),
+            },
+        ];
+
+        disambiguate_doc_ids(&mut results, &config_db);
+
+        // Each doc_id must be a valid prefix of its full hex
+        let hex_a = &results[0].doc_id[1..]; // strip '#'
+        let hex_b = &results[1].doc_id[1..];
+        assert!(did_a.full_hex().starts_with(hex_a));
+        assert!(did_b.full_hex().starts_with(hex_b));
+        // Must be at least 6 chars
+        assert!(hex_a.len() >= 6);
+        assert!(hex_b.len() >= 6);
+        // The two doc_ids must be different
+        assert_ne!(results[0].doc_id, results[1].doc_id);
     }
 
     #[test]

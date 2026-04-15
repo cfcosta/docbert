@@ -235,13 +235,15 @@ impl DocbertMcpServer {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
 
-        let results = search::execute_search(
+        let mut results = search::execute_search(
             &args,
             &self.state.search_index,
             &embedding_db,
             &mut model,
         )
         .map_err(|e| mcp_error("search failed", e))?;
+
+        search::disambiguate_doc_ids(&mut results, &config_db);
 
         let include_snippet = params.include_snippet.unwrap_or(true);
         build_search_tool_result(&config_db, results, query, include_snippet)
@@ -279,13 +281,15 @@ impl DocbertMcpServer {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
 
-        let results = search::execute_semantic_search(
+        let mut results = search::execute_semantic_search(
             &args,
             &config_db,
             &embedding_db,
             &mut model,
         )
         .map_err(|e| mcp_error("semantic search failed", e))?;
+
+        search::disambiguate_doc_ids(&mut results, &config_db);
 
         let include_snippet = params.include_snippet.unwrap_or(true);
         build_search_tool_result(&config_db, results, query, include_snippet)

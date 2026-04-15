@@ -145,11 +145,12 @@ pub(crate) async fn ingest(
             .map_err(map_error)?;
     }
 
-    // Track committed docs and their file snapshots for batch rollback.
+    // Track committed docs and their file/state snapshots for batch rollback.
     struct CommittedFile {
         path: std::path::PathBuf,
         previous_bytes: Option<Vec<u8>>,
         relative_path: String,
+        previous_state: Option<ingest::PreviousDocumentState>,
     }
 
     let mut ingested = Vec::with_capacity(body.documents.len());
@@ -169,6 +170,12 @@ pub(crate) async fn ingest(
             };
 
             let previous_bytes = std::fs::read(&full_path).ok();
+            let previous_state = ingest::capture_previous_state(
+                &state,
+                &body.collection,
+                &uploaded.path,
+            )
+            .map_err(map_error)?;
 
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent)
@@ -224,6 +231,7 @@ pub(crate) async fn ingest(
                         path: full_path,
                         previous_bytes,
                         relative_path: uploaded.path.clone(),
+                        previous_state,
                     });
                     ingested.push(doc);
                 }
@@ -245,14 +253,13 @@ pub(crate) async fn ingest(
     })();
 
     if let Err(status) = batch_result {
-        // Roll back all previously committed docs in this batch.
+        // Roll back all previously committed docs in this batch,
+        // restoring file bytes and full document state (metadata,
+        // embeddings, Tantivy entry).
         for committed in committed_files {
-            let _ = ingest::delete_document(
-                &state,
-                &body.collection,
-                &committed.relative_path,
-            );
-            match committed.previous_bytes {
+            // Restore file bytes first so snapshot refresh sees the
+            // original content on disk.
+            match &committed.previous_bytes {
                 Some(old) => {
                     let _ = std::fs::write(&committed.path, old);
                 }
@@ -260,6 +267,12 @@ pub(crate) async fn ingest(
                     let _ = std::fs::remove_file(&committed.path);
                 }
             }
+            let _ = ingest::rollback_document(
+                &state,
+                &body.collection,
+                &committed.relative_path,
+                committed.previous_state.as_ref(),
+            );
         }
         return Err(status);
     }

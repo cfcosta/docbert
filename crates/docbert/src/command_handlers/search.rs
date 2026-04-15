@@ -29,7 +29,7 @@ pub(crate) fn run_search(
         log_model_runtime(&mut model)?;
     }
 
-    let results = if args.bm25_only || args.no_fuzzy || args.all {
+    let mut results = if args.bm25_only || args.no_fuzzy || args.all {
         let params = search::SearchParams {
             query: args.query.clone(),
             count: args.count,
@@ -63,6 +63,8 @@ pub(crate) fn run_search(
         )?
     };
 
+    search::disambiguate_doc_ids(&mut results, config_db);
+
     if args.json {
         search::format_json(&results, &args.query);
     } else if args.files {
@@ -92,12 +94,14 @@ pub(crate) fn run_semantic_search(
         all: args.all,
     };
 
-    let results = search::execute_semantic_search(
+    let mut results = search::execute_semantic_search(
         &params,
         config_db,
         &embedding_db,
         &mut model,
     )?;
+
+    search::disambiguate_doc_ids(&mut results, config_db);
 
     if args.json {
         search::format_json(&results, &args.query);
@@ -191,7 +195,11 @@ pub(crate) fn cmd_multi_get(
             let (file, content) = if let Some(ref cp) = collection_path {
                 let full_path = std::path::Path::new(cp).join(path);
                 let content = if args.full {
-                    std::fs::read_to_string(&full_path).ok()
+                    docbert_core::preparation::load_preview_content(
+                        std::path::Path::new(path),
+                        &full_path,
+                    )
+                    .ok()
                 } else {
                     None
                 };
@@ -227,7 +235,12 @@ pub(crate) fn cmd_multi_get(
                 let full_path =
                     std::path::Path::new(&collection_path).join(path);
                 println!("--- {collection}:{path} ---");
-                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                if let Ok(content) =
+                    docbert_core::preparation::load_preview_content(
+                        std::path::Path::new(path),
+                        &full_path,
+                    )
+                {
                     print!("{content}");
                     if !content.ends_with('\n') {
                         println!();
