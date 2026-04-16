@@ -11,9 +11,11 @@
 //! slices at the public boundary; internally the hot path
 //! ([`assign_points`], [`fit_with_init`]) materialises them into
 //! `candle_core::Tensor`s and computes the centroid distance matrix as
-//! a single matmul. With the `cuda` feature enabled this matmul runs on
-//! the GPU; without it, candle's CPU `gemm` implementation is still
-//! orders of magnitude faster than the previous scalar nested loop.
+//! a matmul, split into row-chunks so the transient score tensors
+//! stay within a fixed byte budget. With the `cuda` feature enabled
+//! this matmul runs on the GPU; without it, candle's CPU `gemm`
+//! implementation is still orders of magnitude faster than the
+//! previous scalar nested loop.
 //!
 //! [`nearest_centroid`] (single point) and [`update_centroids`] (the
 //! M-step) remain scalar — both are cheap relative to the assignment
@@ -297,23 +299,79 @@ pub fn assign_points(
     assign_tensor(&p, &c).expect("assign_points: matmul failed")
 }
 
+/// Cap on the transient bytes materialised by a single assignment
+/// matmul.
+///
+/// Each chunk produces three tensors of shape `[chunk_rows, k]`: the
+/// matmul output, its affine-scaled twin, and the broadcast-added
+/// score matrix. Sizing each of those to ~128 MiB keeps the working
+/// set near ~384 MiB beside the resident points tensor — small enough
+/// to fit on a 6 GiB GPU after the 3 GB pool upload, big enough that
+/// cuBLAS kernels still amortise their launch overhead.
+const ASSIGN_CHUNK_BYTES: usize = 128 * 1024 * 1024;
+
 /// Tensor-based Lloyd E-step: returns the index of the nearest centroid
 /// for every row of `p` against every row of `c`.
 ///
-/// Argmin uses the formula `||c||² − 2·p·c` (the `||p||²` term is
-/// constant for argmin per row, so we drop it). For typical ColBERT
-/// centroids of ~unit norm, the dominant cost is the `[n, dim] × [dim, k]`
-/// matmul, which is exactly the GEMM candle is best at.
+/// Delegates to [`assign_tensor_chunked`] with a chunk size derived
+/// from [`ASSIGN_CHUNK_BYTES`]. Splitting this into a pair lets tests
+/// drive the chunked path with tiny chunks without having to
+/// synthesise gigabytes of input.
 fn assign_tensor(
     p: &Tensor,
     c: &Tensor,
 ) -> Result<Vec<usize>, candle_core::Error> {
-    let dot = p.matmul(&c.t()?)?; // [n, k]
+    let n = p.dim(0)?;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let k = c.dim(0)?.max(1);
+    let bytes_per_row = k * std::mem::size_of::<f32>();
+    let chunk_rows = (ASSIGN_CHUNK_BYTES / bytes_per_row).max(1).min(n);
+    assign_tensor_chunked(p, c, chunk_rows)
+}
+
+/// Chunked implementation of the Lloyd E-step.
+///
+/// Argmin uses the formula `||c||² − 2·p·c` (the `||p||²` term is
+/// constant for argmin per row, so we drop it). For typical ColBERT
+/// centroids of ~unit norm, the dominant cost is the `[chunk, dim] ×
+/// [dim, k]` matmul, which is exactly the GEMM candle is best at.
+///
+/// Point rows are sliced via [`Tensor::narrow`] — a zero-copy view —
+/// so the caller's points tensor stays resident across chunks and
+/// across Lloyd iterations. The centroid-side quantities (`c_t` and
+/// `c_sq`) only depend on `c`, so they're computed once outside the
+/// loop and reused.
+fn assign_tensor_chunked(
+    p: &Tensor,
+    c: &Tensor,
+    chunk_rows: usize,
+) -> Result<Vec<usize>, candle_core::Error> {
+    assert!(
+        chunk_rows > 0,
+        "assign_tensor_chunked: chunk_rows must be positive",
+    );
+    let n = p.dim(0)?;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let c_t = c.t()?;
     let c_sq = c.sqr()?.sum_keepdim(1)?.t()?; // [1, k]
-    // scores[i, j] = ||c[j]||² - 2·p[i]·c[j], argmin gives nearest.
-    let scores = dot.affine(-2.0, 0.0)?.broadcast_add(&c_sq)?;
-    let argmin_u32: Vec<u32> = scores.argmin(1)?.to_vec1::<u32>()?;
-    Ok(argmin_u32.into_iter().map(|x| x as usize).collect())
+
+    let mut out = Vec::with_capacity(n);
+    let mut start = 0usize;
+    while start < n {
+        let len = chunk_rows.min(n - start);
+        let p_chunk = p.narrow(0, start, len)?;
+        let dot = p_chunk.matmul(&c_t)?; // [len, k]
+        // scores[i, j] = ||c[j]||² - 2·p[i]·c[j], argmin gives nearest.
+        let scores = dot.affine(-2.0, 0.0)?.broadcast_add(&c_sq)?;
+        let argmin_u32: Vec<u32> = scores.argmin(1)?.to_vec1::<u32>()?;
+        out.extend(argmin_u32.into_iter().map(|x| x as usize));
+        start += len;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -375,6 +433,44 @@ mod tests {
     fn assign_points_panics_on_ragged_points() {
         let centroids = [0.0, 0.0];
         let _ = assign_points(&[1.0, 2.0, 3.0], &centroids, 2);
+    }
+
+    #[test]
+    fn assign_tensor_chunked_agrees_with_unchunked() {
+        // Build a dataset with >1 row and exercise chunk boundaries
+        // that are 1, prime, round, off-by-one, and the full length.
+        // The chunked and unchunked paths must agree row-for-row
+        // regardless of chunk size — if they ever diverge, the
+        // per-chunk argmin has drifted from the per-row argmin.
+        let dim = 3;
+        let k = 4;
+        let centroids: Vec<f32> = vec![
+            0.0, 0.0, 0.0, //
+            10.0, 0.0, 0.0, //
+            0.0, 10.0, 0.0, //
+            10.0, 10.0, 0.0, //
+        ];
+        let n = 173;
+        let mut points: Vec<f32> = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let a = ((i * 37) % 11) as f32;
+            let b = ((i * 53) % 13) as f32;
+            points.extend_from_slice(&[a, b, 0.0]);
+        }
+
+        let device = default_device();
+        let p = Tensor::from_slice(&points, (n, dim), device).unwrap();
+        let c = Tensor::from_slice(&centroids, (k, dim), device).unwrap();
+
+        let baseline = assign_tensor_chunked(&p, &c, n).unwrap();
+        assert_eq!(baseline.len(), n);
+        for chunk in [1usize, 7, 64, n - 1, n, n + 5] {
+            let chunked = assign_tensor_chunked(&p, &c, chunk).unwrap();
+            assert_eq!(
+                chunked, baseline,
+                "chunk_rows={chunk} must agree with the unchunked result",
+            );
+        }
     }
 
     // -- Lloyd M-step --
