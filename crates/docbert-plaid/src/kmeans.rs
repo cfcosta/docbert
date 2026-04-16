@@ -7,16 +7,21 @@
 //! the quality of the whole index, so k-means lives at the base of the
 //! stack.
 //!
-//! This module builds the pieces bottom-up, one TDD cycle at a time. Right
-//! now it exposes only the assignment step; the Lloyd update and the
-//! full `fit` routine will follow.
-//!
 //! Points and centroids are both represented as flat row-major `&[f32]`
-//! slices. A centroid block of length `k * dim` holds centroid `i` at
-//! `[i*dim .. (i+1)*dim]`. This matches the storage format fast-plaid uses
-//! on disk and keeps the hot path cache-friendly.
+//! slices at the public boundary; internally the hot path
+//! ([`assign_points`], [`fit_with_init`]) materialises them into
+//! `candle_core::Tensor`s and computes the centroid distance matrix as
+//! a single matmul. With the `cuda` feature enabled this matmul runs on
+//! the GPU; without it, candle's CPU `gemm` implementation is still
+//! orders of magnitude faster than the previous scalar nested loop.
+//!
+//! [`nearest_centroid`] (single point) and [`update_centroids`] (the
+//! M-step) remain scalar — both are cheap relative to the assignment
+//! step and the per-call tensor-allocation overhead would dominate.
 
-use crate::distance::squared_l2;
+use candle_core::Tensor;
+
+use crate::{device::default_device, distance::squared_l2};
 
 /// Index of the centroid nearest to `point` under squared L2 distance.
 ///
@@ -153,6 +158,10 @@ pub fn update_centroids(
 /// deterministic and trivial to test. Random initialization (e.g.
 /// sampling `k` distinct points) is layered on top in [`fit`].
 ///
+/// Internally we allocate the points tensor exactly once and reuse it
+/// across iterations, so the only per-iteration cost is the centroids
+/// upload (`k × dim` floats — negligible) plus the matmul itself.
+///
 /// # Panics
 ///
 /// Panics on any shape violation between `points`, `initial`, and `dim`,
@@ -182,9 +191,20 @@ pub fn fit_with_init(
         return centroids;
     }
 
+    let n_points = points.len() / dim;
+    let k = initial.len() / dim;
+    let device = default_device();
+    // Allocate the points tensor once and keep it on-device for the
+    // entire Lloyd loop.
+    let p_tensor = Tensor::from_slice(points, (n_points, dim), device)
+        .expect("fit_with_init: failed to allocate points tensor");
+
     let mut previous_assignments: Option<Vec<usize>> = None;
     for _ in 0..max_iters {
-        let assignments = assign_points(points, &centroids, dim);
+        let c_tensor = Tensor::from_slice(&centroids, (k, dim), device)
+            .expect("fit_with_init: failed to allocate centroids tensor");
+        let assignments = assign_tensor(&p_tensor, &c_tensor)
+            .expect("fit_with_init: assignment matmul failed");
         if previous_assignments.as_deref() == Some(assignments.as_slice()) {
             break;
         }
@@ -257,10 +277,43 @@ pub fn assign_points(
         points.len(),
         dim,
     );
-    points
-        .chunks_exact(dim)
-        .map(|point| nearest_centroid(point, centroids, dim))
-        .collect()
+    let n_points = points.len() / dim;
+    if n_points == 0 {
+        return Vec::new();
+    }
+    assert!(
+        !centroids.is_empty() && centroids.len().is_multiple_of(dim),
+        "assign_points: centroids length {} is not a positive multiple of dim {}",
+        centroids.len(),
+        dim,
+    );
+    let k = centroids.len() / dim;
+
+    let device = default_device();
+    let p = Tensor::from_slice(points, (n_points, dim), device)
+        .expect("assign_points: failed to allocate points tensor");
+    let c = Tensor::from_slice(centroids, (k, dim), device)
+        .expect("assign_points: failed to allocate centroids tensor");
+    assign_tensor(&p, &c).expect("assign_points: matmul failed")
+}
+
+/// Tensor-based Lloyd E-step: returns the index of the nearest centroid
+/// for every row of `p` against every row of `c`.
+///
+/// Argmin uses the formula `||c||² − 2·p·c` (the `||p||²` term is
+/// constant for argmin per row, so we drop it). For typical ColBERT
+/// centroids of ~unit norm, the dominant cost is the `[n, dim] × [dim, k]`
+/// matmul, which is exactly the GEMM candle is best at.
+fn assign_tensor(
+    p: &Tensor,
+    c: &Tensor,
+) -> Result<Vec<usize>, candle_core::Error> {
+    let dot = p.matmul(&c.t()?)?; // [n, k]
+    let c_sq = c.sqr()?.sum_keepdim(1)?.t()?; // [1, k]
+    // scores[i, j] = ||c[j]||² - 2·p[i]·c[j], argmin gives nearest.
+    let scores = dot.affine(-2.0, 0.0)?.broadcast_add(&c_sq)?;
+    let argmin_u32: Vec<u32> = scores.argmin(1)?.to_vec1::<u32>()?;
+    Ok(argmin_u32.into_iter().map(|x| x as usize).collect())
 }
 
 #[cfg(test)]

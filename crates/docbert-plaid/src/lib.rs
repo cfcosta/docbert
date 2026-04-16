@@ -19,6 +19,7 @@
 //! layers will be added as subsequent TDD cycles come in.
 
 pub mod codec;
+pub mod device;
 pub mod distance;
 pub mod index;
 pub mod kmeans;

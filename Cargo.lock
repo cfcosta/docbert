@@ -1311,6 +1311,7 @@ name = "docbert-plaid"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "candle-core",
  "criterion",
  "rand 0.9.2",
  "tempfile",

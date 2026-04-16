@@ -7,6 +7,14 @@ description = "PLAID-style multi-vector index for docbert (ColBERT late-interact
 
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
+candle-core = "0.10.2"
+
+[features]
+default = []
+# Build candle with CUDA support so heavy tensor ops (k-means assign,
+# MaxSim batch matmul) run on the GPU. Requires a working CUDA toolkit
+# at link time.
+cuda = ["candle-core/cuda"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
