@@ -207,6 +207,44 @@ fn process_document_batch(
 /// corpora; the ⌈√n⌉ heuristic keeps tiny corpora (e.g. a fresh user
 /// with one collection) from tripping the k > tokens guard inside
 /// `build_index_from_embedding_db`.
+/// Incrementally sync the PLAID index after `docbert sync` has written
+/// the new/changed embeddings. Falls back to [`rebuild_plaid_index`]
+/// when no prior index exists on disk.
+///
+/// `touched_bases` is the union of *base* doc_ids whose embeddings
+/// were (re-)written during this sync pass — the bridge expands each
+/// to its current chunk ids and re-encodes them against the existing
+/// codec, leaving every untouched document verbatim.
+///
+/// This replaces the full rebuild-every-sync behaviour: for a corpus
+/// of a few million tokens, retraining k-means + quantizer + encoding
+/// every token dominates sync time even when only a handful of files
+/// changed. With this path, cost scales with the size of the delta.
+fn sync_plaid_index(
+    data_dir: &DataDir,
+    embedding_db: &EmbeddingDb,
+    touched_bases: &[u64],
+) -> error::Result<()> {
+    let Some(existing) = docbert_core::plaid::load_index(data_dir)? else {
+        // First-time sync — we have no codec to reuse. Fall back to
+        // the full build path, which also handles the empty-db case.
+        return rebuild_plaid_index(data_dir, embedding_db);
+    };
+
+    eprintln!(
+        "Updating PLAID index ({} touched base doc(s))...",
+        touched_bases.len(),
+    );
+    let updated = docbert_core::plaid::update_index_for_touched_bases(
+        embedding_db,
+        existing,
+        touched_bases,
+    )?;
+    docbert_core::plaid::save_index(&updated, data_dir)?;
+    eprintln!("  Indexed {} documents.", updated.num_documents());
+    Ok(())
+}
+
 fn rebuild_plaid_index(
     data_dir: &DataDir,
     embedding_db: &EmbeddingDb,
@@ -376,6 +414,13 @@ pub(crate) fn cmd_sync(
 
     let mut runtime = initialize_indexing_runtime(data_dir, model_id)?;
 
+    // Accumulate base doc_ids whose embeddings get re-written during
+    // this sync. The PLAID update path needs these so it can expand
+    // each base into its current chunk ids and re-encode only those
+    // against the frozen codec — every untouched document keeps its
+    // old encoding.
+    let mut touched_bases: Vec<u64> = Vec::new();
+
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
         if !root.is_dir() {
@@ -403,6 +448,21 @@ pub(crate) fn cmd_sync(
             selection.changed_files.len(),
             selection.deleted_ids.len()
         );
+
+        // New + changed files are about to be re-embedded in the
+        // process_document_batch call below. Capture their base
+        // doc_ids up front so we still have them after the batch
+        // takes ownership of the DiscoveredFile vecs.
+        for f in selection
+            .new_files
+            .iter()
+            .chain(selection.changed_files.iter())
+        {
+            let path_str = f.relative_path.to_string_lossy();
+            touched_bases.push(
+                docbert_core::DocumentId::new(name, path_str.as_ref()).numeric,
+            );
+        }
 
         // Keep the stored Merkle snapshot behind the indexed state: plan and
         // execute sync work first, then advance the snapshot only if the work
@@ -483,7 +543,7 @@ pub(crate) fn cmd_sync(
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
-    rebuild_plaid_index(data_dir, &runtime.embedding_db)?;
+    sync_plaid_index(data_dir, &runtime.embedding_db, &touched_bases)?;
 
     eprintln!("Sync complete.");
     Ok(())
@@ -771,6 +831,123 @@ mod tests {
             !data_dir.plaid_index().exists(),
             "no PLAID file should be written for an empty db"
         );
+    }
+
+    #[test]
+    fn sync_plaid_index_falls_back_to_full_build_when_no_index_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
+        embedding_db
+            .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
+            .unwrap();
+
+        // No index file exists yet — sync must fall back to a full
+        // build so the first post-sync PLAID index lands on disk.
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+
+        let loaded = docbert_core::plaid::load_index(&data_dir)
+            .unwrap()
+            .expect("sync must produce an index on the no-existing-index path");
+        let mut doc_ids = loaded.doc_ids.clone();
+        doc_ids.sort();
+        assert_eq!(doc_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn sync_plaid_index_reuses_codec_across_an_untouched_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
+        embedding_db
+            .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
+            .unwrap();
+
+        // First sync: full build.
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        let first =
+            docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
+
+        // Second sync with no touches should take the incremental
+        // path and keep the trained codec bit-for-bit.
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        let second =
+            docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
+
+        assert_eq!(second.codec.centroids, first.codec.centroids);
+        assert_eq!(second.codec.bucket_cutoffs, first.codec.bucket_cutoffs);
+        assert_eq!(second.codec.bucket_weights, first.codec.bucket_weights);
+    }
+
+    #[test]
+    fn sync_plaid_index_re_encodes_a_touched_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
+        embedding_db
+            .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
+            .unwrap();
+
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        let before =
+            docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
+        let before_tokens_for_1 =
+            before.doc_tokens[before.position_of(1).unwrap()].clone();
+        let before_codec = before.codec.clone();
+
+        // Re-embed doc 1 with tokens from the other cluster, then
+        // sync incrementally with 1 as the touched base.
+        embedding_db.store(1, 2, 2, &[9.5, 9.5, 10.1, 9.9]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &[1]).unwrap();
+
+        let after =
+            docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
+        let after_tokens_for_1 =
+            after.doc_tokens[after.position_of(1).unwrap()].clone();
+
+        // Codec unchanged, but doc 1's encoding flipped to the other
+        // cluster — proof the incremental path re-read tokens and
+        // re-encoded them against the frozen codec.
+        assert_eq!(after.codec.centroids, before_codec.centroids);
+        assert_ne!(
+            after_tokens_for_1, before_tokens_for_1,
+            "touched base must be re-encoded on the incremental path",
+        );
+    }
+
+    #[test]
+    fn sync_plaid_index_prunes_docs_removed_from_the_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
+        embedding_db
+            .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
+            .unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        assert!(
+            docbert_core::plaid::load_index(&data_dir)
+                .unwrap()
+                .unwrap()
+                .doc_ids
+                .contains(&2),
+        );
+
+        // Simulate a deletion: doc 2 gone from the db, no base touched.
+        embedding_db.remove(2).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+
+        let after =
+            docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
+        assert!(!after.doc_ids.contains(&2));
+        assert!(after.doc_ids.contains(&1));
     }
 
     #[test]
