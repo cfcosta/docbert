@@ -1,0 +1,337 @@
+//! Index construction: turn a corpus of token embeddings into a searchable
+//! PLAID index.
+//!
+//! `build_index` ties together the three lower layers:
+//!
+//! 1. Flatten every document's token matrix into one big cloud of points.
+//! 2. Run k-means to pick coarse centroids ([`crate::kmeans::fit`]).
+//! 3. Assign every token to a centroid, compute residuals, train cutoffs
+//!    and weights on the residuals ([`crate::codec::train_quantizer`]),
+//!    and encode each token against the fresh codec.
+//!
+//! The resulting [`Index`] keeps one [`EncodedVector`] per original token
+//! plus the per-document `doc_id` bookkeeping. Inverted-file construction
+//! and the query-time search path will be added on top in later
+//! TDD cycles.
+
+use crate::{
+    codec::{EncodedVector, ResidualCodec, train_quantizer},
+    kmeans::{assign_points, fit},
+};
+
+/// A single document's worth of token embeddings, ready to index.
+///
+/// `tokens` is a flat row-major `n_tokens × dim` buffer. Keeping the
+/// tokens flat mirrors the way docbert already stores ColBERT outputs in
+/// `embeddings.db` and avoids an intermediate `Vec<Vec<f32>>` allocation.
+#[derive(Debug, Clone)]
+pub struct DocumentTokens {
+    pub doc_id: u64,
+    pub tokens: Vec<f32>,
+    pub n_tokens: usize,
+}
+
+impl DocumentTokens {
+    /// Total number of f32 values this document contributes.
+    pub fn flat_len(&self) -> usize {
+        self.tokens.len()
+    }
+}
+
+/// Parameters that control how an [`Index`] is built.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexParams {
+    /// Dimensionality of each token embedding.
+    pub dim: usize,
+    /// Number of bits per residual dimension (typically 2 or 4).
+    pub nbits: u32,
+    /// Number of coarse centroids (k in k-means).
+    pub k_centroids: usize,
+    /// Maximum iterations for k-means clustering.
+    pub max_kmeans_iters: usize,
+}
+
+/// A fully-built PLAID index over a corpus of multi-vector embeddings.
+///
+/// Holds the trained codec and the encoded token embeddings of every
+/// document. Future layers (IVF, search) will read from this state
+/// directly without mutating it.
+#[derive(Debug, Clone)]
+pub struct Index {
+    pub params: IndexParams,
+    pub codec: ResidualCodec,
+    pub doc_ids: Vec<u64>,
+    /// `doc_tokens[i]` is the encoded token sequence of the i-th document.
+    pub doc_tokens: Vec<Vec<EncodedVector>>,
+}
+
+impl Index {
+    /// Number of documents currently stored in the index.
+    pub fn num_documents(&self) -> usize {
+        self.doc_ids.len()
+    }
+
+    /// Total number of encoded tokens across all documents.
+    pub fn num_tokens(&self) -> usize {
+        self.doc_tokens.iter().map(Vec::len).sum()
+    }
+
+    /// Find the position of a document inside [`Index::doc_ids`].
+    pub fn position_of(&self, doc_id: u64) -> Option<usize> {
+        self.doc_ids.iter().position(|id| *id == doc_id)
+    }
+}
+
+/// Build a [`Index`] from a corpus of documents.
+///
+/// Every document must share the same embedding dimensionality as
+/// `params.dim`. Documents with zero tokens are preserved in the index —
+/// they contribute nothing to centroid/codec training but still occupy a
+/// slot in `doc_ids` so callers can resolve their position by `doc_id`
+/// later.
+///
+/// # Panics
+///
+/// Panics if any document's flat length is not a multiple of `dim`, if
+/// the total number of tokens is smaller than `params.k_centroids`, or
+/// if `params.k_centroids == 0`.
+pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
+    assert!(params.dim > 0, "build_index: dim must be positive");
+    assert!(
+        params.k_centroids > 0,
+        "build_index: k_centroids must be positive"
+    );
+    assert!(
+        params.nbits > 0 && params.nbits <= 8,
+        "build_index: nbits must be in 1..=8, got {}",
+        params.nbits,
+    );
+
+    for doc in documents {
+        assert!(
+            doc.tokens.len() == doc.n_tokens * params.dim,
+            "build_index: doc {} declared {} tokens but carries {} f32s (dim={})",
+            doc.doc_id,
+            doc.n_tokens,
+            doc.tokens.len(),
+            params.dim,
+        );
+    }
+
+    // Flatten all token embeddings into one training cloud.
+    let total_tokens: usize = documents.iter().map(|d| d.n_tokens).sum();
+    assert!(
+        total_tokens >= params.k_centroids,
+        "build_index: need at least {} tokens for {} centroids, got {}",
+        params.k_centroids,
+        params.k_centroids,
+        total_tokens,
+    );
+    let mut pool: Vec<f32> = Vec::with_capacity(total_tokens * params.dim);
+    for doc in documents {
+        pool.extend_from_slice(&doc.tokens);
+    }
+
+    // 1. Train coarse centroids with k-means.
+    let centroids = fit(
+        &pool,
+        params.k_centroids,
+        params.dim,
+        params.max_kmeans_iters.max(1),
+    );
+
+    // 2. Compute residuals against trained centroids so we can train the
+    //    quantizer on a representative sample of errors.
+    let assignments = assign_points(&pool, &centroids, params.dim);
+    let mut residual_sample: Vec<f32> = Vec::with_capacity(pool.len());
+    for (token, &cluster) in pool.chunks_exact(params.dim).zip(&assignments) {
+        let centroid =
+            &centroids[cluster * params.dim..(cluster + 1) * params.dim];
+        for (t, c) in token.iter().zip(centroid) {
+            residual_sample.push(*t - *c);
+        }
+    }
+
+    // 3. Learn cutoffs + weights on observed residuals.
+    let (bucket_cutoffs, bucket_weights) =
+        train_quantizer(&residual_sample, params.nbits);
+
+    let codec = ResidualCodec {
+        nbits: params.nbits,
+        dim: params.dim,
+        centroids,
+        bucket_cutoffs,
+        bucket_weights,
+    };
+    codec
+        .validate()
+        .expect("build_index produced an invalid codec");
+
+    // 4. Encode each document's token sequence against the fresh codec.
+    let mut doc_ids = Vec::with_capacity(documents.len());
+    let mut doc_tokens = Vec::with_capacity(documents.len());
+    for doc in documents {
+        doc_ids.push(doc.doc_id);
+        let encoded: Vec<EncodedVector> = doc
+            .tokens
+            .chunks_exact(params.dim)
+            .map(|token| codec.encode_vector(token))
+            .collect();
+        doc_tokens.push(encoded);
+    }
+
+    Index {
+        params,
+        codec,
+        doc_ids,
+        doc_tokens,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::distance::squared_l2;
+
+    /// Build a tiny 2-D corpus with two clear clusters of tokens.
+    fn small_corpus() -> Vec<DocumentTokens> {
+        vec![
+            DocumentTokens {
+                doc_id: 1,
+                tokens: vec![0.0, 0.0, 0.1, 0.2, -0.1, 0.1],
+                n_tokens: 3,
+            },
+            DocumentTokens {
+                doc_id: 2,
+                tokens: vec![10.0, 10.0, 10.2, 9.9, 9.8, 10.1],
+                n_tokens: 3,
+            },
+            DocumentTokens {
+                doc_id: 3,
+                tokens: vec![0.3, -0.2, 9.7, 10.2],
+                n_tokens: 2,
+            },
+        ]
+    }
+
+    fn default_params() -> IndexParams {
+        IndexParams {
+            dim: 2,
+            nbits: 2,
+            k_centroids: 2,
+            max_kmeans_iters: 50,
+        }
+    }
+
+    #[test]
+    fn build_index_encodes_every_token() {
+        let docs = small_corpus();
+        let params = default_params();
+        let expected_total: usize = docs.iter().map(|d| d.n_tokens).sum();
+
+        let index = build_index(&docs, params);
+
+        assert_eq!(index.num_documents(), docs.len());
+        assert_eq!(index.num_tokens(), expected_total);
+        for (encoded, doc) in index.doc_tokens.iter().zip(docs.iter()) {
+            assert_eq!(encoded.len(), doc.n_tokens);
+        }
+    }
+
+    #[test]
+    fn build_index_assigns_tokens_in_each_cluster_to_the_closest_centroid() {
+        let docs = small_corpus();
+        let params = default_params();
+        let index = build_index(&docs, params);
+
+        // The two tight clusters around (0,0) and (10,10) should produce
+        // centroids close to those means.
+        let c0 = &index.codec.centroids[0..2];
+        let c1 = &index.codec.centroids[2..4];
+
+        let (near_origin, near_ten) =
+            if squared_l2(c0, &[0.0, 0.0]) < squared_l2(c0, &[10.0, 10.0]) {
+                (c0, c1)
+            } else {
+                (c1, c0)
+            };
+
+        assert!(squared_l2(near_origin, &[0.0, 0.0]) < 1.0);
+        assert!(squared_l2(near_ten, &[10.0, 10.0]) < 1.0);
+    }
+
+    #[test]
+    fn build_index_round_trip_reconstruction_error_is_bounded() {
+        let docs = small_corpus();
+        let params = default_params();
+        let index = build_index(&docs, params);
+
+        for (doc, encoded_doc) in docs.iter().zip(index.doc_tokens.iter()) {
+            for (token, encoded) in
+                doc.tokens.chunks_exact(params.dim).zip(encoded_doc.iter())
+            {
+                let decoded = index.codec.decode_vector(encoded);
+                let err = squared_l2(token, &decoded).sqrt();
+                // Residuals on a 2-D toy corpus with tight clusters stay
+                // small; each bucket should cover well under 0.5 per dim.
+                assert!(
+                    err < 0.6,
+                    "reconstruction error {err} too large for token {token:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_index_preserves_document_id_order() {
+        let docs = small_corpus();
+        let index = build_index(&docs, default_params());
+        let expected_ids: Vec<u64> = docs.iter().map(|d| d.doc_id).collect();
+        assert_eq!(index.doc_ids, expected_ids);
+        assert_eq!(index.position_of(2), Some(1));
+        assert_eq!(index.position_of(999), None);
+    }
+
+    #[test]
+    fn build_index_handles_document_with_no_tokens() {
+        // Empty documents are still indexable: they contribute no tokens
+        // to training but keep their slot so callers can look them up.
+        let mut docs = small_corpus();
+        docs.push(DocumentTokens {
+            doc_id: 42,
+            tokens: vec![],
+            n_tokens: 0,
+        });
+        let index = build_index(&docs, default_params());
+        assert_eq!(index.num_documents(), 4);
+        assert_eq!(index.doc_tokens[3].len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "declared")]
+    fn build_index_panics_on_mismatched_token_count() {
+        let docs = vec![DocumentTokens {
+            doc_id: 1,
+            tokens: vec![0.0, 0.0, 1.0],
+            n_tokens: 2, // says 2 but only 3 f32s and dim=2
+        }];
+        let _ = build_index(&docs, default_params());
+    }
+
+    #[test]
+    #[should_panic(expected = "at least")]
+    fn build_index_panics_when_too_few_tokens_for_k() {
+        let docs = vec![DocumentTokens {
+            doc_id: 1,
+            tokens: vec![0.0, 1.0],
+            n_tokens: 1,
+        }];
+        let params = IndexParams {
+            dim: 2,
+            nbits: 2,
+            k_centroids: 4,
+            max_kmeans_iters: 10,
+        };
+        let _ = build_index(&docs, params);
+    }
+}
