@@ -204,6 +204,75 @@ impl ResidualCodec {
     }
 }
 
+/// Learn bucket cutoffs and reconstruction weights from a sample of
+/// residual values.
+///
+/// The returned tuple is `(bucket_cutoffs, bucket_weights)` with
+/// `2^nbits - 1` cutoffs and `2^nbits` weights, ready to plug into a
+/// [`ResidualCodec`]. Buckets are equal-quantile slices of the input:
+/// cutoffs are picked at `i / (2^nbits)` quantile positions, and each
+/// weight is the arithmetic mean of the residuals falling into that
+/// bucket. This matches fast-plaid's "fit" step and keeps the codec
+/// unbiased on the training distribution.
+///
+/// `residuals` does not need to be sorted; this function sorts a
+/// locally-owned copy. NaN values are rejected up front since they
+/// would poison the sort order.
+///
+/// # Panics
+///
+/// Panics if `residuals` is empty, if `nbits` is zero or exceeds 8, or
+/// if `residuals` contains NaN.
+pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
+    assert!(!residuals.is_empty(), "train_quantizer: empty sample");
+    assert!(
+        nbits > 0 && nbits <= 8,
+        "train_quantizer: nbits must be in 1..=8, got {nbits}"
+    );
+    assert!(
+        residuals.iter().all(|v| !v.is_nan()),
+        "train_quantizer: residual sample contains NaN"
+    );
+
+    let num_buckets = 1usize << nbits;
+    let n = residuals.len();
+
+    let mut sorted = residuals.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let bucket_bounds = |i: usize| -> (usize, usize) {
+        let start = i * n / num_buckets;
+        let end = if i + 1 == num_buckets {
+            n
+        } else {
+            (i + 1) * n / num_buckets
+        };
+        (start, end)
+    };
+
+    let cutoffs: Vec<f32> = (1..num_buckets)
+        .map(|i| sorted[i * n / num_buckets])
+        .collect();
+
+    let weights: Vec<f32> = (0..num_buckets)
+        .map(|i| {
+            let (start, end) = bucket_bounds(i);
+            // If the bucket is empty (e.g., many duplicate values pushed
+            // everyone into one slice), fall back to the nearest real
+            // sample so the decoder still has a sensible value.
+            if start == end {
+                let idx = start.min(n - 1);
+                sorted[idx]
+            } else {
+                let slice = &sorted[start..end];
+                slice.iter().sum::<f32>() / slice.len() as f32
+            }
+        })
+        .collect();
+
+    (cutoffs, weights)
+}
+
 /// Return the index of the bucket that `value` falls into given a set of
 /// ascending cutoffs.
 ///
@@ -337,6 +406,98 @@ mod tests {
             codes: vec![99],
         };
         let _ = codec.decode_vector(&bad);
+    }
+
+    #[test]
+    fn train_quantizer_produces_right_number_of_cutoffs_and_weights() {
+        let residuals: Vec<f32> =
+            (0..1000).map(|i| i as f32 / 1000.0).collect();
+        let (cutoffs, weights) = train_quantizer(&residuals, 2);
+        assert_eq!(cutoffs.len(), 3);
+        assert_eq!(weights.len(), 4);
+    }
+
+    #[test]
+    fn train_quantizer_cutoffs_are_monotonic() {
+        let residuals: Vec<f32> =
+            (0..2048).map(|i| (i as f32 / 2048.0) - 0.5).collect();
+        let (cutoffs, _) = train_quantizer(&residuals, 4);
+        for pair in cutoffs.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "cutoffs must be non-decreasing: {pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn train_quantizer_on_uniform_data_gives_quartile_cutoffs() {
+        // Uniform samples in [0, 1000) with 2 bits → quartile cutoffs at
+        // roughly 250, 500, 750.
+        let residuals: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let (cutoffs, _) = train_quantizer(&residuals, 2);
+        assert!((cutoffs[0] - 250.0).abs() < 1.0);
+        assert!((cutoffs[1] - 500.0).abs() < 1.0);
+        assert!((cutoffs[2] - 750.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn train_quantizer_weights_bracket_cutoffs() {
+        // Each weight should fall within its bucket's [low, high] range.
+        // For uniform data, this is straightforward to verify.
+        let residuals: Vec<f32> = (0..1024).map(|i| i as f32).collect();
+        let (cutoffs, weights) = train_quantizer(&residuals, 2);
+
+        // Bucket 0: below cutoffs[0]
+        assert!(weights[0] < cutoffs[0]);
+        // Bucket 3: above cutoffs[2]
+        assert!(weights[3] > cutoffs[2]);
+        // Middle buckets fall inside their cutoff ranges.
+        assert!(cutoffs[0] <= weights[1] && weights[1] < cutoffs[1]);
+        assert!(cutoffs[1] <= weights[2] && weights[2] < cutoffs[2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty sample")]
+    fn train_quantizer_panics_on_empty_sample() {
+        let _ = train_quantizer(&[], 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN")]
+    fn train_quantizer_panics_on_nan() {
+        let _ = train_quantizer(&[0.1, f32::NAN, 0.3], 2);
+    }
+
+    #[test]
+    fn trained_codec_round_trips_within_reasonable_error() {
+        // Train a 4-bit codec on synthetic residuals, then check the
+        // reconstruction error on held-out samples is small relative to
+        // the residual magnitude.
+        let training: Vec<f32> =
+            (0..2048).map(|i| (i as f32 / 2048.0) - 0.5).collect();
+        let (cutoffs, weights) = train_quantizer(&training, 4);
+
+        let codec = ResidualCodec {
+            nbits: 4,
+            dim: 1,
+            centroids: vec![0.0],
+            bucket_cutoffs: cutoffs,
+            bucket_weights: weights,
+        };
+        codec.validate().unwrap();
+
+        let mut max_err: f32 = 0.0;
+        for v in &[-0.4f32, -0.1, 0.0, 0.25, 0.49] {
+            let err = codec.reconstruction_error(&[*v]).sqrt();
+            max_err = max_err.max(err);
+        }
+        // 16 buckets spanning ~1.0 of range ⇒ each bucket ≈ 0.0625 wide,
+        // so reconstruction error should sit well below 0.05.
+        assert!(
+            max_err < 0.05,
+            "max reconstruction error {max_err} above tolerance"
+        );
     }
 
     #[test]
