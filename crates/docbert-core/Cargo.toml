@@ -27,7 +27,9 @@ default = []
 mkl = ["pylate-rs/mkl"]
 accelerate = ["pylate-rs/accelerate"]
 metal = ["pylate-rs/metal"]
-cuda = ["pylate-rs/cuda"]
+# `cuda` propagates to both pylate-rs (model inference on GPU) and
+# docbert-plaid (k-means + MaxSim matmul on GPU).
+cuda = ["pylate-rs/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
 hegeltest = "0.5"
