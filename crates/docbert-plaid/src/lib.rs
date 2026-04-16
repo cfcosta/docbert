@@ -25,3 +25,4 @@ pub mod index;
 pub mod kmeans;
 pub mod persistence;
 pub mod search;
+pub mod update;
