@@ -82,6 +82,15 @@ impl DataDir {
             .map_err(|_| Error::DataDir(path.clone()))?;
         Ok(path)
     }
+
+    /// Path to the optional PLAID index file (`plaid.idx`).
+    ///
+    /// The file may not exist yet — the index is built on demand and
+    /// callers should treat a missing file as "no PLAID index" rather
+    /// than an error.
+    pub fn plaid_index(&self) -> PathBuf {
+        self.root.join("plaid.idx")
+    }
 }
 
 #[cfg(test)]

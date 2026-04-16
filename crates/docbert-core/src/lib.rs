@@ -99,6 +99,7 @@ pub mod ingestion;
 pub mod merkle;
 pub mod model_manager;
 pub mod path_safety;
+pub mod plaid;
 pub mod preparation;
 pub mod reranker;
 pub mod results;
