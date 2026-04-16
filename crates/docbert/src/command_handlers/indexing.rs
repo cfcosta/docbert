@@ -192,6 +192,67 @@ fn process_document_batch(
     Ok(())
 }
 
+/// Rebuild the PLAID semantic index from whatever is currently in
+/// `embedding_db` and persist it under `data_dir`.
+///
+/// Called at the end of `cmd_sync` and `cmd_rebuild` once the embedding
+/// database is in its post-sync state. When the embedding db is empty
+/// (no collections have been indexed yet, or every doc was deleted), we
+/// skip with a short message — there's nothing to train centroids on.
+///
+/// Centroid count is adapted to the corpus size: we want enough
+/// centroids for good recall but cannot ask for more centroids than we
+/// have training tokens. The ceiling of 256 matches
+/// `PlaidBuildParams::default()` and covers small-to-medium personal
+/// corpora; the ⌈√n⌉ heuristic keeps tiny corpora (e.g. a fresh user
+/// with one collection) from tripping the k > tokens guard inside
+/// `build_index_from_embedding_db`.
+fn rebuild_plaid_index(
+    data_dir: &DataDir,
+    embedding_db: &EmbeddingDb,
+) -> error::Result<()> {
+    let ids = embedding_db.list_ids()?;
+    if ids.is_empty() {
+        eprintln!("No embeddings yet; skipping PLAID index rebuild.");
+        return Ok(());
+    }
+
+    let mut total_tokens = 0usize;
+    for id in &ids {
+        if let Some(matrix) = embedding_db.load(*id)? {
+            total_tokens += matrix.num_tokens as usize;
+        }
+    }
+    if total_tokens == 0 {
+        eprintln!(
+            "No tokens in the embedding database; skipping PLAID index rebuild."
+        );
+        return Ok(());
+    }
+
+    let default_params = docbert_core::plaid::PlaidBuildParams::default();
+    let sqrt_tokens = (total_tokens as f32).sqrt().ceil() as usize;
+    let k_centroids = default_params
+        .k_centroids
+        .min(total_tokens)
+        .min(sqrt_tokens.max(1));
+    let params = docbert_core::plaid::PlaidBuildParams {
+        k_centroids,
+        ..default_params
+    };
+
+    eprintln!(
+        "Rebuilding PLAID semantic index ({total_tokens} tokens, {k_centroids} centroids)...",
+    );
+    let index = docbert_core::plaid::build_index_from_embedding_db(
+        embedding_db,
+        params,
+    )?;
+    docbert_core::plaid::save_index(&index, data_dir)?;
+    eprintln!("  Indexed {} documents.", index.num_documents());
+    Ok(())
+}
+
 pub(crate) fn cmd_rebuild(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -273,6 +334,8 @@ pub(crate) fn cmd_rebuild(
     }
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
+
+    rebuild_plaid_index(data_dir, &runtime.embedding_db)?;
 
     eprintln!("Rebuild complete.");
     Ok(())
@@ -419,6 +482,8 @@ pub(crate) fn cmd_sync(
     }
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
+
+    rebuild_plaid_index(data_dir, &runtime.embedding_db)?;
 
     eprintln!("Sync complete.");
     Ok(())
@@ -691,5 +756,44 @@ mod tests {
             doc_count as usize,
             "metadata count mismatch"
         );
+    }
+
+    #[test]
+    fn rebuild_plaid_index_skips_when_embedding_db_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+
+        // Should return Ok and not write a PLAID index file.
+        rebuild_plaid_index(&data_dir, &embedding_db).unwrap();
+        assert!(
+            !data_dir.plaid_index().exists(),
+            "no PLAID file should be written for an empty db"
+        );
+    }
+
+    #[test]
+    fn rebuild_plaid_index_writes_loadable_file_for_non_empty_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+
+        // Two tiny 2-D documents — enough tokens for the sqrt-based
+        // centroid heuristic to pick k >= 1.
+        embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
+        embedding_db
+            .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
+            .unwrap();
+
+        rebuild_plaid_index(&data_dir, &embedding_db).unwrap();
+
+        let loaded = docbert_core::plaid::load_index(&data_dir)
+            .unwrap()
+            .expect("PLAID index should be persisted after rebuild");
+        let mut doc_ids = loaded.doc_ids.clone();
+        doc_ids.sort();
+        assert_eq!(doc_ids, vec![1, 2]);
     }
 }
