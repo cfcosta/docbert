@@ -238,6 +238,7 @@ impl DocbertMcpServer {
         let mut results = search::execute_search(
             &args,
             &self.state.search_index,
+            &config_db,
             &embedding_db,
             &mut model,
         )

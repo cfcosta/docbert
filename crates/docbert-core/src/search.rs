@@ -13,6 +13,17 @@ use crate::{
     text_util,
 };
 
+/// Reciprocal Rank Fusion constant.
+///
+/// RRF scores a document as `sum(1 / (k + rank_i))` across ranked lists it
+/// appears in. Larger `k` flattens the contribution of high ranks; 60 is the
+/// value from the original RRF paper and what most hybrid-search systems use.
+pub const RRF_K: usize = 60;
+
+/// Number of candidates pulled from each retriever before RRF fusion in
+/// [`execute_search`].
+pub const RRF_CANDIDATE_LIMIT: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Semantic,
@@ -44,7 +55,11 @@ pub struct SearchQuery {
     pub min_score: f32,
 }
 
-/// Options for hybrid search: BM25 first, ColBERT reranking second.
+/// Options for hybrid search.
+///
+/// The default flow runs BM25 and semantic retrieval independently and fuses
+/// them with Reciprocal Rank Fusion. Setting `bm25_only` bypasses the semantic
+/// leg entirely and returns BM25 results directly.
 ///
 /// # Examples
 ///
@@ -69,13 +84,14 @@ pub struct SearchParams {
     pub count: usize,
     /// Search only within this collection.
     pub collection: Option<String>,
-    /// Minimum score threshold.
+    /// Minimum score threshold. Only applied in `bm25_only` mode; ignored
+    /// under RRF fusion because fused scores are not on the BM25 scale.
     pub min_score: f32,
-    /// Skip ColBERT reranking, return BM25 results directly.
+    /// Skip the semantic leg and return BM25 results directly (no RRF).
     pub bm25_only: bool,
-    /// Disable fuzzy matching in the first stage.
+    /// Disable fuzzy matching in the BM25 leg.
     pub no_fuzzy: bool,
-    /// Return all results above the score threshold.
+    /// Return all results instead of capping at `count`.
     pub all: bool,
 }
 
@@ -130,22 +146,35 @@ pub struct FinalResult {
     pub title: String,
 }
 
-/// Run the normal search pipeline.
+/// Run the hybrid search pipeline.
 ///
-/// The steps are:
-/// 1. **BM25 retrieval** - Tantivy finds the top 1000 candidates, with optional fuzzy matching.
-/// 2. **ColBERT reranking** - candidates are rescored with MaxSim unless `bm25_only` is set.
-/// 3. **Score filtering** - results below `min_score` are dropped.
-/// 4. **Limit** - at most `count` results are returned, unless `all` is set.
+/// When `bm25_only` is `false` (the default), BM25 and semantic retrieval
+/// run independently and are fused with Reciprocal Rank Fusion:
+///
+/// 1. **BM25 leg** — Tantivy returns up to [`RRF_CANDIDATE_LIMIT`] candidates,
+///    with optional fuzzy matching.
+/// 2. **Semantic leg** — ColBERT MaxSim scores every document that has an
+///    embedding, optionally filtered by collection and skipping documents
+///    with empty bodies. The top [`RRF_CANDIDATE_LIMIT`] are kept.
+/// 3. **RRF fusion** — ranks from both lists are combined as
+///    `sum(1 / (k + rank))` with `k = `[`RRF_K`].
+/// 4. **Limit** — the top `count` fused results are returned, unless
+///    `all` is set.
+///
+/// When `bm25_only` is `true`, the semantic leg and RRF are skipped and the
+/// result is plain BM25 filtered by `min_score` and limited by `count` / `all`.
+/// `min_score` is ignored in the RRF path because fused scores are not on the
+/// BM25 scale.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use docbert_core::{SearchIndex, EmbeddingDb, ModelManager};
+/// use docbert_core::{ConfigDb, SearchIndex, EmbeddingDb, ModelManager};
 /// use docbert_core::search::{execute_search, SearchParams};
 ///
 /// # let tmp = tempfile::tempdir().unwrap();
 /// let index = SearchIndex::open_in_ram().unwrap();
+/// let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
 /// let emb_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 /// let mut model = ModelManager::new();
 ///
@@ -159,7 +188,7 @@ pub struct FinalResult {
 ///     all: false,
 /// };
 ///
-/// let results = execute_search(&params, &index, &emb_db, &mut model).unwrap();
+/// let results = execute_search(&params, &index, &config_db, &emb_db, &mut model).unwrap();
 /// for r in &results {
 ///     println!("{}: {} (score {:.3})", r.rank, r.title, r.score);
 /// }
@@ -167,52 +196,41 @@ pub struct FinalResult {
 pub fn execute_search(
     args: &SearchParams,
     search_index: &SearchIndex,
+    config_db: &ConfigDb,
     embedding_db: &EmbeddingDb,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
-    let bm25_limit = 1000;
+    if args.bm25_only {
+        return execute_bm25_only(args, search_index);
+    }
 
-    // Stage 1: BM25 retrieval (with optional fuzzy matching)
-    let bm25_results = if args.no_fuzzy {
-        // Pure BM25 without fuzzy
-        if let Some(ref collection) = args.collection {
-            search_index.search_in_collection(
-                &args.query,
-                collection,
-                bm25_limit,
-            )?
-        } else {
-            search_index.search(&args.query, bm25_limit)?
-        }
-    } else {
-        // BM25 + fuzzy matching
-        search_index.search_fuzzy(
-            &args.query,
-            args.collection.as_deref(),
-            bm25_limit,
-        )?
-    };
+    execute_rrf(args, search_index, config_db, embedding_db, model)
+}
+
+fn execute_bm25_only(
+    args: &SearchParams,
+    search_index: &SearchIndex,
+) -> Result<Vec<FinalResult>> {
+    let bm25_limit = 1000;
+    let bm25_results = run_bm25_leg(
+        search_index,
+        &args.query,
+        args.collection.as_deref(),
+        args.no_fuzzy,
+        bm25_limit,
+    )?;
 
     if bm25_results.is_empty() {
         return Ok(vec![]);
     }
 
-    // Stage 2: ColBERT reranking (unless --bm25-only)
-    let results = if args.bm25_only {
-        bm25_to_final(&bm25_results)
-    } else {
-        rerank_results(&bm25_results, embedding_db, model, &args.query)?
-    };
-
-    // Stage 3: Filter by min_score
-    let filtered: Vec<FinalResult> = results
+    let filtered: Vec<FinalResult> = bm25_to_final(&bm25_results)
         .into_iter()
         .filter(|r| r.score >= args.min_score)
         .collect();
 
-    // Stage 4: Limit results
     let limit = if args.all { filtered.len() } else { args.count };
-    let limited: Vec<FinalResult> = filtered
+    Ok(filtered
         .into_iter()
         .take(limit)
         .enumerate()
@@ -220,9 +238,188 @@ pub fn execute_search(
             r.rank = i + 1;
             r
         })
+        .collect())
+}
+
+fn execute_rrf(
+    args: &SearchParams,
+    search_index: &SearchIndex,
+    config_db: &ConfigDb,
+    embedding_db: &EmbeddingDb,
+    model: &mut ModelManager,
+) -> Result<Vec<FinalResult>> {
+    // BM25 leg
+    let bm25_results = run_bm25_leg(
+        search_index,
+        &args.query,
+        args.collection.as_deref(),
+        args.no_fuzzy,
+        RRF_CANDIDATE_LIMIT,
+    )?;
+
+    // Semantic leg (over all documents, scored with ColBERT MaxSim)
+    let (sem_metadata, sem_ranked) = run_semantic_leg(
+        config_db,
+        embedding_db,
+        model,
+        &args.query,
+        args.collection.as_deref(),
+        RRF_CANDIDATE_LIMIT,
+    )?;
+
+    if bm25_results.is_empty() && sem_ranked.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // RRF fusion on ranked doc_num_id lists
+    let bm25_ids: Vec<u64> =
+        bm25_results.iter().map(|r| r.doc_num_id).collect();
+    let sem_ids: Vec<u64> = sem_ranked.iter().map(|r| r.doc_num_id).collect();
+    let fused = rrf_fuse(&[&bm25_ids, &sem_ids], RRF_K);
+
+    // Build FinalResults, preferring BM25-side metadata (which already carries
+    // title) and falling back to semantic-side metadata for docs that only
+    // surfaced semantically.
+    let bm25_lookup: HashMap<u64, &SearchResult> =
+        bm25_results.iter().map(|r| (r.doc_num_id, r)).collect();
+
+    let mut results: Vec<FinalResult> = fused
+        .into_iter()
+        .filter_map(|(doc_num_id, score)| {
+            if let Some(bm25) = bm25_lookup.get(&doc_num_id) {
+                return Some(FinalResult {
+                    rank: 0,
+                    score,
+                    doc_id: short_doc_id(doc_num_id, &bm25.doc_id),
+                    doc_num_id,
+                    collection: bm25.collection.clone(),
+                    path: bm25.path.clone(),
+                    title: bm25.title.clone(),
+                });
+            }
+            let meta = sem_metadata.get(&doc_num_id)?;
+            let did =
+                crate::DocumentId::new(&meta.collection, &meta.relative_path);
+            Some(FinalResult {
+                rank: 0,
+                score,
+                doc_id: short_doc_id(doc_num_id, &did.full_hex()),
+                doc_num_id,
+                collection: meta.collection.clone(),
+                path: meta.relative_path.clone(),
+                title: String::new(),
+            })
+        })
         .collect();
 
-    Ok(limited)
+    let limit = if args.all { results.len() } else { args.count };
+    results.truncate(limit);
+
+    for (i, r) in results.iter_mut().enumerate() {
+        r.rank = i + 1;
+    }
+
+    // Titles for semantic-only entries (BM25 entries already have them).
+    if results.iter().any(|r| r.title.is_empty()) {
+        populate_titles(&mut results, config_db);
+    }
+
+    Ok(results)
+}
+
+fn run_bm25_leg(
+    search_index: &SearchIndex,
+    query: &str,
+    collection: Option<&str>,
+    no_fuzzy: bool,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
+    if no_fuzzy {
+        if let Some(collection) = collection {
+            search_index.search_in_collection(query, collection, limit)
+        } else {
+            search_index.search(query, limit)
+        }
+    } else {
+        search_index.search_fuzzy(query, collection, limit)
+    }
+}
+
+fn run_semantic_leg(
+    config_db: &ConfigDb,
+    embedding_db: &EmbeddingDb,
+    model: &mut ModelManager,
+    query: &str,
+    collection: Option<&str>,
+    limit: usize,
+) -> Result<(HashMap<u64, DocumentMetadata>, Vec<RankedDocument>)> {
+    let metadata_entries = config_db.list_all_document_metadata_typed()?;
+    if metadata_entries.is_empty() {
+        return Ok((HashMap::new(), Vec::new()));
+    }
+
+    let (metadata, doc_ids) = semantic_candidates_from_metadata(
+        config_db,
+        collection,
+        metadata_entries,
+    );
+
+    if doc_ids.is_empty() {
+        return Ok((metadata, Vec::new()));
+    }
+
+    let query_embedding = model.encode_query(query)?;
+    let mut ranked = semantic_ranked_from_query_embedding(
+        &query_embedding,
+        &doc_ids,
+        embedding_db,
+        model,
+    )?;
+
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ranked.truncate(limit);
+
+    Ok((metadata, ranked))
+}
+
+/// Fuse any number of ranked document-id lists using Reciprocal Rank Fusion.
+///
+/// For each list, the document at position `i` (0-indexed) contributes
+/// `1 / (k + (i + 1))` to its fused score. Documents absent from a list
+/// receive no contribution from it. The returned list is sorted by fused
+/// score, highest first.
+///
+/// # Examples
+///
+/// ```
+/// use docbert_core::search::{rrf_fuse, RRF_K};
+///
+/// let bm25 = [20u64, 10, 30];
+/// let semantic = [20u64, 40];
+/// let fused = rrf_fuse(&[&bm25, &semantic], RRF_K);
+/// // 20 is rank 1 in both lists, so it tops the fused list.
+/// assert_eq!(fused[0].0, 20);
+/// ```
+pub fn rrf_fuse(lists: &[&[u64]], k: usize) -> Vec<(u64, f32)> {
+    let mut scores: HashMap<u64, f32> = HashMap::new();
+    for list in lists {
+        for (i, doc_id) in list.iter().enumerate() {
+            let rank = (i + 1) as f32;
+            let k = k as f32;
+            *scores.entry(*doc_id).or_insert(0.0) += 1.0 / (k + rank);
+        }
+    }
+    let mut fused: Vec<(u64, f32)> = scores.into_iter().collect();
+    fused.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    fused
 }
 
 fn semantic_candidates_from_metadata(
@@ -376,6 +573,7 @@ pub fn execute_search_mode(
                 all: false,
             },
             search_index,
+            config_db,
             embedding_db,
             model,
         ),
@@ -594,49 +792,6 @@ fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
         };
         r.title = title;
     }
-}
-
-fn hybrid_final_results_from_ranked(
-    bm25_results: &[SearchResult],
-    ranked: Vec<RankedDocument>,
-) -> Vec<FinalResult> {
-    let bm25_lookup: std::collections::HashMap<u64, &SearchResult> =
-        bm25_results.iter().map(|r| (r.doc_num_id, r)).collect();
-
-    ranked
-        .into_iter()
-        .filter_map(|RankedDocument { doc_num_id, score }| {
-            bm25_lookup.get(&doc_num_id).map(|bm25| FinalResult {
-                rank: 0,
-                score,
-                doc_id: short_doc_id(doc_num_id, &bm25.doc_id),
-                doc_num_id,
-                collection: bm25.collection.clone(),
-                path: bm25.path.clone(),
-                title: bm25.title.clone(),
-            })
-        })
-        .collect()
-}
-
-fn rerank_results(
-    bm25_results: &[SearchResult],
-    embedding_db: &EmbeddingDb,
-    model: &mut ModelManager,
-    query: &str,
-) -> Result<Vec<FinalResult>> {
-    let query_embedding = model.encode_query(query)?;
-
-    let candidate_ids: Vec<u64> =
-        bm25_results.iter().map(|r| r.doc_num_id).collect();
-    let ranked = reranker::rerank(
-        &query_embedding,
-        &candidate_ids,
-        embedding_db,
-        model,
-    )?;
-
-    Ok(hybrid_final_results_from_ranked(bm25_results, ranked))
 }
 
 /// Replace fixed-length short doc IDs in results with disambiguated ones.
@@ -1113,72 +1268,14 @@ mod tests {
         assert_eq!(results[0].score, 0.9);
     }
 
-    #[test]
-    fn hybrid_final_results_from_ranked_preserves_bm25_metadata_for_collapsed_base_ids()
-     {
-        let first_did = DocumentId::new("notes", "a.md");
-        let second_did = DocumentId::new("docs", "b.md");
-        let bm25_results = vec![
-            SearchResult {
-                score: 3.0,
-                doc_id: first_did.full_hex(),
-                doc_num_id: first_did.numeric,
-                collection: "notes".to_string(),
-                path: "a.md".to_string(),
-                title: "Alpha".to_string(),
-                mtime: 1,
-            },
-            SearchResult {
-                score: 2.0,
-                doc_id: second_did.full_hex(),
-                doc_num_id: second_did.numeric,
-                collection: "docs".to_string(),
-                path: "b.md".to_string(),
-                title: "Beta".to_string(),
-                mtime: 2,
-            },
-        ];
-
-        let results = hybrid_final_results_from_ranked(
-            &bm25_results,
-            vec![
-                RankedDocument {
-                    doc_num_id: second_did.numeric,
-                    score: 0.9,
-                },
-                RankedDocument {
-                    doc_num_id: first_did.numeric,
-                    score: 0.8,
-                },
-                RankedDocument {
-                    doc_num_id: DocumentId::new("other", "missing.md").numeric,
-                    score: 0.7,
-                },
-            ],
-        );
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].doc_num_id, second_did.numeric);
-        assert_eq!(results[0].doc_id, second_did.to_string());
-        assert_eq!(results[0].collection, "docs");
-        assert_eq!(results[0].path, "b.md");
-        assert_eq!(results[0].title, "Beta");
-        assert_eq!(results[0].score, 0.9);
-        assert_eq!(results[1].doc_num_id, first_did.numeric);
-        assert_eq!(results[1].doc_id, first_did.to_string());
-        assert_eq!(results[1].collection, "notes");
-        assert_eq!(results[1].path, "a.md");
-        assert_eq!(results[1].title, "Alpha");
-        assert_eq!(results[1].score, 0.8);
-    }
-
     /// Set up a search index with sample documents and commit them.
-    fn setup_index_with_docs() -> (SearchIndex, EmbeddingDb, tempfile::TempDir)
-    {
+    fn setup_index_with_docs()
+    -> (SearchIndex, EmbeddingDb, ConfigDb, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
 
         let mut writer = idx.writer(15_000_000).unwrap();
 
@@ -1241,16 +1338,18 @@ mod tests {
         }
 
         writer.commit().unwrap();
-        (idx, embedding_db, tmp)
+        (idx, embedding_db, config_db, tmp)
     }
 
     #[test]
     fn bm25_only_returns_relevant_results() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("rust programming");
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty(), "search should return results");
         // The Rust guide should be the top result
@@ -1262,11 +1361,13 @@ mod tests {
 
     #[test]
     fn bm25_only_results_have_correct_ranks() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("programming");
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(results.len() >= 2, "should find multiple programming docs");
         for (i, r) in results.iter().enumerate() {
@@ -1280,24 +1381,28 @@ mod tests {
 
     #[test]
     fn bm25_only_respects_count_limit() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.count = 1;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert_eq!(results.len(), 1, "should respect count limit");
     }
 
     #[test]
     fn bm25_only_respects_min_score() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.min_score = 999.0; // impossibly high threshold
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(
             results.is_empty(),
@@ -1307,13 +1412,15 @@ mod tests {
 
     #[test]
     fn bm25_only_collection_filter() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.collection = Some("notes".to_string());
         args.no_fuzzy = true;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty());
         for r in &results {
@@ -1326,24 +1433,28 @@ mod tests {
 
     #[test]
     fn bm25_only_no_results_for_unrelated_query() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("xyzzy_nonexistent_term_12345");
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(results.is_empty(), "should return no results for gibberish");
     }
 
     #[test]
     fn bm25_only_all_flag_returns_everything() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.all = true;
         args.count = 1; // should be ignored when all=true
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(
             results.len() > 1,
@@ -1353,11 +1464,13 @@ mod tests {
 
     #[test]
     fn bm25_only_scores_are_descending() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("programming language");
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         for window in results.windows(2) {
             assert!(
@@ -1369,12 +1482,14 @@ mod tests {
 
     #[test]
     fn bm25_only_fuzzy_matching_finds_typos() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         // "programing" (one 'm') should fuzzy-match "programming"
         let args = make_search_args("programing");
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(
             !results.is_empty(),
@@ -1384,12 +1499,14 @@ mod tests {
 
     #[test]
     fn bm25_only_no_fuzzy_flag() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("rust");
         args.no_fuzzy = true;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty(), "exact search should find 'rust'");
         assert_eq!(results[0].path, "rust-guide.md");
@@ -1397,12 +1514,14 @@ mod tests {
 
     #[test]
     fn bm25_only_result_fields_populated() {
-        let (idx, emb_db, _tmp) = setup_index_with_docs();
+        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("pasta");
         args.no_fuzzy = true;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert_eq!(results.len(), 1);
         let r = &results[0];
@@ -1417,15 +1536,22 @@ mod tests {
     /// Helper to set up index + embeddings for end-to-end tests.
     ///
     /// Creates documents, indexes them in tantivy, computes ColBERT
-    /// embeddings, and returns everything needed for search.
-    fn setup_e2e() -> (SearchIndex, EmbeddingDb, ModelManager, tempfile::TempDir)
-    {
+    /// embeddings, stores metadata in the config db (so the RRF semantic
+    /// leg can find them), and returns everything needed for search.
+    fn setup_e2e() -> (
+        SearchIndex,
+        EmbeddingDb,
+        ConfigDb,
+        ModelManager,
+        tempfile::TempDir,
+    ) {
         use crate::embedding::embed_and_store;
 
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
         let mut model = ModelManager::new();
 
         let mut writer = idx.writer(15_000_000).unwrap();
@@ -1477,8 +1603,26 @@ mod tests {
         ];
 
         let mut embed_docs: Vec<(u64, String)> = Vec::new();
+        let mut registered_collections: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
 
         for (collection, path, title, body) in &docs {
+            let collection_dir = tmp.path().join(collection);
+            if registered_collections.insert(collection) {
+                std::fs::create_dir_all(&collection_dir).unwrap();
+                config_db
+                    .set_collection(
+                        collection,
+                        collection_dir.to_str().unwrap(),
+                    )
+                    .unwrap();
+            }
+            std::fs::write(
+                collection_dir.join(path),
+                format!("# {title}\n\n{body}"),
+            )
+            .unwrap();
+
             let doc_id = DocumentId::new(collection, path);
             idx.add_document(
                 &writer,
@@ -1491,6 +1635,16 @@ mod tests {
                 1000,
             )
             .unwrap();
+            config_db
+                .set_document_metadata_typed(
+                    doc_id.numeric,
+                    &DocumentMetadata {
+                        collection: (*collection).to_string(),
+                        relative_path: (*path).to_string(),
+                        mtime: 1000,
+                    },
+                )
+                .unwrap();
             // Include both title and body in the embedding text
             embed_docs.push((doc_id.numeric, format!("{title}\n{body}")));
         }
@@ -1502,7 +1656,7 @@ mod tests {
             embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
-        (idx, embedding_db, model, tmp)
+        (idx, embedding_db, config_db, model, tmp)
     }
 
     fn setup_semantic_e2e()
@@ -1589,12 +1743,14 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_search_with_reranking_returns_results() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("rust programming language");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty(), "reranked search should return results");
         // Rust guide should be the top result for "rust programming language"
@@ -1628,13 +1784,15 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_improves_relevance() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         // Query about cooking - should rank pasta doc highest
         let mut args = make_search_args("how to cook food");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty());
         assert_eq!(
@@ -1646,12 +1804,14 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranked_scores_are_descending() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(results.len() >= 2);
         for window in results.windows(2) {
@@ -1666,49 +1826,17 @@ mod tests {
 
     #[test]
     #[ignore = "requires ColBERT model download"]
-    fn e2e_reranking_with_min_score() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
-
-        // First get all results to find a reasonable threshold
-        let mut args = make_search_args("rust");
-        args.bm25_only = false;
-        args.all = true;
-
-        let all_results =
-            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
-        assert!(!all_results.is_empty());
-
-        // Use the median score as threshold - should filter out ~half
-        let mid = all_results.len() / 2;
-        let threshold = all_results[mid].score;
-
-        args.min_score = threshold;
-        let filtered =
-            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
-
-        assert!(
-            filtered.len() <= all_results.len(),
-            "min_score filter should reduce result count"
-        );
-        for r in &filtered {
-            assert!(
-                r.score >= threshold,
-                "all results should meet min_score threshold"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "requires ColBERT model download"]
     fn e2e_semantic_search_understands_meaning() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         // "memory management" doesn't appear verbatim, but is
         // semantically related to Rust's ownership/borrow checker
         let mut args = make_search_args("memory management");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(
             !results.is_empty(),
@@ -1725,12 +1853,14 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_all_result_fields_populated() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("gardening plants");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty());
         let r = &results[0];
@@ -1746,14 +1876,16 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_with_collection_filter() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
         args.collection = Some("notes".to_string());
         args.no_fuzzy = true;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty());
         for r in &results {
@@ -1772,7 +1904,7 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_count_and_score_combined() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         // First get all results
         let mut args = make_search_args("programming language");
@@ -1780,7 +1912,8 @@ mod tests {
         args.all = true;
 
         let all_results =
-            execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
         assert!(
             all_results.len() >= 2,
             "should have multiple results to test filtering"
@@ -1789,7 +1922,9 @@ mod tests {
         // Apply count limit
         args.all = false;
         args.count = 1;
-        let limited = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let limited =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
         assert_eq!(limited.len(), 1, "count=1 should limit to 1 result");
         assert_eq!(
             limited[0].path, all_results[0].path,
@@ -1799,49 +1934,15 @@ mod tests {
 
     #[test]
     #[ignore = "requires ColBERT model download"]
-    fn e2e_bm25_and_reranked_return_same_docs() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
-
-        // BM25-only
-        let mut bm25_args = make_search_args("rust safety");
-        bm25_args.bm25_only = true;
-        bm25_args.all = true;
-        let bm25_results =
-            execute_search(&bm25_args, &idx, &emb_db, &mut model).unwrap();
-
-        // With reranking
-        let mut rerank_args = make_search_args("rust safety");
-        rerank_args.bm25_only = false;
-        rerank_args.all = true;
-        let reranked_results =
-            execute_search(&rerank_args, &idx, &emb_db, &mut model).unwrap();
-
-        // Both should find results
-        assert!(!bm25_results.is_empty());
-        assert!(!reranked_results.is_empty());
-
-        // Reranked should contain a subset of BM25 results (only those
-        // with embeddings, but we embedded everything)
-        let bm25_paths: std::collections::HashSet<&str> =
-            bm25_results.iter().map(|r| r.path.as_str()).collect();
-        let reranked_paths: std::collections::HashSet<&str> =
-            reranked_results.iter().map(|r| r.path.as_str()).collect();
-
-        assert!(
-            reranked_paths.is_subset(&bm25_paths),
-            "reranked results should be a subset of BM25 results"
-        );
-    }
-
-    #[test]
-    #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_ranks_are_sequential() {
-        let (idx, emb_db, mut model, _tmp) = setup_e2e();
+        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
 
-        let results = execute_search(&args, &idx, &emb_db, &mut model).unwrap();
+        let results =
+            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+                .unwrap();
 
         assert!(results.len() >= 2);
         for (i, r) in results.iter().enumerate() {
@@ -1870,6 +1971,68 @@ mod tests {
     #[test]
     fn search_mode_parse_rejects_unknown_value() {
         assert_eq!(SearchMode::parse("bm25"), None);
+    }
+
+    #[test]
+    fn rrf_fuse_gives_doc_appearing_in_both_lists_highest_score() {
+        // Doc 20 is rank 1 in both lists, so it earns 2/(k+1). Every other
+        // doc appears in only one list and earns at most 1/(k+1).
+        let a = [20u64, 10, 30];
+        let b = [20u64, 40];
+        let fused = rrf_fuse(&[&a, &b], RRF_K);
+
+        assert_eq!(fused.first().map(|(id, _)| *id), Some(20));
+        // Every doc across both lists appears exactly once in the output.
+        let ids: std::collections::BTreeSet<u64> =
+            fused.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn rrf_fuse_empty_lists_returns_empty() {
+        let fused = rrf_fuse(&[&[], &[]], RRF_K);
+        assert!(fused.is_empty());
+    }
+
+    #[test]
+    fn rrf_fuse_single_list_ranks_by_position() {
+        let list = [7u64, 3, 11];
+        let fused = rrf_fuse(&[&list], RRF_K);
+
+        assert_eq!(
+            fused.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![7, 3, 11],
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_scores_are_descending() {
+        let a = [1u64, 2, 3, 4, 5];
+        let b = [5u64, 4, 3, 2, 1];
+        let fused = rrf_fuse(&[&a, &b], RRF_K);
+
+        for window in fused.windows(2) {
+            assert!(
+                window[0].1 >= window[1].1,
+                "fused scores should be descending"
+            );
+        }
+    }
+
+    #[test]
+    fn rrf_fuse_tie_breaks_deterministically_by_doc_id() {
+        // Doc 42 appears only in list a at rank 1; doc 7 appears only in
+        // list b at rank 1. Both earn 1/(60+1) and therefore tie exactly.
+        // For determinism the fused order must be stable — we sort by
+        // doc_id ascending when scores match.
+        let a = [42u64];
+        let b = [7u64];
+        let fused = rrf_fuse(&[&a, &b], RRF_K);
+
+        assert_eq!(fused.len(), 2);
+        assert_eq!(fused[0].0, 7);
+        assert_eq!(fused[1].0, 42);
+        assert!((fused[0].1 - fused[1].1).abs() < f32::EPSILON);
     }
 
     #[test]

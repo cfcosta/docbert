@@ -43,6 +43,7 @@ pub(crate) fn run_search(
         search::execute_search(
             &params,
             &search_index,
+            config_db,
             &embedding_db,
             &mut model,
         )?

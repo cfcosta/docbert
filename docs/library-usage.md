@@ -510,11 +510,15 @@ Use this when you want the full hybrid-search parameter surface, including:
 - `no_fuzzy`
 - `all`
 
+By default, BM25 and semantic retrieval run in parallel and are fused with
+Reciprocal Rank Fusion. Setting `bm25_only = true` skips the semantic leg.
+
 ```rust,no_run
-use docbert_core::{EmbeddingDb, ModelManager, SearchIndex};
+use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
 use docbert_core::search::{SearchParams, execute_search};
 
 fn main() -> docbert_core::Result<()> {
+    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
     let search_index = SearchIndex::open_in_ram()?;
     let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
@@ -529,7 +533,13 @@ fn main() -> docbert_core::Result<()> {
         all: false,
     };
 
-    let _results = execute_search(&params, &search_index, &embedding_db, &mut model)?;
+    let _results = execute_search(
+        &params,
+        &search_index,
+        &config_db,
+        &embedding_db,
+        &mut model,
+    )?;
     Ok(())
 }
 ```

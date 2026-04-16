@@ -446,7 +446,17 @@ impl ModelManager {
     ///
     /// Returns a 2D tensor of shape `[Q, D]` where Q is the number of query
     /// tokens and D is the embedding dimension.
+    ///
+    /// When the `DOCBERT_WEB_TEST_FAKE_EMBEDDINGS` environment variable is
+    /// set, returns a deterministic 1×2 tensor and skips the model load
+    /// entirely. This matches the fake document embeddings produced by the
+    /// web upload path under the same env var, so integration tests can
+    /// exercise the full search pipeline without a real ColBERT model.
     pub fn encode_query(&mut self, query: &str) -> Result<Tensor> {
+        if std::env::var_os("DOCBERT_WEB_TEST_FAKE_EMBEDDINGS").is_some() {
+            return Tensor::from_vec(vec![1.0f32, 0.0], (1, 2), &Device::Cpu)
+                .map_err(|e| crate::Error::Config(e.to_string()));
+        }
         let prompt = self.query_prompt.clone();
         let model = self.ensure_loaded()?;
         let text = if prompt.is_empty() {
@@ -466,11 +476,25 @@ impl ModelManager {
     ///
     /// The model must already be loaded (via a prior `encode_*` call),
     /// otherwise returns a `Config` error.
+    ///
+    /// When the `DOCBERT_WEB_TEST_FAKE_EMBEDDINGS` environment variable is
+    /// set, returns a deterministic score of `1.0` per (query, doc) pair so
+    /// integration tests can run through the reranker without loading the
+    /// real model.
     pub fn similarity(
         &self,
         query_embeddings: &Tensor,
         document_embeddings: &Tensor,
     ) -> Result<Similarities> {
+        if std::env::var_os("DOCBERT_WEB_TEST_FAKE_EMBEDDINGS").is_some() {
+            let query_batch =
+                query_embeddings.dims().first().copied().unwrap_or(1);
+            let doc_batch =
+                document_embeddings.dims().first().copied().unwrap_or(1);
+            return Ok(Similarities {
+                data: vec![vec![1.0; doc_batch]; query_batch],
+            });
+        }
         let model = self.model.as_ref().ok_or_else(|| {
             crate::error::Error::Config("model not loaded".to_string())
         })?;

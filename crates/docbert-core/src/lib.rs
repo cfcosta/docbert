@@ -1,20 +1,23 @@
 //! docbert-core is the library behind docbert, a local document search engine
-//! that combines BM25 with ColBERT reranking.
+//! that fuses BM25 with ColBERT semantic retrieval.
 //!
 //! Point it at one or more folders, index them, and search them locally. Tantivy
-//! handles the fast keyword pass. ColBERT can rerank the candidate set when you
-//! want semantic matching too.
+//! handles the fast keyword pass. ColBERT adds a semantic retrieval pass, and
+//! the two are combined with Reciprocal Rank Fusion.
 //!
 //! # How it works
 //!
-//! Search has two stages:
+//! Search runs two retrievers in parallel:
 //!
 //! 1. **BM25 retrieval** - Tantivy indexes documents with English stemming and
-//!    returns the top 1000 candidates for a query. Fuzzy matching is optional.
+//!    returns up to 100 keyword candidates. Fuzzy matching is optional.
 //!
-//! 2. **ColBERT reranking** - docbert compares the query embedding with each
-//!    candidate's token embeddings using MaxSim. That helps when the wording is
-//!    different but the meaning is close.
+//! 2. **ColBERT semantic retrieval** - docbert scores the query embedding
+//!    against every stored document embedding with MaxSim and keeps the top
+//!    100. That helps when the wording is different but the meaning is close.
+//!
+//! The two ranked lists are fused with Reciprocal Rank Fusion. A `bm25_only`
+//! flag skips the semantic leg when you want keyword-only results.
 //!
 //! # Storage
 //!
@@ -49,8 +52,14 @@
 //!     all: false,
 //! };
 //!
-//! let results = search::execute_search(&params, &search_index, &embedding_db, &mut model)
-//!     .unwrap();
+//! let results = search::execute_search(
+//!     &params,
+//!     &search_index,
+//!     &config_db,
+//!     &embedding_db,
+//!     &mut model,
+//! )
+//! .unwrap();
 //! for r in &results {
 //!     println!("{}: {}:{} (score: {:.3})", r.rank, r.collection, r.path, r.score);
 //! }

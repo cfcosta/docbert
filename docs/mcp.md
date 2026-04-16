@@ -83,16 +83,16 @@ Fields:
 
 - `query` — required string
 - `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; default `0.0`
+- `minScore` — optional minimum score threshold; ignored under RRF fusion, only applied when `bm25Only` is true; default `0.0`
 - `collection` — optional collection filter
-- `bm25Only` — optional, skip ColBERT reranking
-- `noFuzzy` — optional, disable fuzzy matching in the first stage
-- `all` — optional, return all results above threshold
+- `bm25Only` — optional, skip the semantic leg and return BM25 results directly
+- `noFuzzy` — optional, disable fuzzy matching in the BM25 leg
+- `all` — optional, return all results
 - `includeSnippet` — optional, defaults to `true`
 
 ### Behavior
 
-- Uses `search::execute_search(...)`.
+- Uses `search::execute_search(...)`, which runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion unless `bm25Only` is set.
 - Opens `config.db` and `embeddings.db` for the call.
 - Locks the shared `ModelManager` while searching.
 - If `includeSnippet` is true, the server tries to read the matching file from disk and extract a snippet for the query.

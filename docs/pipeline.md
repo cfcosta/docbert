@@ -265,7 +265,7 @@ If the indexing or mutation step fails, docbert keeps the previous snapshot.
 
 docbert currently exposes two main search modes:
 
-- **hybrid**: BM25 first-stage retrieval followed by ColBERT reranking
+- **hybrid**: BM25 and ColBERT retrieval run in parallel and are fused with Reciprocal Rank Fusion
 - **semantic**: ColBERT-only retrieval over the stored document set
 
 Different surfaces choose different defaults:
@@ -278,43 +278,46 @@ Different surfaces choose different defaults:
 
 Hybrid search is implemented in `docbert_core::search::execute_search`.
 
-### Step 1: BM25 candidate generation
+### Step 1: BM25 leg
 
-The first stage queries Tantivy.
+The BM25 leg queries Tantivy and returns up to `100` candidates (the `RRF_CANDIDATE_LIMIT` constant).
 
 Current behavior:
 
-- fetch up to `1000` candidates
 - optionally filter to one collection
 - use fuzzy matching by default
 - allow a CLI-only `--no-fuzzy` path that uses plain BM25 retrieval instead
-- allow a CLI-only `--bm25-only` path that skips semantic reranking entirely
+- allow a CLI-only `--bm25-only` path that skips the semantic leg entirely and returns BM25 results directly, filtered by `min_score`
 
-If BM25 returns no candidates, the pipeline ends there.
+### Step 2: semantic leg
 
-### Step 2: query embedding
+In parallel, the semantic leg runs the same pipeline as `execute_semantic_search`:
 
-If reranking is enabled, docbert encodes the query with the active ColBERT model via `model.encode_query(...)`.
+1. load all stored document metadata from `config.db`
+2. filter to the requested collection, if any
+3. skip documents whose on-disk body is empty after frontmatter stripping
+4. encode the query with the active ColBERT model via `model.encode_query(...)`
+5. score every candidate embedding with ColBERT MaxSim
+6. keep the top `100` by score
 
-### Step 3: ColBERT reranking
+### Step 3: Reciprocal Rank Fusion
 
-docbert then reranks the BM25 candidates using stored embeddings from `embeddings.db`.
+The two ranked lists are combined with Reciprocal Rank Fusion:
 
-Conceptually, the reranker:
+- each document contributes `1 / (k + rank_i)` from each list it appears in, where `k = 60` (the `RRF_K` constant)
+- docs absent from a list contribute nothing from that list
+- results are sorted by fused score, highest first
 
-- loads embeddings for the candidate document IDs
-- scores them with ColBERT MaxSim-style similarity
-- returns ranked document IDs with semantic scores
+Fusion metadata prefers the BM25 side when a doc surfaces in both (so titles from Tantivy carry through); titles for semantic-only entries are refreshed from disk.
 
-The final hybrid result list keeps the candidate identity and path information from BM25, but uses the reranked semantic score.
+### Step 4: limiting
 
-### Step 4: filtering and limiting
+After fusion, docbert:
 
-After reranking, docbert:
-
-- drops results below `min_score`
 - applies the requested count unless `--all` is set
 - assigns final 1-based ranks
+
+`min_score` is ignored under RRF because fused scores are not on the BM25 scale. It still applies in `--bm25-only` mode.
 
 ## Semantic-only search flow
 

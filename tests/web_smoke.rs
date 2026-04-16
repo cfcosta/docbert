@@ -206,14 +206,18 @@ fn web_upload_then_get_then_search() -> Result<(), Box<dyn std::error::Error>> {
     let search = http_post_json(
         port,
         "/v1/search",
-        r#"{"query":"definitely-not-present","mode":"hybrid","count":10,"min_score":0.0}"#,
+        r#"{"query":"uploaded","mode":"hybrid","count":10,"min_score":0.0}"#,
     )?;
     assert!(
         search.starts_with("HTTP/1.1 200 OK\r\n"),
         "unexpected response: {search}"
     );
-    assert!(search.contains("\"query\":\"definitely-not-present\""));
-    assert!(search.contains("\"result_count\":0"));
+    assert!(search.contains("\"query\":\"uploaded\""));
+    // Under RRF the uploaded doc surfaces in either the BM25 leg (exact
+    // match on "uploaded") or the semantic leg (fake embeddings make every
+    // indexed doc reachable), so result_count should be 1.
+    assert!(search.contains("\"result_count\":1"));
+    assert!(search.contains("nested/uploaded.md"));
 
     child.kill()?;
     child.wait()?;
