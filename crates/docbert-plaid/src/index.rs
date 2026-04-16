@@ -19,6 +19,49 @@ use crate::{
     kmeans::{assign_points, fit},
 };
 
+/// Location of a single encoded token inside an [`Index`].
+///
+/// Stored inside the inverted file so the search path can pull token
+/// codes back out cheaply when computing MaxSim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenRef {
+    pub doc_idx: u32,
+    pub token_idx: u32,
+}
+
+/// Inverted file: for each centroid, the list of tokens that currently
+/// live in that cluster.
+///
+/// The search path uses this to expand a query token to a shortlist of
+/// document candidates: "find the centroids nearest to the query token,
+/// then gather every document holding a token in those centroids".
+#[derive(Debug, Clone, Default)]
+pub struct InvertedFile {
+    /// `lists[c]` holds every [`TokenRef`] assigned to centroid `c`.
+    pub lists: Vec<Vec<TokenRef>>,
+}
+
+impl InvertedFile {
+    /// Total number of centroids the IVF spans.
+    pub fn num_centroids(&self) -> usize {
+        self.lists.len()
+    }
+
+    /// Tokens currently associated with `centroid_id`, or an empty slice
+    /// if the centroid is out of range.
+    pub fn tokens_for_centroid(&self, centroid_id: usize) -> &[TokenRef] {
+        self.lists
+            .get(centroid_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Total number of token entries across every centroid list.
+    pub fn total_tokens(&self) -> usize {
+        self.lists.iter().map(Vec::len).sum()
+    }
+}
+
 /// A single document's worth of token embeddings, ready to index.
 ///
 /// `tokens` is a flat row-major `n_tokens × dim` buffer. Keeping the
@@ -53,8 +96,9 @@ pub struct IndexParams {
 
 /// A fully-built PLAID index over a corpus of multi-vector embeddings.
 ///
-/// Holds the trained codec and the encoded token embeddings of every
-/// document. Future layers (IVF, search) will read from this state
+/// Holds the trained codec, the encoded token embeddings of every
+/// document, and an inverted file mapping centroids back to the tokens
+/// clustered in them. Future layers (search) will read from this state
 /// directly without mutating it.
 #[derive(Debug, Clone)]
 pub struct Index {
@@ -63,6 +107,8 @@ pub struct Index {
     pub doc_ids: Vec<u64>,
     /// `doc_tokens[i]` is the encoded token sequence of the i-th document.
     pub doc_tokens: Vec<Vec<EncodedVector>>,
+    /// Centroid → tokens inverted file used for candidate generation.
+    pub ivf: InvertedFile,
 }
 
 impl Index {
@@ -167,16 +213,26 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         .validate()
         .expect("build_index produced an invalid codec");
 
-    // 4. Encode each document's token sequence against the fresh codec.
+    // 4. Encode each document's token sequence against the fresh codec
+    //    and populate the centroid → tokens inverted file while we go.
     let mut doc_ids = Vec::with_capacity(documents.len());
     let mut doc_tokens = Vec::with_capacity(documents.len());
-    for doc in documents {
+    let mut ivf = InvertedFile {
+        lists: vec![Vec::new(); params.k_centroids],
+    };
+    for (doc_idx, doc) in documents.iter().enumerate() {
         doc_ids.push(doc.doc_id);
         let encoded: Vec<EncodedVector> = doc
             .tokens
             .chunks_exact(params.dim)
             .map(|token| codec.encode_vector(token))
             .collect();
+        for (token_idx, ev) in encoded.iter().enumerate() {
+            ivf.lists[ev.centroid_id as usize].push(TokenRef {
+                doc_idx: doc_idx as u32,
+                token_idx: token_idx as u32,
+            });
+        }
         doc_tokens.push(encoded);
     }
 
@@ -185,6 +241,7 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         codec,
         doc_ids,
         doc_tokens,
+        ivf,
     }
 }
 
@@ -316,6 +373,56 @@ mod tests {
             n_tokens: 2, // says 2 but only 3 f32s and dim=2
         }];
         let _ = build_index(&docs, default_params());
+    }
+
+    #[test]
+    fn build_index_ivf_covers_every_encoded_token_exactly_once() {
+        let docs = small_corpus();
+        let index = build_index(&docs, default_params());
+
+        assert_eq!(
+            index.ivf.num_centroids(),
+            default_params().k_centroids,
+            "IVF has one list per centroid",
+        );
+        assert_eq!(
+            index.ivf.total_tokens(),
+            index.num_tokens(),
+            "every encoded token appears in the IVF exactly once",
+        );
+    }
+
+    #[test]
+    fn build_index_ivf_lists_match_encoded_centroid_ids() {
+        let docs = small_corpus();
+        let index = build_index(&docs, default_params());
+
+        // For every token in every document, the token's centroid_id must
+        // match the IVF list that references it.
+        for (doc_idx, encoded_doc) in index.doc_tokens.iter().enumerate() {
+            for (token_idx, ev) in encoded_doc.iter().enumerate() {
+                let list =
+                    index.ivf.tokens_for_centroid(ev.centroid_id as usize);
+                assert!(
+                    list.iter().any(|t| t.doc_idx as usize == doc_idx
+                        && t.token_idx as usize == token_idx),
+                    "token at doc {doc_idx} pos {token_idx} missing from centroid {} list",
+                    ev.centroid_id,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inverted_file_out_of_range_returns_empty_slice() {
+        let ivf = InvertedFile {
+            lists: vec![vec![TokenRef {
+                doc_idx: 0,
+                token_idx: 0,
+            }]],
+        };
+        assert_eq!(ivf.tokens_for_centroid(0).len(), 1);
+        assert!(ivf.tokens_for_centroid(999).is_empty());
     }
 
     #[test]
