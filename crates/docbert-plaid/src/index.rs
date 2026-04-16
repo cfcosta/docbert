@@ -213,19 +213,30 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         .validate()
         .expect("build_index produced an invalid codec");
 
-    // 4. Encode each document's token sequence against the fresh codec
-    //    and populate the centroid → tokens inverted file while we go.
+    // 4. Encode every token across the whole corpus in one batched pass
+    //    (single matmul-driven nearest-centroid lookup), then split the
+    //    flat result back into per-document EncodedVectors and populate
+    //    the centroid → tokens inverted file along the way.
+    let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool);
+
     let mut doc_ids = Vec::with_capacity(documents.len());
     let mut doc_tokens = Vec::with_capacity(documents.len());
     let mut ivf = InvertedFile {
         lists: vec![Vec::new(); params.k_centroids],
     };
+    let mut token_offset = 0usize;
     for (doc_idx, doc) in documents.iter().enumerate() {
         doc_ids.push(doc.doc_id);
-        let encoded: Vec<EncodedVector> = doc
-            .tokens
-            .chunks_exact(params.dim)
-            .map(|token| codec.encode_vector(token))
+        let n_tok = doc.n_tokens;
+        let cids = &all_centroid_ids[token_offset..token_offset + n_tok];
+        let codes_slice = &all_codes
+            [token_offset * params.dim..(token_offset + n_tok) * params.dim];
+        let encoded: Vec<EncodedVector> = (0..n_tok)
+            .map(|i| EncodedVector {
+                centroid_id: cids[i],
+                codes: codes_slice[i * params.dim..(i + 1) * params.dim]
+                    .to_vec(),
+            })
             .collect();
         for (token_idx, ev) in encoded.iter().enumerate() {
             ivf.lists[ev.centroid_id as usize].push(TokenRef {
@@ -234,6 +245,7 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
             });
         }
         doc_tokens.push(encoded);
+        token_offset += n_tok;
     }
 
     Index {

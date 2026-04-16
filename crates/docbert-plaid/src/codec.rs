@@ -151,6 +151,55 @@ impl ResidualCodec {
         }
     }
 
+    /// Encode every token in a flat `n × dim` buffer in one batched
+    /// pass, returning the per-token centroid id and a flat `n × dim`
+    /// code buffer.
+    ///
+    /// The expensive step — the nearest-centroid lookup — runs as a
+    /// single matmul through [`crate::kmeans::assign_points`], which
+    /// uses candle's GEMM (CPU or CUDA depending on build). The
+    /// residual + bucket loop stays scalar because per-element
+    /// `searchsorted` would otherwise require either a 3-D broadcast
+    /// against the cutoffs table or a per-cutoff kernel launch — both
+    /// less efficient than a tight Rust loop over the small cutoffs
+    /// vector. Returning the codes flat avoids `n` `Vec<u8>`
+    /// allocations; callers split into per-token slices as needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the codec is malformed, if `tokens.len() % dim != 0`,
+    /// or if `tokens` is empty.
+    pub fn batch_encode_tokens(&self, tokens: &[f32]) -> (Vec<u32>, Vec<u8>) {
+        self.validate().unwrap();
+        assert!(
+            tokens.len().is_multiple_of(self.dim),
+            "batch_encode_tokens: tokens length {} is not a multiple of dim {}",
+            tokens.len(),
+            self.dim,
+        );
+        let n = tokens.len() / self.dim;
+        if n == 0 {
+            return (Vec::new(), Vec::new());
+        }
+
+        let assignments =
+            crate::kmeans::assign_points(tokens, &self.centroids, self.dim);
+
+        let mut centroid_ids: Vec<u32> = Vec::with_capacity(n);
+        let mut codes: Vec<u8> = Vec::with_capacity(tokens.len());
+        for (token, &cluster) in
+            tokens.chunks_exact(self.dim).zip(assignments.iter())
+        {
+            let centroid_slice =
+                &self.centroids[cluster * self.dim..(cluster + 1) * self.dim];
+            for (t, c) in token.iter().zip(centroid_slice.iter()) {
+                codes.push(bucket_for_value(*t - *c, &self.bucket_cutoffs));
+            }
+            centroid_ids.push(cluster as u32);
+        }
+        (centroid_ids, codes)
+    }
+
     /// Reconstruct an approximate token embedding from its codes.
     ///
     /// # Panics
