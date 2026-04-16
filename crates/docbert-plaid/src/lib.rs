@@ -18,5 +18,6 @@
 //! At the moment the crate only exposes the lowest-level primitives; more
 //! layers will be added as subsequent TDD cycles come in.
 
+pub mod codec;
 pub mod distance;
 pub mod kmeans;
