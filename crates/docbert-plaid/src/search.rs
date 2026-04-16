@@ -183,7 +183,12 @@ fn batch_maxsim(
     let n_q = query_tokens.len() / dim;
 
     // Decode every candidate's encoded tokens into a flat f32 vector,
-    // record the per-doc lengths so we can build the mask.
+    // record the per-doc lengths so we can build the mask. Decoding
+    // stays scalar per-doc here: a tensor-batched decode trades the
+    // per-token Rust loop for several extra `from_slice`/`to_vec1`
+    // round trips and a u8→u32 conversion of the entire codes buffer,
+    // which empirically (criterion bench) is 4–5× *slower* on both
+    // CPU and CUDA backends for typical search candidate sizes.
     let mut decoded: Vec<Vec<f32>> = Vec::with_capacity(candidate_idxs.len());
     let mut max_len = 0usize;
     for &doc_idx in candidate_idxs {
