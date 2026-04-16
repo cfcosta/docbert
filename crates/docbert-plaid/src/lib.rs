@@ -22,4 +22,5 @@ pub mod codec;
 pub mod distance;
 pub mod index;
 pub mod kmeans;
+pub mod persistence;
 pub mod search;
