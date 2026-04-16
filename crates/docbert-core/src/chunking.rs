@@ -14,7 +14,10 @@ use crate::model_manager::DEFAULT_DOCUMENT_LENGTH;
 
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
-const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
+/// Mask used to strip the chunk-index bits out of a chunk `doc_id`,
+/// leaving the base-document bit space. Also the upper bound on a
+/// `DocumentId::new().numeric` — see [`crate::DocumentId::new`].
+pub(crate) const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
 
 /// Default chunk size in characters (roughly ~519 tokens / ~2K chars).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;

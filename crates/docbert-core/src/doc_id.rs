@@ -72,7 +72,22 @@ impl DocumentId {
         hasher.update(relative_path.as_bytes());
         let hash: [u8; 32] = *hasher.finalize().as_bytes();
 
-        let numeric = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        // Mask to 48 bits so the numeric id fits in the chunk-family
+        // bit space. The chunking scheme (see `crate::chunking`)
+        // packs a per-chunk index into the top 16 bits via XOR, and
+        // the search path collapses chunks back to bases by masking
+        // those bits off with `document_family_key`. For that
+        // round-trip to succeed, a base numeric id must itself have
+        // zero top 16 bits — otherwise every search result would be
+        // silently dropped by `metadata.contains_key(&family_key)`.
+        //
+        // 48 bits still gives 2^48 ≈ 2.8×10^14 distinct ids, which is
+        // comfortably collision-resistant for any realistic corpus.
+        // The `short` / `full_hex` displays continue to carry the
+        // full blake3 digest, so user-facing disambiguation is
+        // unaffected.
+        let numeric_raw = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        let numeric = numeric_raw & crate::chunking::CHUNK_FAMILY_MASK;
         let full = hex_encode(&hash);
         let short = full[..MIN_SHORT_LEN].to_string();
 
@@ -253,5 +268,66 @@ mod tests {
             b.full_hex(),
             "collision between ({c1}, {p1}) and ({c2}, {p2})"
         );
+    }
+
+    #[test]
+    fn numeric_fits_in_chunk_family_bit_space() {
+        // The chunking scheme reserves the top 16 bits of a u64 for a
+        // chunk index: chunk_doc_id(base, k) == base ^ (k << 48), and
+        // document_family_key(chunk_id) == chunk_id & 0x0000_FFFF_FFFF_FFFF.
+        // For the metadata lookup at search time — which collapses
+        // chunk ids back to base ids via document_family_key — to
+        // round-trip, `DocumentId::new().numeric` must itself fit in
+        // 48 bits. Any path whose blake3 prefix has a set bit in the
+        // top 16 would otherwise cause the search to silently drop
+        // every hit ("No results found") because
+        // `metadata.contains_key(&family_key(chunk_id))` would compare
+        // a masked key against an unmasked one.
+        //
+        // Exercise a mix of realistic collection/path pairs; real
+        // blake3 prefixes almost always have top-16 bits set, so this
+        // test relies on the masking contract rather than specific
+        // values.
+        for (coll, path) in [
+            ("blog", "plaid.md"),
+            ("diary", "2024-01-01.md"),
+            ("mugraph", "intro.md"),
+            ("openclaw", "README.md"),
+            ("resources", "paper.pdf"),
+            ("lobster", "engine.txt"),
+            ("docbert", "architecture.md"),
+        ] {
+            let id = DocumentId::new(coll, path);
+            assert_eq!(
+                id.numeric >> 48,
+                0,
+                "DocumentId::new({coll:?}, {path:?}).numeric = {:#018x} \
+                 does not fit in 48 bits; top 16 bits = {:#06x} \
+                 would collide with chunk-index encoding",
+                id.numeric,
+                id.numeric >> 48,
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_survives_document_family_key_unchanged() {
+        // Round-trip test: family_key(did.numeric) must equal
+        // did.numeric, otherwise the search path's
+        // `metadata.contains_key(&family_key(chunk_id))` lookup drops
+        // every result.
+        use crate::chunking::document_family_key;
+        for (coll, path) in [
+            ("blog", "plaid.md"),
+            ("diary", "2024-01-01.md"),
+            ("mugraph", "intro.md"),
+        ] {
+            let id = DocumentId::new(coll, path);
+            assert_eq!(
+                document_family_key(id.numeric),
+                id.numeric,
+                "family_key round-trip failed for ({coll:?}, {path:?})",
+            );
+        }
     }
 }
