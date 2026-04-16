@@ -66,6 +66,165 @@ pub fn nearest_centroid(point: &[f32], centroids: &[f32], dim: usize) -> usize {
     best_idx
 }
 
+/// Recompute centroids as the mean of the points currently assigned to them.
+///
+/// This is the M-step of Lloyd's algorithm. If a cluster ends up with no
+/// points assigned, its centroid is copied from `previous` unchanged —
+/// this keeps empty clusters from collapsing to the origin and follows
+/// what fast-plaid's index builder does.
+///
+/// `points` is row-major `n_points × dim`, `assignments` has length
+/// `n_points` with values in `0..k`, and `previous` is row-major
+/// `k × dim`. Returns a new `k × dim` buffer.
+///
+/// # Panics
+///
+/// Panics if any shape invariant is violated or if an assignment is
+/// out of range.
+pub fn update_centroids(
+    points: &[f32],
+    assignments: &[usize],
+    previous: &[f32],
+    dim: usize,
+) -> Vec<f32> {
+    assert!(dim > 0, "update_centroids: dim must be positive");
+    assert!(
+        points.len().is_multiple_of(dim),
+        "update_centroids: points length {} is not a multiple of dim {}",
+        points.len(),
+        dim,
+    );
+    assert!(
+        previous.len().is_multiple_of(dim) && !previous.is_empty(),
+        "update_centroids: previous length {} is not a positive multiple of dim {}",
+        previous.len(),
+        dim,
+    );
+    let k = previous.len() / dim;
+    assert_eq!(
+        assignments.len(),
+        points.len() / dim,
+        "update_centroids: {} assignments for {} points",
+        assignments.len(),
+        points.len() / dim,
+    );
+
+    let mut sums = vec![0.0f32; k * dim];
+    let mut counts = vec![0usize; k];
+
+    for (point, &cluster) in points.chunks_exact(dim).zip(assignments.iter()) {
+        assert!(
+            cluster < k,
+            "update_centroids: assignment {cluster} out of range 0..{k}"
+        );
+        let slot = &mut sums[cluster * dim..(cluster + 1) * dim];
+        for (s, p) in slot.iter_mut().zip(point.iter()) {
+            *s += *p;
+        }
+        counts[cluster] += 1;
+    }
+
+    let mut new_centroids = vec![0.0f32; k * dim];
+    for (cluster, &count) in counts.iter().enumerate() {
+        let start = cluster * dim;
+        let end = start + dim;
+        if count == 0 {
+            new_centroids[start..end].copy_from_slice(&previous[start..end]);
+            continue;
+        }
+        let inv = 1.0f32 / count as f32;
+        for (out, s) in
+            new_centroids[start..end].iter_mut().zip(&sums[start..end])
+        {
+            *out = s * inv;
+        }
+    }
+
+    new_centroids
+}
+
+/// Run Lloyd's algorithm starting from an explicit set of initial centroids.
+///
+/// Iterates "assign points to nearest centroid, recompute centroids" up to
+/// `max_iters` times, stopping early when no point changes cluster between
+/// iterations. Returns the final centroids as a flat `k × dim` buffer.
+///
+/// Taking the initial centroids as an argument keeps the function
+/// deterministic and trivial to test. Random initialization (e.g.
+/// sampling `k` distinct points) is layered on top in [`fit`].
+///
+/// # Panics
+///
+/// Panics on any shape violation between `points`, `initial`, and `dim`,
+/// or if `dim == 0`.
+pub fn fit_with_init(
+    points: &[f32],
+    initial: &[f32],
+    dim: usize,
+    max_iters: usize,
+) -> Vec<f32> {
+    assert!(dim > 0, "fit_with_init: dim must be positive");
+    assert!(
+        initial.len().is_multiple_of(dim) && !initial.is_empty(),
+        "fit_with_init: initial centroids length {} is not a positive multiple of dim {}",
+        initial.len(),
+        dim,
+    );
+    assert!(
+        points.len().is_multiple_of(dim),
+        "fit_with_init: points length {} is not a multiple of dim {}",
+        points.len(),
+        dim,
+    );
+
+    let mut centroids = initial.to_vec();
+    if points.is_empty() || max_iters == 0 {
+        return centroids;
+    }
+
+    let mut previous_assignments: Option<Vec<usize>> = None;
+    for _ in 0..max_iters {
+        let assignments = assign_points(points, &centroids, dim);
+        if previous_assignments.as_deref() == Some(assignments.as_slice()) {
+            break;
+        }
+        centroids = update_centroids(points, &assignments, &centroids, dim);
+        previous_assignments = Some(assignments);
+    }
+    centroids
+}
+
+/// Run k-means with a deterministic initial centroid selection.
+///
+/// This convenience picks the first `k` rows of `points` as the starting
+/// centroids and then delegates to [`fit_with_init`]. It's deterministic
+/// (no RNG), useful for tests, and a sensible default when callers have
+/// already shuffled their input. More sophisticated initialization
+/// (k-means++, sampling) can be added later without changing this API.
+///
+/// # Panics
+///
+/// Panics if `k == 0`, if `dim == 0`, if `points` is empty, or if
+/// `points` has fewer than `k` rows.
+pub fn fit(points: &[f32], k: usize, dim: usize, max_iters: usize) -> Vec<f32> {
+    assert!(k > 0, "fit: k must be positive");
+    assert!(dim > 0, "fit: dim must be positive");
+    assert!(
+        points.len().is_multiple_of(dim),
+        "fit: points length {} is not a multiple of dim {}",
+        points.len(),
+        dim,
+    );
+    let n_points = points.len() / dim;
+    assert!(
+        n_points >= k,
+        "fit: need at least k={k} points, got {n_points}",
+    );
+
+    let initial = &points[..k * dim];
+    fit_with_init(points, initial, dim, max_iters)
+}
+
 /// Assign every point in `points` to the index of its nearest centroid.
 ///
 /// `points` is a flat row-major `n_points × dim` buffer; `centroids` is a
@@ -163,5 +322,101 @@ mod tests {
     fn assign_points_panics_on_ragged_points() {
         let centroids = [0.0, 0.0];
         let _ = assign_points(&[1.0, 2.0, 3.0], &centroids, 2);
+    }
+
+    // -- Lloyd M-step --
+
+    #[test]
+    fn update_centroids_averages_assigned_points() {
+        // Two clusters. Cluster 0 gets (0,0) and (2,0); cluster 1 gets (10,0).
+        let points = [0.0, 0.0, 2.0, 0.0, 10.0, 0.0];
+        let assignments = [0, 0, 1];
+        let previous = [0.0, 0.0, 0.0, 0.0];
+
+        let updated = update_centroids(&points, &assignments, &previous, 2);
+
+        assert_eq!(updated, vec![1.0, 0.0, 10.0, 0.0]);
+    }
+
+    #[test]
+    fn update_centroids_keeps_previous_for_empty_clusters() {
+        // Cluster 1 receives no points; its centroid must survive.
+        let points = [0.0, 0.0, 2.0, 0.0];
+        let assignments = [0, 0];
+        let previous = [5.0, 5.0, 99.0, -99.0];
+
+        let updated = update_centroids(&points, &assignments, &previous, 2);
+
+        assert_eq!(updated[..2], [1.0, 0.0]);
+        assert_eq!(updated[2..], [99.0, -99.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn update_centroids_panics_on_out_of_range_assignment() {
+        let points = [0.0, 0.0];
+        let assignments = [5];
+        let previous = [0.0, 0.0];
+        let _ = update_centroids(&points, &assignments, &previous, 2);
+    }
+
+    // -- Lloyd driver --
+
+    #[test]
+    fn fit_with_init_converges_on_well_separated_clusters() {
+        // Two tight clusters at (0,0) and (10,10). Starting from slightly
+        // off-centre initial centroids, one round of Lloyd's is enough to
+        // snap them to the true cluster means.
+        let points = vec![
+            0.0, 0.0, 0.2, -0.1, -0.1, 0.1, // near (0,0)
+            10.0, 10.0, 10.1, 9.9, 9.9, 10.1, // near (10,10)
+        ];
+        let initial = [0.5, 0.5, 9.5, 9.5];
+
+        let fitted = fit_with_init(&points, &initial, 2, 20);
+
+        assert_eq!(fitted.len(), 4);
+        // Cluster 0 mean
+        assert!((fitted[0] - 0.0333).abs() < 1e-3);
+        assert!((fitted[1] - 0.0).abs() < 1e-3);
+        // Cluster 1 mean
+        assert!((fitted[2] - 10.0).abs() < 1e-3);
+        assert!((fitted[3] - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fit_with_init_is_idempotent_after_convergence() {
+        // Running Lloyd again on an already-converged centroid set must
+        // produce the same centroids (no further movement).
+        let points = vec![0.0, 0.0, 1.0, 0.0, 10.0, 0.0, 11.0, 0.0];
+        let initial = [0.5, 0.0, 10.5, 0.0];
+
+        let once = fit_with_init(&points, &initial, 2, 50);
+        let twice = fit_with_init(&points, &once, 2, 50);
+
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn fit_with_init_returns_initial_when_no_iterations_allowed() {
+        let points = vec![0.0, 0.0, 10.0, 10.0];
+        let initial = [1.0, 1.0, 9.0, 9.0];
+        assert_eq!(fit_with_init(&points, &initial, 2, 0), initial.to_vec());
+    }
+
+    #[test]
+    fn fit_uses_first_k_points_as_initial_centroids() {
+        // With k equal to the number of points, the centroids should be
+        // the points themselves and the assignment is the identity.
+        let points = vec![1.0, 2.0, 3.0, 4.0];
+        let fitted = fit(&points, 2, 2, 10);
+        assert_eq!(fitted, points);
+    }
+
+    #[test]
+    #[should_panic(expected = "need at least")]
+    fn fit_panics_when_asked_for_more_clusters_than_points() {
+        let points = vec![0.0, 0.0];
+        let _ = fit(&points, 5, 2, 1);
     }
 }
