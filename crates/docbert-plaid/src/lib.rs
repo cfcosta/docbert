@@ -19,3 +19,4 @@
 //! layers will be added as subsequent TDD cycles come in.
 
 pub mod distance;
+pub mod kmeans;
