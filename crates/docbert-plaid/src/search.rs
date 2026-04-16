@@ -16,7 +16,11 @@
 //! follows the same data structures and can be layered in later without
 //! changing the public API.
 
-use crate::{codec::EncodedVector, distance::squared_l2, index::Index};
+use crate::{
+    codec::EncodedVector,
+    distance::{dot, squared_l2},
+    index::Index,
+};
 
 /// Tunable knobs for a single search call.
 #[derive(Debug, Clone, Copy)]
@@ -156,12 +160,17 @@ pub fn top_n_centroids(
 
 /// MaxSim between a flat query tensor and a document's encoded tokens.
 ///
-/// For every query token we find the maximum squared-similarity with
-/// any of the document's decoded tokens and sum those maxima. We use
-/// negative squared L2 as the similarity here because the embeddings
-/// live on the same unit-norm sphere in practice (ColBERT applies L2
-/// normalization), so ordering by `-||q-d||²` agrees with ordering by
-/// cosine similarity without the extra divisions.
+/// For every query token we find the maximum dot-product similarity
+/// against any of the document's decoded tokens and sum those maxima.
+/// This matches the ColBERT / PLAID reference definition
+/// (`S = Σ_i max_j q_i · d_j`) so scores are directly comparable with
+/// fast-plaid and the original ColBERT paper.
+///
+/// We use dot product rather than `-squared_l2`: for L2-normalized
+/// query and doc tokens the two are rank-equivalent, but residual
+/// quantization can push decoded doc tokens slightly off the unit
+/// sphere, at which point only the dot product preserves the intended
+/// scoring semantics.
 fn maxsim_query_vs_encoded(
     query_tokens: &[f32],
     doc_encoded: &[EncodedVector],
@@ -179,7 +188,7 @@ fn maxsim_query_vs_encoded(
     for q in query_tokens.chunks_exact(dim) {
         let mut best = f32::NEG_INFINITY;
         for d in &decoded {
-            let sim = -squared_l2(q, d);
+            let sim = dot(q, d);
             if sim > best {
                 best = sim;
             }
@@ -205,26 +214,56 @@ mod tests {
         }
     }
 
-    /// Two well-separated clusters of 2-D tokens in three documents:
-    /// doc 1 lives near (0,0), doc 2 near (10,10), doc 3 straddles both.
+    /// Two well-separated clusters of **unit-norm** 2-D tokens in three
+    /// documents. This mirrors the real-world ColBERT invariant that
+    /// token embeddings live on the unit sphere, which is what makes
+    /// the dot-product MaxSim meaningful. Doc 1 points east, doc 2
+    /// points north, doc 3 has one token in each cluster.
     fn corpus() -> Vec<DocumentTokens> {
+        // Unit vectors by construction.
+        let east_a = [1.0f32, 0.0];
+        let east_b = normalize([0.98, 0.2]);
+        let east_c = normalize([0.97, -0.24]);
+        let north_a = [0.0f32, 1.0];
+        let north_b = normalize([0.2, 0.98]);
+        let north_c = normalize([-0.24, 0.97]);
+
+        let mut doc1 = Vec::new();
+        doc1.extend_from_slice(&east_a);
+        doc1.extend_from_slice(&east_b);
+        doc1.extend_from_slice(&east_c);
+
+        let mut doc2 = Vec::new();
+        doc2.extend_from_slice(&north_a);
+        doc2.extend_from_slice(&north_b);
+        doc2.extend_from_slice(&north_c);
+
+        let mut doc3 = Vec::new();
+        doc3.extend_from_slice(&east_a);
+        doc3.extend_from_slice(&north_a);
+
         vec![
             DocumentTokens {
                 doc_id: 1,
-                tokens: vec![0.0, 0.0, 0.1, 0.2, -0.1, 0.1],
+                tokens: doc1,
                 n_tokens: 3,
             },
             DocumentTokens {
                 doc_id: 2,
-                tokens: vec![10.0, 10.0, 10.2, 9.9, 9.8, 10.1],
+                tokens: doc2,
                 n_tokens: 3,
             },
             DocumentTokens {
                 doc_id: 3,
-                tokens: vec![0.3, -0.2, 9.7, 10.2],
+                tokens: doc3,
                 n_tokens: 2,
             },
         ]
+    }
+
+    fn normalize(v: [f32; 2]) -> [f32; 2] {
+        let norm = (v[0] * v[0] + v[1] * v[1]).sqrt();
+        [v[0] / norm, v[1] / norm]
     }
 
     #[test]
@@ -259,12 +298,13 @@ mod tests {
 
     #[test]
     fn search_ranks_matching_cluster_highest() {
-        // Query near (0,0). Doc 1 sits exactly in that cluster, doc 3 has
-        // a partial overlap, doc 2 is in the other cluster.
+        // Unit-norm query pointing east. Doc 1 has three east tokens,
+        // doc 3 has one east and one north token, doc 2 is entirely
+        // north. MaxSim should prefer doc 1.
         let index = build_index(&corpus(), params());
         let out = search(
             &index,
-            &[0.0, 0.0, 0.05, 0.1],
+            &[1.0, 0.0],
             SearchParams {
                 top_k: 3,
                 n_probe: 2,
@@ -279,7 +319,7 @@ mod tests {
         let index = build_index(&corpus(), params());
         let out = search(
             &index,
-            &[0.0, 0.0],
+            &[1.0, 0.0],
             SearchParams {
                 top_k: 1,
                 n_probe: 2,
@@ -291,9 +331,10 @@ mod tests {
     #[test]
     fn search_scores_are_non_increasing() {
         let index = build_index(&corpus(), params());
+        // Two query tokens, one east, one north.
         let out = search(
             &index,
-            &[0.0, 0.0, 10.0, 10.0],
+            &[1.0, 0.0, 0.0, 1.0],
             SearchParams {
                 top_k: 3,
                 n_probe: 2,
@@ -315,7 +356,7 @@ mod tests {
         let index = build_index(&corpus(), params());
         let out = search(
             &index,
-            &[10.0, 10.0],
+            &[0.0, 1.0],
             SearchParams {
                 top_k: 1,
                 n_probe: 1,
@@ -335,7 +376,7 @@ mod tests {
         let index = build_index(&docs, params());
         let out = search(
             &index,
-            &[0.0, 0.0],
+            &[1.0, 0.0],
             SearchParams {
                 top_k: 10,
                 n_probe: 2,
@@ -348,12 +389,132 @@ mod tests {
     }
 
     #[test]
+    fn search_score_equals_sum_of_maxsim_over_decoded_tokens() {
+        // Sanity: the score we return should match a ground-truth
+        // MaxSim computed with the same decoded tokens, confirming our
+        // per-token similarity is dot product (not -squared_l2).
+        let index = build_index(&corpus(), params());
+        let query = [1.0f32, 0.0];
+
+        let out = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 1,
+                n_probe: index.codec.num_centroids(),
+            },
+        );
+        assert!(!out.is_empty());
+
+        let top = out[0];
+        let doc_idx = index.position_of(top.doc_id).expect("doc present");
+        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+            .iter()
+            .map(|ev| index.codec.decode_vector(ev))
+            .collect();
+
+        // Standard MaxSim: Σ max_j q_i · d_j.
+        let mut expected = 0.0f32;
+        for q in query.chunks_exact(2) {
+            let best = decoded
+                .iter()
+                .map(|d| dot(q, d))
+                .fold(f32::NEG_INFINITY, f32::max);
+            expected += best;
+        }
+        assert!(
+            (expected - top.score).abs() < 1e-5,
+            "score {} differs from ground-truth MaxSim {}",
+            top.score,
+            expected,
+        );
+    }
+
+    #[test]
+    fn search_works_with_four_bit_residuals() {
+        // Build an index with 4-bit residual quantization (16 buckets)
+        // and confirm the MaxSim-ranked top result is still the
+        // matching-cluster doc.
+        let params_4bit = IndexParams {
+            dim: 2,
+            nbits: 4,
+            k_centroids: 2,
+            max_kmeans_iters: 50,
+        };
+        let index = build_index(&corpus(), params_4bit);
+        let out = search(
+            &index,
+            &[1.0, 0.0],
+            SearchParams {
+                top_k: 1,
+                n_probe: 2,
+            },
+        );
+        assert_eq!(out[0].doc_id, 1);
+    }
+
+    #[test]
+    fn search_survives_large_synthetic_corpus_on_both_clusters() {
+        // Bigger synthetic corpus with two distinct unit-norm clusters.
+        // An east query must top-rank an east document; same for north.
+        let mut docs = Vec::new();
+        for i in 0..20 {
+            let jitter = i as f32 * 0.003;
+            let east = normalize([1.0 - jitter, 0.05 + jitter]);
+            docs.push(DocumentTokens {
+                doc_id: 100 + i,
+                tokens: east.to_vec(),
+                n_tokens: 1,
+            });
+            let north = normalize([0.05 + jitter, 1.0 - jitter]);
+            docs.push(DocumentTokens {
+                doc_id: 200 + i,
+                tokens: north.to_vec(),
+                n_tokens: 1,
+            });
+        }
+        let index = build_index(&docs, params());
+
+        let east = search(
+            &index,
+            &[1.0, 0.0],
+            SearchParams {
+                top_k: 5,
+                n_probe: 2,
+            },
+        );
+        for r in &east {
+            assert!(
+                (100..120).contains(&r.doc_id),
+                "east query should only surface east docs: got {}",
+                r.doc_id,
+            );
+        }
+
+        let north = search(
+            &index,
+            &[0.0, 1.0],
+            SearchParams {
+                top_k: 5,
+                n_probe: 2,
+            },
+        );
+        for r in &north {
+            assert!(
+                (200..220).contains(&r.doc_id),
+                "north query should only surface north docs: got {}",
+                r.doc_id,
+            );
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "top_k must be positive")]
     fn search_panics_on_zero_top_k() {
         let index = build_index(&corpus(), params());
         let _ = search(
             &index,
-            &[0.0, 0.0],
+            &[1.0, 0.0],
             SearchParams {
                 top_k: 0,
                 n_probe: 1,
@@ -367,7 +528,7 @@ mod tests {
         let index = build_index(&corpus(), params());
         let _ = search(
             &index,
-            &[0.0, 0.0],
+            &[1.0, 0.0],
             SearchParams {
                 top_k: 1,
                 n_probe: 0,
@@ -381,7 +542,7 @@ mod tests {
         let index = build_index(&corpus(), params());
         let _ = search(
             &index,
-            &[0.0, 0.0, 1.0],
+            &[1.0, 0.0, 0.5],
             SearchParams {
                 top_k: 1,
                 n_probe: 1,
