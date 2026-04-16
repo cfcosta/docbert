@@ -7,7 +7,6 @@ use docbert_core::{
     config_db::ConfigDb,
     data_dir::DataDir,
     doc_id::format_document_ref,
-    embedding_db::EmbeddingDb,
     error,
     model_manager::{DEFAULT_MODEL_ID, ModelManager},
     search,
@@ -73,10 +72,6 @@ struct DocbertState {
 impl DocbertState {
     fn open_config_db(&self) -> error::Result<ConfigDb> {
         runtime_resources::open_config_db_blocking(&self.data_dir)
-    }
-
-    fn open_embedding_db(&self) -> error::Result<EmbeddingDb> {
-        runtime_resources::open_embedding_db_blocking(&self.data_dir)
     }
 }
 
@@ -227,10 +222,6 @@ impl DocbertMcpServer {
             .state
             .open_config_db()
             .map_err(|e| mcp_error("failed to open config db", e))?;
-        let embedding_db = self
-            .state
-            .open_embedding_db()
-            .map_err(|e| mcp_error("failed to open embedding db", e))?;
         let mut model = self.state.model.lock().map_err(|_| {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
@@ -239,10 +230,10 @@ impl DocbertMcpServer {
             &args,
             &self.state.search_index,
             &config_db,
-            &embedding_db,
+            &self.state.data_dir,
             &mut model,
         )
-        .map_err(|e| mcp_error("search failed", e))?;
+        .map_err(search_error)?;
 
         search::disambiguate_doc_ids(&mut results, &config_db);
 
@@ -274,10 +265,6 @@ impl DocbertMcpServer {
             .state
             .open_config_db()
             .map_err(|e| mcp_error("failed to open config db", e))?;
-        let embedding_db = self
-            .state
-            .open_embedding_db()
-            .map_err(|e| mcp_error("failed to open embedding db", e))?;
         let mut model = self.state.model.lock().map_err(|_| {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
@@ -285,10 +272,10 @@ impl DocbertMcpServer {
         let mut results = search::execute_semantic_search(
             &args,
             &config_db,
-            &embedding_db,
+            &self.state.data_dir,
             &mut model,
         )
-        .map_err(|e| mcp_error("semantic search failed", e))?;
+        .map_err(search_error)?;
 
         search::disambiguate_doc_ids(&mut results, &config_db);
 
@@ -901,6 +888,20 @@ fn mcp_error(message: &str, error: impl std::fmt::Display) -> rmcp::ErrorData {
     )
 }
 
+/// Map a core search error to an MCP error with a user-facing message.
+///
+/// `PlaidIndexMissing` gets surfaced with the actionable "run `docbert
+/// sync`" hint inline in the message so MCP clients can present it
+/// directly without having to dig into `data.error`.
+fn search_error(err: docbert_core::Error) -> rmcp::ErrorData {
+    match err {
+        docbert_core::Error::PlaidIndexMissing => {
+            rmcp::ErrorData::internal_error(err.to_string(), None)
+        }
+        other => mcp_error("search failed", other),
+    }
+}
+
 /// Run the MCP server on stdin/stdout.
 ///
 /// This blocks until the client disconnects. In practice, it is what
@@ -939,7 +940,11 @@ pub fn run_mcp(data_dir: DataDir, model_id: String) -> error::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use docbert_core::{doc_id::DocumentId, incremental::DocumentMetadata};
+    use docbert_core::{
+        doc_id::DocumentId,
+        embedding_db::EmbeddingDb,
+        incremental::DocumentMetadata,
+    };
 
     use super::*;
 
@@ -1062,7 +1067,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_search_empty_index_returns_no_results() {
+    async fn semantic_search_without_plaid_index_returns_actionable_error() {
+        // Without a prebuilt PLAID index (fresh data dir), semantic_search
+        // must surface PlaidIndexMissing as a tool error, not an empty
+        // result set — callers need to know to run `docbert sync`.
         let (server, _tmp, _doc_ids) = build_server(&[]);
 
         let params = SemanticSearchParams {
@@ -1073,14 +1081,15 @@ mod tests {
             include_snippet: Some(false),
         };
 
-        let result = server.semantic_search(Parameters(params)).await.unwrap();
-        let structured = result.structured_content.expect("structured");
-        let results = structured
-            .get("results")
-            .and_then(|v| v.as_array())
-            .expect("results array");
-
-        assert!(results.is_empty());
+        let err = server
+            .semantic_search(Parameters(params))
+            .await
+            .expect_err("expected PlaidIndexMissing error");
+        assert!(
+            err.message.contains("sync"),
+            "expected sync hint in error, got: {}",
+            err.message
+        );
     }
 
     #[test]

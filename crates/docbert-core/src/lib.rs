@@ -31,17 +31,16 @@
 //!
 //! ```no_run
 //! use std::path::Path;
-//! use docbert_core::{ConfigDb, DataDir, SearchIndex, EmbeddingDb, ModelManager};
+//! use docbert_core::{ConfigDb, DataDir, SearchIndex, ModelManager};
 //! use docbert_core::search::{self, SearchParams};
 //!
 //! // Open the local databases (the caller decides the root path).
 //! let data_dir = DataDir::new(Path::new("/home/user/.local/share/docbert"));
 //! let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
 //! let search_index = SearchIndex::open(&data_dir.tantivy_dir().unwrap()).unwrap();
-//! let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
 //! let mut model = ModelManager::new();
 //!
-//! // BM25-only search does not need to download a model.
+//! // BM25-only search does not need a PLAID index or a ColBERT model.
 //! let params = SearchParams {
 //!     query: "rust programming".to_string(),
 //!     count: 10,
@@ -56,7 +55,7 @@
 //!     &params,
 //!     &search_index,
 //!     &config_db,
-//!     &embedding_db,
+//!     &data_dir,
 //!     &mut model,
 //! )
 //! .unwrap();

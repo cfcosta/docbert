@@ -73,9 +73,6 @@ pub(crate) async fn search(
     let config_db = state
         .open_config_db()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let embedding_db = state
-        .open_embedding_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut model = state
         .model
         .lock()
@@ -85,10 +82,18 @@ pub(crate) async fn search(
         &request,
         &state.search_index,
         &config_db,
-        &embedding_db,
+        &state.data_dir,
         &mut model,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|err| match err {
+        // "PLAID index not built yet" is a caller-actionable state, not
+        // a server fault: surface it as 503 so clients can distinguish
+        // from a real internal error.
+        docbert_core::Error::PlaidIndexMissing => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
     drop(model);
 
     search::disambiguate_doc_ids(&mut results, &config_db);
@@ -404,10 +409,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_search_empty_index_returns_ok() {
+    async fn web_search_without_plaid_index_returns_service_unavailable() {
+        // Fresh data dir → no PLAID index → semantic leg cannot run.
+        // The handler converts PlaidIndexMissing to 503 so clients can
+        // tell this apart from a real internal error and prompt the
+        // user to run `docbert sync`.
         let (_tmp, state) = test_state();
 
-        let response = search(
+        let status = search(
             State(state),
             Json(SearchRequest {
                 query: "rust".to_string(),
@@ -418,11 +427,7 @@ mod tests {
             }),
         )
         .await
-        .unwrap()
-        .0;
-
-        assert_eq!(response.mode, "hybrid");
-        assert_eq!(response.result_count, 0);
-        assert!(response.results.is_empty());
+        .expect_err("expected 503 for missing PLAID index");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

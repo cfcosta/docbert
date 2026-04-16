@@ -1,7 +1,6 @@
 use docbert_core::{
     ConfigDb,
     DataDir,
-    EmbeddingDb,
     ModelManager,
     SearchIndex,
     error,
@@ -22,7 +21,6 @@ pub(crate) fn run_search(
     args: &cli::SearchArgs,
 ) -> error::Result<()> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model =
         ModelManager::with_model_id(model_resolution.model_id.clone());
     if !args.bm25_only {
@@ -44,7 +42,7 @@ pub(crate) fn run_search(
             &params,
             &search_index,
             config_db,
-            &embedding_db,
+            data_dir,
             &mut model,
         )?
     } else {
@@ -59,7 +57,7 @@ pub(crate) fn run_search(
             &request,
             &search_index,
             config_db,
-            &embedding_db,
+            data_dir,
             &mut model,
         )?
     };
@@ -82,7 +80,6 @@ pub(crate) fn run_semantic_search(
     model_resolution: &ModelResolution,
     args: &cli::SemanticSearchArgs,
 ) -> error::Result<()> {
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model =
         ModelManager::with_model_id(model_resolution.model_id.clone());
     log_model_runtime(&mut model)?;
@@ -96,10 +93,7 @@ pub(crate) fn run_semantic_search(
     };
 
     let mut results = search::execute_semantic_search(
-        &params,
-        config_db,
-        &embedding_db,
-        &mut model,
+        &params, config_db, data_dir, &mut model,
     )?;
 
     search::disambiguate_doc_ids(&mut results, config_db);

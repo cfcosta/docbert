@@ -80,4 +80,9 @@ pub enum Error {
 
     #[error("archive serialization error: {0}")]
     Rkyv(#[from] rkyv::rancor::Error),
+
+    #[error(
+        "PLAID semantic index is not built yet; run `docbert sync` or `docbert rebuild` to build it"
+    )]
+    PlaidIndexMissing,
 }

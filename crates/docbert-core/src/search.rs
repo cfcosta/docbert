@@ -1,13 +1,16 @@
 use std::{collections::HashMap, path::Path};
 
 use crate::{
+    chunking::document_family_key,
     config_db::ConfigDb,
+    data_dir::DataDir,
     doc_id::{format_document_ref, strip_document_ref_prefix},
     embedding_db::EmbeddingDb,
-    error::Result,
+    error::{Error, Result},
     incremental::DocumentMetadata,
     ingestion,
     model_manager::ModelManager,
+    plaid,
     reranker::{self, RankedDocument},
     tantivy_index::{SearchIndex, SearchResult},
     text_util,
@@ -153,29 +156,30 @@ pub struct FinalResult {
 ///
 /// 1. **BM25 leg** — Tantivy returns up to [`RRF_CANDIDATE_LIMIT`] candidates,
 ///    with optional fuzzy matching.
-/// 2. **Semantic leg** — ColBERT MaxSim scores every document that has an
-///    embedding, optionally filtered by collection and skipping documents
-///    with empty bodies. The top [`RRF_CANDIDATE_LIMIT`] are kept.
+/// 2. **Semantic leg** — the prebuilt PLAID index at
+///    [`DataDir::plaid_index`] is queried with the encoded query tokens
+///    to produce up to [`RRF_CANDIDATE_LIMIT`] candidates. If no PLAID
+///    index is present, the call fails with [`Error::PlaidIndexMissing`]
+///    so the caller can surface a clear "run `docbert sync`" message.
 /// 3. **RRF fusion** — ranks from both lists are combined as
 ///    `sum(1 / (k + rank))` with `k = `[`RRF_K`].
 /// 4. **Limit** — the top `count` fused results are returned, unless
 ///    `all` is set.
 ///
-/// When `bm25_only` is `true`, the semantic leg and RRF are skipped and the
-/// result is plain BM25 filtered by `min_score` and limited by `count` / `all`.
-/// `min_score` is ignored in the RRF path because fused scores are not on the
-/// BM25 scale.
+/// When `bm25_only` is `true`, the semantic leg is skipped entirely and
+/// the PLAID index is not touched. `min_score` is ignored in the RRF
+/// path because fused scores are not on the BM25 scale.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use docbert_core::{ConfigDb, SearchIndex, EmbeddingDb, ModelManager};
+/// use docbert_core::{ConfigDb, DataDir, SearchIndex, ModelManager};
 /// use docbert_core::search::{execute_search, SearchParams};
 ///
 /// # let tmp = tempfile::tempdir().unwrap();
+/// let data_dir = DataDir::new(tmp.path());
 /// let index = SearchIndex::open_in_ram().unwrap();
 /// let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-/// let emb_db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
 /// let mut model = ModelManager::new();
 ///
 /// let params = SearchParams {
@@ -188,7 +192,8 @@ pub struct FinalResult {
 ///     all: false,
 /// };
 ///
-/// let results = execute_search(&params, &index, &config_db, &emb_db, &mut model).unwrap();
+/// // bm25_only skips the semantic leg; no PLAID index is required.
+/// let results = execute_search(&params, &index, &config_db, &data_dir, &mut model).unwrap();
 /// for r in &results {
 ///     println!("{}: {} (score {:.3})", r.rank, r.title, r.score);
 /// }
@@ -197,14 +202,14 @@ pub fn execute_search(
     args: &SearchParams,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
-    embedding_db: &EmbeddingDb,
+    data_dir: &DataDir,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
     if args.bm25_only {
         return execute_bm25_only(args, search_index);
     }
 
-    execute_rrf(args, search_index, config_db, embedding_db, model)
+    execute_rrf(args, search_index, config_db, data_dir, model)
 }
 
 fn execute_bm25_only(
@@ -245,7 +250,7 @@ fn execute_rrf(
     args: &SearchParams,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
-    embedding_db: &EmbeddingDb,
+    data_dir: &DataDir,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
     // BM25 leg
@@ -257,10 +262,10 @@ fn execute_rrf(
         RRF_CANDIDATE_LIMIT,
     )?;
 
-    // Semantic leg (over all documents, scored with ColBERT MaxSim)
+    // Semantic leg — requires a prebuilt PLAID index.
     let (sem_metadata, sem_ranked) = run_semantic_leg(
         config_db,
-        embedding_db,
+        data_dir,
         model,
         &args.query,
         args.collection.as_deref(),
@@ -345,37 +350,78 @@ fn run_bm25_leg(
     }
 }
 
+/// Default number of IVF centroids each query token probes during PLAID
+/// search. Small enough to stay fast on a laptop, large enough that the
+/// recall loss relative to exact MaxSim is negligible on typical personal
+/// corpora. Expose later as a knob if workloads want finer control.
+const PLAID_DEFAULT_N_PROBE: usize = 8;
+
 fn run_semantic_leg(
     config_db: &ConfigDb,
-    embedding_db: &EmbeddingDb,
+    data_dir: &DataDir,
     model: &mut ModelManager,
     query: &str,
     collection: Option<&str>,
     limit: usize,
 ) -> Result<(HashMap<u64, DocumentMetadata>, Vec<RankedDocument>)> {
+    // Require a prebuilt PLAID index. The caller surfaces the error as
+    // an actionable "run `docbert sync`" message.
+    let plaid_index =
+        plaid::load_index(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
+
+    // Collect metadata up front so we can (a) filter results by
+    // collection and (b) hand a HashMap to the fusion caller for
+    // final-result enrichment.
     let metadata_entries = config_db.list_all_document_metadata_typed()?;
     if metadata_entries.is_empty() {
         return Ok((HashMap::new(), Vec::new()));
     }
 
-    let (metadata, doc_ids) = semantic_candidates_from_metadata(
-        config_db,
-        collection,
-        metadata_entries,
-    );
-
-    if doc_ids.is_empty() {
+    let metadata: HashMap<u64, DocumentMetadata> = metadata_entries
+        .into_iter()
+        .filter(|(_, meta)| {
+            collection.is_none_or(|c| c == meta.collection.as_str())
+        })
+        .collect();
+    if metadata.is_empty() {
         return Ok((metadata, Vec::new()));
     }
 
     let query_embedding = model.encode_query(query)?;
-    let mut ranked = semantic_ranked_from_query_embedding(
+
+    // Oversample PLAID so a collection filter + chunk-family collapse
+    // don't starve the fused result set of candidates.
+    let oversample = limit.saturating_mul(8).max(limit).max(64);
+    let raw_results = plaid::search(
+        &plaid_index,
         &query_embedding,
-        &doc_ids,
-        embedding_db,
-        model,
+        oversample,
+        PLAID_DEFAULT_N_PROBE,
     )?;
 
+    // Collapse chunk families to a single base-document score (keep the
+    // best chunk score per family), then drop anything outside the
+    // collection filter or missing metadata.
+    let mut best_per_family: HashMap<u64, f32> = HashMap::new();
+    for result in raw_results {
+        let base_id = document_family_key(result.doc_id);
+        if !metadata.contains_key(&base_id) {
+            continue;
+        }
+        best_per_family
+            .entry(base_id)
+            .and_modify(|current| {
+                if result.score > *current {
+                    *current = result.score;
+                }
+            })
+            .or_insert(result.score);
+    }
+
+    let mut ranked: Vec<RankedDocument> = best_per_family
+        .into_iter()
+        .map(|(doc_num_id, score)| RankedDocument { doc_num_id, score })
+        .collect();
     ranked.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -422,6 +468,9 @@ pub fn rrf_fuse(lists: &[&[u64]], k: usize) -> Vec<(u64, f32)> {
     fused
 }
 
+// Kept only to back the legacy unit tests that exercised the
+// pre-PLAID semantic leg; the production code no longer calls it.
+#[allow(dead_code)]
 fn semantic_candidates_from_metadata(
     config_db: &ConfigDb,
     collection: Option<&str>,
@@ -447,6 +496,7 @@ fn semantic_candidates_from_metadata(
     (metadata, doc_ids)
 }
 
+#[allow(dead_code)]
 fn semantic_ranked_from_query_embedding(
     query_embedding: &candle_core::Tensor,
     doc_ids: &[u64],
@@ -494,39 +544,74 @@ fn semantic_final_results_from_ranked(
 
 /// Run semantic-only search across all indexed documents.
 ///
-/// Unlike [`execute_search`], this skips BM25 and scores every stored embedding
-/// with ColBERT MaxSim. That can surface related documents even when they share
-/// little wording with the query.
+/// Unlike [`execute_search`], this skips BM25 entirely and returns
+/// results purely from the PLAID index. If the index has not been built
+/// yet, the call fails with [`Error::PlaidIndexMissing`]; the caller
+/// should surface this as a clear "run `docbert sync`" message.
 ///
 /// The ColBERT model is loaded on first use.
 pub fn execute_semantic_search(
     args: &SemanticSearchParams,
     config_db: &ConfigDb,
-    embedding_db: &EmbeddingDb,
+    data_dir: &DataDir,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
+    let plaid_index =
+        plaid::load_index(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
+
     let metadata_entries = config_db.list_all_document_metadata_typed()?;
     if metadata_entries.is_empty() {
         return Ok(vec![]);
     }
 
-    let (metadata, doc_ids) = semantic_candidates_from_metadata(
-        config_db,
-        args.collection.as_deref(),
-        metadata_entries,
-    );
-
-    if doc_ids.is_empty() {
+    let metadata: HashMap<u64, DocumentMetadata> = metadata_entries
+        .into_iter()
+        .filter(|(_, meta)| {
+            args.collection.is_none()
+                || args.collection.as_deref() == Some(meta.collection.as_str())
+        })
+        .collect();
+    if metadata.is_empty() {
         return Ok(vec![]);
     }
 
     let query_embedding = model.encode_query(&args.query)?;
-    let ranked = semantic_ranked_from_query_embedding(
+
+    let oversample = args.count.saturating_mul(8).max(args.count).max(64);
+    let raw_results = plaid::search(
+        &plaid_index,
         &query_embedding,
-        &doc_ids,
-        embedding_db,
-        model,
+        oversample,
+        PLAID_DEFAULT_N_PROBE,
     )?;
+
+    // Collapse chunk families, filter by collection/metadata presence,
+    // keep the best score per family.
+    let mut best_per_family: HashMap<u64, f32> = HashMap::new();
+    for result in raw_results {
+        let base_id = document_family_key(result.doc_id);
+        if !metadata.contains_key(&base_id) {
+            continue;
+        }
+        best_per_family
+            .entry(base_id)
+            .and_modify(|current| {
+                if result.score > *current {
+                    *current = result.score;
+                }
+            })
+            .or_insert(result.score);
+    }
+
+    let mut ranked: Vec<RankedDocument> = best_per_family
+        .into_iter()
+        .map(|(doc_num_id, score)| RankedDocument { doc_num_id, score })
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut results = semantic_final_results_from_ranked(
         &metadata,
@@ -546,7 +631,7 @@ pub fn execute_search_mode(
     request: &SearchQuery,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
-    embedding_db: &EmbeddingDb,
+    data_dir: &DataDir,
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
     match mode {
@@ -559,7 +644,7 @@ pub fn execute_search_mode(
                 all: false,
             },
             config_db,
-            embedding_db,
+            data_dir,
             model,
         ),
         SearchMode::Hybrid => execute_search(
@@ -574,7 +659,7 @@ pub fn execute_search_mode(
             },
             search_index,
             config_db,
-            embedding_db,
+            data_dir,
             model,
         ),
     }
@@ -728,6 +813,7 @@ pub fn short_doc_id(numeric: u64, full_hex: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn document_has_semantic_body(
     config_db: &ConfigDb,
     collection_paths: &mut std::collections::HashMap<String, Option<String>>,
@@ -1270,12 +1356,11 @@ mod tests {
 
     /// Set up a search index with sample documents and commit them.
     fn setup_index_with_docs()
-    -> (SearchIndex, EmbeddingDb, ConfigDb, tempfile::TempDir) {
+    -> (SearchIndex, DataDir, ConfigDb, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
 
         let mut writer = idx.writer(15_000_000).unwrap();
 
@@ -1338,17 +1423,17 @@ mod tests {
         }
 
         writer.commit().unwrap();
-        (idx, embedding_db, config_db, tmp)
+        (idx, data_dir, config_db, tmp)
     }
 
     #[test]
     fn bm25_only_returns_relevant_results() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("rust programming");
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty(), "search should return results");
@@ -1361,12 +1446,12 @@ mod tests {
 
     #[test]
     fn bm25_only_results_have_correct_ranks() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("programming");
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(results.len() >= 2, "should find multiple programming docs");
@@ -1381,13 +1466,13 @@ mod tests {
 
     #[test]
     fn bm25_only_respects_count_limit() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.count = 1;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert_eq!(results.len(), 1, "should respect count limit");
@@ -1395,13 +1480,13 @@ mod tests {
 
     #[test]
     fn bm25_only_respects_min_score() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.min_score = 999.0; // impossibly high threshold
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(
@@ -1412,14 +1497,14 @@ mod tests {
 
     #[test]
     fn bm25_only_collection_filter() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.collection = Some("notes".to_string());
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty());
@@ -1433,12 +1518,12 @@ mod tests {
 
     #[test]
     fn bm25_only_no_results_for_unrelated_query() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("xyzzy_nonexistent_term_12345");
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(results.is_empty(), "should return no results for gibberish");
@@ -1446,14 +1531,14 @@ mod tests {
 
     #[test]
     fn bm25_only_all_flag_returns_everything() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("programming");
         args.all = true;
         args.count = 1; // should be ignored when all=true
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(
@@ -1464,12 +1549,12 @@ mod tests {
 
     #[test]
     fn bm25_only_scores_are_descending() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let args = make_search_args("programming language");
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         for window in results.windows(2) {
@@ -1482,13 +1567,13 @@ mod tests {
 
     #[test]
     fn bm25_only_fuzzy_matching_finds_typos() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         // "programing" (one 'm') should fuzzy-match "programming"
         let args = make_search_args("programing");
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(
@@ -1499,13 +1584,13 @@ mod tests {
 
     #[test]
     fn bm25_only_no_fuzzy_flag() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("rust");
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty(), "exact search should find 'rust'");
@@ -1514,13 +1599,13 @@ mod tests {
 
     #[test]
     fn bm25_only_result_fields_populated() {
-        let (idx, emb_db, config_db, _tmp) = setup_index_with_docs();
+        let (idx, data_dir, config_db, _tmp) = setup_index_with_docs();
         let mut model = ModelManager::new();
         let mut args = make_search_args("pasta");
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert_eq!(results.len(), 1);
@@ -1540,7 +1625,7 @@ mod tests {
     /// leg can find them), and returns everything needed for search.
     fn setup_e2e() -> (
         SearchIndex,
-        EmbeddingDb,
+        DataDir,
         ConfigDb,
         ModelManager,
         tempfile::TempDir,
@@ -1549,9 +1634,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let idx = SearchIndex::open_in_ram().unwrap();
+        let data_dir = DataDir::new(tmp.path());
         let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let mut model = ModelManager::new();
 
         let mut writer = idx.writer(15_000_000).unwrap();
@@ -1656,17 +1742,30 @@ mod tests {
             embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
-        (idx, embedding_db, config_db, model, tmp)
+        // Build and persist a PLAID index so the search path can find it.
+        let plaid_index = crate::plaid::build_index_from_embedding_db(
+            &embedding_db,
+            crate::plaid::PlaidBuildParams {
+                k_centroids: 4,
+                nbits: 2,
+                max_kmeans_iters: 20,
+            },
+        )
+        .expect("failed to build PLAID index for e2e fixture");
+        crate::plaid::save_index(&plaid_index, &data_dir).unwrap();
+
+        (idx, data_dir, config_db, model, tmp)
     }
 
     fn setup_semantic_e2e()
-    -> (ConfigDb, EmbeddingDb, ModelManager, tempfile::TempDir) {
+    -> (ConfigDb, DataDir, ModelManager, tempfile::TempDir) {
         use crate::embedding::embed_and_store;
 
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
         let mut model = ModelManager::new();
 
         let docs: Vec<(&str, &str, &str, &str)> = vec![
@@ -1717,39 +1816,50 @@ mod tests {
             embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
-        (config_db, embedding_db, model, tmp)
+        // Build and persist the PLAID index so the semantic leg can find it.
+        let plaid_index = crate::plaid::build_index_from_embedding_db(
+            &embedding_db,
+            crate::plaid::PlaidBuildParams {
+                k_centroids: 2,
+                nbits: 2,
+                max_kmeans_iters: 20,
+            },
+        )
+        .expect("failed to build PLAID index for semantic e2e fixture");
+        crate::plaid::save_index(&plaid_index, &data_dir).unwrap();
+
+        (config_db, data_dir, model, tmp)
     }
 
     #[test]
-    fn semantic_search_empty_returns_empty() {
+    fn semantic_search_without_plaid_index_errors_with_actionable_message() {
+        // Before a PLAID index has been built (fresh data dir), any
+        // semantic query must fail with PlaidIndexMissing so the caller
+        // can prompt the user to run `docbert sync`.
         let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let mut model = ModelManager::new();
         let args = make_semantic_args("anything");
 
-        let results = execute_semantic_search(
-            &args,
-            &config_db,
-            &embedding_db,
-            &mut model,
-        )
-        .unwrap();
+        let err =
+            execute_semantic_search(&args, &config_db, &data_dir, &mut model)
+                .unwrap_err();
 
-        assert!(results.is_empty());
+        assert!(matches!(err, Error::PlaidIndexMissing));
+        assert!(err.to_string().contains("docbert sync"));
     }
 
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_search_with_reranking_returns_results() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("rust programming language");
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty(), "reranked search should return results");
@@ -1763,16 +1873,12 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_semantic_only_search_returns_results() {
-        let (config_db, embedding_db, mut model, _tmp) = setup_semantic_e2e();
+        let (config_db, data_dir, mut model, _tmp) = setup_semantic_e2e();
         let args = make_semantic_args("rust programming language");
 
-        let results = execute_semantic_search(
-            &args,
-            &config_db,
-            &embedding_db,
-            &mut model,
-        )
-        .unwrap();
+        let results =
+            execute_semantic_search(&args, &config_db, &data_dir, &mut model)
+                .unwrap();
 
         assert!(!results.is_empty(), "semantic search should return results");
         assert_eq!(
@@ -1784,14 +1890,14 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_improves_relevance() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         // Query about cooking - should rank pasta doc highest
         let mut args = make_search_args("how to cook food");
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty());
@@ -1804,13 +1910,13 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranked_scores_are_descending() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(results.len() >= 2);
@@ -1827,7 +1933,7 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_semantic_search_understands_meaning() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         // "memory management" doesn't appear verbatim, but is
         // semantically related to Rust's ownership/borrow checker
@@ -1835,7 +1941,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(
@@ -1853,13 +1959,13 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_all_result_fields_populated() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("gardening plants");
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty());
@@ -1876,7 +1982,7 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_with_collection_filter() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
@@ -1884,7 +1990,7 @@ mod tests {
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(!results.is_empty());
@@ -1904,7 +2010,7 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_count_and_score_combined() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         // First get all results
         let mut args = make_search_args("programming language");
@@ -1912,7 +2018,7 @@ mod tests {
         args.all = true;
 
         let all_results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
         assert!(
             all_results.len() >= 2,
@@ -1923,7 +2029,7 @@ mod tests {
         args.all = false;
         args.count = 1;
         let limited =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
         assert_eq!(limited.len(), 1, "count=1 should limit to 1 result");
         assert_eq!(
@@ -1935,13 +2041,13 @@ mod tests {
     #[test]
     #[ignore = "requires ColBERT model download"]
     fn e2e_reranking_ranks_are_sequential() {
-        let (idx, emb_db, config_db, mut model, _tmp) = setup_e2e();
+        let (idx, data_dir, config_db, mut model, _tmp) = setup_e2e();
 
         let mut args = make_search_args("programming");
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &emb_db, &mut model)
+            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
                 .unwrap();
 
         assert!(results.len() >= 2);
