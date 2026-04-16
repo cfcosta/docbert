@@ -31,6 +31,7 @@ use docbert_plaid::{
     },
     persistence,
     search::{self as plaid_search, SearchParams},
+    update::{self as plaid_update, IndexUpdate},
 };
 
 use crate::{
@@ -144,6 +145,62 @@ pub fn build_index_from_embedding_db(
     };
 
     Ok(plaid_index::build_index(&documents, index_params))
+}
+
+/// Apply the given sync deltas to `existing`, reusing its codec.
+///
+/// `changed_ids` are doc_ids whose embeddings have changed since the
+/// last build (treated as upserts: the old entry is removed, new
+/// tokens are read from `embedding_db` and encoded against the
+/// existing codec). `deleted_ids` are removed outright.
+///
+/// Returns [`Error::Config`] if any `changed_ids` entry is missing
+/// from `embedding_db`, or if the stored dimensionality disagrees
+/// with the existing index — the caller is responsible for falling
+/// back to a full rebuild in those cases.
+///
+/// Does not re-train centroids or the residual codec. For a corpus
+/// whose distribution hasn't drifted much, this is strictly cheaper
+/// than [`build_index_from_embedding_db`] since k-means and quantizer
+/// training are skipped; the heavy work reduces to encoding just the
+/// `changed_ids` tokens.
+pub fn update_index_from_embedding_db(
+    embedding_db: &EmbeddingDb,
+    existing: PlaidIndex,
+    changed_ids: &[u64],
+    deleted_ids: &[u64],
+) -> Result<PlaidIndex> {
+    let dim = existing.params.dim;
+    let mut upserts: Vec<DocumentTokens> =
+        Vec::with_capacity(changed_ids.len());
+    for &id in changed_ids {
+        let Some(matrix) = embedding_db.load(id)? else {
+            return Err(Error::Config(format!(
+                "cannot update PLAID index: changed doc_id {id} not found \
+                 in embedding_db",
+            )));
+        };
+        let this_dim = matrix.dimension as usize;
+        if this_dim != dim {
+            return Err(Error::Config(format!(
+                "cannot update PLAID index: doc {id} has dim {this_dim} \
+                 but index expects {dim}",
+            )));
+        }
+        upserts.push(DocumentTokens {
+            doc_id: id,
+            tokens: matrix.data,
+            n_tokens: matrix.num_tokens as usize,
+        });
+    }
+
+    Ok(plaid_update::apply_update(
+        existing,
+        IndexUpdate {
+            deletions: deleted_ids,
+            upserts: &upserts,
+        },
+    ))
 }
 
 /// Write `index` to the canonical PLAID index path under `data_dir`.
@@ -324,6 +381,137 @@ mod tests {
         assert!(!results.is_empty());
         // Doc 1 or doc 3 lives in this cluster; doc 2 is far.
         assert!(results[0].doc_id == 1 || results[0].doc_id == 3);
+    }
+
+    #[test]
+    fn update_with_no_changes_returns_equivalent_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+        let before_ids = index.doc_ids.clone();
+        let before_codec = index.codec.clone();
+
+        let updated =
+            update_index_from_embedding_db(&db, index, &[], &[]).unwrap();
+
+        assert_eq!(updated.doc_ids, before_ids);
+        assert_eq!(updated.codec.centroids, before_codec.centroids);
+        assert_eq!(updated.codec.bucket_cutoffs, before_codec.bucket_cutoffs);
+        assert_eq!(updated.codec.bucket_weights, before_codec.bucket_weights);
+    }
+
+    #[test]
+    fn update_preserves_existing_codec_when_adding_a_new_doc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+        let before_codec = index.codec.clone();
+
+        // Introduce a new document after the codec has been frozen.
+        db.store(4, 1, 2, &[0.2, -0.3]).unwrap();
+
+        let updated =
+            update_index_from_embedding_db(&db, index, &[4], &[]).unwrap();
+
+        assert!(updated.doc_ids.contains(&4));
+        assert_eq!(updated.codec.centroids, before_codec.centroids);
+        assert_eq!(updated.codec.bucket_cutoffs, before_codec.bucket_cutoffs);
+        assert_eq!(updated.codec.bucket_weights, before_codec.bucket_weights);
+    }
+
+    #[test]
+    fn update_removes_deleted_docs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+
+        let updated =
+            update_index_from_embedding_db(&db, index, &[], &[2]).unwrap();
+
+        assert!(!updated.doc_ids.contains(&2));
+        assert!(updated.doc_ids.contains(&1));
+        assert!(updated.doc_ids.contains(&3));
+    }
+
+    #[test]
+    fn update_reads_replacement_tokens_for_changed_id_from_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+        let old_encoded =
+            index.doc_tokens[index.position_of(1).unwrap()].clone();
+
+        // Overwrite doc 1's embedding with tokens from the far cluster.
+        // After update, the encoded centroid_id should flip — proving
+        // the bridge re-read tokens from the db rather than reusing
+        // the cached encoding.
+        db.store(1, 2, 2, &[10.0, 10.0, 10.1, 9.9]).unwrap();
+
+        let updated =
+            update_index_from_embedding_db(&db, index, &[1], &[]).unwrap();
+
+        let pos = updated.position_of(1).expect("doc 1 must survive update");
+        let new_encoded = &updated.doc_tokens[pos];
+        assert_eq!(new_encoded.len(), 2);
+        assert_ne!(
+            *new_encoded, old_encoded,
+            "update must re-encode from the db's current tokens",
+        );
+    }
+
+    #[test]
+    fn update_errors_when_changed_id_is_missing_from_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+
+        let err = update_index_from_embedding_db(&db, index, &[999], &[])
+            .unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(
+                    msg.contains("999"),
+                    "message should cite the id: {msg}"
+                );
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_errors_on_dim_mismatch_between_index_and_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
+        seed_small_db(&db); // dim=2 entries
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+
+        // Insert a 3-D embedding that the 2-D index can't possibly
+        // encode against its trained centroids.
+        db.store(42, 1, 3, &[1.0, 2.0, 3.0]).unwrap();
+
+        let err =
+            update_index_from_embedding_db(&db, index, &[42], &[]).unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(
+                    msg.contains("dim"),
+                    "message should mention dim: {msg}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[test]
