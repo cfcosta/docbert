@@ -9,4 +9,22 @@ description = "PLAID-style multi-vector index for docbert (ColBERT late-interact
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+rand = "0.9"
 tempfile = "3"
+
+[[bench]]
+name = "kmeans"
+harness = false
+
+[[bench]]
+name = "codec"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "build_index"
+harness = false
