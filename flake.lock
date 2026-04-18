@@ -88,10 +88,28 @@
         "type": "github"
       }
     },
+    "nvidia-cutlass": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1712885620,
+        "narHash": "sha256-D/s7eYsa5l/mfx73tE4mnFcTQdYqGmXa9d9TCryw4e4=",
+        "owner": "NVIDIA",
+        "repo": "cutlass",
+        "rev": "7d49e6c7e2f8896c47f586706e67e1fb215529dc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NVIDIA",
+        "repo": "cutlass",
+        "rev": "7d49e6c7e2f8896c47f586706e67e1fb215529dc",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "bun2nix": "bun2nix",
         "nixpkgs": "nixpkgs",
+        "nvidia-cutlass": "nvidia-cutlass",
         "rust-overlay": "rust-overlay",
         "treefmt-nix": "treefmt-nix_2"
       }

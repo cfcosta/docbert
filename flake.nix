@@ -13,11 +13,16 @@
       url = "github:nix-community/bun2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nvidia-cutlass = {
+      url = "github:NVIDIA/cutlass/7d49e6c7e2f8896c47f586706e67e1fb215529dc";
+      flake = false;
+    };
   };
 
   outputs =
     {
       bun2nix,
+      nvidia-cutlass,
       nixpkgs,
       rust-overlay,
       treefmt-nix,
@@ -178,16 +183,6 @@
             CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
           };
 
-          # Pre-fetch NVIDIA CUTLASS for candle-flash-attn (cudaforge).
-          # The Nix sandbox blocks network access, so we fetch it here and
-          # populate cudaforge's cache directory in preBuild.
-          cutlassSrc = pkgs.fetchgit {
-            url = "https://github.com/NVIDIA/cutlass.git";
-            rev = "7d49e6c7e2f8896c47f586706e67e1fb215529dc";
-            hash = "sha256-GR9GeR8xjyr6GPX/O2qXaAlIek4QzKxn/hjAUe6fIQU=";
-            leaveDotGit = true;
-            fetchSubmodules = false;
-          };
         in
         {
           default = mkPackage { name = "docbert"; };
@@ -203,9 +198,15 @@
               CUDAFORGE_HOME = "/tmp/cudaforge-cache";
             };
             extraPreBuild = ''
+              dest=$CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
               mkdir -p $CUDAFORGE_HOME/git/checkouts
-              cp -r ${cutlassSrc} $CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
-              chmod -R u+w $CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
+              cp -r ${nvidia-cutlass} $dest
+              chmod -R u+w $dest
+
+              # Stub a minimal .git dir so cudaforge's `git rev-parse HEAD`
+              # returns the expected commit hash and skips any network fetch.
+              mkdir -p $dest/.git/objects $dest/.git/refs
+              echo "7d49e6c7e2f8896c47f586706e67e1fb215529dc" > $dest/.git/HEAD
             '';
           };
 
