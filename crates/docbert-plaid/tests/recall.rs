@@ -353,7 +353,11 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
     let query_tokens = 16;
     let top_k = 10;
     let n_probe = 8;
-    let shortlist = top_k * 10;
+    // The two-stage cascade shortlists to `ndocs` (Stage 2) then
+    // `ndocs/4` (Stage 3). Asking for Stage 2 to keep ~200% of the
+    // corpus makes Stage 2 a no-op, so Stage 3 is the effective cut
+    // at `ndocs / 4`.
+    let ndocs = top_k * 40;
 
     let corpus = build_corpus(0xBEEF, n_docs, tokens_per_doc);
     let index = build_index(
@@ -390,7 +394,7 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
             SearchParams {
                 top_k,
                 n_probe,
-                n_candidate_docs: Some(shortlist),
+                n_candidate_docs: Some(ndocs),
                 centroid_score_threshold: None,
             },
         )

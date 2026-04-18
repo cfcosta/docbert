@@ -3,27 +3,33 @@
 //! The flow mirrors PLAID's reference implementation:
 //!
 //! 1. For every query token, find the `n_probe` top dot-product coarse
-//!    centroids (matching `S_c,q = C · Q^T`).
+//!    centroids (matching `S_c,q = C · Q^T`). This is paper Stage 1.
 //! 2. *Optional* centroid pruning: drop probed centroids whose best
 //!    score across all query tokens sits below
-//!    `centroid_score_threshold`. This further shrinks the reachable
-//!    centroid set before postings are gathered.
+//!    `centroid_score_threshold`. This is used both here (to shrink the
+//!    reachable centroid set before postings are gathered) and below,
+//!    at token level, when scoring `D̃`.
 //! 3. Union the doc-level IVF postings for the surviving centroids to
 //!    get a set of candidate documents.
-//! 4. *Optional* centroid interaction: compute an approximate MaxSim
-//!    score per candidate using only the centroids each doc touches,
-//!    and keep the top-`n_candidate_docs` survivors.
+//! 4. *Optional* centroid interaction. When `n_candidate_docs` is set,
+//!    the cascade runs in two refinement passes:
+//!    - Stage 2 (paper §4.3): approximate MaxSim with the pruned mask
+//!      applied at token level; keep top `n_candidate_docs` (paper's
+//!      `ndocs`).
+//!    - Stage 3 (paper §4.2): approximate MaxSim without pruning on
+//!      the Stage 2 survivors; keep top `n_candidate_docs / 4` (paper's
+//!      `ndocs/4` empirical heuristic), clamped to at least `top_k`.
 //! 5. Decode the survivors' stored residual codes into approximate
 //!    embeddings and compute exact MaxSim against the query.
 //! 6. Sort by exact MaxSim score and return the top-`top_k`.
 //!
-//! Steps 2 and 4 are the paper's pruning and centroid-interaction
-//! stages. They share a precomputed `[n_query_tokens, n_centroids]`
-//! query-centroid score matrix that step 1 would conceptually compute
-//! anyway, and together they drastically shrink the set of candidates
-//! reaching the expensive decode in step 5. Callers that want the
-//! legacy behaviour (every probed candidate decodes, no pruning) can
-//! pass `n_candidate_docs = None` and `centroid_score_threshold = None`.
+//! The pruning and interaction stages share a precomputed
+//! `[n_query_tokens, n_centroids]` query-centroid score matrix that
+//! step 1 would conceptually compute anyway, and together they
+//! drastically shrink the set of candidates reaching the expensive
+//! decode in step 5. Callers that want the legacy behaviour (every
+//! probed candidate decodes, no pruning) can pass
+//! `n_candidate_docs = None` and `centroid_score_threshold = None`.
 
 use candle_core::Tensor;
 
@@ -146,35 +152,41 @@ pub fn search(
     //    cheaply rank candidates via the precomputed query-centroid
     //    score matrix and keep only the top survivors before paying
     //    for full decode + exact MaxSim.
-    if let Some(limit) = params.n_candidate_docs
-        && candidate_idxs.len() > limit
-    {
+    if let Some(n_stage2) = params.n_candidate_docs {
         let qc_scores = qc_scores_opt
             .as_ref()
             .expect("qc_scores precomputed when n_candidate_docs is set");
         let n_q = query_tokens.len() / dim;
         let n_c = index.codec.num_centroids();
-        let mask_slice = pruned_mask.as_deref();
-        let mut approx: Vec<(usize, f32)> = candidate_idxs
-            .iter()
-            .map(|&doc_idx| {
-                let score = approx_centroid_interaction_score(
-                    &index.doc_tokens[doc_idx],
-                    qc_scores,
-                    n_q,
-                    n_c,
-                    mask_slice,
-                );
-                (doc_idx, score)
-            })
-            .collect();
-        approx.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        approx.truncate(limit);
-        candidate_idxs = approx.into_iter().map(|(idx, _)| idx).collect();
+
+        // Stage 2 — cheap pruned centroid interaction. Keep top
+        // `n_stage2` candidates (the paper's `ndocs`).
+        candidate_idxs = shortlist_by_approx_score(
+            candidate_idxs,
+            index,
+            qc_scores,
+            n_q,
+            n_c,
+            pruned_mask.as_deref(),
+            n_stage2,
+        );
+
+        // Stage 3 — unpruned centroid interaction. Refines the Stage 2
+        // survivors down to `ndocs/4`, matching the paper's empirical
+        // heuristic. Callers that want top-`k` results should set
+        // `n_candidate_docs >= 4 * top_k` so Stage 3 doesn't undershoot
+        // their requested result count. docbert-core's default already
+        // does this (8 * top_k).
+        let n_stage3 = n_stage2.div_ceil(4).max(1);
+        candidate_idxs = shortlist_by_approx_score(
+            candidate_idxs,
+            index,
+            qc_scores,
+            n_q,
+            n_c,
+            None,
+            n_stage3,
+        );
     }
 
     // 5. Score every surviving candidate with one batched MaxSim matmul
@@ -276,6 +288,47 @@ fn query_centroid_score_matrix(
         }
     }
     out
+}
+
+/// Rank `candidate_idxs` by approximate centroid-interaction score
+/// and keep the top `limit` survivors.
+///
+/// A no-op when the input is already smaller than `limit`. Used by
+/// both Stage 2 (pruned) and Stage 3 (unpruned) of the paper's
+/// centroid-interaction cascade; the only difference between the two
+/// callers is the `mask` argument.
+fn shortlist_by_approx_score(
+    candidate_idxs: Vec<usize>,
+    index: &Index,
+    qc_scores: &[f32],
+    n_q: usize,
+    n_centroids: usize,
+    mask: Option<&[bool]>,
+    limit: usize,
+) -> Vec<usize> {
+    if candidate_idxs.len() <= limit {
+        return candidate_idxs;
+    }
+    let mut approx: Vec<(usize, f32)> = candidate_idxs
+        .into_iter()
+        .map(|doc_idx| {
+            let score = approx_centroid_interaction_score(
+                &index.doc_tokens[doc_idx],
+                qc_scores,
+                n_q,
+                n_centroids,
+                mask,
+            );
+            (doc_idx, score)
+        })
+        .collect();
+    approx.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    approx.truncate(limit);
+    approx.into_iter().map(|(idx, _)| idx).collect()
 }
 
 /// For every centroid, return the max dot-product score achieved by
@@ -949,6 +1002,45 @@ mod tests {
             },
         );
         assert_eq!(unpruned, pruned);
+    }
+
+    #[test]
+    fn two_stage_interaction_caps_survivors_to_ndocs_div_four() {
+        // Paper §4.2/§4.3: Stage 2 shortlists to `ndocs`, Stage 3
+        // refines to `ndocs/4`. With 20 synthetic east/north docs, a
+        // Stage 2 shortlist of 16, and `top_k` well above the Stage 3
+        // cap, we should see at most `16/4 = 4` docs in the final
+        // result — the Stage 3 bound, not `top_k` nor Stage 2's 16.
+        let mut docs = Vec::new();
+        for i in 0..20 {
+            let jitter = i as f32 * 0.003;
+            let east = normalize([1.0 - jitter, 0.05 + jitter]);
+            docs.push(DocumentTokens {
+                doc_id: 100 + i,
+                tokens: east.to_vec(),
+                n_tokens: 1,
+            });
+        }
+        let index = build_index(&docs, params());
+        let out = search(
+            &index,
+            &[1.0, 0.0],
+            SearchParams {
+                top_k: 20,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: Some(16),
+                centroid_score_threshold: None,
+            },
+        );
+        assert!(
+            out.len() <= 4,
+            "Stage 3 must cap the decoded set at ndocs/4 = 4; got {}",
+            out.len(),
+        );
+        assert!(
+            !out.is_empty(),
+            "Stage 3 should still return at least one result"
+        );
     }
 
     #[test]
