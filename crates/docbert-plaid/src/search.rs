@@ -18,7 +18,7 @@
 
 use candle_core::Tensor;
 
-use crate::{device::default_device, distance::squared_l2, index::Index};
+use crate::{device::default_device, distance::dot, index::Index};
 
 /// Tunable knobs for a single search call.
 #[derive(Debug, Clone, Copy)]
@@ -113,11 +113,19 @@ pub fn search(
     scored
 }
 
-/// Indices of the `n` centroids closest to `point`, nearest first.
+/// Indices of the `n` centroids with the highest dot-product against
+/// `point`, most relevant first.
 ///
 /// This is the multi-centroid counterpart to
-/// [`crate::kmeans::nearest_centroid`]. It's used by the search path to
-/// build the probe set for each query token.
+/// [`crate::kmeans::nearest_centroid`]. It implements PLAID's
+/// query-centroid scoring `S_c,q = C · Q^T` (one row per query token),
+/// which is the ranking the paper uses for candidate generation.
+///
+/// Dot product is used here instead of squared L2 because the paper and
+/// ColBERT's downstream MaxSim both operate on dot-product similarity.
+/// For centroids with varying magnitudes the two metrics disagree, and
+/// dot product is what keeps probe ordering consistent with the scorer.
+/// Ties are broken toward the earlier centroid index for determinism.
 ///
 /// The output vector has length `min(n, num_centroids)`.
 ///
@@ -149,10 +157,10 @@ pub fn top_n_centroids(
     let mut scored: Vec<(usize, f32)> = centroids
         .chunks_exact(dim)
         .enumerate()
-        .map(|(i, c)| (i, squared_l2(point, c)))
+        .map(|(i, c)| (i, dot(point, c)))
         .collect();
     scored.sort_by(|a, b| {
-        a.1.partial_cmp(&b.1)
+        b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(&b.0))
     });
@@ -334,12 +342,38 @@ mod tests {
     }
 
     #[test]
-    fn top_n_centroids_returns_indices_in_ascending_distance_order() {
-        // 3 centroids on a line. Point (4, 0) is closest to index 1, then
-        // index 0, then index 2.
+    fn top_n_centroids_ranks_by_descending_dot_product() {
+        // Three centroids on the +x axis at magnitudes 0, 5, and 12.
+        // Query at (4, 0). Dot products are 0, 20, 48; PLAID ranks by
+        // descending relevance (`S_c,q = C · Q^T`), so the biggest
+        // dot product wins.
         let centroids = [0.0, 0.0, 5.0, 0.0, 12.0, 0.0];
         let out = top_n_centroids(&[4.0, 0.0], &centroids, 2, 3);
-        assert_eq!(out, vec![1, 0, 2]);
+        assert_eq!(out, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn top_n_centroids_breaks_ties_toward_earlier_index() {
+        // Zero query makes every dot product 0. The deterministic
+        // tie-break is "earliest index wins".
+        let centroids = [1.0, 0.0, 0.0, 1.0, -1.0, 0.0];
+        let out = top_n_centroids(&[0.0, 0.0], &centroids, 2, 3);
+        assert_eq!(out, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn top_n_centroids_on_unit_norm_centroids_picks_most_aligned() {
+        // All centroids and the query are unit-norm. Dot product then
+        // reduces to cosine similarity, so the best-aligned centroid
+        // wins. Here (0.6, 0.8) is the closest direction to (1, 0).
+        let centroids = [
+            0.6, 0.8, //
+            0.0, 1.0, //
+            -1.0, 0.0, //
+            1.0, 0.0,
+        ];
+        let out = top_n_centroids(&[1.0, 0.0], &centroids, 2, 2);
+        assert_eq!(out, vec![3, 0]);
     }
 
     #[test]
