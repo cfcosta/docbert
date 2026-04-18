@@ -89,5 +89,81 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_top_n_centroids, bench_search);
+/// Ablation: compare the four PLAID-stage combinations at a single
+/// docbert-scale working point, mirroring Figure 6 of the paper.
+///
+/// Pipeline toggles:
+/// - baseline: centroid probing → all candidates → decode + MaxSim
+/// - interaction: adds the centroid-interaction shortlist stage
+/// - pruning: adds query-dependent centroid-score thresholding
+/// - both: interaction + pruning enabled
+fn bench_plaid_stages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search/plaid_stages");
+    let n_docs = 5_000;
+    let tokens = 100;
+    let top_k = 10;
+    let ndocs = 256; // paper's k=10 ndocs row in Table 2
+    let t_cs = 0.4f32; // roughly paper's k=1000 threshold
+
+    let index = make_index(0x1DEC, n_docs, tokens);
+    let query = shared::random_unit_vectors(0x9, QUERY_TOKENS, DIM);
+    group.sample_size(20);
+
+    for (label, params) in [
+        (
+            "baseline",
+            SearchParams {
+                top_k,
+                n_probe: 8,
+                n_candidate_docs: None,
+                centroid_score_threshold: None,
+            },
+        ),
+        (
+            "interaction",
+            SearchParams {
+                top_k,
+                n_probe: 8,
+                n_candidate_docs: Some(ndocs),
+                centroid_score_threshold: None,
+            },
+        ),
+        (
+            "pruning",
+            SearchParams {
+                top_k,
+                n_probe: 8,
+                n_candidate_docs: None,
+                centroid_score_threshold: Some(t_cs),
+            },
+        ),
+        (
+            "both",
+            SearchParams {
+                top_k,
+                n_probe: 8,
+                n_candidate_docs: Some(ndocs),
+                centroid_score_threshold: Some(t_cs),
+            },
+        ),
+    ] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(label),
+            &params,
+            |b, p| {
+                b.iter(|| {
+                    search(black_box(&index), black_box(&query), black_box(*p))
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_top_n_centroids,
+    bench_search,
+    bench_plaid_stages,
+);
 criterion_main!(benches);
