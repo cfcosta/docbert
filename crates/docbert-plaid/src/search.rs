@@ -92,21 +92,23 @@ pub fn search(
 
     // Precompute the per-centroid max dot product against any query
     // token when either pruning or centroid interaction is active.
-    // Pruning uses it to skip weakly-matching centroids before they
-    // contribute to candidate generation; centroid interaction uses
-    // the full matrix for approximate per-doc scoring.
+    // Pruning uses it to build a pruned-centroid bitmask for use in
+    // both candidate generation and centroid interaction; centroid
+    // interaction uses the full qc_scores matrix for approximate
+    // per-doc scoring.
     let need_qc_scores = params.centroid_score_threshold.is_some()
         || params.n_candidate_docs.is_some();
     let qc_scores_opt: Option<Vec<f32>> = need_qc_scores.then(|| {
         query_centroid_score_matrix(query_tokens, &index.codec.centroids, dim)
     });
-    let per_centroid_max: Option<Vec<f32>> =
-        params.centroid_score_threshold.map(|_| {
-            per_centroid_max_scores(
+    let pruned_mask: Option<Vec<bool>> =
+        params.centroid_score_threshold.map(|threshold| {
+            let per_cent = per_centroid_max_scores(
                 qc_scores_opt.as_ref().expect("qc_scores precomputed"),
                 query_tokens.len() / dim,
                 n_centroids,
-            )
+            );
+            per_cent.iter().map(|&s| s < threshold).collect()
         });
 
     // 1-2. Gather the union of candidate doc indices reachable via the
@@ -121,9 +123,8 @@ pub fn search(
         for centroid_id in
             top_n_centroids(query_token, &index.codec.centroids, dim, n_probe)
         {
-            if let (Some(threshold), Some(max_scores)) =
-                (params.centroid_score_threshold, per_centroid_max.as_ref())
-                && max_scores[centroid_id] < threshold
+            if let Some(mask) = pruned_mask.as_ref()
+                && mask[centroid_id]
             {
                 continue;
             }
@@ -153,6 +154,7 @@ pub fn search(
             .expect("qc_scores precomputed when n_candidate_docs is set");
         let n_q = query_tokens.len() / dim;
         let n_c = index.codec.num_centroids();
+        let mask_slice = pruned_mask.as_deref();
         let mut approx: Vec<(usize, f32)> = candidate_idxs
             .iter()
             .map(|&doc_idx| {
@@ -161,6 +163,7 @@ pub fn search(
                     qc_scores,
                     n_q,
                     n_c,
+                    mask_slice,
                 );
                 (doc_idx, score)
             })
@@ -307,20 +310,40 @@ fn per_centroid_max_scores(
 /// Duplicate centroid ids within the doc are filtered implicitly: a
 /// centroid that appears twice can't beat itself in the max, so the
 /// running-max shortcut is correct without an explicit dedup pass.
+///
+/// When `pruned_mask` is `Some`, tokens whose centroid is marked
+/// pruned are skipped before the max, matching PLAID §4.3's token-level
+/// pruning of `D̃`. If every token in the doc is pruned the result is
+/// `f32::NEG_INFINITY`, which sorts below every non-pruned doc in the
+/// centroid-interaction shortlist.
 fn approx_centroid_interaction_score(
     doc: &[crate::codec::EncodedVector],
     qc_scores: &[f32],
     n_q: usize,
     n_centroids: usize,
+    pruned_mask: Option<&[bool]>,
 ) -> f32 {
     if doc.is_empty() {
         return 0.0;
+    }
+    // If every token's centroid is pruned, the doc has no D̃ rows left;
+    // report −∞ so the caller's ranking drops it instead of a
+    // deceptive 0.0.
+    if let Some(mask) = pruned_mask
+        && doc.iter().all(|ev| mask[ev.centroid_id as usize])
+    {
+        return f32::NEG_INFINITY;
     }
     let mut total = 0.0f32;
     for q in 0..n_q {
         let row = &qc_scores[q * n_centroids..(q + 1) * n_centroids];
         let mut best = f32::NEG_INFINITY;
         for ev in doc {
+            if let Some(mask) = pruned_mask
+                && mask[ev.centroid_id as usize]
+            {
+                continue;
+            }
             let s = row[ev.centroid_id as usize];
             if s > best {
                 best = s;
@@ -926,6 +949,76 @@ mod tests {
             },
         );
         assert_eq!(unpruned, pruned);
+    }
+
+    #[test]
+    fn approx_score_skips_tokens_whose_centroid_is_pruned() {
+        // Paper §4.3: D̃ must only be comprised of tokens whose centroid
+        // passes the t_cs threshold. This directly exercises that
+        // behaviour on a controlled qc_scores matrix.
+        //
+        // 3 centroids, 2 query tokens. Centroid 0 is strong for q0 only,
+        // centroid 1 is strong for q1 only, centroid 2 is mediocre for
+        // both. A doc with tokens in centroids [0, 2] would normally
+        // pull qc_scores[2] into the q1 max (because centroid 0 is weak
+        // for q1 and centroid 2 at least has 0.4). Pruning centroid 2
+        // drops that contribution and only centroid 0's qc values
+        // remain.
+        use crate::codec::EncodedVector;
+        let n_q = 2;
+        let n_c = 3;
+        // qc_scores layout is row-major [n_q, n_c].
+        // q0 row: centroid 0 = 0.9, centroid 1 = 0.0, centroid 2 = 0.4.
+        // q1 row: centroid 0 = 0.0, centroid 1 = 0.9, centroid 2 = 0.4.
+        let qc = [0.9, 0.0, 0.4, 0.0, 0.9, 0.4];
+        let doc = [
+            EncodedVector {
+                centroid_id: 0,
+                codes: vec![0, 0],
+            },
+            EncodedVector {
+                centroid_id: 2,
+                codes: vec![0, 0],
+            },
+        ];
+
+        let unpruned =
+            approx_centroid_interaction_score(&doc, &qc, n_q, n_c, None);
+        // q0: max(0.9, 0.4) = 0.9; q1: max(0.0, 0.4) = 0.4. Total 1.3.
+        assert!((unpruned - 1.3).abs() < 1e-5, "unpruned was {unpruned}");
+
+        // Prune centroid 2 (per-centroid max 0.4 < t_cs=0.5).
+        let pruned_mask = [false, false, true];
+        let pruned = approx_centroid_interaction_score(
+            &doc,
+            &qc,
+            n_q,
+            n_c,
+            Some(&pruned_mask),
+        );
+        // q0: max over {centroid 0} = 0.9; q1: max over {centroid 0} =
+        // 0.0. Total 0.9.
+        assert!((pruned - 0.9).abs() < 1e-5, "pruned was {pruned}");
+    }
+
+    #[test]
+    fn approx_score_on_all_pruned_doc_is_negative_infinity() {
+        // Every centroid in the doc is masked. The scorer must return a
+        // score low enough that the doc loses to any non-empty doc in
+        // the centroid-interaction sort.
+        use crate::codec::EncodedVector;
+        let qc = [0.5, 0.5];
+        let doc = [EncodedVector {
+            centroid_id: 0,
+            codes: vec![0, 0],
+        }];
+        let mask = [true];
+        let score =
+            approx_centroid_interaction_score(&doc, &qc, 1, 1, Some(&mask));
+        assert!(
+            score == f32::NEG_INFINITY,
+            "all-pruned doc should score -inf, got {score}",
+        );
     }
 
     #[test]
