@@ -24,7 +24,7 @@ use std::collections::HashSet;
 
 use crate::{
     codec::EncodedVector,
-    index::{DocumentTokens, Index, InvertedFile, TokenRef},
+    index::{DocumentTokens, Index, build_inverted_file},
 };
 
 /// Mutation plan consumed by [`apply_update`].
@@ -144,21 +144,10 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Index {
         }
     }
 
-    // Rebuild the IVF from the final token list. Removing entries
-    // one by one would be O(n_deleted × avg_list_length); a full
-    // rebuild is O(n_tokens) and avoids having to track per-token
-    // locations inside each centroid's list.
-    let mut ivf = InvertedFile {
-        lists: vec![Vec::new(); params.k_centroids],
-    };
-    for (doc_idx, encoded) in new_doc_tokens.iter().enumerate() {
-        for (token_idx, ev) in encoded.iter().enumerate() {
-            ivf.lists[ev.centroid_id as usize].push(TokenRef {
-                doc_idx: doc_idx as u32,
-                token_idx: token_idx as u32,
-            });
-        }
-    }
+    // Rebuild the IVF from the final token list. A full rebuild is
+    // O(n_docs · avg_tokens_per_doc) and avoids tracking per-token
+    // positions inside each centroid's list.
+    let ivf = build_inverted_file(&new_doc_tokens, params.k_centroids);
 
     Index {
         params,
@@ -176,8 +165,8 @@ mod tests {
 
     fn seed_corpus() -> Vec<DocumentTokens> {
         // Two well-separated clusters so k-means produces stable
-        // centroids we can reason about, plus a mixed doc so
-        // TokenRefs span more than one centroid per document.
+        // centroids we can reason about, plus a mixed doc so the IVF
+        // postings span more than one centroid per document.
         vec![
             DocumentTokens {
                 doc_id: 1,
@@ -210,22 +199,28 @@ mod tests {
         build_index(&seed_corpus(), seed_params())
     }
 
-    fn assert_ivf_covers_every_token_exactly_once(index: &Index) {
-        assert_eq!(
-            index.ivf.total_tokens(),
-            index.num_tokens(),
-            "every encoded token must appear in the IVF exactly once",
-        );
+    fn assert_ivf_covers_every_doc_centroid_pair(index: &Index) {
         for (doc_idx, encoded) in index.doc_tokens.iter().enumerate() {
-            for (token_idx, ev) in encoded.iter().enumerate() {
-                let list =
-                    index.ivf.tokens_for_centroid(ev.centroid_id as usize);
+            for ev in encoded {
+                let list = index.ivf.docs_for_centroid(ev.centroid_id as usize);
                 assert!(
-                    list.iter().any(|t| t.doc_idx as usize == doc_idx
-                        && t.token_idx as usize == token_idx),
-                    "missing TokenRef for doc_idx={doc_idx} token_idx={token_idx}",
+                    list.contains(&(doc_idx as u32)),
+                    "missing posting for doc_idx={doc_idx} centroid={}",
+                    ev.centroid_id,
                 );
             }
+        }
+        // Postings are unique per centroid.
+        for c in 0..index.ivf.num_centroids() {
+            let postings = index.ivf.docs_for_centroid(c);
+            let mut sorted = postings.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(
+                sorted.len(),
+                postings.len(),
+                "duplicate docs in centroid {c} postings",
+            );
         }
     }
 
@@ -245,7 +240,7 @@ mod tests {
 
         assert_eq!(updated.doc_ids, before_ids);
         assert_eq!(updated.doc_tokens, before_tokens);
-        assert_ivf_covers_every_token_exactly_once(&updated);
+        assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
     #[test]
@@ -271,7 +266,7 @@ mod tests {
         assert_eq!(updated.doc_ids, vec![1, 3]);
         assert_eq!(updated.doc_tokens.len(), 2);
         assert_eq!(updated.num_tokens(), original_tokens - removed_tokens);
-        assert_ivf_covers_every_token_exactly_once(&updated);
+        assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
     #[test]
@@ -294,7 +289,7 @@ mod tests {
         assert_eq!(updated.doc_ids, vec![1, 2, 3, 99]);
         let encoded = updated.doc_tokens.last().unwrap();
         assert_eq!(encoded.len(), 2);
-        assert_ivf_covers_every_token_exactly_once(&updated);
+        assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
     #[test]
@@ -334,7 +329,7 @@ mod tests {
             *new_encoded, old_encoded,
             "upsert must replace the old encoded tokens",
         );
-        assert_ivf_covers_every_token_exactly_once(&updated);
+        assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
     #[test]
@@ -416,7 +411,7 @@ mod tests {
             updated.doc_tokens[updated.position_of(77).unwrap()].len(),
             0
         );
-        assert_ivf_covers_every_token_exactly_once(&updated);
+        assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
     #[test]

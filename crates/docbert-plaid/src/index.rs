@@ -19,26 +19,24 @@ use crate::{
     kmeans::{assign_points, fit},
 };
 
-/// Location of a single encoded token inside an [`Index`].
+/// Inverted file: for each centroid, the sorted list of unique document
+/// indices that have at least one token clustered in that centroid.
 ///
-/// Stored inside the inverted file so the search path can pull token
-/// codes back out cheaply when computing MaxSim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TokenRef {
-    pub doc_idx: u32,
-    pub token_idx: u32,
-}
-
-/// Inverted file: for each centroid, the list of tokens that currently
-/// live in that cluster.
+/// This mirrors PLAID's "centroid → unique passage ids" layout from
+/// §3 of the paper: candidate generation only needs to know which
+/// documents are reachable via a probed centroid, and deduplicating
+/// per-doc keeps the posting lists small even when a single document
+/// has many tokens mapped to the same cluster.
 ///
 /// The search path uses this to expand a query token to a shortlist of
-/// document candidates: "find the centroids nearest to the query token,
-/// then gather every document holding a token in those centroids".
+/// document candidates: find the centroids with the highest dot-product
+/// against the query token, then gather every document listed under
+/// those centroids.
 #[derive(Debug, Clone, Default)]
 pub struct InvertedFile {
-    /// `lists[c]` holds every [`TokenRef`] assigned to centroid `c`.
-    pub lists: Vec<Vec<TokenRef>>,
+    /// `lists[c]` holds the sorted, deduplicated `doc_idx`s of every
+    /// document with at least one token assigned to centroid `c`.
+    pub lists: Vec<Vec<u32>>,
 }
 
 impl InvertedFile {
@@ -47,17 +45,22 @@ impl InvertedFile {
         self.lists.len()
     }
 
-    /// Tokens currently associated with `centroid_id`, or an empty slice
-    /// if the centroid is out of range.
-    pub fn tokens_for_centroid(&self, centroid_id: usize) -> &[TokenRef] {
+    /// Document indices currently associated with `centroid_id`, or an
+    /// empty slice if the centroid is out of range. Entries are sorted
+    /// ascending and contain no duplicates.
+    pub fn docs_for_centroid(&self, centroid_id: usize) -> &[u32] {
         self.lists
             .get(centroid_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    /// Total number of token entries across every centroid list.
-    pub fn total_tokens(&self) -> usize {
+    /// Total number of (centroid, doc) postings across every list.
+    ///
+    /// This is the sum of `lists[c].len()` over all centroids `c`. It
+    /// is at most `num_centroids * num_documents` and at least equal
+    /// to the number of documents that contain any tokens at all.
+    pub fn total_doc_postings(&self) -> usize {
         self.lists.iter().map(Vec::len).sum()
     }
 }
@@ -221,11 +224,8 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
 
     let mut doc_ids = Vec::with_capacity(documents.len());
     let mut doc_tokens = Vec::with_capacity(documents.len());
-    let mut ivf = InvertedFile {
-        lists: vec![Vec::new(); params.k_centroids],
-    };
     let mut token_offset = 0usize;
-    for (doc_idx, doc) in documents.iter().enumerate() {
+    for doc in documents {
         doc_ids.push(doc.doc_id);
         let n_tok = doc.n_tokens;
         let cids = &all_centroid_ids[token_offset..token_offset + n_tok];
@@ -238,15 +238,11 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
                     .to_vec(),
             })
             .collect();
-        for (token_idx, ev) in encoded.iter().enumerate() {
-            ivf.lists[ev.centroid_id as usize].push(TokenRef {
-                doc_idx: doc_idx as u32,
-                token_idx: token_idx as u32,
-            });
-        }
         doc_tokens.push(encoded);
         token_offset += n_tok;
     }
+
+    let ivf = build_inverted_file(&doc_tokens, params.k_centroids);
 
     Index {
         params,
@@ -255,6 +251,26 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         doc_tokens,
         ivf,
     }
+}
+
+/// Build the centroid → unique-doc-ids inverted file from the encoded
+/// corpus. Each doc contributes at most one entry per centroid it
+/// touches; entries within a list are sorted ascending.
+pub(crate) fn build_inverted_file(
+    doc_tokens: &[Vec<EncodedVector>],
+    k_centroids: usize,
+) -> InvertedFile {
+    let mut lists: Vec<Vec<u32>> = vec![Vec::new(); k_centroids];
+    for (doc_idx, encoded) in doc_tokens.iter().enumerate() {
+        let mut touched: Vec<u32> =
+            encoded.iter().map(|ev| ev.centroid_id).collect();
+        touched.sort_unstable();
+        touched.dedup();
+        for cid in touched {
+            lists[cid as usize].push(doc_idx as u32);
+        }
+    }
+    InvertedFile { lists }
 }
 
 #[cfg(test)]
@@ -388,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn build_index_ivf_covers_every_encoded_token_exactly_once() {
+    fn build_index_ivf_has_one_list_per_centroid() {
         let docs = small_corpus();
         let index = build_index(&docs, default_params());
 
@@ -397,28 +413,23 @@ mod tests {
             default_params().k_centroids,
             "IVF has one list per centroid",
         );
-        assert_eq!(
-            index.ivf.total_tokens(),
-            index.num_tokens(),
-            "every encoded token appears in the IVF exactly once",
-        );
     }
 
     #[test]
-    fn build_index_ivf_lists_match_encoded_centroid_ids() {
+    fn build_index_ivf_postings_cover_every_doc_that_touches_each_centroid() {
+        // Every (doc, token) pair implies the doc_idx must appear in
+        // that centroid's posting list. This is the PLAID "centroid →
+        // unique passage ids" contract: postings are indexed by doc.
         let docs = small_corpus();
         let index = build_index(&docs, default_params());
 
-        // For every token in every document, the token's centroid_id must
-        // match the IVF list that references it.
         for (doc_idx, encoded_doc) in index.doc_tokens.iter().enumerate() {
-            for (token_idx, ev) in encoded_doc.iter().enumerate() {
-                let list =
-                    index.ivf.tokens_for_centroid(ev.centroid_id as usize);
+            for ev in encoded_doc {
+                let postings =
+                    index.ivf.docs_for_centroid(ev.centroid_id as usize);
                 assert!(
-                    list.iter().any(|t| t.doc_idx as usize == doc_idx
-                        && t.token_idx as usize == token_idx),
-                    "token at doc {doc_idx} pos {token_idx} missing from centroid {} list",
+                    postings.contains(&(doc_idx as u32)),
+                    "doc_idx={doc_idx} missing from centroid {} postings",
                     ev.centroid_id,
                 );
             }
@@ -426,15 +437,62 @@ mod tests {
     }
 
     #[test]
+    fn build_index_ivf_postings_are_unique_per_centroid() {
+        // PLAID stores centroid → unique doc ids, not token refs. A doc
+        // with multiple tokens in the same centroid must appear at most
+        // once in that centroid's list.
+        let docs = small_corpus();
+        let index = build_index(&docs, default_params());
+
+        for c in 0..index.ivf.num_centroids() {
+            let postings = index.ivf.docs_for_centroid(c);
+            let mut unique: Vec<u32> = postings.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                postings.len(),
+                "centroid {c} has duplicate doc entries: {postings:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_index_dedupes_repeated_tokens_in_same_centroid() {
+        // Doc 1 has three tokens that all cluster to the same coarse
+        // centroid. The doc_idx should show up once in that centroid's
+        // posting, not three times.
+        let docs = vec![
+            DocumentTokens {
+                doc_id: 1,
+                tokens: vec![0.0, 0.0, 0.05, -0.02, -0.03, 0.01],
+                n_tokens: 3,
+            },
+            DocumentTokens {
+                doc_id: 2,
+                tokens: vec![10.0, 10.0, 10.1, 9.9],
+                n_tokens: 2,
+            },
+        ];
+        let index = build_index(&docs, default_params());
+
+        for c in 0..index.ivf.num_centroids() {
+            let postings = index.ivf.docs_for_centroid(c);
+            let count_of_doc_0 = postings.iter().filter(|&&d| d == 0).count();
+            assert!(
+                count_of_doc_0 <= 1,
+                "doc 0 appears {count_of_doc_0} times in centroid {c}",
+            );
+        }
+    }
+
+    #[test]
     fn inverted_file_out_of_range_returns_empty_slice() {
         let ivf = InvertedFile {
-            lists: vec![vec![TokenRef {
-                doc_idx: 0,
-                token_idx: 0,
-            }]],
+            lists: vec![vec![0u32]],
         };
-        assert_eq!(ivf.tokens_for_centroid(0).len(), 1);
-        assert!(ivf.tokens_for_centroid(999).is_empty());
+        assert_eq!(ivf.docs_for_centroid(0).len(), 1);
+        assert!(ivf.docs_for_centroid(999).is_empty());
     }
 
     #[test]

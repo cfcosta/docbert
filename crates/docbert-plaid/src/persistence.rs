@@ -36,7 +36,7 @@ use std::{
 
 use crate::{
     codec::{EncodedVector, ResidualCodec},
-    index::{Index, IndexParams, InvertedFile, TokenRef},
+    index::{Index, IndexParams, build_inverted_file},
 };
 
 const MAGIC: &[u8; 8] = b"PLAIDIDX";
@@ -151,12 +151,9 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
 
     let mut doc_tokens: Vec<Vec<EncodedVector>> =
         Vec::with_capacity(n_documents);
-    let mut ivf = InvertedFile {
-        lists: vec![Vec::new(); k_centroids],
-    };
-    for (doc_idx, count) in token_counts.iter().enumerate() {
+    for count in token_counts.iter() {
         let mut encoded_doc = Vec::with_capacity(*count as usize);
-        for token_idx in 0..*count {
+        for _ in 0..*count {
             let centroid_id = read_u32(r)?;
             if (centroid_id as usize) >= k_centroids {
                 return Err(io::Error::new(
@@ -168,14 +165,11 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
             }
             let mut codes = vec![0u8; dim];
             r.read_exact(&mut codes)?;
-            ivf.lists[centroid_id as usize].push(TokenRef {
-                doc_idx: doc_idx as u32,
-                token_idx,
-            });
             encoded_doc.push(EncodedVector { centroid_id, codes });
         }
         doc_tokens.push(encoded_doc);
     }
+    let ivf = build_inverted_file(&doc_tokens, k_centroids);
 
     let codec = ResidualCodec {
         nbits,
@@ -342,12 +336,13 @@ mod tests {
         let loaded = load(&path).unwrap();
 
         assert_eq!(loaded.ivf.num_centroids(), index.ivf.num_centroids());
-        assert_eq!(loaded.ivf.total_tokens(), index.ivf.total_tokens());
+        assert_eq!(
+            loaded.ivf.total_doc_postings(),
+            index.ivf.total_doc_postings(),
+        );
         for c in 0..index.ivf.num_centroids() {
-            let mut want = index.ivf.tokens_for_centroid(c).to_vec();
-            let mut got = loaded.ivf.tokens_for_centroid(c).to_vec();
-            want.sort_by_key(|t| (t.doc_idx, t.token_idx));
-            got.sort_by_key(|t| (t.doc_idx, t.token_idx));
+            let want = index.ivf.docs_for_centroid(c);
+            let got = loaded.ivf.docs_for_centroid(c);
             assert_eq!(got, want, "IVF list for centroid {c} differs");
         }
     }

@@ -69,15 +69,16 @@ pub fn search(
     let n_centroids = index.codec.num_centroids();
     let n_probe = params.n_probe.min(n_centroids);
 
-    // 1-2. Gather the union of candidate doc indices whose tokens landed
-    //      near some query token.
+    // 1-2. Gather the union of candidate doc indices reachable via the
+    //      probed centroids. IVF postings are already deduplicated per
+    //      doc, so each centroid contributes at most one write per doc.
     let mut candidate_docs: Vec<bool> = vec![false; index.num_documents()];
     for query_token in query_tokens.chunks_exact(dim) {
         for centroid_id in
             top_n_centroids(query_token, &index.codec.centroids, dim, n_probe)
         {
-            for tref in index.ivf.tokens_for_centroid(centroid_id) {
-                candidate_docs[tref.doc_idx as usize] = true;
+            for &doc_idx in index.ivf.docs_for_centroid(centroid_id) {
+                candidate_docs[doc_idx as usize] = true;
             }
         }
     }
