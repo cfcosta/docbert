@@ -114,6 +114,65 @@ pub fn read_code(packed: &[u8], i: usize, nbits: u32) -> u8 {
     (packed[byte_idx] >> bit_off) & mask
 }
 
+/// Precomputed 256-entry lookup table mapping every possible packed
+/// byte to the sequence of `bucket_weights` values it decodes to.
+///
+/// PLAID §4.5 notes that naive decompression pays a chain of
+/// shift-mask-weight-lookup operations per residual dimension; a
+/// one-off table that already composes the shift/mask with the weight
+/// lookup reduces decoding to a single load per code position. For
+/// `nbits=2` the whole table is `256 × 4` f32 = 4 KiB and easily stays
+/// in L1.
+pub struct DecodeTable {
+    /// `weights[b * codes_per_byte + k]` = weight for the `k`-th code
+    /// position inside packed byte value `b`.
+    weights: Vec<f32>,
+    codes_per_byte: usize,
+    nbits: u32,
+}
+
+impl DecodeTable {
+    /// Build the table for `codec`. Call once per search/decode batch
+    /// and reuse across every encoded vector.
+    pub fn new(codec: &ResidualCodec) -> Self {
+        assert_supported_nbits(codec.nbits);
+        let codes_per_byte = 8 / codec.nbits as usize;
+        let entries = 256;
+        let mut weights = vec![0.0f32; entries * codes_per_byte];
+        let mask: u8 = ((1u16 << codec.nbits) - 1) as u8;
+        for b in 0u16..256 {
+            let byte = b as u8;
+            for k in 0..codes_per_byte {
+                let code = (byte >> (k * codec.nbits as usize)) & mask;
+                weights[b as usize * codes_per_byte + k] =
+                    codec.bucket_weights[code as usize];
+            }
+        }
+        Self {
+            weights,
+            codes_per_byte,
+            nbits: codec.nbits,
+        }
+    }
+
+    /// Weights for the `codes_per_byte` positions inside packed byte
+    /// `byte`. Length always equals `codes_per_byte`.
+    pub fn weights_for(&self, byte: u8) -> &[f32] {
+        let start = byte as usize * self.codes_per_byte;
+        &self.weights[start..start + self.codes_per_byte]
+    }
+
+    /// Number of codes packed into one byte at this table's `nbits`.
+    pub fn codes_per_byte(&self) -> usize {
+        self.codes_per_byte
+    }
+
+    /// Bit-width the table was built for.
+    pub fn nbits(&self) -> u32 {
+        self.nbits
+    }
+}
+
 impl ResidualCodec {
     /// Number of buckets this codec partitions the residual space into.
     pub fn num_buckets(&self) -> usize {
@@ -274,31 +333,59 @@ impl ResidualCodec {
     /// Panics if the codec is malformed, if `codes.len() != dim`, or if
     /// any code is out of range.
     pub fn decode_vector(&self, encoded: &EncodedVector) -> Vec<f32> {
+        let table = DecodeTable::new(self);
+        self.decode_vector_with_table(encoded, &table)
+    }
+
+    /// Decode an encoded vector using a pre-built [`DecodeTable`].
+    ///
+    /// Callers that decode many vectors in a row (e.g., the search
+    /// path's per-candidate decode loop) should build the table once
+    /// outside the loop and reuse it here — each call then amounts to
+    /// one table load per packed byte plus the centroid add.
+    pub fn decode_vector_with_table(
+        &self,
+        encoded: &EncodedVector,
+        table: &DecodeTable,
+    ) -> Vec<f32> {
         self.validate().unwrap();
+        assert_eq!(
+            table.nbits, self.nbits,
+            "decode_vector_with_table: table nbits {} != codec nbits {}",
+            table.nbits, self.nbits,
+        );
         let expected_bytes = self.packed_bytes();
         assert_eq!(
             encoded.codes.len(),
             expected_bytes,
-            "decode_vector: expected {expected_bytes} packed bytes, got {}",
+            "decode_vector_with_table: expected {expected_bytes} packed bytes, got {}",
             encoded.codes.len(),
         );
         let centroid_id = encoded.centroid_id as usize;
         assert!(
             centroid_id < self.num_centroids(),
-            "decode_vector: centroid_id {} out of range 0..{}",
+            "decode_vector_with_table: centroid_id {} out of range 0..{}",
             centroid_id,
             self.num_centroids(),
         );
 
         let centroid_slice = &self.centroids
             [centroid_id * self.dim..(centroid_id + 1) * self.dim];
+        let codes_per_byte = table.codes_per_byte;
 
-        (0..self.dim)
-            .map(|i| {
-                let idx = read_code(&encoded.codes, i, self.nbits) as usize;
-                centroid_slice[i] + self.bucket_weights[idx]
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.dim);
+        for (byte_idx, &byte) in encoded.codes.iter().enumerate() {
+            let weights = table.weights_for(byte);
+            let base_dim = byte_idx * codes_per_byte;
+            for (k, &w) in weights.iter().enumerate() {
+                let dim_idx = base_dim + k;
+                if dim_idx >= self.dim {
+                    break;
+                }
+                out.push(centroid_slice[dim_idx] + w);
+            }
+        }
+        out
     }
 
     /// Return the squared L2 reconstruction error for `vector` under
@@ -412,6 +499,35 @@ mod tests {
             centroids,
             bucket_cutoffs: vec![-0.5, 0.0, 0.5],
             bucket_weights: vec![-0.75, -0.25, 0.25, 0.75],
+        }
+    }
+
+    #[test]
+    fn decode_with_lookup_table_matches_scalar_decode() {
+        // Paper §4.5: precompute the 2^8 possible unpack outputs for a
+        // packed byte, decode via table lookup instead of bit ops. The
+        // output must match the scalar reference bit-for-bit.
+        for &nbits in &[1u32, 2, 4, 8] {
+            let num_buckets = 1usize << nbits;
+            let codec = ResidualCodec {
+                nbits,
+                dim: 16,
+                centroids: (0..16).map(|i| i as f32 * 0.1).collect(),
+                bucket_cutoffs: (1..num_buckets)
+                    .map(|i| (i as f32 / num_buckets as f32) - 0.5)
+                    .collect(),
+                bucket_weights: (0..num_buckets)
+                    .map(|i| (i as f32 + 0.5) / num_buckets as f32 - 0.5)
+                    .collect(),
+            };
+            let input: Vec<f32> =
+                (0..16).map(|i| i as f32 * 0.05 - 0.3).collect();
+            let encoded = codec.encode_vector(&input);
+
+            let scalar = codec.decode_vector(&encoded);
+            let table = DecodeTable::new(&codec);
+            let via_table = codec.decode_vector_with_table(&encoded, &table);
+            assert_eq!(scalar, via_table, "mismatch at nbits={nbits}");
         }
     }
 

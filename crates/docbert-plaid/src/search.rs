@@ -33,7 +33,12 @@
 
 use candle_core::Tensor;
 
-use crate::{device::default_device, distance::dot, index::Index};
+use crate::{
+    codec::DecodeTable,
+    device::default_device,
+    distance::dot,
+    index::Index,
+};
 
 /// Tunable knobs for a single search call.
 #[derive(Debug, Clone, Copy)]
@@ -409,21 +414,23 @@ fn approx_centroid_interaction_score(
     total
 }
 
-/// Score a batch of candidate docs against `query_tokens` with one
-/// matmul instead of a per-doc Rust loop.
+/// Score a batch of candidate docs against `query_tokens` with a
+/// padding-free packed MaxSim, matching PLAID §4.5.
 ///
-/// We pack all candidates into a single padded `[n_cands, max_doc_len,
-/// dim]` tensor, materialise the query as `[n_q, dim]`, and compute
-/// `docs.matmul(query.T)` once to get a `[n_cands, max_doc_len, n_q]`
-/// score block. Padded positions get a large negative additive mask so
-/// they can never win a max, then we max over `max_doc_len` (per-query
-/// best doc token) and sum over `n_q` (Σ max — the standard MaxSim).
+/// All candidate tokens are decoded into a single `[total_tokens, dim]`
+/// buffer concatenated along the doc axis — no padding between docs,
+/// no mask. A single GEMM produces `[total_tokens, n_q]` scores, and
+/// per-doc MaxSim is a scalar max-then-sum over the slice of rows
+/// belonging to each candidate. On uniform-length corpora this costs
+/// roughly the same as the old padded path, but on ragged corpora
+/// (short + long docs mixed) it avoids the `max_len - doc_len` wasted
+/// rows and the `[n_c, max_len, n_q]` masking broadcast the old path
+/// had to materialise.
 ///
-/// This matches the ColBERT/PLAID reference definition
-/// (`S = Σ_i max_j q_i · d_j`) and is what fast-plaid does on its
-/// `colbert_score_reduce` path. Decoding each doc's tokens stays
-/// scalar (one centroid lookup + bucket-weight add per dim) — that
-/// cost is small relative to the matmul and isn't the bottleneck.
+/// Final scoring still matches the ColBERT/PLAID reference definition
+/// `S = Σ_i max_j q_i · d_j`. Decoding uses the `DecodeTable` lookup
+/// so each packed byte lands in the output buffer as a single table
+/// read plus the centroid add.
 fn batch_maxsim(
     query_tokens: &[f32],
     candidate_idxs: &[usize],
@@ -432,86 +439,74 @@ fn batch_maxsim(
 ) -> Vec<(usize, f32)> {
     let n_q = query_tokens.len() / dim;
 
-    // Decode every candidate's encoded tokens into a flat f32 vector,
-    // record the per-doc lengths so we can build the mask. Decoding
-    // stays scalar per-doc here: a tensor-batched decode trades the
-    // per-token Rust loop for several extra `from_slice`/`to_vec1`
-    // round trips and a u8→u32 conversion of the entire codes buffer,
-    // which empirically (criterion bench) is 4–5× *slower* on both
-    // CPU and CUDA backends for typical search candidate sizes.
-    let mut decoded: Vec<Vec<f32>> = Vec::with_capacity(candidate_idxs.len());
-    let mut max_len = 0usize;
+    let decode_table = DecodeTable::new(&index.codec);
+    let total_tokens_bound: usize = candidate_idxs
+        .iter()
+        .map(|&i| index.doc_tokens[i].len())
+        .sum();
+    // Packed (concatenated) decoded tokens and per-doc row offsets.
+    let mut packed: Vec<f32> = Vec::with_capacity(total_tokens_bound * dim);
+    let mut offsets: Vec<usize> = Vec::with_capacity(candidate_idxs.len() + 1);
+    offsets.push(0);
     for &doc_idx in candidate_idxs {
-        let mut tokens =
-            Vec::with_capacity(index.doc_tokens[doc_idx].len() * dim);
         for ev in &index.doc_tokens[doc_idx] {
-            tokens.extend(index.codec.decode_vector(ev));
+            packed.extend(
+                index.codec.decode_vector_with_table(ev, &decode_table),
+            );
         }
-        max_len = max_len.max(tokens.len() / dim);
-        decoded.push(tokens);
+        offsets.push(packed.len() / dim);
     }
-    if max_len == 0 || n_q == 0 {
+    let total_tokens = packed.len() / dim;
+    if total_tokens == 0 || n_q == 0 {
         return candidate_idxs.iter().map(|&i| (i, 0.0)).collect();
     }
 
-    // Pack docs + mask. Padded slots stay at zero in `padded`, but the
-    // mask drives them to −∞ in the score block before we take max.
-    let n_c = candidate_idxs.len();
-    let mut padded = vec![0.0f32; n_c * max_len * dim];
-    let mut mask = vec![-1e9f32; n_c * max_len];
-    for (i, tokens) in decoded.iter().enumerate() {
-        let n_tok = tokens.len() / dim;
-        let row_start = i * max_len * dim;
-        padded[row_start..row_start + n_tok * dim].copy_from_slice(tokens);
-        for j in 0..n_tok {
-            mask[i * max_len + j] = 0.0;
-        }
-    }
-
+    // Single `[total_tokens, dim] × [dim, n_q]` GEMM. No padding, no
+    // mask — the packed layout means every row is a real token.
     let device = default_device();
-    // Allocate the docs as a 2-D `[n_c * max_len, dim]` tensor and the
-    // query as `[n_q, dim]`. We then matmul against `query.T = [dim,
-    // n_q]` to get a `[n_c * max_len, n_q]` score block, and reshape
-    // back to `[n_c, max_len, n_q]`. Going through 2-D avoids candle's
-    // matmul rank-broadcast restrictions and keeps the underlying GEMM
-    // dispatch a single call.
-    let docs_t = Tensor::from_vec(padded, (n_c * max_len, dim), device)
+    let docs_t = Tensor::from_vec(packed, (total_tokens, dim), device)
         .expect("batch_maxsim: docs tensor allocation failed");
     let q_t = Tensor::from_slice(query_tokens, (n_q, dim), device)
         .expect("batch_maxsim: query tensor allocation failed");
-    let mask_t = Tensor::from_vec(mask, (n_c, max_len), device)
-        .expect("batch_maxsim: mask tensor allocation failed");
-
     let q_transposed = q_t
         .t()
         .expect("query transpose")
         .contiguous()
         .expect("query contiguous");
-    let scores_2d = docs_t
+    let scores_flat: Vec<f32> = docs_t
         .matmul(&q_transposed)
-        .expect("batch_maxsim: docs × query.T matmul failed");
-    let scores = scores_2d
-        .reshape((n_c, max_len, n_q))
-        .expect("batch_maxsim: score reshape failed");
+        .expect("batch_maxsim: docs × query.T matmul failed")
+        .to_vec2::<f32>()
+        .expect("scores to_vec2")
+        .into_iter()
+        .flatten()
+        .collect();
 
-    // Broadcast mask [n_c, max_len, 1] over the query dim and add it
-    // to scores so padded positions can never win the next max.
-    let masked = scores
-        .broadcast_add(
-            &mask_t
-                .unsqueeze(2)
-                .expect("mask unsqueeze")
-                .broadcast_as((n_c, max_len, n_q))
-                .expect("mask broadcast"),
-        )
-        .expect("batch_maxsim: mask broadcast_add failed");
-
-    // max over doc tokens (dim 1) → [n_c, n_q]; then sum over q-tokens.
-    let per_query_max = masked.max(1).expect("max over doc tokens");
-    let totals = per_query_max.sum(1).expect("sum over query tokens");
-    let totals_vec: Vec<f32> = totals.to_vec1().expect("totals to_vec1");
-
-    candidate_idxs.iter().copied().zip(totals_vec).collect()
+    // Per-doc MaxSim reduction over the doc's slice of score rows.
+    let mut out = Vec::with_capacity(candidate_idxs.len());
+    for (i, &doc_idx) in candidate_idxs.iter().enumerate() {
+        let start = offsets[i];
+        let end = offsets[i + 1];
+        if start == end {
+            out.push((doc_idx, 0.0));
+            continue;
+        }
+        let mut total = 0.0f32;
+        for q in 0..n_q {
+            let mut best = f32::NEG_INFINITY;
+            for t in start..end {
+                let s = scores_flat[t * n_q + q];
+                if s > best {
+                    best = s;
+                }
+            }
+            if best.is_finite() {
+                total += best;
+            }
+        }
+        out.push((doc_idx, total));
+    }
+    out
 }
 
 #[cfg(test)]
