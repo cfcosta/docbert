@@ -118,16 +118,18 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Index {
             pool.extend_from_slice(&doc.tokens);
         }
         let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool);
+        let packed_per_token = codec.packed_bytes();
         let mut offset = 0usize;
         for doc in update.upserts {
             let n = doc.n_tokens;
             let cids = &all_centroid_ids[offset..offset + n];
-            let codes_slice =
-                &all_codes[offset * params.dim..(offset + n) * params.dim];
+            let codes_slice = &all_codes
+                [offset * packed_per_token..(offset + n) * packed_per_token];
             let encoded: Vec<EncodedVector> = (0..n)
                 .map(|i| EncodedVector {
                     centroid_id: cids[i],
-                    codes: codes_slice[i * params.dim..(i + 1) * params.dim]
+                    codes: codes_slice
+                        [i * packed_per_token..(i + 1) * packed_per_token]
                         .to_vec(),
                 })
                 .collect();

@@ -221,6 +221,7 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
     //    flat result back into per-document EncodedVectors and populate
     //    the centroid → tokens inverted file along the way.
     let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool);
+    let packed_per_token = codec.packed_bytes();
 
     let mut doc_ids = Vec::with_capacity(documents.len());
     let mut doc_tokens = Vec::with_capacity(documents.len());
@@ -229,12 +230,13 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         doc_ids.push(doc.doc_id);
         let n_tok = doc.n_tokens;
         let cids = &all_centroid_ids[token_offset..token_offset + n_tok];
-        let codes_slice = &all_codes
-            [token_offset * params.dim..(token_offset + n_tok) * params.dim];
+        let codes_slice = &all_codes[token_offset * packed_per_token
+            ..(token_offset + n_tok) * packed_per_token];
         let encoded: Vec<EncodedVector> = (0..n_tok)
             .map(|i| EncodedVector {
                 centroid_id: cids[i],
-                codes: codes_slice[i * params.dim..(i + 1) * params.dim]
+                codes: codes_slice
+                    [i * packed_per_token..(i + 1) * packed_per_token]
                     .to_vec(),
             })
             .collect();

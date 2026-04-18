@@ -16,14 +16,15 @@
 //! copy of the original token.
 //!
 //! This module exposes the codec state and the encode/decode operations
-//! assuming the codec has already been trained. A separate routine
-//! (next TDD cycle) will learn bucket cutoffs and weights from a sample
-//! of residuals.
+//! assuming the codec has already been trained. Bucket cutoffs and
+//! weights are learned from a sample of residuals via
+//! [`train_quantizer`].
 //!
-//! Storage layout: one `u8` per residual dimension. `nbits` may be less
-//! than 8 (2 and 4 are the values fast-plaid's reference supports), but
-//! for now we don't bit-pack on write. Bit packing can be layered in
-//! later without changing the semantic API.
+//! Storage layout: residual codes are LSB-first bit-packed at `nbits`
+//! bits each. Supported widths are `{1, 2, 4, 8}` — enough to cover
+//! every value the ColBERTv2/PLAID papers use in practice. For a 128-d
+//! embedding at 2 bits, this is 32 bytes per token (vs. 128 bytes
+//! unpacked), matching the paper's §4.5 packed-index layout.
 
 use crate::{distance::squared_l2, kmeans::nearest_centroid};
 
@@ -48,14 +49,69 @@ pub struct ResidualCodec {
     pub bucket_weights: Vec<f32>,
 }
 
-/// A single encoded token: a centroid reference plus per-dim bucket codes.
+/// A single encoded token: a centroid reference plus a bit-packed
+/// buffer of per-dim bucket codes.
+///
+/// The `codes` buffer holds `dim` quantization codes packed LSB-first
+/// at `nbits` bits each. For the supported widths of 1, 2, 4, and 8
+/// bits the buffer length is `(dim * nbits) / 8` (dim is expected to
+/// be a multiple of `8/nbits` so code positions don't span bytes —
+/// ColBERT dims are 128 or 96, which satisfies that constraint for
+/// every supported `nbits`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedVector {
     /// Index of the coarse centroid this token was quantized against.
     pub centroid_id: u32,
-    /// One bucket code per residual dimension. Values are in
-    /// `0 .. 2^nbits`.
+    /// Bit-packed bucket codes. Use [`ResidualCodec::read_code`] or the
+    /// codec's `decode_vector` to pull values out.
     pub codes: Vec<u8>,
+}
+
+/// Number of bytes required to pack `dim` codes at `nbits` bits each.
+///
+/// Panics if `nbits` is not one of the supported packed widths.
+pub fn packed_bytes_per_vector(dim: usize, nbits: u32) -> usize {
+    assert_supported_nbits(nbits);
+    (dim * nbits as usize).div_ceil(8)
+}
+
+fn assert_supported_nbits(nbits: u32) {
+    assert!(
+        matches!(nbits, 1 | 2 | 4 | 8),
+        "packed codec: nbits must be 1, 2, 4, or 8 (got {nbits})",
+    );
+}
+
+/// Pack `unpacked` (one byte per code, values in `0 .. 2^nbits`) into
+/// an LSB-first bit-packed buffer.
+fn pack_codes(unpacked: &[u8], nbits: u32) -> Vec<u8> {
+    assert_supported_nbits(nbits);
+    if nbits == 8 {
+        return unpacked.to_vec();
+    }
+    let codes_per_byte = 8 / nbits as usize;
+    let mask: u8 = ((1u16 << nbits) - 1) as u8;
+    let n_bytes = unpacked.len().div_ceil(codes_per_byte);
+    let mut packed = vec![0u8; n_bytes];
+    for (i, &code) in unpacked.iter().enumerate() {
+        let byte_idx = i / codes_per_byte;
+        let bit_off = (i % codes_per_byte) * nbits as usize;
+        packed[byte_idx] |= (code & mask) << bit_off;
+    }
+    packed
+}
+
+/// Read the code at logical position `i` from a packed buffer.
+pub fn read_code(packed: &[u8], i: usize, nbits: u32) -> u8 {
+    assert_supported_nbits(nbits);
+    if nbits == 8 {
+        return packed[i];
+    }
+    let codes_per_byte = 8 / nbits as usize;
+    let mask: u8 = ((1u16 << nbits) - 1) as u8;
+    let byte_idx = i / codes_per_byte;
+    let bit_off = (i % codes_per_byte) * nbits as usize;
+    (packed[byte_idx] >> bit_off) & mask
 }
 
 impl ResidualCodec {
@@ -69,6 +125,11 @@ impl ResidualCodec {
         self.centroids.len() / self.dim
     }
 
+    /// Number of packed bytes each encoded vector uses.
+    pub fn packed_bytes(&self) -> usize {
+        packed_bytes_per_vector(self.dim, self.nbits)
+    }
+
     /// Validate internal shape invariants. Called automatically by
     /// encode/decode; exposed so callers loading a codec from disk can
     /// fail fast.
@@ -76,9 +137,9 @@ impl ResidualCodec {
         if self.dim == 0 {
             return Err("codec: dim must be positive".into());
         }
-        if self.nbits == 0 || self.nbits > 8 {
+        if !matches!(self.nbits, 1 | 2 | 4 | 8) {
             return Err(format!(
-                "codec: nbits must be in 1..=8, got {}",
+                "codec: nbits must be 1, 2, 4, or 8, got {}",
                 self.nbits
             ));
         }
@@ -139,11 +200,12 @@ impl ResidualCodec {
         let centroid_slice = &self.centroids
             [centroid_id * self.dim..(centroid_id + 1) * self.dim];
 
-        let codes: Vec<u8> = vector
+        let unpacked: Vec<u8> = vector
             .iter()
             .zip(centroid_slice.iter())
             .map(|(v, c)| bucket_for_value(*v - *c, &self.bucket_cutoffs))
             .collect();
+        let codes = pack_codes(&unpacked, self.nbits);
 
         EncodedVector {
             centroid_id: centroid_id as u32,
@@ -185,19 +247,24 @@ impl ResidualCodec {
         let assignments =
             crate::kmeans::assign_points(tokens, &self.centroids, self.dim);
 
+        let packed_per_token = self.packed_bytes();
         let mut centroid_ids: Vec<u32> = Vec::with_capacity(n);
-        let mut codes: Vec<u8> = Vec::with_capacity(tokens.len());
+        let mut packed_codes: Vec<u8> =
+            Vec::with_capacity(n * packed_per_token);
+        let mut scratch: Vec<u8> = Vec::with_capacity(self.dim);
         for (token, &cluster) in
             tokens.chunks_exact(self.dim).zip(assignments.iter())
         {
             let centroid_slice =
                 &self.centroids[cluster * self.dim..(cluster + 1) * self.dim];
+            scratch.clear();
             for (t, c) in token.iter().zip(centroid_slice.iter()) {
-                codes.push(bucket_for_value(*t - *c, &self.bucket_cutoffs));
+                scratch.push(bucket_for_value(*t - *c, &self.bucket_cutoffs));
             }
+            packed_codes.extend(pack_codes(&scratch, self.nbits));
             centroid_ids.push(cluster as u32);
         }
-        (centroid_ids, codes)
+        (centroid_ids, packed_codes)
     }
 
     /// Reconstruct an approximate token embedding from its codes.
@@ -208,11 +275,11 @@ impl ResidualCodec {
     /// any code is out of range.
     pub fn decode_vector(&self, encoded: &EncodedVector) -> Vec<f32> {
         self.validate().unwrap();
+        let expected_bytes = self.packed_bytes();
         assert_eq!(
             encoded.codes.len(),
-            self.dim,
-            "decode_vector: expected {} codes, got {}",
-            self.dim,
+            expected_bytes,
+            "decode_vector: expected {expected_bytes} packed bytes, got {}",
             encoded.codes.len(),
         );
         let centroid_id = encoded.centroid_id as usize;
@@ -226,19 +293,10 @@ impl ResidualCodec {
         let centroid_slice = &self.centroids
             [centroid_id * self.dim..(centroid_id + 1) * self.dim];
 
-        encoded
-            .codes
-            .iter()
-            .zip(centroid_slice.iter())
-            .map(|(code, c)| {
-                let idx = *code as usize;
-                assert!(
-                    idx < self.bucket_weights.len(),
-                    "decode_vector: code {} out of range 0..{}",
-                    idx,
-                    self.bucket_weights.len(),
-                );
-                *c + self.bucket_weights[idx]
+        (0..self.dim)
+            .map(|i| {
+                let idx = read_code(&encoded.codes, i, self.nbits) as usize;
+                centroid_slice[i] + self.bucket_weights[idx]
             })
             .collect()
     }
@@ -358,6 +416,104 @@ mod tests {
     }
 
     #[test]
+    fn pack_then_read_code_recovers_every_input() {
+        // Every nbits ∈ {1,2,4,8} should pack losslessly: reading each
+        // position back from the packed buffer must return the
+        // original value.
+        for &nbits in &[1u32, 2, 4, 8] {
+            let num_buckets = 1usize << nbits;
+            // Cycle through 0..num_buckets so every code value lands
+            // somewhere, plus a few more for good byte alignment.
+            let unpacked: Vec<u8> = (0..32u8)
+                .map(|i| (i as usize % num_buckets) as u8)
+                .collect();
+            let packed = pack_codes(&unpacked, nbits);
+            for (i, &expected) in unpacked.iter().enumerate() {
+                let got = read_code(&packed, i, nbits);
+                assert_eq!(
+                    got, expected,
+                    "nbits={nbits} position {i}: got {got}, expected {expected}",
+                );
+            }
+            // Byte count matches the advertised formula.
+            assert_eq!(
+                packed.len(),
+                packed_bytes_per_vector(unpacked.len(), nbits),
+            );
+        }
+    }
+
+    #[test]
+    fn encode_vector_produces_packed_codes_at_two_bits() {
+        // Paper §4.5: ColBERTv2/PLAID pack `8/nbits` residual codes
+        // per byte. For dim=8 at 2-bit, that's 4 codes per byte ⇒
+        // 2 bytes of packed storage, not 8.
+        let codec = ResidualCodec {
+            nbits: 2,
+            dim: 8,
+            centroids: vec![0.0; 8],
+            bucket_cutoffs: vec![-0.5, 0.0, 0.5],
+            bucket_weights: vec![-0.75, -0.25, 0.25, 0.75],
+        };
+        let encoded = codec.encode_vector(&[0.1f32; 8]);
+        assert_eq!(encoded.codes.len(), 2);
+    }
+
+    #[test]
+    fn encode_vector_produces_packed_codes_at_four_bits() {
+        // dim=8 at 4-bit ⇒ 2 codes per byte ⇒ 4 bytes.
+        let codec = ResidualCodec {
+            nbits: 4,
+            dim: 8,
+            centroids: vec![0.0; 8],
+            bucket_cutoffs: (0..15).map(|i| i as f32 / 15.0 - 0.5).collect(),
+            bucket_weights: (0..16).map(|i| i as f32 / 16.0 - 0.5).collect(),
+        };
+        let encoded = codec.encode_vector(&[0.1f32; 8]);
+        assert_eq!(encoded.codes.len(), 4);
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_at_every_supported_nbits() {
+        // Roundtripping through packing/unpacking must be lossless up
+        // to the bucket quantisation. We exercise 1, 2, 4, and 8 bit
+        // widths on a small residual so every branch of the packing
+        // math gets hit.
+        for nbits in [1u32, 2, 4, 8] {
+            let num_buckets = 1usize << nbits;
+            let bucket_cutoffs: Vec<f32> = (1..num_buckets)
+                .map(|i| (i as f32 / num_buckets as f32) - 0.5)
+                .collect();
+            let bucket_weights: Vec<f32> = (0..num_buckets)
+                .map(|i| (i as f32 + 0.5) / num_buckets as f32 - 0.5)
+                .collect();
+            let codec = ResidualCodec {
+                nbits,
+                dim: 8,
+                centroids: vec![0.0; 8],
+                bucket_cutoffs,
+                bucket_weights,
+            };
+            let input = [-0.4f32, -0.1, 0.0, 0.25, 0.49, -0.25, 0.1, 0.3];
+            let encoded = codec.encode_vector(&input);
+            let decoded = codec.decode_vector(&encoded);
+            let max_err = input
+                .iter()
+                .zip(decoded.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            // Each bucket covers at most `1 / num_buckets` of [−0.5, 0.5]
+            // so reconstruction error per dim is bounded by half a
+            // bucket width.
+            let tolerance = 1.0 / num_buckets as f32;
+            assert!(
+                max_err <= tolerance,
+                "nbits={nbits}: max_err={max_err}, tolerance={tolerance}",
+            );
+        }
+    }
+
+    #[test]
     fn bucket_for_value_places_below_first_cutoff_in_bucket_zero() {
         let cutoffs = [-0.5, 0.0, 0.5];
         assert_eq!(bucket_for_value(-1.0, &cutoffs), 0);
@@ -447,12 +603,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of range")]
-    fn decode_panics_on_code_out_of_range() {
+    #[should_panic(expected = "packed bytes")]
+    fn decode_panics_on_wrong_packed_code_length() {
+        // With `dim=1` at 2 bits, a valid encoding is 1 packed byte.
+        // Handing decode a 2-byte buffer should fail the shape check.
         let codec = two_bit_1d_codec_with_centroids(vec![0.0]);
         let bad = EncodedVector {
             centroid_id: 0,
-            codes: vec![99],
+            codes: vec![0, 0],
         };
         let _ = codec.decode_vector(&bad);
     }

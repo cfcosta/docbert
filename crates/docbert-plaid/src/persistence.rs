@@ -35,12 +35,17 @@ use std::{
 };
 
 use crate::{
-    codec::{EncodedVector, ResidualCodec},
+    codec::{EncodedVector, ResidualCodec, packed_bytes_per_vector},
     index::{Index, IndexParams, build_inverted_file},
 };
 
 const MAGIC: &[u8; 8] = b"PLAIDIDX";
-const FORMAT_VERSION: u32 = 1;
+/// Format versions in the wild:
+///
+/// - `1`: unpacked residual codes, one byte per residual dimension.
+/// - `2`: LSB-first bit-packed codes at `nbits ∈ {1, 2, 4, 8}`;
+///   `(dim * nbits) / 8` bytes per token.
+const FORMAT_VERSION: u32 = 2;
 
 /// Write `index` to `path`, creating or truncating the file as needed.
 pub fn save(index: &Index, path: &Path) -> io::Result<()> {
@@ -81,16 +86,16 @@ fn write_index<W: Write>(index: &Index, w: &mut W) -> io::Result<()> {
         .collect();
     write_u32_slice(w, &token_counts)?;
 
+    let packed_bytes = packed_bytes_per_vector(params.dim, params.nbits);
     for encoded_doc in &index.doc_tokens {
         for ev in encoded_doc {
             write_u32(w, ev.centroid_id)?;
-            if ev.codes.len() != params.dim {
+            if ev.codes.len() != packed_bytes {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "encoded token has {} codes but dim is {}",
+                        "encoded token has {} packed bytes but codec expects {packed_bytes}",
                         ev.codes.len(),
-                        params.dim,
                     ),
                 ));
             }
@@ -127,7 +132,7 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
     let max_kmeans_iters = read_u32(r)? as usize;
     let n_documents = read_u64(r)? as usize;
 
-    if dim == 0 || k_centroids == 0 || !(1..=8).contains(&nbits) {
+    if dim == 0 || k_centroids == 0 || !matches!(nbits, 1 | 2 | 4 | 8) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "plaid index header has invalid dim/k_centroids/nbits",
@@ -148,6 +153,7 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
 
     let doc_ids = read_u64_vec(r, n_documents)?;
     let token_counts = read_u32_vec(r, n_documents)?;
+    let packed_bytes = packed_bytes_per_vector(dim, nbits);
 
     let mut doc_tokens: Vec<Vec<EncodedVector>> =
         Vec::with_capacity(n_documents);
@@ -163,7 +169,7 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
                     ),
                 ));
             }
-            let mut codes = vec![0u8; dim];
+            let mut codes = vec![0u8; packed_bytes];
             r.read_exact(&mut codes)?;
             encoded_doc.push(EncodedVector { centroid_id, codes });
         }
@@ -405,6 +411,22 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(MAGIC);
         buf.extend_from_slice(&999u32.to_le_bytes());
+        std::fs::write(&path, &buf).unwrap();
+
+        let err = load(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("version"));
+    }
+
+    #[test]
+    fn load_rejects_legacy_unpacked_format_version_one() {
+        // Version 1 (pre-packing) indexes must be rebuilt. The loader
+        // should reject them with a clear version mismatch.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("legacy.plaid");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&1u32.to_le_bytes());
         std::fs::write(&path, &buf).unwrap();
 
         let err = load(&path).unwrap_err();

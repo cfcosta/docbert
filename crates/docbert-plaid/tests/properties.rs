@@ -162,7 +162,7 @@ fn codec_reconstruction_error_decreases_as_nbits_grows() {
     let dim = 1;
     let centroids = vec![0.0f32];
     let mut errors = Vec::new();
-    for nbits in [2u32, 4, 6] {
+    for nbits in [2u32, 4, 8] {
         let (cutoffs, weights) = train_quantizer(&pool, nbits);
         let codec = ResidualCodec {
             nbits,
