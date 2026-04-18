@@ -359,6 +359,7 @@ mod tests {
         let params = crate::search::SearchParams {
             top_k: 3,
             n_probe: 2,
+            n_candidate_docs: None,
         };
 
         let a = crate::search::search(&index, &query, params);

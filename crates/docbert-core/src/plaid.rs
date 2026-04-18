@@ -332,7 +332,17 @@ pub fn search(
         .to_vec1::<f32>()?;
     debug_assert_eq!(query_flat.len(), query_tokens * query_dim);
 
-    let params = SearchParams { top_k, n_probe };
+    // Default docbert-core tuning: shortlist ~max(top_k * 8, 128)
+    // candidates through PLAID's centroid-interaction stage before
+    // full decode + MaxSim. For the personal-note corpora docbert
+    // targets, this gives near-exact ranking with a fraction of the
+    // decode cost of sending every probed candidate to MaxSim.
+    let n_candidate_docs = Some((top_k * 8).max(128));
+    let params = SearchParams {
+        top_k,
+        n_probe,
+        n_candidate_docs,
+    };
     let out = plaid_search::search(index, &query_flat, params);
     Ok(out
         .into_iter()

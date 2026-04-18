@@ -66,6 +66,7 @@ fn bench_search(c: &mut Criterion) {
         let params = SearchParams {
             top_k: 10,
             n_probe: 8,
+            n_candidate_docs: None,
         };
         group.sample_size(if n_docs >= 5_000 { 20 } else { 50 });
         group.bench_with_input(

@@ -150,11 +150,18 @@ fn plaid_search_recall_at_10_against_decoded_brute_force_is_high() {
     for q_seed in 0..n_queries {
         let query =
             random_unit_vectors(0xBEEF + q_seed as u64, query_tokens, DIM);
-        let plaid_top: Vec<u64> =
-            search(&index, &query, SearchParams { top_k, n_probe })
-                .into_iter()
-                .map(|r| r.doc_id)
-                .collect();
+        let plaid_top: Vec<u64> = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k,
+                n_probe,
+                n_candidate_docs: None,
+            },
+        )
+        .into_iter()
+        .map(|r| r.doc_id)
+        .collect();
 
         let exact_top: Vec<u64> = exhaustive_maxsim(&query, &decoded_docs, DIM)
             .into_iter()
@@ -205,11 +212,18 @@ fn plaid_search_recall_at_10_against_original_brute_force_is_meaningful() {
     for q_seed in 0..n_queries {
         let query =
             random_unit_vectors(0xDEADBEEF + q_seed as u64, query_tokens, DIM);
-        let plaid_top: Vec<u64> =
-            search(&index, &query, SearchParams { top_k, n_probe })
-                .into_iter()
-                .map(|r| r.doc_id)
-                .collect();
+        let plaid_top: Vec<u64> = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k,
+                n_probe,
+                n_candidate_docs: None,
+            },
+        )
+        .into_iter()
+        .map(|r| r.doc_id)
+        .collect();
 
         let exact_top: Vec<u64> =
             exhaustive_maxsim(&query, &original_docs, DIM)
@@ -251,6 +265,7 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
         SearchParams {
             top_k: 5,
             n_probe: 8,
+            n_candidate_docs: None,
         },
     );
 
@@ -307,6 +322,7 @@ fn plaid_search_returns_results_sorted_descending_by_score() {
         SearchParams {
             top_k: 20,
             n_probe: 4,
+            n_candidate_docs: None,
         },
     );
     assert!(results.len() >= 2);
@@ -316,6 +332,72 @@ fn plaid_search_returns_results_sorted_descending_by_score() {
             "scores not monotonic: {pair:?}",
         );
     }
+}
+
+#[test]
+fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
+    // Centroid-interaction is an approximate intermediate ranker:
+    // each doc's MaxSim is approximated by scoring only against the
+    // centroids its tokens landed in, skipping residual decode. On
+    // uniform-random synthetic tokens the centroids carry less
+    // per-doc signal than on real text (which clusters meaningfully),
+    // so recall on this corpus is a floor — real documents should do
+    // materially better. The test's job is to catch regressions, not
+    // pin a production-grade number.
+    let n_docs = 200;
+    let tokens_per_doc = 40;
+    let query_tokens = 16;
+    let top_k = 10;
+    let n_probe = 8;
+    let shortlist = top_k * 10;
+
+    let corpus = build_corpus(0xBEEF, n_docs, tokens_per_doc);
+    let index = build_index(
+        &corpus,
+        IndexParams {
+            dim: DIM,
+            nbits: 4,
+            k_centroids: 64,
+            max_kmeans_iters: 20,
+        },
+    );
+
+    let mut total_recall = 0.0f32;
+    let n_queries = 5;
+    for q_seed in 0..n_queries {
+        let query =
+            random_unit_vectors(0xA11CE + q_seed as u64, query_tokens, DIM);
+        let no_shortlist: Vec<u64> = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k,
+                n_probe,
+                n_candidate_docs: None,
+            },
+        )
+        .into_iter()
+        .map(|r| r.doc_id)
+        .collect();
+        let shortlisted: Vec<u64> = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k,
+                n_probe,
+                n_candidate_docs: Some(shortlist),
+            },
+        )
+        .into_iter()
+        .map(|r| r.doc_id)
+        .collect();
+        total_recall += recall_at_k(&shortlisted, &no_shortlist);
+    }
+    let avg = total_recall / n_queries as f32;
+    assert!(
+        avg >= 0.40,
+        "centroid-interaction shortlist recall should be ≥ 0.40; got {avg:.3}",
+    );
 }
 
 #[test]
@@ -342,6 +424,7 @@ fn maxsim_score_for_unit_norm_query_is_at_most_q_times_one() {
         SearchParams {
             top_k: 5,
             n_probe: 8,
+            n_candidate_docs: None,
         },
     );
 

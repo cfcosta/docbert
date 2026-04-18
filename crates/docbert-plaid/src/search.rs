@@ -2,19 +2,23 @@
 //!
 //! The flow mirrors PLAID's reference implementation:
 //!
-//! 1. For every query token, find the `n_probe` nearest coarse centroids.
-//! 2. Union the IVF lists for those centroids to get a set of candidate
-//!    documents whose tokens landed near some query token.
-//! 3. For each candidate document, decode its stored codes back into
-//!    approximate embeddings and compute MaxSim against the query.
-//! 4. Sort documents by MaxSim score and return the top-`top_k`.
+//! 1. For every query token, find the `n_probe` top dot-product coarse
+//!    centroids (matching `S_c,q = C · Q^T`).
+//! 2. Union the doc-level IVF postings for those centroids to get a set
+//!    of candidate documents.
+//! 3. *Optional* centroid interaction: compute an approximate MaxSim
+//!    score per candidate using only the centroids each doc touches,
+//!    and keep the top-`n_candidate_docs` survivors.
+//! 4. Decode the survivors' stored residual codes into approximate
+//!    embeddings and compute exact MaxSim against the query.
+//! 5. Sort by exact MaxSim score and return the top-`top_k`.
 //!
-//! Step 3 is intentionally exact (decode then MaxSim) for now. It already
-//! shrinks the search from "every document" to "documents reachable via
-//! probed centroids", which is the majority of PLAID's speedup. Further
-//! acceleration (centroid-lookup scoring, score-bounded early exit)
-//! follows the same data structures and can be layered in later without
-//! changing the public API.
+//! Step 3 is the paper's centroid-interaction stage. It's cheap because
+//! it reuses the `[n_query_tokens, n_centroids]` query-centroid score
+//! matrix that step 1 would compute anyway, and it drastically shrinks
+//! the set of candidates that reach the expensive decode in step 4.
+//! Callers that want legacy behaviour (every candidate decodes) can
+//! pass `n_candidate_docs = None`.
 
 use candle_core::Tensor;
 
@@ -25,8 +29,14 @@ use crate::{device::default_device, distance::dot, index::Index};
 pub struct SearchParams {
     /// Number of top-scoring documents to return.
     pub top_k: usize,
-    /// Number of nearest centroids each query token probes.
+    /// Number of top dot-product centroids each query token probes.
     pub n_probe: usize,
+    /// Maximum number of candidates surviving PLAID's
+    /// centroid-interaction stage that proceed to full decode +
+    /// exact MaxSim. `None` disables centroid interaction and sends
+    /// every probed candidate straight to decode — correct but
+    /// slower for large corpora.
+    pub n_candidate_docs: Option<usize>,
 }
 
 /// One entry in a ranked search result list.
@@ -83,14 +93,51 @@ pub fn search(
         }
     }
 
-    // 3. Score every candidate with one batched MaxSim matmul.
-    let candidate_idxs: Vec<usize> = candidate_docs
+    let mut candidate_idxs: Vec<usize> = candidate_docs
         .iter()
         .enumerate()
         .filter_map(|(idx, &is_cand)| {
             (is_cand && !index.doc_tokens[idx].is_empty()).then_some(idx)
         })
         .collect();
+
+    // 3. Centroid interaction: when the caller set `n_candidate_docs`,
+    //    cheaply rank candidates via the precomputed query-centroid
+    //    score matrix and keep only the top survivors before paying
+    //    for full decode + exact MaxSim.
+    if let Some(limit) = params.n_candidate_docs
+        && candidate_idxs.len() > limit
+    {
+        let qc_scores = query_centroid_score_matrix(
+            query_tokens,
+            &index.codec.centroids,
+            dim,
+        );
+        let n_q = query_tokens.len() / dim;
+        let n_c = index.codec.num_centroids();
+        let mut approx: Vec<(usize, f32)> = candidate_idxs
+            .iter()
+            .map(|&doc_idx| {
+                let score = approx_centroid_interaction_score(
+                    &index.doc_tokens[doc_idx],
+                    &qc_scores,
+                    n_q,
+                    n_c,
+                );
+                (doc_idx, score)
+            })
+            .collect();
+        approx.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        approx.truncate(limit);
+        candidate_idxs = approx.into_iter().map(|(idx, _)| idx).collect();
+    }
+
+    // 4. Score every surviving candidate with one batched MaxSim matmul
+    //    on decoded tokens.
     let mut scored: Vec<SearchResult> = if candidate_idxs.is_empty() {
         Vec::new()
     } else {
@@ -166,6 +213,62 @@ pub fn top_n_centroids(
             .then_with(|| a.0.cmp(&b.0))
     });
     scored.into_iter().take(n.min(k)).map(|(i, _)| i).collect()
+}
+
+/// Compute the row-major `[n_q, n_centroids]` matrix of query-to-centroid
+/// dot products used by PLAID's centroid-interaction stage.
+///
+/// Materialising the whole matrix once amortises the per-centroid work
+/// across every candidate document — the same query-centroid entries
+/// get hit by every doc that touches each centroid.
+fn query_centroid_score_matrix(
+    query_tokens: &[f32],
+    centroids: &[f32],
+    dim: usize,
+) -> Vec<f32> {
+    let n_q = query_tokens.len() / dim;
+    let n_c = centroids.len() / dim;
+    let mut out = vec![0.0f32; n_q * n_c];
+    for (qi, q) in query_tokens.chunks_exact(dim).enumerate() {
+        for (ci, c) in centroids.chunks_exact(dim).enumerate() {
+            out[qi * n_c + ci] = dot(q, c);
+        }
+    }
+    out
+}
+
+/// Approximate MaxSim for one candidate doc using only the centroids
+/// the doc touches. This is PLAID's centroid-interaction score:
+///
+/// `Σ_q max_{c ∈ unique_centroids(doc)} qc_scores[q, c]`
+///
+/// Duplicate centroid ids within the doc are filtered implicitly: a
+/// centroid that appears twice can't beat itself in the max, so the
+/// running-max shortcut is correct without an explicit dedup pass.
+fn approx_centroid_interaction_score(
+    doc: &[crate::codec::EncodedVector],
+    qc_scores: &[f32],
+    n_q: usize,
+    n_centroids: usize,
+) -> f32 {
+    if doc.is_empty() {
+        return 0.0;
+    }
+    let mut total = 0.0f32;
+    for q in 0..n_q {
+        let row = &qc_scores[q * n_centroids..(q + 1) * n_centroids];
+        let mut best = f32::NEG_INFINITY;
+        for ev in doc {
+            let s = row[ev.centroid_id as usize];
+            if s > best {
+                best = s;
+            }
+        }
+        if best.is_finite() {
+            total += best;
+        }
+    }
+    total
 }
 
 /// Score a batch of candidate docs against `query_tokens` with one
@@ -393,6 +496,7 @@ mod tests {
             SearchParams {
                 top_k: 3,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         assert!(out.is_empty());
@@ -410,6 +514,7 @@ mod tests {
             SearchParams {
                 top_k: 3,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         assert!(!out.is_empty(), "should surface at least one doc");
@@ -425,6 +530,7 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         assert_eq!(out.len(), 1);
@@ -440,6 +546,7 @@ mod tests {
             SearchParams {
                 top_k: 3,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         for pair in out.windows(2) {
@@ -462,6 +569,7 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: 1,
+                n_candidate_docs: None,
             },
         );
         assert_eq!(out[0].doc_id, 2);
@@ -482,6 +590,7 @@ mod tests {
             SearchParams {
                 top_k: 10,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         assert!(
@@ -504,6 +613,7 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
             },
         );
         assert!(!out.is_empty());
@@ -550,6 +660,7 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         assert_eq!(out[0].doc_id, 1);
@@ -583,6 +694,7 @@ mod tests {
             SearchParams {
                 top_k: 5,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         for r in &east {
@@ -599,6 +711,7 @@ mod tests {
             SearchParams {
                 top_k: 5,
                 n_probe: 2,
+                n_candidate_docs: None,
             },
         );
         for r in &north {
@@ -620,6 +733,7 @@ mod tests {
             SearchParams {
                 top_k: 0,
                 n_probe: 1,
+                n_candidate_docs: None,
             },
         );
     }
@@ -634,6 +748,7 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: 0,
+                n_candidate_docs: None,
             },
         );
     }
@@ -648,7 +763,94 @@ mod tests {
             SearchParams {
                 top_k: 1,
                 n_probe: 1,
+                n_candidate_docs: None,
             },
         );
+    }
+
+    #[test]
+    fn centroid_interaction_shortlist_caps_candidates_surviving_to_decode() {
+        // With only one candidate allowed past centroid interaction we
+        // should get exactly one doc in the results, and it must be the
+        // best-scoring one under the approximate stage.
+        let index = build_index(&corpus(), params());
+        let out = search(
+            &index,
+            &[1.0, 0.0],
+            SearchParams {
+                top_k: 5,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: Some(1),
+            },
+        );
+        assert_eq!(out.len(), 1, "shortlist of 1 must cap output at 1");
+        assert_eq!(
+            out[0].doc_id, 1,
+            "east query should surface the east doc as the survivor",
+        );
+    }
+
+    #[test]
+    fn centroid_interaction_with_large_shortlist_matches_no_shortlist() {
+        // A shortlist size at least equal to the number of candidates
+        // is effectively no shortlisting — the centroid-interaction
+        // stage picks everything through, so results must agree with
+        // the legacy `None` path byte-for-byte.
+        let index = build_index(&corpus(), params());
+        let query = [1.0, 0.0, 0.0, 1.0];
+
+        let legacy = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 3,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
+            },
+        );
+        let shortlisted = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 3,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: Some(1_000),
+            },
+        );
+        assert_eq!(legacy, shortlisted);
+    }
+
+    #[test]
+    fn centroid_interaction_preserves_exact_maxsim_on_surviving_candidates() {
+        // The final ranking stage still runs exact decoded MaxSim.
+        // With a shortlist that keeps everyone, the top-1 score must
+        // equal the MaxSim over decoded tokens for that doc.
+        let index = build_index(&corpus(), params());
+        let query = [1.0f32, 0.0];
+        let out = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 1,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: Some(1_000),
+            },
+        );
+        let top = out[0];
+        let doc_idx = index.position_of(top.doc_id).unwrap();
+        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+            .iter()
+            .map(|ev| index.codec.decode_vector(ev))
+            .collect();
+        let expected: f32 = query
+            .chunks_exact(2)
+            .map(|q| {
+                decoded
+                    .iter()
+                    .map(|d| dot(q, d))
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
+            .sum();
+        assert!((expected - top.score).abs() < 1e-5);
     }
 }
