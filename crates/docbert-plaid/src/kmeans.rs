@@ -216,13 +216,21 @@ pub fn fit_with_init(
     centroids
 }
 
-/// Run k-means with a deterministic initial centroid selection.
+/// Run k-means with deterministic farthest-first (Gonzalez) seeding.
 ///
-/// This convenience picks the first `k` rows of `points` as the starting
-/// centroids and then delegates to [`fit_with_init`]. It's deterministic
-/// (no RNG), useful for tests, and a sensible default when callers have
-/// already shuffled their input. More sophisticated initialization
-/// (k-means++, sampling) can be added later without changing this API.
+/// The seeder picks the first point as the initial centroid, then for
+/// each subsequent centroid picks the point whose squared distance to
+/// the *nearest* already-chosen centroid is largest. This spreads the
+/// initial centroids across the data cloud and avoids the failure mode
+/// of the old "first k points" strategy, where a pre-sorted corpus
+/// could drop every initial centroid into the same cluster and leave
+/// Lloyd's M-step stuck in a degenerate local minimum.
+///
+/// Gonzalez's farthest-first is a deterministic approximation to
+/// k-means++ (which samples proportional to `D²`). For the synthetic
+/// and docbert-scale corpora this crate targets it's cheap — O(k · n · dim)
+/// — and gives the bulk of the clustering-quality win without
+/// depending on an RNG, which keeps fixtures reproducible.
 ///
 /// # Panics
 ///
@@ -243,8 +251,65 @@ pub fn fit(points: &[f32], k: usize, dim: usize, max_iters: usize) -> Vec<f32> {
         "fit: need at least k={k} points, got {n_points}",
     );
 
-    let initial = &points[..k * dim];
-    fit_with_init(points, initial, dim, max_iters)
+    let initial = farthest_first_init(points, k, dim);
+    fit_with_init(points, &initial, dim, max_iters)
+}
+
+/// Pick `k` initial centroids via deterministic farthest-first
+/// seeding (Gonzalez's algorithm, a deterministic approximation to
+/// k-means++).
+///
+/// The first centroid is row 0 of `points`. Each subsequent centroid
+/// is the row whose squared L2 distance to the nearest already-picked
+/// centroid is largest; ties break toward the earlier row index.
+///
+/// # Panics
+///
+/// Panics if `points` has fewer than `k` rows or if `dim == 0`.
+pub fn farthest_first_init(points: &[f32], k: usize, dim: usize) -> Vec<f32> {
+    assert!(k > 0, "farthest_first_init: k must be positive");
+    assert!(dim > 0, "farthest_first_init: dim must be positive");
+    assert!(
+        points.len().is_multiple_of(dim) && !points.is_empty(),
+        "farthest_first_init: points length {} is not a positive multiple of dim {}",
+        points.len(),
+        dim,
+    );
+    let n = points.len() / dim;
+    assert!(
+        n >= k,
+        "farthest_first_init: need at least k={k} points, got {n}",
+    );
+
+    let mut centroids = Vec::with_capacity(k * dim);
+    centroids.extend_from_slice(&points[..dim]);
+
+    // Squared L2 to the nearest picked centroid for each point.
+    let mut min_dists = vec![0.0f32; n];
+    for (i, p) in points.chunks_exact(dim).enumerate() {
+        min_dists[i] = squared_l2(p, &points[..dim]);
+    }
+
+    for _ in 1..k {
+        let mut best_idx = 0usize;
+        let mut best_dist = f32::NEG_INFINITY;
+        for (i, &d) in min_dists.iter().enumerate() {
+            if d > best_dist {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+        let new_c = &points[best_idx * dim..(best_idx + 1) * dim];
+        centroids.extend_from_slice(new_c);
+        for (i, p) in points.chunks_exact(dim).enumerate() {
+            let d = squared_l2(p, new_c);
+            if d < min_dists[i] {
+                min_dists[i] = d;
+            }
+        }
+    }
+
+    centroids
 }
 
 /// Assign every point in `points` to the index of its nearest centroid.
@@ -554,12 +619,34 @@ mod tests {
     }
 
     #[test]
-    fn fit_uses_first_k_points_as_initial_centroids() {
-        // With k equal to the number of points, the centroids should be
-        // the points themselves and the assignment is the identity.
-        let points = vec![1.0, 2.0, 3.0, 4.0];
-        let fitted = fit(&points, 2, 2, 10);
-        assert_eq!(fitted, points);
+    fn fit_uses_farthest_first_seeding_to_spread_initial_centroids() {
+        // Two tight clusters, one near origin and one near (10, 10).
+        // With `max_iters = 0` no Lloyd step runs, so the returned
+        // centroids ARE the initial seeds. Farthest-first must pick
+        // one point from each cluster — the two returned centroids
+        // should therefore sit far apart, not both near origin like
+        // the old "first k points" seeding would give.
+        let points = vec![
+            0.0, 0.0, 0.1, 0.1, -0.1, 0.1, // cluster near origin
+            10.0, 10.0, 10.1, 9.9, 9.9, 10.1, // cluster near (10, 10)
+        ];
+        let seeds = fit(&points, 2, 2, 0);
+        let c0 = &seeds[0..2];
+        let c1 = &seeds[2..4];
+        let dist = squared_l2(c0, c1);
+        assert!(
+            dist > 100.0,
+            "expected well-separated seeds, got {c0:?} and {c1:?} (dist²={dist})",
+        );
+    }
+
+    #[test]
+    fn fit_is_deterministic_across_identical_calls() {
+        // Farthest-first seeding must still be reproducible — no RNG.
+        let points = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let a = fit(&points, 3, 2, 10);
+        let b = fit(&points, 3, 2, 10);
+        assert_eq!(a, b);
     }
 
     #[test]
