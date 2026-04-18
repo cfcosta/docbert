@@ -157,6 +157,7 @@ fn plaid_search_recall_at_10_against_decoded_brute_force_is_high() {
                 top_k,
                 n_probe,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         )
         .into_iter()
@@ -219,6 +220,7 @@ fn plaid_search_recall_at_10_against_original_brute_force_is_meaningful() {
                 top_k,
                 n_probe,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         )
         .into_iter()
@@ -266,6 +268,7 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
             top_k: 5,
             n_probe: 8,
             n_candidate_docs: None,
+            centroid_score_threshold: None,
         },
     );
 
@@ -323,6 +326,7 @@ fn plaid_search_returns_results_sorted_descending_by_score() {
             top_k: 20,
             n_probe: 4,
             n_candidate_docs: None,
+            centroid_score_threshold: None,
         },
     );
     assert!(results.len() >= 2);
@@ -374,6 +378,7 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
                 top_k,
                 n_probe,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         )
         .into_iter()
@@ -386,6 +391,7 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
                 top_k,
                 n_probe,
                 n_candidate_docs: Some(shortlist),
+                centroid_score_threshold: None,
             },
         )
         .into_iter()
@@ -425,6 +431,7 @@ fn maxsim_score_for_unit_norm_query_is_at_most_q_times_one() {
             top_k: 5,
             n_probe: 8,
             n_candidate_docs: None,
+            centroid_score_threshold: None,
         },
     );
 

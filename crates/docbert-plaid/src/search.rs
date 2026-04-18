@@ -4,21 +4,26 @@
 //!
 //! 1. For every query token, find the `n_probe` top dot-product coarse
 //!    centroids (matching `S_c,q = C · Q^T`).
-//! 2. Union the doc-level IVF postings for those centroids to get a set
-//!    of candidate documents.
-//! 3. *Optional* centroid interaction: compute an approximate MaxSim
+//! 2. *Optional* centroid pruning: drop probed centroids whose best
+//!    score across all query tokens sits below
+//!    `centroid_score_threshold`. This further shrinks the reachable
+//!    centroid set before postings are gathered.
+//! 3. Union the doc-level IVF postings for the surviving centroids to
+//!    get a set of candidate documents.
+//! 4. *Optional* centroid interaction: compute an approximate MaxSim
 //!    score per candidate using only the centroids each doc touches,
 //!    and keep the top-`n_candidate_docs` survivors.
-//! 4. Decode the survivors' stored residual codes into approximate
+//! 5. Decode the survivors' stored residual codes into approximate
 //!    embeddings and compute exact MaxSim against the query.
-//! 5. Sort by exact MaxSim score and return the top-`top_k`.
+//! 6. Sort by exact MaxSim score and return the top-`top_k`.
 //!
-//! Step 3 is the paper's centroid-interaction stage. It's cheap because
-//! it reuses the `[n_query_tokens, n_centroids]` query-centroid score
-//! matrix that step 1 would compute anyway, and it drastically shrinks
-//! the set of candidates that reach the expensive decode in step 4.
-//! Callers that want legacy behaviour (every candidate decodes) can
-//! pass `n_candidate_docs = None`.
+//! Steps 2 and 4 are the paper's pruning and centroid-interaction
+//! stages. They share a precomputed `[n_query_tokens, n_centroids]`
+//! query-centroid score matrix that step 1 would conceptually compute
+//! anyway, and together they drastically shrink the set of candidates
+//! reaching the expensive decode in step 5. Callers that want the
+//! legacy behaviour (every probed candidate decodes, no pruning) can
+//! pass `n_candidate_docs = None` and `centroid_score_threshold = None`.
 
 use candle_core::Tensor;
 
@@ -37,6 +42,12 @@ pub struct SearchParams {
     /// every probed candidate straight to decode — correct but
     /// slower for large corpora.
     pub n_candidate_docs: Option<usize>,
+    /// Minimum per-centroid score (max dot product against any query
+    /// token) required for a centroid to contribute to candidate
+    /// generation and centroid interaction. Centroids below this
+    /// threshold are treated as unreachable for this query. `None`
+    /// disables pruning, matching the legacy probe behaviour.
+    pub centroid_score_threshold: Option<f32>,
 }
 
 /// One entry in a ranked search result list.
@@ -79,14 +90,43 @@ pub fn search(
     let n_centroids = index.codec.num_centroids();
     let n_probe = params.n_probe.min(n_centroids);
 
+    // Precompute the per-centroid max dot product against any query
+    // token when either pruning or centroid interaction is active.
+    // Pruning uses it to skip weakly-matching centroids before they
+    // contribute to candidate generation; centroid interaction uses
+    // the full matrix for approximate per-doc scoring.
+    let need_qc_scores = params.centroid_score_threshold.is_some()
+        || params.n_candidate_docs.is_some();
+    let qc_scores_opt: Option<Vec<f32>> = need_qc_scores.then(|| {
+        query_centroid_score_matrix(query_tokens, &index.codec.centroids, dim)
+    });
+    let per_centroid_max: Option<Vec<f32>> =
+        params.centroid_score_threshold.map(|_| {
+            per_centroid_max_scores(
+                qc_scores_opt.as_ref().expect("qc_scores precomputed"),
+                query_tokens.len() / dim,
+                n_centroids,
+            )
+        });
+
     // 1-2. Gather the union of candidate doc indices reachable via the
     //      probed centroids. IVF postings are already deduplicated per
     //      doc, so each centroid contributes at most one write per doc.
+    //      Centroid pruning drops probed centroids whose best per-query
+    //      score sits below the caller's threshold — skipping them
+    //      both shrinks the candidate set and saves work later in
+    //      centroid interaction.
     let mut candidate_docs: Vec<bool> = vec![false; index.num_documents()];
     for query_token in query_tokens.chunks_exact(dim) {
         for centroid_id in
             top_n_centroids(query_token, &index.codec.centroids, dim, n_probe)
         {
+            if let (Some(threshold), Some(max_scores)) =
+                (params.centroid_score_threshold, per_centroid_max.as_ref())
+                && max_scores[centroid_id] < threshold
+            {
+                continue;
+            }
             for &doc_idx in index.ivf.docs_for_centroid(centroid_id) {
                 candidate_docs[doc_idx as usize] = true;
             }
@@ -108,11 +148,9 @@ pub fn search(
     if let Some(limit) = params.n_candidate_docs
         && candidate_idxs.len() > limit
     {
-        let qc_scores = query_centroid_score_matrix(
-            query_tokens,
-            &index.codec.centroids,
-            dim,
-        );
+        let qc_scores = qc_scores_opt
+            .as_ref()
+            .expect("qc_scores precomputed when n_candidate_docs is set");
         let n_q = query_tokens.len() / dim;
         let n_c = index.codec.num_centroids();
         let mut approx: Vec<(usize, f32)> = candidate_idxs
@@ -120,7 +158,7 @@ pub fn search(
             .map(|&doc_idx| {
                 let score = approx_centroid_interaction_score(
                     &index.doc_tokens[doc_idx],
-                    &qc_scores,
+                    qc_scores,
                     n_q,
                     n_c,
                 );
@@ -136,7 +174,7 @@ pub fn search(
         candidate_idxs = approx.into_iter().map(|(idx, _)| idx).collect();
     }
 
-    // 4. Score every surviving candidate with one batched MaxSim matmul
+    // 5. Score every surviving candidate with one batched MaxSim matmul
     //    on decoded tokens.
     let mut scored: Vec<SearchResult> = if candidate_idxs.is_empty() {
         Vec::new()
@@ -150,7 +188,7 @@ pub fn search(
             .collect()
     };
 
-    // 4. Rank by score (desc), tie-break by doc_id (asc) for determinism.
+    // 6. Rank by score (desc), tie-break by doc_id (asc) for determinism.
     scored.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -232,6 +270,30 @@ fn query_centroid_score_matrix(
     for (qi, q) in query_tokens.chunks_exact(dim).enumerate() {
         for (ci, c) in centroids.chunks_exact(dim).enumerate() {
             out[qi * n_c + ci] = dot(q, c);
+        }
+    }
+    out
+}
+
+/// For every centroid, return the max dot-product score achieved by
+/// any query token against that centroid.
+///
+/// PLAID's centroid pruning uses this "best any-query score" to cheaply
+/// rank centroids by query relevance: a centroid whose best score
+/// across all query tokens is still small cannot usefully participate
+/// in MaxSim, so it can be dropped without hurting top-K.
+fn per_centroid_max_scores(
+    qc_scores: &[f32],
+    n_q: usize,
+    n_centroids: usize,
+) -> Vec<f32> {
+    let mut out = vec![f32::NEG_INFINITY; n_centroids];
+    for q in 0..n_q {
+        let row = &qc_scores[q * n_centroids..(q + 1) * n_centroids];
+        for (c, &s) in row.iter().enumerate() {
+            if s > out[c] {
+                out[c] = s;
+            }
         }
     }
     out
@@ -497,6 +559,7 @@ mod tests {
                 top_k: 3,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert!(out.is_empty());
@@ -515,6 +578,7 @@ mod tests {
                 top_k: 3,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert!(!out.is_empty(), "should surface at least one doc");
@@ -531,6 +595,7 @@ mod tests {
                 top_k: 1,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert_eq!(out.len(), 1);
@@ -547,6 +612,7 @@ mod tests {
                 top_k: 3,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         for pair in out.windows(2) {
@@ -570,6 +636,7 @@ mod tests {
                 top_k: 1,
                 n_probe: 1,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert_eq!(out[0].doc_id, 2);
@@ -591,6 +658,7 @@ mod tests {
                 top_k: 10,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert!(
@@ -614,6 +682,7 @@ mod tests {
                 top_k: 1,
                 n_probe: index.codec.num_centroids(),
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert!(!out.is_empty());
@@ -661,6 +730,7 @@ mod tests {
                 top_k: 1,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         assert_eq!(out[0].doc_id, 1);
@@ -695,6 +765,7 @@ mod tests {
                 top_k: 5,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         for r in &east {
@@ -712,6 +783,7 @@ mod tests {
                 top_k: 5,
                 n_probe: 2,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         for r in &north {
@@ -734,6 +806,7 @@ mod tests {
                 top_k: 0,
                 n_probe: 1,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
     }
@@ -749,6 +822,7 @@ mod tests {
                 top_k: 1,
                 n_probe: 0,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
     }
@@ -764,6 +838,7 @@ mod tests {
                 top_k: 1,
                 n_probe: 1,
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
     }
@@ -781,6 +856,7 @@ mod tests {
                 top_k: 5,
                 n_probe: index.codec.num_centroids(),
                 n_candidate_docs: Some(1),
+                centroid_score_threshold: None,
             },
         );
         assert_eq!(out.len(), 1, "shortlist of 1 must cap output at 1");
@@ -806,6 +882,7 @@ mod tests {
                 top_k: 3,
                 n_probe: index.codec.num_centroids(),
                 n_candidate_docs: None,
+                centroid_score_threshold: None,
             },
         );
         let shortlisted = search(
@@ -815,9 +892,91 @@ mod tests {
                 top_k: 3,
                 n_probe: index.codec.num_centroids(),
                 n_candidate_docs: Some(1_000),
+                centroid_score_threshold: None,
             },
         );
         assert_eq!(legacy, shortlisted);
+    }
+
+    #[test]
+    fn centroid_pruning_with_low_threshold_matches_no_pruning() {
+        // A threshold below every attainable centroid score is a
+        // no-op. For unit-norm centroids the dot product ceiling is
+        // ~1, so using −1.0 guarantees every centroid survives.
+        let index = build_index(&corpus(), params());
+        let query = [1.0, 0.0, 0.0, 1.0];
+        let unpruned = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 3,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
+                centroid_score_threshold: None,
+            },
+        );
+        let pruned = search(
+            &index,
+            &query,
+            SearchParams {
+                top_k: 3,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
+                centroid_score_threshold: Some(-1.0),
+            },
+        );
+        assert_eq!(unpruned, pruned);
+    }
+
+    #[test]
+    fn centroid_pruning_excludes_docs_whose_only_centroid_is_below_threshold() {
+        // Build an index with two clusters. An east-pointing query
+        // scores the east centroid near 1.0 and the north centroid
+        // near 0.0. A threshold of 0.5 prunes the north centroid,
+        // so doc 2 (pure-north) must be filtered out — but doc 3
+        // (mixed east + north) still has an east token and survives.
+        let index = build_index(&corpus(), params());
+        let out = search(
+            &index,
+            &[1.0f32, 0.0],
+            SearchParams {
+                top_k: 5,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
+                centroid_score_threshold: Some(0.5),
+            },
+        );
+        let ids: Vec<u64> = out.iter().map(|r| r.doc_id).collect();
+        assert!(
+            !ids.contains(&2),
+            "pure-north doc must be pruned when only the east centroid survives the threshold: got {ids:?}",
+        );
+        assert!(
+            ids.contains(&1),
+            "east-cluster doc must still rank when its centroid survives: got {ids:?}",
+        );
+    }
+
+    #[test]
+    fn centroid_pruning_with_unreachable_threshold_drops_every_candidate() {
+        // No centroid can score higher than ~1.0 against a unit-norm
+        // query on unit-norm centroids. A threshold of 10.0 prunes
+        // everything, so no docs survive.
+        let index = build_index(&corpus(), params());
+        let out = search(
+            &index,
+            &[1.0, 0.0],
+            SearchParams {
+                top_k: 3,
+                n_probe: index.codec.num_centroids(),
+                n_candidate_docs: None,
+                centroid_score_threshold: Some(10.0),
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "every centroid below threshold should yield empty results",
+        );
     }
 
     #[test]
@@ -834,6 +993,7 @@ mod tests {
                 top_k: 1,
                 n_probe: index.codec.num_centroids(),
                 n_candidate_docs: Some(1_000),
+                centroid_score_threshold: None,
             },
         );
         let top = out[0];

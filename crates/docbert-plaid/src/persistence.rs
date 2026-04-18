@@ -360,6 +360,7 @@ mod tests {
             top_k: 3,
             n_probe: 2,
             n_candidate_docs: None,
+            centroid_score_threshold: None,
         };
 
         let a = crate::search::search(&index, &query, params);

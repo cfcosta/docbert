@@ -342,6 +342,7 @@ pub fn search(
         top_k,
         n_probe,
         n_candidate_docs,
+        centroid_score_threshold: None,
     };
     let out = plaid_search::search(index, &query_flat, params);
     Ok(out
