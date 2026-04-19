@@ -294,3 +294,26 @@ fn prop_assign_points_matches_per_point_nearest_centroid(tc: TestCase) {
         );
     }
 }
+
+/// Shape: `assign_points` returns one assignment per input row, each
+/// in `0..k`. Covers both the non-empty and empty-input paths so the
+/// early-return branch in `assign_points` stays correct.
+#[hegel::test(test_cases = 100)]
+fn prop_assign_points_output_shape_and_range(tc: TestCase) {
+    use docbert_plaid::kmeans::assign_points;
+    let dim = tc.draw(codec_dim());
+    let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(32));
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let points = if n == 0 {
+        Vec::new()
+    } else {
+        tc.draw(unit_rows(dim, n))
+    };
+    let centroids = tc.draw(unit_rows(dim, k));
+
+    let out = assign_points(&points, &centroids, dim);
+    assert_eq!(out.len(), n);
+    for &c in &out {
+        assert!(c < k, "assignment {c} out of range 0..{k}");
+    }
+}
