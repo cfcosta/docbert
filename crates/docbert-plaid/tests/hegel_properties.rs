@@ -317,3 +317,39 @@ fn prop_assign_points_output_shape_and_range(tc: TestCase) {
         assert!(c < k, "assignment {c} out of range 0..{k}");
     }
 }
+
+/// Shape + algebraic: `top_n_centroids` has length `min(n, k)`, every
+/// index is unique and in `0..k`, and the dot products at the returned
+/// indices are non-increasing — i.e. the list is sorted by relevance,
+/// most relevant first.
+#[hegel::test(test_cases = 100)]
+fn prop_top_n_centroids_shape_sort_uniqueness(tc: TestCase) {
+    use docbert_plaid::{distance::dot, search::top_n_centroids};
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
+    let point = tc.draw(unit_rows(dim, 1));
+    let centroids = tc.draw(unit_rows(dim, k));
+
+    let out = top_n_centroids(&point, &centroids, dim, n);
+    assert_eq!(out.len(), n.min(k));
+
+    let mut seen: Vec<usize> = out.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), out.len(), "duplicate centroid index in {out:?}");
+    for &i in &out {
+        assert!(i < k, "centroid index {i} out of range 0..{k}");
+    }
+
+    let scores: Vec<f32> = out
+        .iter()
+        .map(|&i| dot(&point, &centroids[i * dim..(i + 1) * dim]))
+        .collect();
+    for pair in scores.windows(2) {
+        assert!(
+            pair[0] >= pair[1],
+            "top_n_centroids scores not descending: {scores:?}",
+        );
+    }
+}
