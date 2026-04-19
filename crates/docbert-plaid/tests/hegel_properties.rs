@@ -467,3 +467,21 @@ fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
         centroids = update_centroids(&points, &assignments, &centroids, dim);
     }
 }
+
+/// Determinism: two `fit` calls with identical inputs produce
+/// byte-identical centroids. Covers the farthest-first seeding too —
+/// it must stay reproducible without an RNG so test fixtures remain
+/// stable across runs.
+#[hegel::test(test_cases = 40)]
+fn prop_fit_is_deterministic(tc: TestCase) {
+    use docbert_plaid::kmeans::fit;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(24));
+    let iters = tc.draw(gs::integers::<usize>().min_value(0).max_value(8));
+    let points = tc.draw(unit_rows(dim, n));
+
+    let a = fit(&points, k, dim, iters);
+    let b = fit(&points, k, dim, iters);
+    assert_eq!(a, b);
+}
