@@ -1054,3 +1054,49 @@ fn prop_search_scores_non_increasing_and_capped_by_top_k(tc: TestCase) {
         );
     }
 }
+
+/// Determinism: two `search` calls with identical inputs produce
+/// identical result vectors — doc_id-for-doc_id and score-for-score.
+/// Covers both the baseline path and the full cascade (pruning +
+/// centroid interaction), since all four knobs are drawn.
+#[hegel::test(test_cases = 30)]
+fn prop_search_deterministic(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let n_q = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let query = tc.draw(unit_rows(dim, n_q));
+    let top_k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n_probe = tc.draw(
+        gs::integers::<usize>()
+            .min_value(1)
+            .max_value(params.k_centroids),
+    );
+    let n_candidate_docs: Option<usize> = tc.draw(gs::optional(
+        gs::integers::<usize>().min_value(1).max_value(32),
+    ));
+    let threshold: Option<f32> = tc.draw(gs::optional(
+        gs::floats::<f32>()
+            .min_value(-2.0)
+            .max_value(2.0)
+            .allow_nan(false)
+            .allow_infinity(false),
+    ));
+
+    let sp = SearchParams {
+        top_k,
+        n_probe,
+        n_candidate_docs,
+        centroid_score_threshold: threshold,
+    };
+    let a = search(&index, &query, sp);
+    let b = search(&index, &query, sp);
+    assert_eq!(a, b);
+}
