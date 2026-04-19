@@ -1526,3 +1526,54 @@ fn prop_apply_update_deletions_removed(tc: TestCase) {
     assert_eq!(updated.doc_ids, survivors_ids);
     assert_eq!(updated.doc_tokens, survivors_tokens);
 }
+
+/// Metamorphic: `apply_update` with any mix of deletions and upserts
+/// leaves the codec (centroids, cutoffs, weights, nbits, dim)
+/// byte-for-byte unchanged. This is the whole point of incremental
+/// updates — they never retrain the codec, which means callers can
+/// reuse the original codec's decode tables across updates.
+#[hegel::test(test_cases = 20)]
+fn prop_apply_update_upsert_codec_unchanged(tc: TestCase) {
+    use docbert_plaid::{
+        index::{DocumentTokens, build_index},
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+    let before_codec = index.codec.clone();
+
+    let next_id = docs.iter().map(|d| d.doc_id).max().unwrap_or(0) + 1;
+    let upsert_n = tc.draw(gs::integers::<usize>().min_value(0).max_value(2));
+    let upserts: Vec<DocumentTokens> = (0..upsert_n)
+        .map(|i| {
+            let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+            DocumentTokens {
+                doc_id: next_id + i as u64,
+                tokens: tc.draw(unit_rows(dim, n)),
+                n_tokens: n,
+            }
+        })
+        .collect();
+    let deletions: Vec<u64> = if !docs.is_empty() && tc.draw(gs::booleans()) {
+        vec![docs[0].doc_id]
+    } else {
+        Vec::new()
+    };
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &deletions,
+            upserts: &upserts,
+        },
+    );
+
+    assert_eq!(updated.codec.dim, before_codec.dim);
+    assert_eq!(updated.codec.nbits, before_codec.nbits);
+    assert_eq!(updated.codec.centroids, before_codec.centroids);
+    assert_eq!(updated.codec.bucket_cutoffs, before_codec.bucket_cutoffs);
+    assert_eq!(updated.codec.bucket_weights, before_codec.bucket_weights);
+}
