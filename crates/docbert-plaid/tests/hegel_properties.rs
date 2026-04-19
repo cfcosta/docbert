@@ -198,3 +198,16 @@ fn prop_dot_commutative(tc: TestCase) {
     let b = tc.draw(finite_floats(n));
     assert_eq!(dot(&a, &b), dot(&b, &a));
 }
+
+/// Algebraic: `squared_l2(a, b) == squared_l2(b, a)`. Each squared
+/// difference is symmetric in its operands, and the summation iterates
+/// in the same left-to-right order in both directions, so equality is
+/// bit-exact.
+#[hegel::test(test_cases = 200)]
+fn prop_squared_l2_symmetric(tc: TestCase) {
+    use docbert_plaid::distance::squared_l2;
+    let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(64));
+    let a = tc.draw(finite_floats(n));
+    let b = tc.draw(finite_floats(n));
+    assert_eq!(squared_l2(&a, &b), squared_l2(&b, &a));
+}
