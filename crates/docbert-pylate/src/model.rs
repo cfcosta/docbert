@@ -5,11 +5,11 @@ use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use rayon::prelude::*;
 use tokenizers::{
+    pad_encodings,
     Encoding,
     PaddingParams,
     PaddingStrategy,
     Tokenizer,
-    pad_encodings,
 };
 
 use crate::{
@@ -922,7 +922,7 @@ mod hegel_tests {
     //!   `concatenate_embedding_batches` must preserve the batch/dim invariants
     //!   while zero-padding short batches up to the longest token length.
     use candle_core::{Device, Tensor};
-    use hegel::{TestCase, generators as gs};
+    use hegel::{generators as gs, TestCase};
 
     use super::{
         compute_raw_similarity,

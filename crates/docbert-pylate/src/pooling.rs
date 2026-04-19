@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::anyhow;
 use candle_core::{Device, Tensor};
 use candle_transformers::models::deepseek2::NonZeroOp;
-use kodama::{Method, linkage};
+use kodama::{linkage, Method};
 
 /// A Disjoint Set Union (DSU) data structure using a HashMap to handle generic cluster labels.
 struct Dsu {
