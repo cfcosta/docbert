@@ -1320,6 +1320,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "docbert-pylate"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-flash-attn",
+ "candle-nn",
+ "candle-transformers",
+ "hf-hub 0.4.3",
+ "kodama",
+ "rayon",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokenizers",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

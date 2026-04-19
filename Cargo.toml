@@ -1,3 +1,8 @@
 [workspace]
-members = ["crates/docbert", "crates/docbert-core", "crates/docbert-plaid"]
+members = [
+  "crates/docbert",
+  "crates/docbert-core",
+  "crates/docbert-plaid",
+  "crates/docbert-pylate",
+]
 resolver = "3"
