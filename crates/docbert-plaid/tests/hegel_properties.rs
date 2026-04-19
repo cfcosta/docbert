@@ -552,3 +552,53 @@ fn prop_fit_with_init_matches_scalar_lloyd(tc: TestCase) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// codec.rs
+// ---------------------------------------------------------------------------
+
+/// Round-trip: for every supported `nbits ∈ {1,2,4,8}` and every
+/// code sequence where each element lives in `[0, 2^nbits)`, reading
+/// positions back out of the packed buffer returns the original
+/// sequence element-for-element. `pack_codes` is private, so we
+/// exercise it through `encode_vector` on a codec whose cutoffs place
+/// each integer-valued input cleanly into the target bucket — the
+/// codes packed by `encode_vector` are then the target sequence.
+#[hegel::test(test_cases = 200)]
+fn prop_pack_read_roundtrip_all_nbits(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, read_code};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let num_buckets = 1u32 << nbits;
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let dim = n_bytes * codes_per_byte;
+
+    let max_code: u8 = (num_buckets - 1) as u8;
+    let targets: Vec<u8> = tc.draw(
+        gs::vecs(gs::integers::<u8>().min_value(0).max_value(max_code))
+            .min_size(dim)
+            .max_size(dim),
+    );
+
+    // Cutoffs at integer+0.5 so feeding in `b as f32` always lands in
+    // bucket `b` (bucket = #cutoffs ≤ value).
+    let cutoffs: Vec<f32> = (1..num_buckets).map(|i| i as f32 - 0.5).collect();
+    let weights: Vec<f32> = (0..num_buckets).map(|i| i as f32).collect();
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: vec![0.0; dim],
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+
+    let input: Vec<f32> = targets.iter().map(|&b| b as f32).collect();
+    let encoded = codec.encode_vector(&input);
+    for (i, &expected) in targets.iter().enumerate() {
+        let got = read_code(&encoded.codes, i, nbits);
+        assert_eq!(
+            got, expected,
+            "nbits={nbits} i={i}: got {got}, expected {expected}",
+        );
+    }
+}
