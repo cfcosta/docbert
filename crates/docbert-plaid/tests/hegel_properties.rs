@@ -353,3 +353,55 @@ fn prop_top_n_centroids_shape_sort_uniqueness(tc: TestCase) {
         );
     }
 }
+
+/// Shape: `update_centroids` returns a `k × dim` buffer; every cluster
+/// with at least one assigned point equals the arithmetic mean of its
+/// points within float ε, and empty clusters keep their previous
+/// centroid byte-for-byte (preventing degenerate collapses to origin).
+#[hegel::test(test_cases = 100)]
+fn prop_update_centroids_shape_and_empty_cluster_preservation(tc: TestCase) {
+    use docbert_plaid::kmeans::update_centroids;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(24));
+    let previous = tc.draw(unit_rows(dim, k));
+
+    let (points, assignments): (Vec<f32>, Vec<usize>) = if n == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let points = tc.draw(unit_rows(dim, n));
+        let assignments: Vec<usize> = (0..n)
+            .map(|_| {
+                tc.draw(gs::integers::<usize>().min_value(0).max_value(k - 1))
+            })
+            .collect();
+        (points, assignments)
+    };
+
+    let updated = update_centroids(&points, &assignments, &previous, dim);
+    assert_eq!(updated.len(), k * dim);
+
+    for cluster in 0..k {
+        let members: Vec<&[f32]> = points
+            .chunks_exact(dim)
+            .zip(&assignments)
+            .filter_map(|(p, &a)| (a == cluster).then_some(p))
+            .collect();
+        let got = &updated[cluster * dim..(cluster + 1) * dim];
+        if members.is_empty() {
+            let prev = &previous[cluster * dim..(cluster + 1) * dim];
+            assert_eq!(got, prev, "empty cluster {cluster} not preserved");
+        } else {
+            for d in 0..dim {
+                let want = members.iter().map(|m| m[d]).sum::<f32>()
+                    / members.len() as f32;
+                assert!(
+                    (got[d] - want).abs() <= 1e-5,
+                    "cluster {cluster} dim {d}: got {} want {}",
+                    got[d],
+                    want,
+                );
+            }
+        }
+    }
+}
