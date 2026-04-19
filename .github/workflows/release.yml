@@ -234,6 +234,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.bump.outputs.commit_sha }}
+          # Need full history so the changelog step can walk back to
+          # the previous release tag.
+          fetch-depth: 0
 
       - name: Create and push tag
         run: |
@@ -241,6 +244,35 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "${{ needs.bump.outputs.tag }}"
           git push origin "${{ needs.bump.outputs.tag }}"
+
+      - name: Compose changelog
+        id: changelog
+        env:
+          TAG: ${{ needs.bump.outputs.tag }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Find the previous release tag (matching `v*`). If this is
+          # the first release, walk back from the root instead.
+          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            HEADER="## Changes since ${PREV_TAG}"
+          else
+            RANGE="${TAG}"
+            HEADER="## Changes"
+          fi
+
+          {
+            echo "$HEADER"
+            echo ""
+            git log \
+              --no-merges \
+              --reverse \
+              --pretty=format:"- [\`%h\`](${REPO_URL}/commit/%H) %s — %an" \
+              "$RANGE"
+            echo ""
+          } > changelog.md
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -253,5 +285,5 @@ jobs:
         with:
           tag_name: ${{ needs.bump.outputs.tag }}
           name: ${{ needs.bump.outputs.tag }}
-          generate_release_notes: true
+          body_path: changelog.md
           files: artifacts/*
