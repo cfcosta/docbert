@@ -876,3 +876,44 @@ fn prop_batch_encode_matches_per_token(tc: TestCase) {
         );
     }
 }
+
+/// Round-trip: `encode(decode(encode(v))) == encode(v)` on
+/// single-centroid codecs with strictly-increasing cutoffs. Once a
+/// residual is snapped to its bucket weight (strictly inside the
+/// bucket's open interval), decoding and re-encoding must land in
+/// the same bucket — the centroid choice can't change with only one
+/// centroid, so only the bucket idempotence is under test. This
+/// deliberately avoids the multi-centroid Voronoi-crossing case,
+/// where the decoded point can drift into a neighbour cell and flip
+/// `centroid_id`.
+#[hegel::test(test_cases = 100)]
+fn prop_encode_decode_encode_idempotent(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![2u32, 4, 8]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let dim = n_bytes * codes_per_byte;
+
+    // Dense linear ramp over [-1, 1] with 4x more points than buckets
+    // so every bucket is populated and cutoffs come out strictly
+    // increasing.
+    let num_buckets = 1usize << nbits;
+    let pool_n = num_buckets * 4;
+    let residual_pool: Vec<f32> = (0..pool_n)
+        .map(|i| (i as f32 / pool_n as f32) * 2.0 - 1.0)
+        .collect();
+    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: vec![0.0; dim],
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+
+    let v = tc.draw(unit_rows(dim, 1));
+    let enc1 = codec.encode_vector(&v);
+    let dec1 = codec.decode_vector(&enc1);
+    let enc2 = codec.encode_vector(&dec1);
+    assert_eq!(enc1, enc2, "encode→decode→encode not idempotent");
+}
