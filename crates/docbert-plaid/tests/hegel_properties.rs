@@ -798,3 +798,33 @@ fn prop_reconstruction_error_non_negative(tc: TestCase) {
         assert!(codec.reconstruction_error(&[*v]) >= 0.0);
     }
 }
+
+/// Differential: `decode_vector_with_table` must produce bit-for-bit
+/// the same output as scalar `decode_vector` for every supported
+/// nbits and any valid encoded vector. This is the PLAID §4.5 lookup
+/// table path and the inner loop of `batch_maxsim`; any drift silently
+/// corrupts MaxSim scores.
+#[hegel::test(test_cases = 100)]
+fn prop_decode_table_matches_scalar(tc: TestCase) {
+    use docbert_plaid::codec::{DecodeTable, ResidualCodec};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let dim = n_bytes * codes_per_byte;
+
+    let num_buckets = 1u32 << nbits;
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: tc.draw(unit_rows(dim, 2)),
+        bucket_cutoffs: (1..num_buckets).map(|i| i as f32 - 0.5).collect(),
+        bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
+    };
+    let input = tc.draw(finite_floats(dim));
+    let encoded = codec.encode_vector(&input);
+
+    let scalar = codec.decode_vector(&encoded);
+    let table = DecodeTable::new(&codec);
+    let via_table = codec.decode_vector_with_table(&encoded, &table);
+    assert_eq!(scalar, via_table);
+}
