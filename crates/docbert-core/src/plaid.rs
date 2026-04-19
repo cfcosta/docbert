@@ -144,7 +144,7 @@ pub fn build_index_from_embedding_db(
         max_kmeans_iters: params.max_kmeans_iters,
     };
 
-    Ok(plaid_index::build_index(&documents, index_params))
+    Ok(plaid_index::build_index(&documents, index_params)?)
 }
 
 /// Apply the given sync deltas to `existing`, reusing its codec.
@@ -200,7 +200,7 @@ pub fn update_index_from_embedding_db(
             deletions: deleted_ids,
             upserts: &upserts,
         },
-    ))
+    )?)
 }
 
 /// Incrementally sync `existing` against `embedding_db` given the set
@@ -284,7 +284,7 @@ pub fn update_index_for_touched_bases(
             upserts: &upsert_docs,
             deletions: &deletions,
         },
-    ))
+    )?)
 }
 
 /// Write `index` to the canonical PLAID index path under `data_dir`.
@@ -344,7 +344,7 @@ pub fn search(
         n_candidate_docs,
         centroid_score_threshold: None,
     };
-    let out = plaid_search::search(index, &query_flat, params);
+    let out = plaid_search::search(index, &query_flat, params)?;
     Ok(out
         .into_iter()
         .map(|r| PlaidResult {

@@ -72,6 +72,9 @@ pub enum Error {
     #[error("tensor error: {0}")]
     Candle(#[from] candle_core::Error),
 
+    #[error("plaid index error: {0}")]
+    Plaid(#[from] docbert_plaid::PlaidError),
+
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
 
