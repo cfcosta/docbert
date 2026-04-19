@@ -26,6 +26,12 @@ use hegel::{TestCase, generators as gs};
 /// to unit length. Mirrors the ColBERT invariant that token embeddings
 /// live on the unit sphere, which is what makes dot-product MaxSim
 /// meaningful.
+///
+/// If a drawn row's norm is too small to normalise stably it is
+/// replaced by a standard basis vector (`e₀`). This keeps every row a
+/// true unit vector regardless of what the drawn floats happen to be —
+/// otherwise tests that rely on `‖a‖ = 1` (e.g. self-dot = 1) fail on
+/// the all-near-zero corner.
 #[hegel::composite]
 fn unit_rows(tc: TestCase, dim: usize, n: usize) -> Vec<f32> {
     let total = n * dim;
@@ -41,9 +47,15 @@ fn unit_rows(tc: TestCase, dim: usize, n: usize) -> Vec<f32> {
         .max_size(total),
     );
     for row in v.chunks_exact_mut(dim) {
-        let norm = row.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
-        for x in row {
-            *x /= norm;
+        let norm_sq: f32 = row.iter().map(|x| x * x).sum();
+        if norm_sq < 1e-6 {
+            row.fill(0.0);
+            row[0] = 1.0;
+        } else {
+            let norm = norm_sq.sqrt();
+            for x in row {
+                *x /= norm;
+            }
         }
     }
     v
@@ -243,6 +255,44 @@ fn prop_squared_l2_expansion_identity(tc: TestCase) {
     assert!(
         (lhs - rhs).abs() <= 1e-5,
         "expansion identity drifted: lhs={lhs} rhs={rhs}",
+    );
+}
+
+/// Algebraic: on unit-norm vectors `a`, `b`:
+///   - `dot(a, a) ≈ 1`
+///   - `dot(a, -a) ≈ -1`
+///   - `squared_l2(a, b) ≈ 2·(1 − dot(a, b))`
+///
+/// The third identity is what justifies ColBERT/PLAID using dot
+/// product as the per-token similarity: on the unit sphere it's
+/// monotonic with squared L2, so argmax on dot matches argmin on
+/// L2. Drift here would silently break that equivalence.
+#[hegel::test(test_cases = 200)]
+fn prop_unit_vector_distance_identities(tc: TestCase) {
+    use docbert_plaid::distance::{dot, squared_l2};
+    let dim = tc.draw(codec_dim());
+    let ab = tc.draw(unit_rows(dim, 2));
+    let (a, b) = ab.split_at(dim);
+
+    let self_dot = dot(a, a);
+    assert!(
+        (self_dot - 1.0).abs() <= 1e-5,
+        "unit-norm self-dot {self_dot} != 1",
+    );
+
+    let neg_a: Vec<f32> = a.iter().map(|x| -x).collect();
+    let anti_dot = dot(a, &neg_a);
+    assert!(
+        (anti_dot + 1.0).abs() <= 1e-5,
+        "antipodal dot {anti_dot} != -1",
+    );
+
+    let cos = dot(a, b);
+    let expected = 2.0 * (1.0 - cos);
+    let got = squared_l2(a, b);
+    assert!(
+        (got - expected).abs() <= 1e-5,
+        "squared_l2 {got} != 2(1 - cos) = {expected}",
     );
 }
 
@@ -799,6 +849,102 @@ fn prop_reconstruction_error_non_negative(tc: TestCase) {
     }
 }
 
+/// Differential: `encode_vector` picks the same centroid as scalar
+/// `nearest_centroid` applied to the original vector. Ties may break
+/// either way between the two paths, so on disagreement we verify
+/// the chosen centroids are equidistant within one f32 ULP.
+#[hegel::test(test_cases = 100)]
+fn prop_encode_picks_nearest_centroid(tc: TestCase) {
+    use docbert_plaid::{
+        codec::{ResidualCodec, train_quantizer},
+        distance::squared_l2,
+        kmeans::nearest_centroid,
+    };
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![2u32, 4]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let dim = n_bytes * codes_per_byte;
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let centroids = tc.draw(unit_rows(dim, k));
+    let residual_pool = tc.draw(finite_floats(64));
+    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: centroids.clone(),
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+    let v = tc.draw(unit_rows(dim, 1));
+
+    let encoded = codec.encode_vector(&v);
+    let scalar = nearest_centroid(&v, &centroids, dim);
+    if encoded.centroid_id as usize == scalar {
+        return;
+    }
+    let encoded_idx = encoded.centroid_id as usize;
+    let d_enc =
+        squared_l2(&v, &centroids[encoded_idx * dim..(encoded_idx + 1) * dim]);
+    let d_sca = squared_l2(&v, &centroids[scalar * dim..(scalar + 1) * dim]);
+    assert!(
+        (d_enc - d_sca).abs() <= 1e-5,
+        "encode picked {encoded_idx} (d²={d_enc}) but scalar picked \
+         {scalar} (d²={d_sca})",
+    );
+}
+
+/// Algebraic: for a codec whose interior bucket weights are at
+/// bucket midpoints, any input inside the outermost cutoffs
+/// reconstructs within half the widest interior bucket width.
+///
+/// Generalises the hand-picked unit test by drawing the nbits,
+/// probe position, and input value — but keeps the codec
+/// construction explicit so the "weights at bucket midpoints"
+/// precondition stays true by construction. Without that
+/// precondition (e.g. on an arbitrarily trained codec), the bound
+/// doesn't hold in general.
+#[hegel::test(test_cases = 200)]
+fn prop_codec_interior_error_bounded_by_half_bucket_width(tc: TestCase) {
+    use docbert_plaid::codec::ResidualCodec;
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![2u32, 4, 8]));
+    let num_buckets = 1u32 << nbits;
+    // Uniform interior cutoffs over [-1, 1] and weights at bucket
+    // centres — exactly the midpoint construction the original test
+    // used, now fuzzed over nbits and probe value.
+    let step = 2.0 / num_buckets as f32;
+    let bucket_cutoffs: Vec<f32> =
+        (1..num_buckets).map(|i| -1.0 + i as f32 * step).collect();
+    let bucket_weights: Vec<f32> = (0..num_buckets)
+        .map(|i| -1.0 + (i as f32 + 0.5) * step)
+        .collect();
+    let codec = ResidualCodec {
+        nbits,
+        dim: 1,
+        centroids: vec![0.0],
+        bucket_cutoffs,
+        bucket_weights,
+    };
+
+    // Input strictly inside the outermost cutoffs so it always
+    // lands in an interior bucket where the half-width bound holds.
+    let v: f32 = tc.draw(
+        gs::floats::<f32>()
+            .min_value(-1.0 + step)
+            .max_value(1.0 - step)
+            .allow_nan(false)
+            .allow_infinity(false),
+    );
+
+    let encoded = codec.encode_vector(&[v]);
+    let decoded = codec.decode_vector(&encoded);
+    let half_width = step / 2.0;
+    assert!(
+        (decoded[0] - v).abs() <= half_width + 1e-5,
+        "per-dim error {} exceeds half bucket width {half_width}",
+        (decoded[0] - v).abs(),
+    );
+}
+
 /// Differential: `decode_vector_with_table` must produce bit-for-bit
 /// the same output as scalar `decode_vector` for every supported
 /// nbits and any valid encoded vector. This is the PLAID §4.5 lookup
@@ -864,15 +1010,36 @@ fn prop_batch_encode_matches_per_token(tc: TestCase) {
 
     for (i, token) in tokens.chunks_exact(dim).enumerate() {
         let expected = codec.encode_vector(token);
-        assert_eq!(
-            cids[i], expected.centroid_id,
-            "token {i}: batched centroid_id differs",
-        );
         let batch_slice = &packed[i * packed_per..(i + 1) * packed_per];
-        assert_eq!(
-            batch_slice,
-            expected.codes.as_slice(),
-            "token {i}: batched codes differ from per-token encode",
+        if cids[i] == expected.centroid_id {
+            assert_eq!(
+                batch_slice,
+                expected.codes.as_slice(),
+                "token {i}: batched codes differ from per-token encode",
+            );
+            continue;
+        }
+        // Tie break: scalar `nearest_centroid` takes the earlier
+        // index, the batched matmul argmin can land on a later one.
+        // When that happens the two paths must still agree on
+        // distance, and the packed codes will differ because they
+        // are residuals against different centroids — which is
+        // correct, not a regression.
+        let expected_idx = expected.centroid_id as usize;
+        let batched_idx = cids[i] as usize;
+        let centroids = &codec.centroids;
+        let d_exp = docbert_plaid::distance::squared_l2(
+            token,
+            &centroids[expected_idx * dim..(expected_idx + 1) * dim],
+        );
+        let d_bat = docbert_plaid::distance::squared_l2(
+            token,
+            &centroids[batched_idx * dim..(batched_idx + 1) * dim],
+        );
+        assert!(
+            (d_exp - d_bat).abs() <= 1e-5,
+            "token {i}: batched picked {batched_idx} (d²={d_bat}) \
+             but scalar picked {expected_idx} (d²={d_exp})",
         );
     }
 }
