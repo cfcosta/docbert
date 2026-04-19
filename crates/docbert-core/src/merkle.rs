@@ -274,9 +274,15 @@ impl CollectionMerkleSnapshot {
     }
 
     /// Serialize to a byte vector for persistence in the config database.
-    pub fn serialize(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Rkyv`] if the rkyv encoder fails (effectively
+    /// only on allocator failure).
+    ///
+    /// [`Error::Rkyv`]: crate::Error::Rkyv
+    pub fn serialize(&self) -> crate::Result<Vec<u8>> {
         encode_bytes(self)
-            .expect("CollectionMerkleSnapshot serialization should succeed")
     }
 
     /// Deserialize from bytes. Returns `None` for invalid payloads.
@@ -626,7 +632,7 @@ mod tests {
             ],
         );
 
-        let bytes = snapshot.serialize();
+        let bytes = snapshot.serialize().unwrap();
         let restored = CollectionMerkleSnapshot::deserialize(&bytes).unwrap();
 
         assert_eq!(restored, snapshot);

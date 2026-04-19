@@ -452,7 +452,7 @@ impl ConfigDb {
         doc_id: u64,
         metadata: &DocumentMetadata,
     ) -> Result<()> {
-        let data = metadata.serialize();
+        let data = metadata.serialize()?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DOCUMENT_METADATA)?;
@@ -488,7 +488,7 @@ impl ConfigDb {
         {
             let mut table = txn.open_table(DOCUMENT_METADATA)?;
             for (doc_id, metadata) in entries {
-                let data = metadata.serialize();
+                let data = metadata.serialize()?;
                 table.insert(*doc_id, data.as_slice())?;
             }
         }
@@ -637,7 +637,7 @@ impl ConfigDb {
         collection: &str,
         snapshot: &CollectionMerkleSnapshot,
     ) -> Result<()> {
-        let data = snapshot.serialize();
+        let data = snapshot.serialize()?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;

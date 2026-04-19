@@ -21,7 +21,7 @@ use crate::{
 ///     relative_path: "hello.md".to_string(),
 ///     mtime: 1700000000,
 /// };
-/// let bytes = meta.serialize();
+/// let bytes = meta.serialize().unwrap();
 /// let restored = DocumentMetadata::deserialize(&bytes).unwrap();
 /// assert_eq!(meta, restored);
 /// ```
@@ -45,9 +45,15 @@ impl DocumentMetadata {
     ///
     /// The format is a checked `rkyv` archive. Use [`deserialize`](Self::deserialize)
     /// to recover the struct.
-    pub fn serialize(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Rkyv`] if the rkyv encoder fails (effectively
+    /// only on allocator failure).
+    ///
+    /// [`Error::Rkyv`]: crate::Error::Rkyv
+    pub fn serialize(&self) -> crate::Result<Vec<u8>> {
         encode_bytes(self)
-            .expect("DocumentMetadata serialization should succeed")
     }
 
     /// Deserialize from bytes. Returns `None` if the archive is invalid.
@@ -204,7 +210,7 @@ mod tests {
             relative_path: "hello.md".to_string(),
             mtime: 12345,
         };
-        let bytes = meta.serialize();
+        let bytes = meta.serialize().unwrap();
         let restored = DocumentMetadata::deserialize(&bytes).unwrap();
         assert_eq!(meta, restored);
     }
@@ -216,7 +222,8 @@ mod tests {
             relative_path: "hello.md".to_string(),
             mtime: 12345,
         }
-        .serialize();
+        .serialize()
+        .unwrap();
         bytes.truncate(bytes.len() / 2);
         assert!(DocumentMetadata::deserialize(&bytes).is_none());
     }
