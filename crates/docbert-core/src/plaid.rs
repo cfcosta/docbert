@@ -468,7 +468,7 @@ mod tests {
         let query = Tensor::from_slice(
             &[0.0f32, 0.0],
             (1, 2),
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
 
@@ -755,7 +755,7 @@ mod tests {
         let bad_query = Tensor::from_slice(
             &[1.0f32, 2.0, 3.0],
             (1, 3),
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
 

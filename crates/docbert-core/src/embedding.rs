@@ -333,7 +333,7 @@ mod tests {
             Ok(Tensor::from_vec(
                 data,
                 (texts.len(), 1, 2),
-                &candle_core::Device::Cpu,
+                &crate::test_util::test_device(),
             )?)
         }
     }
@@ -352,7 +352,7 @@ mod tests {
             Ok(Tensor::from_vec(
                 data,
                 (2, 3, 2),
-                &candle_core::Device::Cpu,
+                &crate::test_util::test_device(),
             )?)
         }
     }

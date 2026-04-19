@@ -464,7 +464,7 @@ mod tests {
         let query = Tensor::zeros(
             &[2, 128],
             candle_core::DType::F32,
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
 
@@ -522,7 +522,7 @@ mod tests {
         let query = Tensor::zeros(
             &[2, 128],
             candle_core::DType::F32,
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
 
@@ -541,7 +541,7 @@ mod tests {
         let query = Tensor::zeros(
             &[2, 128],
             candle_core::DType::F32,
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
 
@@ -561,7 +561,7 @@ mod tests {
         let query = Tensor::zeros(
             &[2, 128],
             candle_core::DType::F32,
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
         embedding_db.store(42, 2, 128, &vec![0.0; 256]).unwrap();

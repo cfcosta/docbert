@@ -1219,7 +1219,7 @@ mod tests {
         let query_embedding = Tensor::zeros(
             &[2, 128],
             candle_core::DType::F32,
-            &candle_core::Device::Cpu,
+            &crate::test_util::test_device(),
         )
         .unwrap();
         embedding_db

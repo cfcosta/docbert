@@ -109,6 +109,9 @@ pub mod tantivy_index;
 pub mod text_util;
 pub mod walker;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 pub use config_db::{ConfigDb, PersistedLlmSettings};
 pub use conversation::{ChatMessage, Conversation};
 pub use data_dir::DataDir;
