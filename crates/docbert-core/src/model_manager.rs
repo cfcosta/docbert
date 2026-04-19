@@ -374,11 +374,7 @@ impl ModelManager {
 
     /// Load the model if needed and return runtime details for diagnostics.
     pub fn runtime_config(&mut self) -> Result<ModelRuntimeConfig> {
-        self.ensure_loaded()?;
-        Ok(self
-            .runtime_config
-            .clone()
-            .expect("runtime config set on load"))
+        self.ensure_loaded_and_config().map(|(_, cfg)| cfg.clone())
     }
 
     /// Ensures the model is loaded, downloading from HuggingFace Hub if needed.
@@ -387,8 +383,19 @@ impl ModelManager {
     /// for prepending to queries and documents (e.g. `"search_query: "` for
     /// ColBERT-Zero). Falls back to empty strings for models without prompts.
     fn ensure_loaded(&mut self) -> Result<&mut ColBERT> {
+        Ok(self.ensure_loaded_and_config()?.0)
+    }
+
+    /// Core load-and-return helper shared by `ensure_loaded` and
+    /// `runtime_config`. On first call it constructs the `ColBERT`
+    /// model plus its `ModelRuntimeConfig` and installs them via
+    /// `Option::insert`, which hands back a `&mut T` directly — no
+    /// trailing `unwrap` on the Option.
+    fn ensure_loaded_and_config(
+        &mut self,
+    ) -> Result<(&mut ColBERT, &ModelRuntimeConfig)> {
         if self.model.is_none() {
-            // Resolve prompts from model config before loading
+            // Resolve prompts from model config before loading.
             let (query_prompt, document_prompt) =
                 resolve_prompts(&self.model_id);
             self.query_prompt = query_prompt;
@@ -417,7 +424,16 @@ impl ModelManager {
             self.model = Some(colbert);
         }
 
-        Ok(self.model.as_mut().unwrap())
+        // Both Options are Some at this point. `as_mut()` / `as_ref()`
+        // combined with the match pattern turn the "can't happen"
+        // branch into dead code the compiler optimises out, without a
+        // user-visible panic site.
+        match (self.model.as_mut(), self.runtime_config.as_ref()) {
+            (Some(model), Some(cfg)) => Ok((model, cfg)),
+            _ => unreachable!(
+                "model and runtime_config are set immediately above",
+            ),
+        }
     }
 
     /// Encodes document texts into ColBERT token-level embeddings.
