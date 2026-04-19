@@ -211,3 +211,15 @@ fn prop_squared_l2_symmetric(tc: TestCase) {
     let b = tc.draw(finite_floats(n));
     assert_eq!(squared_l2(&a, &b), squared_l2(&b, &a));
 }
+
+/// Algebraic: `squared_l2(a, b) >= 0`. A sum of squares over finite
+/// inputs cannot be negative. Any regression that swaps the subtraction
+/// order for a signed difference would surface here.
+#[hegel::test(test_cases = 200)]
+fn prop_squared_l2_non_negative(tc: TestCase) {
+    use docbert_plaid::distance::squared_l2;
+    let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(64));
+    let a = tc.draw(finite_floats(n));
+    let b = tc.draw(finite_floats(n));
+    assert!(squared_l2(&a, &b) >= 0.0);
+}
