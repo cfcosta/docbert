@@ -127,13 +127,12 @@ pub(crate) fn cmd_status(
     Ok(())
 }
 
-pub(crate) fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
+pub(crate) fn cmd_model_show(
+    model_resolution: &ModelResolution,
+    json: bool,
+) -> error::Result<()> {
     if json {
-        println!(
-            "{}",
-            model_show_json_string(model_resolution)
-                .expect("model resolution JSON serialization should succeed")
-        );
+        println!("{}", model_show_json_string(model_resolution)?);
     } else {
         println!("Resolved model: {}", model_resolution.model_id);
         println!("Source: {}", model_resolution.source.as_str());
@@ -149,6 +148,7 @@ pub(crate) fn cmd_model_show(model_resolution: &ModelResolution, json: bool) {
             println!("Config setting: (unset)");
         }
     }
+    Ok(())
 }
 
 pub(crate) fn cmd_model_set(

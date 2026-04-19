@@ -176,7 +176,7 @@ fn main() -> error::Result<()> {
         Command::Web(_) => unreachable!(), // Handled above
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {
-                command_handlers::cmd_model_show(&model_resolution, json);
+                command_handlers::cmd_model_show(&model_resolution, json)?;
             }
             cli::ModelAction::Set { model } => {
                 command_handlers::cmd_model_set(&config_db, &model)?;
