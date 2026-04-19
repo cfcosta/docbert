@@ -1155,3 +1155,75 @@ fn prop_search_permutation_invariant_over_query_tokens(tc: TestCase) {
         );
     }
 }
+
+/// Metamorphic: if a document is duplicated under a new doc_id, both
+/// copies must rank together with identical scores. A failure would
+/// imply the scorer depends on doc position or uses non-stable
+/// per-doc state.
+#[hegel::test(test_cases = 20)]
+fn prop_search_duplicated_doc_returns_both_with_same_score(tc: TestCase) {
+    use docbert_plaid::{
+        index::{DocumentTokens, build_index},
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let mut docs = tc.draw(corpus(dim, 2, 4, 5, 6));
+    // Pick one doc with tokens to duplicate.
+    let target_idx = docs.iter().position(|d| d.n_tokens > 0).unwrap_or(0);
+    let clone_tokens = docs[target_idx].tokens.clone();
+    let clone_n = docs[target_idx].n_tokens;
+    if clone_n == 0 {
+        // Ensure we have a non-empty doc to duplicate.
+        docs[target_idx].tokens = tc.draw(unit_rows(dim, 1));
+        docs[target_idx].n_tokens = 1;
+    }
+    let clone_tokens = if clone_n == 0 {
+        docs[target_idx].tokens.clone()
+    } else {
+        clone_tokens
+    };
+    let clone_n = docs[target_idx].n_tokens;
+    let clone_id: u64 = docs.iter().map(|d| d.doc_id).max().unwrap() + 1;
+    docs.push(DocumentTokens {
+        doc_id: clone_id,
+        tokens: clone_tokens,
+        n_tokens: clone_n,
+    });
+    let original_id = docs[target_idx].doc_id;
+
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let sp = SearchParams {
+        top_k: docs.len(),
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let results = search(&index, &query, sp);
+
+    let original_score = results
+        .iter()
+        .find(|r| r.doc_id == original_id)
+        .map(|r| r.score);
+    let clone_score = results
+        .iter()
+        .find(|r| r.doc_id == clone_id)
+        .map(|r| r.score);
+    match (original_score, clone_score) {
+        (Some(a), Some(b)) => assert!(
+            (a - b).abs() <= 1e-4,
+            "duplicated doc scored differently: {a} vs {b}",
+        ),
+        (None, None) => {
+            // Neither surfaced — the query has no match for this
+            // doc in either copy, which is fine.
+        }
+        other => panic!(
+            "only one copy surfaced: original={:?} clone={:?}",
+            other.0, other.1,
+        ),
+    }
+}
