@@ -47,18 +47,27 @@ jobs:
 
           release_type = "${{ github.event.inputs.release_type }}"
 
-          # All crate Cargo.toml files in the workspace.
-          crate_tomls = [
-              pathlib.Path("crates/docbert/Cargo.toml"),
-              pathlib.Path("crates/docbert-core/Cargo.toml"),
+          # Every crate in the workspace. All of them get bumped to the
+          # same new version regardless of what they currently hold —
+          # `docbert-plaid` lags behind the others (it was introduced
+          # mid-0.x) and we want `cargo publish` to see a single,
+          # coherent release version across the whole workspace.
+          workspace_crates = [
+              ("docbert",       pathlib.Path("crates/docbert/Cargo.toml")),
+              ("docbert-core",  pathlib.Path("crates/docbert-core/Cargo.toml")),
+              ("docbert-plaid", pathlib.Path("crates/docbert-plaid/Cargo.toml")),
           ]
-
           cargo_lock_path = pathlib.Path("Cargo.lock")
 
-          # Read the current version from the first crate's Cargo.toml.
-          root_toml = crate_tomls[0].read_text(encoding="utf-8")
-          root_manifest = tomllib.loads(root_toml)
-          old_version = root_manifest["package"]["version"]
+          # The canonical version to bump from is `docbert`'s
+          # (it's the user-facing binary and the source of truth for
+          # the release tag). Other crates' current versions don't
+          # matter here — they'll be overwritten to the new target.
+          canonical_toml = pathlib.Path("crates/docbert/Cargo.toml")
+          canonical_manifest = tomllib.loads(
+              canonical_toml.read_text(encoding="utf-8")
+          )
+          old_version = canonical_manifest["package"]["version"]
 
           match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", old_version)
           if not match:
@@ -75,36 +84,46 @@ jobs:
               raise SystemExit(f"Unsupported release type: {release_type}")
 
           new_version = f"{major}.{minor}.{patch}"
+          print(f"Bumping all workspace crates to {new_version}")
 
-          # Update version in each crate's Cargo.toml.
-          for toml_path in crate_tomls:
+          # Set every crate's version to `new_version`, reading each
+          # crate's *current* version from its own manifest rather
+          # than assuming they match — otherwise docbert-plaid (which
+          # still carries 0.1.0) would fail the match and the bump
+          # would silently skip it.
+          version_line = re.compile(r'(?m)^version = "[^"]+"$')
+          for name, toml_path in workspace_crates:
               text = toml_path.read_text(encoding="utf-8")
-              text, n = re.subn(
-                  r'(?m)^version = "' + re.escape(old_version) + r'"$',
-                  f'version = "{new_version}"',
-                  text,
-                  count=1,
+              text, n = version_line.subn(
+                  f'version = "{new_version}"', text, count=1
               )
               if n != 1:
-                  raise SystemExit(f"Could not update version in {toml_path}")
+                  raise SystemExit(
+                      f"Could not locate a version line in {toml_path}"
+                  )
               toml_path.write_text(text, encoding="utf-8")
 
-          # Update all workspace package versions in Cargo.lock.
-          package_names = ["docbert", "docbert-core"]
+          # Update every workspace crate's entry in Cargo.lock. The
+          # pattern matches the `[[package]] name = "X" version = "Y"`
+          # block regardless of which version it currently holds, so
+          # we don't have to know docbert-plaid's pre-bump version.
           cargo_lock = cargo_lock_path.read_text(encoding="utf-8")
-          for name in package_names:
-              cargo_lock, n = re.subn(
+          for name, _ in workspace_crates:
+              pattern = (
                   r'(\[\[package\]\]\nname = "'
                   + re.escape(name)
-                  + r'"\nversion = ")'
-                  + re.escape(old_version)
-                  + r'(")',
-                  r'\g<1>' + new_version + r'\g<2>',
+                  + r'"\nversion = ")[^"]+(")'
+              )
+              cargo_lock, n = re.subn(
+                  pattern,
+                  r"\g<1>" + new_version + r"\g<2>",
                   cargo_lock,
                   count=1,
               )
               if n != 1:
-                  raise SystemExit(f"Could not update {name} version in Cargo.lock")
+                  raise SystemExit(
+                      f"Could not update {name} version in Cargo.lock"
+                  )
           cargo_lock_path.write_text(cargo_lock, encoding="utf-8")
 
           github_output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
@@ -121,7 +140,10 @@ jobs:
 
       - name: Create release commit
         run: |
-          git add Cargo.lock crates/docbert/Cargo.toml crates/docbert-core/Cargo.toml
+          git add Cargo.lock \
+                  crates/docbert/Cargo.toml \
+                  crates/docbert-core/Cargo.toml \
+                  crates/docbert-plaid/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
 
       - name: Push release commit
