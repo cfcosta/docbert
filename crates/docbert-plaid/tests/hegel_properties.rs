@@ -1400,3 +1400,36 @@ fn prop_save_load_roundtrip_exact(tc: TestCase) {
         );
     }
 }
+
+/// Round-trip + determinism: `search(index, q) ==
+/// search(load(save(index)), q)` for any valid query and search
+/// params. Combines structural persistence (task #38) with the search
+/// cascade, so any bug that affects only the decoded-token path or
+/// IVF traversal would still flip the result vectors here.
+#[hegel::test(test_cases = 20)]
+fn prop_save_load_search_identical(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        persistence::{load, save},
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.plaid");
+    save(&index, &path).unwrap();
+    let loaded = load(&path).unwrap();
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let sp = SearchParams {
+        top_k: docs.len(),
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    assert_eq!(search(&index, &query, sp), search(&loaded, &query, sp));
+}
