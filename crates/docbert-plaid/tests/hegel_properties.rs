@@ -1319,3 +1319,42 @@ fn prop_search_empty_query_empty_result(tc: TestCase) {
     let results = search(&index, &[], sp);
     assert!(results.is_empty());
 }
+
+/// Metamorphic: with `n_probe = num_centroids`, no shortlist, no
+/// threshold, and `top_k` at least `num_documents`, every non-empty
+/// doc must appear in the result set. This pins down the "no filter
+/// path drops" contract — if any branch silently excludes a doc
+/// when nothing should filter it, it surfaces here.
+#[hegel::test(test_cases = 20)]
+fn prop_search_full_probe_considers_every_nonempty_doc(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 4, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let query = tc.draw(unit_rows(dim, 1));
+    let sp = SearchParams {
+        top_k: docs.len() + 2,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let results = search(&index, &query, sp);
+
+    let expected: std::collections::HashSet<u64> = docs
+        .iter()
+        .filter(|d| d.n_tokens > 0)
+        .map(|d| d.doc_id)
+        .collect();
+    let got: std::collections::HashSet<u64> =
+        results.iter().map(|r| r.doc_id).collect();
+    assert_eq!(
+        got, expected,
+        "full-probe search should see every non-empty doc",
+    );
+}
