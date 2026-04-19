@@ -1,6 +1,6 @@
 [package]
 name = "docbert-pylate"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 license = "MIT"
 description = "Rust library for late interaction (ColBERT) models, vendored into the docbert workspace."
