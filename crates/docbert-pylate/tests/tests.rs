@@ -6,6 +6,27 @@ fn load_model(repo_id: &str, device: Device) -> Result<ColBERT> {
     Ok(ColBERT::from(repo_id).with_device(device).try_into()?)
 }
 
+/// Selects the device integration tests should run on. Prefers CUDA when
+/// the `cuda` feature is enabled, then Metal when `metal` is enabled, and
+/// falls back to CPU — with a runtime fall-back to CPU when the preferred
+/// accelerator can't be initialised. Leaves the explicit CPU/CUDA parity
+/// test below alone: that test compares *both* devices on purpose.
+fn test_device() -> Device {
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(d) = Device::new_cuda(0) {
+            return d;
+        }
+    }
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(d) = Device::new_metal(0) {
+            return d;
+        }
+    }
+    Device::Cpu
+}
+
 fn assert_close(actual: f32, expected: f32, tolerance: f32, context: &str) {
     assert!(
         (actual - expected).abs() < tolerance,
@@ -25,7 +46,7 @@ fn argmax(values: &[f32]) -> usize {
 /// Tests the `GTE-ModernColBERT-v1` model from the Hugging Face Hub.
 #[test]
 fn gte_modern_colbert_test() -> Result<()> {
-    let device = Device::Cpu;
+    let device = test_device();
     println!("Testing with lightonai/GTE-ModernColBERT-v1...");
 
     let mut model = load_model("lightonai/GTE-ModernColBERT-v1", device)?;
@@ -73,7 +94,8 @@ fn gte_modern_colbert_test() -> Result<()> {
 
 #[test]
 fn gte_modern_colbert_semantics_regression_test() -> Result<()> {
-    let mut model = load_model("lightonai/GTE-ModernColBERT-v1", Device::Cpu)?;
+    let mut model =
+        load_model("lightonai/GTE-ModernColBERT-v1", test_device())?;
 
     let query_sentences = vec![
         "what is the capital of france".to_string(),
@@ -144,7 +166,7 @@ fn gte_modern_colbert_semantics_regression_test() -> Result<()> {
 /// Tests the `colbertv2.0` model from the Hugging Face Hub.
 #[test]
 fn colbert_v2_test() -> Result<()> {
-    let device = Device::Cpu;
+    let device = test_device();
     println!("Testing with lightonai/colbertv2.0...");
 
     let mut model = load_model("lightonai/colbertv2.0", device)?;
@@ -167,7 +189,7 @@ fn colbert_v2_test() -> Result<()> {
 /// Tests the `answerai-colbert-small-v1` model from the Hugging Face Hub.
 #[test]
 fn answerai_colbert_small_v1_test() -> Result<()> {
-    let device = Device::Cpu;
+    let device = test_device();
     println!("Testing with lightonai/answerai-colbert-small-v1...");
 
     let mut model = load_model("lightonai/answerai-colbert-small-v1", device)?;

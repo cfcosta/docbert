@@ -751,9 +751,34 @@ impl ColBERT {
     }
 }
 
+/// Test-only device selector shared by `mod tests` and `mod hegel_tests`.
+///
+/// Prefers CUDA when the `cuda` feature is on, Metal when `metal` is on,
+/// and falls back to CPU — with a runtime fall-back to CPU when the
+/// preferred accelerator can't be initialised (typical on CI builds of
+/// `--features cuda` without a GPU). Matches the selection order in
+/// `ColBERT::with_device`, so tests run on the same backend production
+/// encodes would use.
+#[cfg(test)]
+fn test_device() -> Device {
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(d) = Device::new_cuda(0) {
+            return d;
+        }
+    }
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(d) = Device::new_metal(0) {
+            return d;
+        }
+    }
+    Device::Cpu
+}
+
 #[cfg(test)]
 mod tests {
-    use candle_core::{DType, Device, Tensor};
+    use candle_core::{DType, Tensor};
 
     use super::{
         concatenate_embedding_batches,
@@ -764,7 +789,7 @@ mod tests {
 
     #[test]
     fn fast_document_path_matches_compact_path_for_right_padded_masks() {
-        let device = Device::Cpu;
+        let device = super::test_device();
         let embeddings = Tensor::from_vec(
             vec![
                 1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, // doc 1
@@ -808,7 +833,7 @@ mod tests {
 
     #[test]
     fn fast_query_path_matches_compact_path_for_right_padded_masks() {
-        let device = Device::Cpu;
+        let device = super::test_device();
         let embeddings = Tensor::from_vec(
             vec![
                 1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, // q1
@@ -843,7 +868,7 @@ mod tests {
 
     #[test]
     fn fast_document_path_zeroes_masked_rows() {
-        let device = Device::Cpu;
+        let device = super::test_device();
         let embeddings = Tensor::from_vec(
             vec![1.0f32, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0],
             (1, 4, 2),
@@ -868,7 +893,7 @@ mod tests {
 
     #[test]
     fn concatenate_embedding_batches_pads_variable_sequence_lengths() {
-        let device = Device::Cpu;
+        let device = super::test_device();
         let first = Tensor::zeros((64, 514, 128), DType::F32, &device).unwrap();
         let second =
             Tensor::zeros((64, 519, 128), DType::F32, &device).unwrap();
@@ -906,28 +931,8 @@ mod hegel_tests {
         filter_normalize_and_pad_compact,
         normalize_and_mask_padded,
         normalize_mask_and_truncate_right_padded,
+        test_device,
     };
-
-    /// Selects the test device based on compile-time features, falling back
-    /// to CPU if the preferred accelerator can't be initialised at runtime
-    /// (e.g., the `cuda` feature is on but no GPU is present in this
-    /// environment). Picks CUDA, then Metal, then CPU — matches how
-    /// `ColBERT::with_device` prioritises them in production.
-    fn test_device() -> Device {
-        #[cfg(feature = "cuda")]
-        {
-            if let Ok(d) = Device::new_cuda(0) {
-                return d;
-            }
-        }
-        #[cfg(feature = "metal")]
-        {
-            if let Ok(d) = Device::new_metal(0) {
-                return d;
-            }
-        }
-        Device::Cpu
-    }
 
     // -----------------------------------------------------------------------
     // Shared generators
