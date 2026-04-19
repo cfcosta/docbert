@@ -182,3 +182,19 @@ fn generators_produce_valid_shapes(tc: TestCase) {
     assert!(params.k_centroids <= total);
     assert!(matches!(params.nbits, 1 | 2 | 4 | 8));
 }
+
+// ---------------------------------------------------------------------------
+// distance.rs
+// ---------------------------------------------------------------------------
+
+/// Algebraic: `dot(a, b) == dot(b, a)`. Summation order is the only
+/// source of asymmetry and we compute both sums in the same left-to-right
+/// order, so equality holds bit-for-bit rather than within an ε.
+#[hegel::test(test_cases = 200)]
+fn prop_dot_commutative(tc: TestCase) {
+    use docbert_plaid::distance::dot;
+    let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(64));
+    let a = tc.draw(finite_floats(n));
+    let b = tc.draw(finite_floats(n));
+    assert_eq!(dot(&a, &b), dot(&b, &a));
+}
