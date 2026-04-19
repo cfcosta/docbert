@@ -56,7 +56,7 @@ impl BaseModel {
 /// right-padding to the batch longest sequence, so filtering rows out and then padding them
 /// back in produces the same layout as simply zeroing the masked rows after normalization.
 /// Keeping the whole operation on-device avoids per-row CPU roundtrips and tiny tensor ops.
-fn normalize_and_mask_padded(
+pub(crate) fn normalize_and_mask_padded(
     embeddings: &Tensor,
     attention_mask: &Tensor,
 ) -> Result<Tensor, candle_core::Error> {
@@ -67,7 +67,7 @@ fn normalize_and_mask_padded(
 
 /// Filters rows with a mask, normalizes the kept rows, and pads back to the batch max length.
 #[allow(dead_code)]
-fn filter_normalize_and_pad_compact(
+pub(crate) fn filter_normalize_and_pad_compact(
     embeddings: &Tensor,
     attention_mask: &Tensor,
     device: &Device,
@@ -123,7 +123,7 @@ fn filter_normalize_and_pad_compact(
 
 /// Fast path for right-padded masks: normalize on-device, zero masked rows, then trim the
 /// shared padded suffix down to the batch's maximum valid length.
-fn normalize_mask_and_truncate_right_padded(
+pub(crate) fn normalize_mask_and_truncate_right_padded(
     embeddings: &Tensor,
     attention_mask: &Tensor,
     max_len: usize,
@@ -132,7 +132,7 @@ fn normalize_mask_and_truncate_right_padded(
     masked.narrow(1, 0, max_len.max(1))
 }
 
-fn concatenate_embedding_batches(
+pub(crate) fn concatenate_embedding_batches(
     embeddings: Vec<Tensor>,
 ) -> Result<Tensor, candle_core::Error> {
     if embeddings.is_empty() {
@@ -177,6 +177,40 @@ fn concatenate_embedding_batches(
     }
 
     Tensor::cat(&padded_batches, 0)
+}
+
+/// Computes MaxSim similarity scores between query and document embeddings.
+///
+/// `queries_embeddings` has shape `(n_queries, q_tokens, dim)` and
+/// `documents_embeddings` has shape `(n_documents, d_tokens, dim)`. The
+/// returned matrix is `(n_queries, n_documents)` where each entry is
+/// `Σ_t max_k dot(Q[i,t], D[j,k])`.
+pub(crate) fn compute_similarities(
+    queries_embeddings: &Tensor,
+    documents_embeddings: &Tensor,
+) -> Result<Similarities, ColbertError> {
+    let scores =
+        compute_raw_similarity(queries_embeddings, documents_embeddings)?;
+    let max_scores = scores.max(3)?;
+    let similarities = max_scores.sum(2)?;
+    let similarities_vec = similarities.to_vec2::<f32>()?;
+    Ok(Similarities {
+        data: similarities_vec,
+    })
+}
+
+/// Computes the raw, un-reduced similarity matrix between query and document embeddings.
+///
+/// Output shape is `(n_queries, n_documents, q_tokens, d_tokens)` where each
+/// entry is `dot(Q[i,t], D[j,k])`.
+pub(crate) fn compute_raw_similarity(
+    queries_embeddings: &Tensor,
+    documents_embeddings: &Tensor,
+) -> Result<Tensor, ColbertError> {
+    queries_embeddings
+        .unsqueeze(1)?
+        .broadcast_matmul(&documents_embeddings.transpose(1, 2)?.unsqueeze(0)?)
+        .map_err(ColbertError::from)
 }
 
 /// The main ColBERT model structure.
@@ -588,16 +622,7 @@ impl ColBERT {
         queries_embeddings: &Tensor,
         documents_embeddings: &Tensor,
     ) -> Result<Similarities, ColbertError> {
-        let scores = queries_embeddings.unsqueeze(1)?.broadcast_matmul(
-            &documents_embeddings.transpose(1, 2)?.unsqueeze(0)?,
-        )?;
-
-        let max_scores = scores.max(3)?;
-        let similarities = max_scores.sum(2)?;
-        let similarities_vec = similarities.to_vec2::<f32>()?;
-        Ok(Similarities {
-            data: similarities_vec,
-        })
+        compute_similarities(queries_embeddings, documents_embeddings)
     }
 
     /// Computes the raw, un-reduced similarity matrix between query and document embeddings.
@@ -606,12 +631,7 @@ impl ColBERT {
         queries_embeddings: &Tensor,
         documents_embeddings: &Tensor,
     ) -> Result<Tensor, ColbertError> {
-        queries_embeddings
-            .unsqueeze(1)?
-            .broadcast_matmul(
-                &documents_embeddings.transpose(1, 2)?.unsqueeze(0)?,
-            )
-            .map_err(ColbertError::from)
+        compute_raw_similarity(queries_embeddings, documents_embeddings)
     }
 
     fn tensorize_encodings(
@@ -854,5 +874,504 @@ mod tests {
         let combined =
             concatenate_embedding_batches(vec![first, second]).unwrap();
         assert_eq!(combined.dims3().unwrap(), (128, 519, 128));
+    }
+}
+
+#[cfg(test)]
+mod hegel_tests {
+    //! Hegel property tests for `model.rs` internals.
+    //!
+    //! Covers two tiers that need `pub(crate)` access and therefore can't live
+    //! in `tests/properties.rs`:
+    //!
+    //! - **C** — `compute_similarities` / `compute_raw_similarity`: MaxSim
+    //!   differential against a hand-rolled reference, shape contract,
+    //!   zero-doc-token monotonicity, and query-scaling linearity.
+    //! - **E** — masking and concatenation helpers: the right-padded fast
+    //!   path must match the compact path, `normalize_and_mask_padded` must
+    //!   zero masked rows and bound unmasked rows, and
+    //!   `concatenate_embedding_batches` must preserve the batch/dim invariants
+    //!   while zero-padding short batches up to the longest token length.
+    use candle_core::{Device, Tensor};
+    use hegel::{TestCase, generators as gs};
+
+    use super::{
+        compute_raw_similarity,
+        compute_similarities,
+        concatenate_embedding_batches,
+        filter_normalize_and_pad_compact,
+        normalize_and_mask_padded,
+        normalize_mask_and_truncate_right_padded,
+    };
+
+    const DEV: Device = Device::Cpu;
+
+    // -----------------------------------------------------------------------
+    // Shared generators
+    // -----------------------------------------------------------------------
+
+    /// Draws an `(b, s, d)` embedding tensor plus an `(b, s)` attention mask.
+    /// The mask is arbitrary 0/1 — used for properties that don't require
+    /// right-padding (E1, E2).
+    #[hegel::composite]
+    fn embeddings_with_free_mask(tc: TestCase) -> (Tensor, Tensor) {
+        let b: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let s: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let d: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let emb_data: Vec<f32> = tc.draw(
+            gs::vecs(
+                gs::floats::<f32>()
+                    .min_value(-5.0)
+                    .max_value(5.0)
+                    .allow_nan(false)
+                    .allow_infinity(false),
+            )
+            .min_size(b * s * d)
+            .max_size(b * s * d),
+        );
+        let mask_data: Vec<u32> = tc.draw(
+            gs::vecs(gs::integers::<u32>().min_value(0).max_value(1))
+                .min_size(b * s)
+                .max_size(b * s),
+        );
+        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &DEV).unwrap();
+        let mask = Tensor::from_vec(mask_data, (b, s), &DEV).unwrap();
+        (embeddings, mask)
+    }
+
+    /// Draws an `(b, s, d)` embedding tensor plus a right-padded attention
+    /// mask (each row is a prefix of 1s then 0s). Returns `(emb, mask,
+    /// max_valid_len)`. This is exactly the precondition under which the
+    /// fast and compact paths must agree (E3, E4).
+    #[hegel::composite]
+    fn embeddings_with_right_padded_mask(
+        tc: TestCase,
+    ) -> (Tensor, Tensor, usize) {
+        let b: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let s: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let d: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let emb_data: Vec<f32> = tc.draw(
+            gs::vecs(
+                gs::floats::<f32>()
+                    .min_value(-5.0)
+                    .max_value(5.0)
+                    .allow_nan(false)
+                    .allow_infinity(false),
+            )
+            .min_size(b * s * d)
+            .max_size(b * s * d),
+        );
+        let mut mask_flat = Vec::<u32>::with_capacity(b * s);
+        let mut max_valid = 0usize;
+        for _ in 0..b {
+            let valid: usize =
+                tc.draw(gs::integers::<usize>().min_value(0).max_value(s));
+            max_valid = max_valid.max(valid);
+            for j in 0..s {
+                mask_flat.push(u32::from(j < valid));
+            }
+        }
+        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &DEV).unwrap();
+        let mask = Tensor::from_vec(mask_flat, (b, s), &DEV).unwrap();
+        (embeddings, mask, max_valid)
+    }
+
+    /// Draws a non-empty `Vec<Tensor>` with matching `(batch, dim)` and
+    /// varying per-batch sequence length. Used to exercise
+    /// `concatenate_embedding_batches`.
+    #[hegel::composite]
+    fn embedding_batch_list(tc: TestCase) -> Vec<Tensor> {
+        let n_batches: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+        let batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+        let finite = || {
+            gs::floats::<f32>()
+                .min_value(-3.0)
+                .max_value(3.0)
+                .allow_nan(false)
+                .allow_infinity(false)
+        };
+        let mut out = Vec::with_capacity(n_batches);
+        for _ in 0..n_batches {
+            let tokens: usize =
+                tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+            let data: Vec<f32> = tc.draw(
+                gs::vecs(finite())
+                    .min_size(batch * tokens * dim)
+                    .max_size(batch * tokens * dim),
+            );
+            out.push(
+                Tensor::from_vec(data, (batch, tokens, dim), &DEV).unwrap(),
+            );
+        }
+        out
+    }
+
+    /// Draws query and document embeddings that share the last dim but can
+    /// differ in batch size and token count. Used for every C-tier property.
+    #[hegel::composite]
+    fn query_doc_pair(tc: TestCase) -> (Tensor, Tensor) {
+        let dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let q_batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let q_tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let d_batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let d_tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let finite = || {
+            gs::floats::<f32>()
+                .min_value(-1.0)
+                .max_value(1.0)
+                .allow_nan(false)
+                .allow_infinity(false)
+        };
+        let q_data: Vec<f32> = tc.draw(
+            gs::vecs(finite())
+                .min_size(q_batch * q_tokens * dim)
+                .max_size(q_batch * q_tokens * dim),
+        );
+        let d_data: Vec<f32> = tc.draw(
+            gs::vecs(finite())
+                .min_size(d_batch * d_tokens * dim)
+                .max_size(d_batch * d_tokens * dim),
+        );
+        let q =
+            Tensor::from_vec(q_data, (q_batch, q_tokens, dim), &DEV).unwrap();
+        let d =
+            Tensor::from_vec(d_data, (d_batch, d_tokens, dim), &DEV).unwrap();
+        (q, d)
+    }
+
+    // -----------------------------------------------------------------------
+    // E — masking / concat helpers
+    // -----------------------------------------------------------------------
+
+    /// E1: `normalize_and_mask_padded` zeros every row whose mask is 0.
+    /// E2: rows whose mask is 1 have squared L2 norm ≤ 1 + ε.
+    /// These are one property in two assertions because the generator is
+    /// shared.
+    #[hegel::test(test_cases = 200)]
+    fn normalize_and_mask_padded_respects_mask(tc: TestCase) {
+        let (emb, mask) = tc.draw(embeddings_with_free_mask());
+        let out = normalize_and_mask_padded(&emb, &mask).unwrap();
+        assert_eq!(out.dims(), emb.dims(), "shape must be preserved");
+
+        let out_v: Vec<Vec<Vec<f32>>> = out.to_vec3::<f32>().unwrap();
+        let mask_v: Vec<Vec<u32>> = mask.to_vec2::<u32>().unwrap();
+        for (b_idx, row_block) in out_v.iter().enumerate() {
+            for (s_idx, row) in row_block.iter().enumerate() {
+                let bit = mask_v[b_idx][s_idx];
+                if bit == 0 {
+                    for v in row {
+                        assert_eq!(
+                            *v, 0.0,
+                            "masked row at ({b_idx},{s_idx}) not zeroed",
+                        );
+                    }
+                } else {
+                    let n2: f32 = row.iter().map(|v| v * v).sum();
+                    assert!(
+                        n2 <= 1.0 + 1e-4,
+                        "unmasked row at ({b_idx},{s_idx}) has n²={n2}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// E3: `normalize_mask_and_truncate_right_padded` output shape is
+    /// `(batch, max(max_len, 1), dim)`.
+    #[hegel::test(test_cases = 200)]
+    fn truncate_right_padded_has_expected_shape(tc: TestCase) {
+        let (emb, mask, max_valid) =
+            tc.draw(embeddings_with_right_padded_mask());
+        let (b, _, d) = emb.dims3().unwrap();
+        let out =
+            normalize_mask_and_truncate_right_padded(&emb, &mask, max_valid)
+                .unwrap();
+        assert_eq!(out.dim(0).unwrap(), b);
+        assert_eq!(out.dim(1).unwrap(), max_valid.max(1));
+        assert_eq!(out.dim(2).unwrap(), d);
+    }
+
+    /// E4: under the right-padded-mask precondition the fast path and the
+    /// compact path produce the same tensor. This is the single highest-value
+    /// property in the suite — a bug that diverges the two would silently
+    /// corrupt document embeddings.
+    #[hegel::test(test_cases = 200)]
+    fn truncate_right_padded_matches_compact(tc: TestCase) {
+        let (emb, mask, max_valid) =
+            tc.draw(embeddings_with_right_padded_mask());
+        let fast =
+            normalize_mask_and_truncate_right_padded(&emb, &mask, max_valid)
+                .unwrap();
+        let compact =
+            filter_normalize_and_pad_compact(&emb, &mask, &DEV).unwrap();
+
+        // When every row in a given batch is masked out, the compact path
+        // emits one zero row while the fast path emits `max(max_valid, 1)`
+        // zero rows. Both are legitimate zero-padding layouts; only compare
+        // the rows that the compact path actually produced.
+        let (fast_b, fast_s, fast_d) = fast.dims3().unwrap();
+        let (comp_b, comp_s, comp_d) = compact.dims3().unwrap();
+        assert_eq!(fast_b, comp_b);
+        assert_eq!(fast_d, comp_d);
+        let common = fast_s.min(comp_s);
+        let fast_cmp = fast.narrow(1, 0, common).unwrap();
+        let comp_cmp = compact.narrow(1, 0, common).unwrap();
+
+        let fv: Vec<Vec<Vec<f32>>> = fast_cmp.to_vec3::<f32>().unwrap();
+        let cv: Vec<Vec<Vec<f32>>> = comp_cmp.to_vec3::<f32>().unwrap();
+        for (fb, cb) in fv.iter().zip(cv.iter()) {
+            for (fr, cr) in fb.iter().zip(cb.iter()) {
+                for (fv, cv) in fr.iter().zip(cr.iter()) {
+                    assert!(
+                        (fv - cv).abs() < 1e-5,
+                        "fast vs compact divergence: {fv} vs {cv}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// E5: `concatenate_embedding_batches` is identity on a single-element
+    /// input — the fast-path clone returns the tensor unchanged.
+    #[hegel::test(test_cases = 100)]
+    fn concatenate_single_is_identity(tc: TestCase) {
+        let list = tc.draw(embedding_batch_list());
+        let only = list.into_iter().next().unwrap();
+        let clone = only.to_vec3::<f32>().unwrap();
+        let out = concatenate_embedding_batches(vec![only.clone()]).unwrap();
+        let out_v: Vec<Vec<Vec<f32>>> = out.to_vec3::<f32>().unwrap();
+        assert_eq!(clone, out_v);
+    }
+
+    /// E6: concatenation preserves `dim`, sums `batch` across inputs, and
+    /// takes the max `tokens` across inputs. E7: every row beyond a batch's
+    /// original token count is zero.
+    #[hegel::test(test_cases = 150)]
+    fn concatenate_shape_and_zero_padding(tc: TestCase) {
+        let list = tc.draw(embedding_batch_list());
+        let expected_batch: usize =
+            list.iter().map(|t| t.dim(0).unwrap()).sum();
+        let expected_tokens: usize =
+            list.iter().map(|t| t.dim(1).unwrap()).max().unwrap();
+        let expected_dim = list[0].dim(2).unwrap();
+
+        let originals: Vec<Vec<Vec<Vec<f32>>>> =
+            list.iter().map(|t| t.to_vec3::<f32>().unwrap()).collect();
+
+        let out = concatenate_embedding_batches(list).unwrap();
+        assert_eq!(out.dim(0).unwrap(), expected_batch);
+        assert_eq!(out.dim(1).unwrap(), expected_tokens);
+        assert_eq!(out.dim(2).unwrap(), expected_dim);
+
+        let out_v: Vec<Vec<Vec<f32>>> = out.to_vec3::<f32>().unwrap();
+        let mut row = 0usize;
+        for orig_batch in originals {
+            let tokens_here = orig_batch[0].len();
+            for orig_row in orig_batch {
+                let out_row = &out_v[row];
+                // Unpadded region must match the input verbatim.
+                for (t, ot) in orig_row.iter().enumerate() {
+                    assert_eq!(&out_row[t], ot);
+                }
+                // Padded region beyond the batch's own tokens is zero.
+                for (t, pad_row) in out_row.iter().enumerate().skip(tokens_here)
+                {
+                    for v in pad_row {
+                        assert_eq!(
+                            *v, 0.0,
+                            "pad region at (row={row}, t={t}) not zero",
+                        );
+                    }
+                }
+                row += 1;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // C — similarity / raw_similarity
+    // -----------------------------------------------------------------------
+
+    fn naive_raw_similarity(q: &Tensor, d: &Tensor) -> Vec<Vec<Vec<Vec<f32>>>> {
+        let qv: Vec<Vec<Vec<f32>>> = q.to_vec3::<f32>().unwrap();
+        let dv: Vec<Vec<Vec<f32>>> = d.to_vec3::<f32>().unwrap();
+        qv.iter()
+            .map(|query| {
+                dv.iter()
+                    .map(|doc| {
+                        query
+                            .iter()
+                            .map(|qt| {
+                                doc.iter()
+                                    .map(|dt| {
+                                        qt.iter()
+                                            .zip(dt.iter())
+                                            .map(|(a, b)| a * b)
+                                            .sum::<f32>()
+                                    })
+                                    .collect::<Vec<f32>>()
+                            })
+                            .collect::<Vec<Vec<f32>>>()
+                    })
+                    .collect::<Vec<Vec<Vec<f32>>>>()
+            })
+            .collect()
+    }
+
+    fn naive_max_sim(q: &Tensor, d: &Tensor) -> Vec<Vec<f32>> {
+        naive_raw_similarity(q, d)
+            .iter()
+            .map(|query| {
+                query
+                    .iter()
+                    .map(|doc| {
+                        doc.iter()
+                            .map(|per_qtok| {
+                                per_qtok
+                                    .iter()
+                                    .copied()
+                                    .fold(f32::NEG_INFINITY, f32::max)
+                            })
+                            .sum::<f32>()
+                    })
+                    .collect::<Vec<f32>>()
+            })
+            .collect()
+    }
+
+    fn approx_eq_matrix(a: &[Vec<f32>], b: &[Vec<f32>], tol: f32) {
+        assert_eq!(a.len(), b.len());
+        for (ra, rb) in a.iter().zip(b.iter()) {
+            assert_eq!(ra.len(), rb.len());
+            for (x, y) in ra.iter().zip(rb.iter()) {
+                assert!(
+                    (x - y).abs() < tol,
+                    "matrix drift: {x} vs {y} (tol={tol})",
+                );
+            }
+        }
+    }
+
+    /// C1: `compute_similarities` agrees with a hand-rolled MaxSim reference.
+    #[hegel::test(test_cases = 200)]
+    fn similarity_matches_naive_maxsim(tc: TestCase) {
+        let (q, d) = tc.draw(query_doc_pair());
+        let got = compute_similarities(&q, &d).unwrap();
+        let want = naive_max_sim(&q, &d);
+        approx_eq_matrix(&got.data, &want, 1e-4);
+    }
+
+    /// C2: `compute_raw_similarity` equals the pointwise `Q · Dᵀ` reference.
+    /// Candle only exposes `to_vec0`…`to_vec3`, so we reshape the 4-D output
+    /// `(nq, nd, qt, dt)` down to 3-D `(nq*nd, qt, dt)` and walk the flat
+    /// reference in the same order.
+    #[hegel::test(test_cases = 150)]
+    fn raw_similarity_matches_naive(tc: TestCase) {
+        let (q, d) = tc.draw(query_doc_pair());
+        let raw = compute_raw_similarity(&q, &d).unwrap();
+        let (nq, nd, qt, dt) = raw.dims4().unwrap();
+        let flat = raw.reshape((nq * nd, qt, dt)).unwrap();
+        let got: Vec<Vec<Vec<f32>>> = flat.to_vec3::<f32>().unwrap();
+        let want = naive_raw_similarity(&q, &d);
+
+        let mut idx = 0usize;
+        for query_block in &want {
+            for doc_block in query_block {
+                let got_slab = &got[idx];
+                idx += 1;
+                assert_eq!(got_slab.len(), doc_block.len());
+                for (g_row, w_row) in got_slab.iter().zip(doc_block.iter()) {
+                    assert_eq!(g_row.len(), w_row.len());
+                    for (x, y) in g_row.iter().zip(w_row.iter()) {
+                        assert!(
+                            (x - y).abs() < 1e-4,
+                            "raw sim drift: {x} vs {y}",
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(idx, nq * nd);
+    }
+
+    /// C3: output shape is `(n_queries, n_documents)` — the plumbing must not
+    /// drop or duplicate rows.
+    #[hegel::test(test_cases = 100)]
+    fn similarity_shape_contract(tc: TestCase) {
+        let (q, d) = tc.draw(query_doc_pair());
+        let nq = q.dim(0).unwrap();
+        let nd = d.dim(0).unwrap();
+        let out = compute_similarities(&q, &d).unwrap();
+        assert_eq!(out.data.len(), nq);
+        for row in &out.data {
+            assert_eq!(row.len(), nd);
+        }
+    }
+
+    /// C4: appending a zero-valued token row to every document cannot reduce
+    /// the similarity — `max_k` now includes `0.0` as an option, so the per-
+    /// query-token max is non-decreasing and the sum follows.
+    #[hegel::test(test_cases = 150)]
+    fn zero_doc_token_is_non_decreasing(tc: TestCase) {
+        let (q, d) = tc.draw(query_doc_pair());
+        let (db, dt, dd) = d.dims3().unwrap();
+        let zeros = Tensor::zeros((db, 1, dd), d.dtype(), &DEV).unwrap();
+        let d_padded = Tensor::cat(&[&d, &zeros], 1).unwrap();
+        assert_eq!(d_padded.dim(1).unwrap(), dt + 1);
+
+        let before = compute_similarities(&q, &d).unwrap();
+        let after = compute_similarities(&q, &d_padded).unwrap();
+        for (rb, ra) in before.data.iter().zip(after.data.iter()) {
+            for (vb, va) in rb.iter().zip(ra.iter()) {
+                assert!(
+                    *va + 1e-4 >= *vb,
+                    "zero-doc-token decreased similarity: {vb} → {va}",
+                );
+            }
+        }
+    }
+
+    /// C5: scaling queries uniformly by `k > 0` scales the similarity matrix
+    /// by `k`. MaxSim is `Σ_t max_k dot(k·Q[i,t], D[j,k]) = k · Σ_t max_k
+    /// dot(Q[i,t], D[j,k])` because `k > 0` preserves the argmax of each
+    /// per-q-token inner dot-product row.
+    #[hegel::test(test_cases = 150)]
+    fn similarity_linear_in_positive_query_scale(tc: TestCase) {
+        let (q, d) = tc.draw(query_doc_pair());
+        let k: f32 = tc.draw(
+            gs::floats::<f32>()
+                .min_value(0.25)
+                .max_value(4.0)
+                .allow_nan(false)
+                .allow_infinity(false),
+        );
+        let q_scaled = q.affine(f64::from(k), 0.0).unwrap();
+
+        let base = compute_similarities(&q, &d).unwrap();
+        let scaled = compute_similarities(&q_scaled, &d).unwrap();
+        for (rb, rs) in base.data.iter().zip(scaled.data.iter()) {
+            for (vb, vs) in rb.iter().zip(rs.iter()) {
+                assert!(
+                    (*vs - vb * k).abs() < 1e-3,
+                    "scale-linearity drift: k·{vb}={} vs {vs} (k={k})",
+                    vb * k,
+                );
+            }
+        }
     }
 }
