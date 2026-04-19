@@ -1644,3 +1644,57 @@ fn prop_apply_update_ivf_invariants_preserved(tc: TestCase) {
         );
     }
 }
+
+/// Metamorphic: after building an index on `A` and upserting `B` via
+/// `apply_update`, the final doc_id set equals `A ∪ B`, total token
+/// count equals the combined sum, and every `(doc_idx, centroid_id)`
+/// appears in the IVF. We don't assert byte-for-byte equality with
+/// `build_index(A ∪ B)` — the rebuild would retrain on the combined
+/// pool and pick a different codec — but the structural invariants
+/// both paths must satisfy are checked.
+#[hegel::test(test_cases = 20)]
+fn prop_apply_update_full_upsert_matches_build_index(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let a = tc.draw(corpus(dim, 1, 3, 4, 4));
+    let a_total: usize = a.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, a_total));
+    let index = build_index(&a, params);
+
+    let a_max_id = a.iter().map(|d| d.doc_id).max().unwrap();
+    let mut b = tc.draw(corpus(dim, 1, 3, 4, 0));
+    // Rewrite B's doc_ids to sit after A's so there's no overwrite.
+    // Upserts with duplicate ids would exercise a different invariant
+    // (prop_apply_update_upsert_codec_unchanged handles that cross).
+    for (i, d) in b.iter_mut().enumerate() {
+        d.doc_id = a_max_id + 1 + i as u64;
+    }
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &[],
+            upserts: &b,
+        },
+    );
+
+    let expected_ids: std::collections::HashSet<u64> =
+        a.iter().chain(b.iter()).map(|d| d.doc_id).collect();
+    let got_ids: std::collections::HashSet<u64> =
+        updated.doc_ids.iter().copied().collect();
+    assert_eq!(got_ids, expected_ids);
+
+    let expected_tokens: usize =
+        a.iter().chain(b.iter()).map(|d| d.n_tokens).sum();
+    assert_eq!(updated.num_tokens(), expected_tokens);
+
+    for (doc_idx, encoded) in updated.doc_tokens.iter().enumerate() {
+        for ev in encoded {
+            let list = updated.ivf.docs_for_centroid(ev.centroid_id as usize);
+            assert!(list.contains(&(doc_idx as u32)));
+        }
+    }
+}
