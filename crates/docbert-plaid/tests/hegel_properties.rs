@@ -705,3 +705,19 @@ fn prop_bucket_for_value_range(tc: TestCase) {
         );
     }
 }
+
+/// Algebraic: `train_quantizer` returns non-decreasing cutoffs for any
+/// non-NaN residual sample. This is the quantile-picking invariant —
+/// cutoffs are chosen at equally-spaced quantile positions of a
+/// sorted copy, so they must come out sorted.
+#[hegel::test(test_cases = 100)]
+fn prop_train_quantizer_cutoffs_monotonic(tc: TestCase) {
+    use docbert_plaid::codec::train_quantizer;
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(256));
+    let residuals = tc.draw(finite_floats(n));
+    let (cutoffs, _) = train_quantizer(&residuals, nbits);
+    for pair in cutoffs.windows(2) {
+        assert!(pair[0] <= pair[1], "cutoffs not monotone: {:?}", &cutoffs,);
+    }
+}
