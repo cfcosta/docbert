@@ -1577,3 +1577,70 @@ fn prop_apply_update_upsert_codec_unchanged(tc: TestCase) {
     assert_eq!(updated.codec.bucket_cutoffs, before_codec.bucket_cutoffs);
     assert_eq!(updated.codec.bucket_weights, before_codec.bucket_weights);
 }
+
+/// Shape: after any apply_update, the IVF invariants still hold —
+/// every `(doc_idx, centroid_id)` is in the list for that centroid,
+/// every list is strictly ascending (sorted + deduped), and the
+/// number of lists matches `params.k_centroids`.
+#[hegel::test(test_cases = 20)]
+fn prop_apply_update_ivf_invariants_preserved(tc: TestCase) {
+    use docbert_plaid::{
+        index::{DocumentTokens, build_index},
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let next_id = docs.iter().map(|d| d.doc_id).max().unwrap_or(0) + 1;
+    let n_upsert = tc.draw(gs::integers::<usize>().min_value(0).max_value(3));
+    let upserts: Vec<DocumentTokens> = (0..n_upsert)
+        .map(|i| {
+            let n = tc.draw(gs::integers::<usize>().min_value(0).max_value(3));
+            let tokens = if n == 0 {
+                Vec::new()
+            } else {
+                tc.draw(unit_rows(dim, n))
+            };
+            DocumentTokens {
+                doc_id: next_id + i as u64,
+                tokens,
+                n_tokens: n,
+            }
+        })
+        .collect();
+    let deletions: Vec<u64> = docs
+        .iter()
+        .filter(|_| tc.draw(gs::booleans()))
+        .map(|d| d.doc_id)
+        .collect();
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &deletions,
+            upserts: &upserts,
+        },
+    );
+
+    assert_eq!(updated.ivf.num_centroids(), params.k_centroids);
+    for (doc_idx, encoded) in updated.doc_tokens.iter().enumerate() {
+        for ev in encoded {
+            let list = updated.ivf.docs_for_centroid(ev.centroid_id as usize);
+            assert!(
+                list.contains(&(doc_idx as u32)),
+                "doc_idx={doc_idx} missing from centroid {} postings",
+                ev.centroid_id,
+            );
+        }
+    }
+    for c in 0..updated.ivf.num_centroids() {
+        let postings = updated.ivf.docs_for_centroid(c);
+        assert!(
+            postings.windows(2).all(|w| w[0] < w[1]),
+            "centroid {c} postings not strictly ascending: {postings:?}",
+        );
+    }
+}
