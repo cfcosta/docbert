@@ -27,7 +27,7 @@ use docbert_plaid::{
     index::{DocumentTokens, IndexParams, build_index},
     search::{SearchParams, search},
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const DIM: usize = 32;
 

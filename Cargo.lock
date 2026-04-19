@@ -1316,7 +1316,7 @@ dependencies = [
  "candle-core",
  "criterion",
  "hegeltest",
- "rand 0.9.4",
+ "rand 0.10.1",
  "tempfile",
  "thiserror 2.0.18",
 ]

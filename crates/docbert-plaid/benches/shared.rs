@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use docbert_plaid::index::DocumentTokens;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 /// Generate `n_points` L2-normalized random vectors of dimension `dim`,
 /// returned as a flat row-major `n_points × dim` buffer.

@@ -20,7 +20,7 @@ cuda = ["candle-core/cuda"]
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 hegeltest = "0.5"
-rand = "0.9"
+rand = "0.10"
 tempfile = "3"
 
 [[bench]]
