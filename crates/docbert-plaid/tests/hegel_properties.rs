@@ -245,3 +245,52 @@ fn prop_squared_l2_expansion_identity(tc: TestCase) {
         "expansion identity drifted: lhs={lhs} rhs={rhs}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// kmeans.rs
+// ---------------------------------------------------------------------------
+
+/// Differential: the tensor-matmul `assign_points` path must produce
+/// the same assignment vector as calling the scalar `nearest_centroid`
+/// per row. This is the flagship catch-all for E-step regressions —
+/// any drift between the `||c||² − 2·p·c` shortcut and the direct L2
+/// computation surfaces here as a mismatched assignment. Ties are
+/// permitted to break either way on either side, so we compare the
+/// equivalence class (same squared-distance to the returned centroid)
+/// rather than exact index equality.
+#[hegel::test(test_cases = 60)]
+fn prop_assign_points_matches_per_point_nearest_centroid(tc: TestCase) {
+    use docbert_plaid::{
+        distance::squared_l2,
+        kmeans::{assign_points, nearest_centroid},
+    };
+    let dim = tc.draw(codec_dim());
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let points = tc.draw(unit_rows(dim, n));
+    let centroids = tc.draw(unit_rows(dim, k));
+
+    let batched = assign_points(&points, &centroids, dim);
+    assert_eq!(batched.len(), n);
+
+    for (i, (point, &cluster)) in
+        points.chunks_exact(dim).zip(batched.iter()).enumerate()
+    {
+        let scalar = nearest_centroid(point, &centroids, dim);
+        if cluster == scalar {
+            continue;
+        }
+        let d_batched =
+            squared_l2(point, &centroids[cluster * dim..(cluster + 1) * dim]);
+        let d_scalar =
+            squared_l2(point, &centroids[scalar * dim..(scalar + 1) * dim]);
+        // If the two paths picked different centroids, they must at
+        // least be equidistant up to one f32 ULP — otherwise the
+        // batched path truly picked a worse one.
+        assert!(
+            (d_batched - d_scalar).abs() <= 1e-5,
+            "row {i}: batched picked {cluster} (d²={d_batched}) \
+             but scalar picked {scalar} (d²={d_scalar})",
+        );
+    }
+}
