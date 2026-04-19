@@ -1358,3 +1358,45 @@ fn prop_search_full_probe_considers_every_nonempty_doc(tc: TestCase) {
         "full-probe search should see every non-empty doc",
     );
 }
+
+// ---------------------------------------------------------------------------
+// persistence.rs
+// ---------------------------------------------------------------------------
+
+/// Round-trip: `load(save(index))` matches the original on params,
+/// codec fields, doc_ids, doc_tokens, and every IVF posting list.
+/// The IVF is rebuilt from scratch on load, so this also checks the
+/// rebuild stays consistent with the on-disk encoding.
+#[hegel::test(test_cases = 20)]
+fn prop_save_load_roundtrip_exact(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        persistence::{load, save},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.plaid");
+    save(&index, &path).unwrap();
+    let loaded = load(&path).unwrap();
+
+    assert_eq!(loaded.params.dim, index.params.dim);
+    assert_eq!(loaded.params.nbits, index.params.nbits);
+    assert_eq!(loaded.params.k_centroids, index.params.k_centroids);
+    assert_eq!(loaded.doc_ids, index.doc_ids);
+    assert_eq!(loaded.codec.centroids, index.codec.centroids);
+    assert_eq!(loaded.codec.bucket_cutoffs, index.codec.bucket_cutoffs);
+    assert_eq!(loaded.codec.bucket_weights, index.codec.bucket_weights);
+    assert_eq!(loaded.doc_tokens, index.doc_tokens);
+    assert_eq!(loaded.ivf.num_centroids(), index.ivf.num_centroids());
+    for c in 0..index.ivf.num_centroids() {
+        assert_eq!(
+            loaded.ivf.docs_for_centroid(c),
+            index.ivf.docs_for_centroid(c),
+        );
+    }
+}
