@@ -773,3 +773,28 @@ fn prop_reconstruction_error_decreases_with_nbits(tc: TestCase) {
         prev = mse;
     }
 }
+
+/// Algebraic: `reconstruction_error(v) >= 0` for any encodable input
+/// and any valid codec. Trivial from squared-L2 non-negativity, but
+/// locks in the invariant so anyone swapping in a signed distance for
+/// "relative error" gets caught.
+#[hegel::test(test_cases = 100)]
+fn prop_reconstruction_error_non_negative(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let n = tc.draw(gs::integers::<usize>().min_value(16).max_value(128));
+    let pool = tc.draw(finite_floats(n));
+    let (cutoffs, weights) = train_quantizer(&pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim: 1,
+        centroids: vec![0.0],
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+    let probe_n = tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
+    let probes = tc.draw(finite_floats(probe_n));
+    for v in &probes {
+        assert!(codec.reconstruction_error(&[*v]) >= 0.0);
+    }
+}
