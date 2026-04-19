@@ -602,3 +602,30 @@ fn prop_pack_read_roundtrip_all_nbits(tc: TestCase) {
         );
     }
 }
+
+/// Shape: `packed_bytes_per_vector(dim, nbits) == (dim * nbits + 7) / 8`
+/// and the codes returned by `encode_vector` have exactly that many
+/// bytes. Locks in the paper's §4.5 packed-layout byte count so any
+/// off-by-one in the packing path is caught at the boundary.
+#[hegel::test(test_cases = 200)]
+fn prop_packed_bytes_formula(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, packed_bytes_per_vector};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
+    let dim = n_bytes * codes_per_byte;
+
+    let expected = (dim * nbits as usize).div_ceil(8);
+    assert_eq!(packed_bytes_per_vector(dim, nbits), expected);
+
+    let num_buckets = 1u32 << nbits;
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: vec![0.0; dim],
+        bucket_cutoffs: (1..num_buckets).map(|i| i as f32 - 0.5).collect(),
+        bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
+    };
+    let encoded = codec.encode_vector(&vec![0.0; dim]);
+    assert_eq!(encoded.codes.len(), expected);
+}
