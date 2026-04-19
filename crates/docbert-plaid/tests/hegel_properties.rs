@@ -485,3 +485,24 @@ fn prop_fit_is_deterministic(tc: TestCase) {
     let b = fit(&points, k, dim, iters);
     assert_eq!(a, b);
 }
+
+/// Round-trip: running `fit_with_init` on its own output yields the
+/// same assignments — Lloyd's is idempotent once it has converged.
+/// We use a generous `max_iters` in the first run to reach a fixed
+/// point, then check that a second pass doesn't nudge anything.
+#[hegel::test(test_cases = 40)]
+fn prop_fit_with_init_idempotent_after_convergence(tc: TestCase) {
+    use docbert_plaid::kmeans::{assign_points, fit_with_init};
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(2).max_value(6));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(24));
+    let points = tc.draw(unit_rows(dim, n));
+    let initial = points[..k * dim].to_vec();
+
+    let once = fit_with_init(&points, &initial, dim, 50);
+    let twice = fit_with_init(&points, &once, dim, 50);
+
+    let assign_once = assign_points(&points, &once, dim);
+    let assign_twice = assign_points(&points, &twice, dim);
+    assert_eq!(assign_once, assign_twice);
+}
