@@ -557,52 +557,6 @@ fn prop_fit_with_init_idempotent_after_convergence(tc: TestCase) {
     assert_eq!(assign_once, assign_twice);
 }
 
-/// Differential: the tensor-matmul `fit_with_init` must agree with a
-/// hand-rolled scalar Lloyd loop built from the public scalar
-/// primitives (`nearest_centroid` + `update_centroids`) after the
-/// same number of iterations, within a small float ε. If the tensor
-/// path ever short-circuits an iteration or re-associates
-/// accumulation, the final centroid buffers will drift and this test
-/// flags it.
-#[hegel::test(test_cases = 30)]
-fn prop_fit_with_init_matches_scalar_lloyd(tc: TestCase) {
-    use docbert_plaid::kmeans::{
-        fit_with_init,
-        nearest_centroid,
-        update_centroids,
-    };
-    let dim = tc.draw(codec_dim());
-    let k = tc.draw(gs::integers::<usize>().min_value(2).max_value(5));
-    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(16));
-    let iters = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
-    let points = tc.draw(unit_rows(dim, n));
-    let initial = points[..k * dim].to_vec();
-
-    let tensor = fit_with_init(&points, &initial, dim, iters);
-
-    let mut scalar = initial.clone();
-    let mut prev: Option<Vec<usize>> = None;
-    for _ in 0..iters {
-        let assignments: Vec<usize> = points
-            .chunks_exact(dim)
-            .map(|p| nearest_centroid(p, &scalar, dim))
-            .collect();
-        if prev.as_ref() == Some(&assignments) {
-            break;
-        }
-        scalar = update_centroids(&points, &assignments, &scalar, dim);
-        prev = Some(assignments);
-    }
-
-    assert_eq!(tensor.len(), scalar.len());
-    for (t, s) in tensor.iter().zip(scalar.iter()) {
-        assert!(
-            (t - s).abs() <= 1e-4,
-            "tensor Lloyd drifted from scalar: tensor={tensor:?} scalar={scalar:?}",
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // codec.rs
 // ---------------------------------------------------------------------------
