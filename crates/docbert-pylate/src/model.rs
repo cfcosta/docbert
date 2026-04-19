@@ -24,6 +24,12 @@ use crate::{
 ///
 /// This allows `ColBERT` to use different architectures like
 /// `BertModel` or `ModernBert` without changing the core logic.
+///
+/// `ModernBert` and `BertModel` have very different struct sizes
+/// (`clippy::large_enum_variant` would suggest boxing one), but boxing would
+/// add an indirection on the hot forward path and we hold exactly one of
+/// these per `ColBERT` anyway, so the size difference is immaterial.
+#[allow(clippy::large_enum_variant)]
 pub enum BaseModel {
     /// A variant holding a `ModernBert` model.
     ModernBert(ModernBert),
@@ -476,8 +482,7 @@ impl ColBERT {
                 .collect();
 
             let mut all_embeddings = Vec::with_capacity(
-                (sorted_encodings.len() + self.batch_size - 1)
-                    / self.batch_size,
+                sorted_encodings.len().div_ceil(self.batch_size),
             );
             let padding = PaddingParams {
                 strategy: PaddingStrategy::BatchLongest,
@@ -581,9 +586,8 @@ impl ColBERT {
                 .map_err(ColbertError::from);
         }
 
-        let mut all_embeddings = Vec::with_capacity(
-            (sentences.len() + self.batch_size - 1) / self.batch_size,
-        );
+        let mut all_embeddings =
+            Vec::with_capacity(sentences.len().div_ceil(self.batch_size));
         for batch_sentences in sentences.chunks(self.batch_size) {
             let (token_ids, attention_mask, token_type_ids, max_valid_len) =
                 self.tokenize(batch_sentences, is_query)?;

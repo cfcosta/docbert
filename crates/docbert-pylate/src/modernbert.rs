@@ -55,12 +55,18 @@ pub struct ClassifierConfig {
     pub classifier_pooling: ClassifierPooling,
 }
 
+/// Cache of per-shape packed cos/sin tables keyed by the list of valid
+/// sequence lengths. Extracted into a type alias because the full
+/// `Arc<Mutex<HashMap<_, _>>>` combination trips `clippy::type_complexity`.
+#[cfg(feature = "cuda")]
+type PackedCosSinCache = Arc<Mutex<HashMap<Vec<usize>, (Tensor, Tensor)>>>;
+
 #[derive(Debug, Clone)]
 struct RotaryEmbedding {
     sin: Tensor,
     cos: Tensor,
     #[cfg(feature = "cuda")]
-    packed_cos_sin: Arc<Mutex<HashMap<Vec<usize>, (Tensor, Tensor)>>>,
+    packed_cos_sin: PackedCosSinCache,
 }
 
 impl RotaryEmbedding {
@@ -545,43 +551,7 @@ impl ModernBertLayer {
     }
 
     #[cfg(feature = "cuda")]
-    fn forward_varlen_padded(
-        &self,
-        xs: &Tensor,
-        packed_residual: &Tensor,
-        valid_lens: &[usize],
-        seqlens: &Tensor,
-        max_seq_len: usize,
-        local_window: Option<usize>,
-        padding_cache: &Mutex<HashMap<usize, Tensor>>,
-    ) -> Result<(Tensor, Tensor)> {
-        let mut xs = xs.clone();
-        if let Some(norm) = &self.attn_norm {
-            xs = xs.apply(norm)?;
-        }
-
-        let attn_out = self.attn.forward_varlen_packed(
-            &xs,
-            valid_lens,
-            seqlens,
-            max_seq_len,
-            local_window,
-        )?;
-        let xs = (attn_out + packed_residual)?;
-
-        let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
-        let xs = (xs + mlp_out)?;
-        let padded_xs = unpack_varlen_bsd(
-            &xs,
-            valid_lens,
-            max_seq_len,
-            xs.device(),
-            padding_cache,
-        )?;
-        Ok((padded_xs, xs))
-    }
-
-    #[cfg(feature = "cuda")]
+    #[allow(clippy::too_many_arguments)]
     fn forward_varlen_packed_input(
         &self,
         packed_xs: &Tensor,
