@@ -480,7 +480,9 @@ pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
     let n = residuals.len();
 
     let mut sorted = residuals.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // We already rejected NaN above, so `total_cmp` is a strict
+    // ordering and doesn't need the `partial_cmp().unwrap()` dance.
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let bucket_bounds = |i: usize| -> (usize, usize) {
         let start = i * n / num_buckets;

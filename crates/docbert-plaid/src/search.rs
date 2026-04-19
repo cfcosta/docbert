@@ -115,20 +115,25 @@ pub fn search(
     // both candidate generation and centroid interaction; centroid
     // interaction uses the full qc_scores matrix for approximate
     // per-doc scoring.
-    let need_qc_scores = params.centroid_score_threshold.is_some()
-        || params.n_candidate_docs.is_some();
-    let qc_scores_opt: Option<Vec<f32>> = need_qc_scores.then(|| {
+    let qc_scores: Option<Vec<f32>> = (params
+        .centroid_score_threshold
+        .is_some()
+        || params.n_candidate_docs.is_some())
+    .then(|| {
         query_centroid_score_matrix(query_tokens, &index.codec.centroids, dim)
     });
     let pruned_mask: Option<Vec<bool>> =
-        params.centroid_score_threshold.map(|threshold| {
-            let per_cent = per_centroid_max_scores(
-                qc_scores_opt.as_ref().expect("qc_scores precomputed"),
-                query_tokens.len() / dim,
-                n_centroids,
-            );
-            per_cent.iter().map(|&s| s < threshold).collect()
-        });
+        match (qc_scores.as_ref(), params.centroid_score_threshold) {
+            (Some(scores), Some(threshold)) => {
+                let per_cent = per_centroid_max_scores(
+                    scores,
+                    query_tokens.len() / dim,
+                    n_centroids,
+                );
+                Some(per_cent.iter().map(|&s| s < threshold).collect())
+            }
+            _ => None,
+        };
 
     // 1-2. Gather the union of candidate doc indices reachable via the
     //      probed centroids. IVF postings are already deduplicated per
@@ -165,10 +170,13 @@ pub fn search(
     //    cheaply rank candidates via the precomputed query-centroid
     //    score matrix and keep only the top survivors before paying
     //    for full decode + exact MaxSim.
-    if let Some(n_stage2) = params.n_candidate_docs {
-        let qc_scores = qc_scores_opt
-            .as_ref()
-            .expect("qc_scores precomputed when n_candidate_docs is set");
+    //
+    //    The `if let` pattern-matches both fields at once so the
+    //    compiler can prove qc_scores is Some under this arm — no
+    //    `expect` gymnastics needed.
+    if let (Some(n_stage2), Some(qc_scores)) =
+        (params.n_candidate_docs, qc_scores.as_ref())
+    {
         let n_q = query_tokens.len() / dim;
         let n_c = index.codec.num_centroids();
 
