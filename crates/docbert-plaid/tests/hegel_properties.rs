@@ -1003,3 +1003,54 @@ fn prop_build_inverted_file_invariants(tc: TestCase) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// search.rs
+// ---------------------------------------------------------------------------
+
+/// Algebraic + shape: `search` returns at most `top_k` results, its
+/// scores are non-increasing, and equal-scoring entries are ordered
+/// by ascending `doc_id`. All three are load-bearing for downstream
+/// ranking consumers.
+#[hegel::test(test_cases = 30)]
+fn prop_search_scores_non_increasing_and_capped_by_top_k(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let n_q = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let query = tc.draw(unit_rows(dim, n_q));
+    let top_k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n_probe = tc.draw(
+        gs::integers::<usize>()
+            .min_value(1)
+            .max_value(params.k_centroids),
+    );
+
+    let results = search(
+        &index,
+        &query,
+        SearchParams {
+            top_k,
+            n_probe,
+            n_candidate_docs: None,
+            centroid_score_threshold: None,
+        },
+    );
+
+    assert!(results.len() <= top_k);
+    for pair in results.windows(2) {
+        assert!(
+            pair[0].score > pair[1].score
+                || (pair[0].score == pair[1].score
+                    && pair[0].doc_id < pair[1].doc_id),
+            "search ordering violated: {pair:?}",
+        );
+    }
+}
