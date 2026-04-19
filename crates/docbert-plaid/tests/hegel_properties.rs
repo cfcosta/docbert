@@ -943,3 +943,26 @@ fn prop_build_index_shape(tc: TestCase) {
         assert_eq!(encoded.len(), doc.n_tokens);
     }
 }
+
+/// Shape: for every valid generated corpus, the codec `build_index`
+/// trains validates. This is the entry point for both the persistence
+/// layer and `apply_update` — a malformed codec here would cascade
+/// into every downstream test and production save path.
+#[hegel::test(test_cases = 30)]
+fn prop_build_index_codec_validates(tc: TestCase) {
+    use docbert_plaid::index::build_index;
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 6, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+
+    let index = build_index(&docs, params);
+    assert!(
+        index.codec.validate().is_ok(),
+        "build_index produced a codec that fails validate(): {:?}",
+        index.codec.validate(),
+    );
+    assert_eq!(index.codec.dim, params.dim);
+    assert_eq!(index.codec.nbits, params.nbits);
+    assert_eq!(index.codec.num_centroids(), params.k_centroids);
+}
