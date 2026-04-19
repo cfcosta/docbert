@@ -917,3 +917,29 @@ fn prop_encode_decode_encode_idempotent(tc: TestCase) {
     let enc2 = codec.encode_vector(&dec1);
     assert_eq!(enc1, enc2, "encode→decode→encode not idempotent");
 }
+
+// ---------------------------------------------------------------------------
+// index.rs
+// ---------------------------------------------------------------------------
+
+/// Shape: after `build_index`, sum of encoded token lengths equals
+/// sum of input `n_tokens`; `doc_ids` preserves input order; each
+/// encoded doc's length equals the input doc's `n_tokens`.
+#[hegel::test(test_cases = 30)]
+fn prop_build_index_shape(tc: TestCase) {
+    use docbert_plaid::index::build_index;
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 6, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let expected_ids: Vec<u64> = docs.iter().map(|d| d.doc_id).collect();
+
+    let index = build_index(&docs, params);
+
+    assert_eq!(index.num_documents(), docs.len());
+    assert_eq!(index.num_tokens(), total_tokens);
+    assert_eq!(index.doc_ids, expected_ids);
+    for (encoded, doc) in index.doc_tokens.iter().zip(docs.iter()) {
+        assert_eq!(encoded.len(), doc.n_tokens);
+    }
+}
