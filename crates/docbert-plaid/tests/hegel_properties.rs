@@ -1433,3 +1433,44 @@ fn prop_save_load_search_identical(tc: TestCase) {
     };
     assert_eq!(search(&index, &query, sp), search(&loaded, &query, sp));
 }
+
+// ---------------------------------------------------------------------------
+// update.rs
+// ---------------------------------------------------------------------------
+
+/// Metamorphic: `apply_update` with empty deletions and upserts
+/// preserves doc_ids, every encoded token, and each IVF posting list
+/// exactly. The only legal no-op path; any drift here would imply
+/// the update loop touches state unnecessarily.
+#[hegel::test(test_cases = 20)]
+fn prop_apply_update_empty_is_identity(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let before_ids = index.doc_ids.clone();
+    let before_tokens = index.doc_tokens.clone();
+    let before_ivf: Vec<Vec<u32>> = (0..index.ivf.num_centroids())
+        .map(|c| index.ivf.docs_for_centroid(c).to_vec())
+        .collect();
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &[],
+            upserts: &[],
+        },
+    );
+
+    assert_eq!(updated.doc_ids, before_ids);
+    assert_eq!(updated.doc_tokens, before_tokens);
+    for (c, expected) in before_ivf.iter().enumerate() {
+        assert_eq!(updated.ivf.docs_for_centroid(c), expected.as_slice());
+    }
+}
