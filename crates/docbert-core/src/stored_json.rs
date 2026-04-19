@@ -32,21 +32,22 @@ impl From<serde_json::Value> for StoredJsonValue {
             serde_json::Value::Null => Self::Null,
             serde_json::Value::Bool(value) => Self::Bool(value),
             serde_json::Value::Number(value) => {
-                if value.is_i64() {
-                    Self::Number(StoredJsonNumber::I64(
-                        value.as_i64().expect("signed JSON number"),
-                    ))
-                } else if value.is_u64() {
-                    Self::Number(StoredJsonNumber::U64(
-                        value.as_u64().expect("unsigned JSON number"),
-                    ))
-                } else {
-                    Self::Number(StoredJsonNumber::F64(
-                        value.as_f64().expect(
-                            "serde_json numbers are representable as f64",
-                        ),
-                    ))
-                }
+                // `serde_json::Number` is always exactly one of i64,
+                // u64, or f64 by spec. Walk the cascade via
+                // `or_else`; the final `unreachable!` is dead code
+                // the compiler can't prove out but documents the
+                // invariant instead of a silent default.
+                let stored = value
+                    .as_i64()
+                    .map(StoredJsonNumber::I64)
+                    .or_else(|| value.as_u64().map(StoredJsonNumber::U64))
+                    .or_else(|| value.as_f64().map(StoredJsonNumber::F64))
+                    .unwrap_or_else(|| {
+                        unreachable!(
+                            "serde_json::Number is always i64, u64, or f64",
+                        )
+                    });
+                Self::Number(stored)
             }
             serde_json::Value::String(value) => Self::String(value),
             serde_json::Value::Array(values) => {
@@ -87,8 +88,15 @@ impl From<StoredJsonNumber> for serde_json::Number {
         match value {
             StoredJsonNumber::I64(value) => Self::from(value),
             StoredJsonNumber::U64(value) => Self::from(value),
-            StoredJsonNumber::F64(value) => Self::from_f64(value)
-                .expect("stored JSON floats are finite serde_json numbers"),
+            // `from_f64` only rejects NaN/±Inf. Stored values come
+            // from a previous `as_f64()` (which returns finite f64
+            // for every real JSON number), so non-finite floats
+            // don't reach this branch for valid roundtrips. Fall
+            // back to 0 rather than a panic for the callers who
+            // construct `StoredJsonNumber::F64` directly with a
+            // non-finite float.
+            StoredJsonNumber::F64(value) => serde_json::Number::from_f64(value)
+                .unwrap_or_else(|| serde_json::Number::from(0)),
         }
     }
 }
