@@ -1970,3 +1970,89 @@ fn prop_apply_update_full_upsert_matches_build_index(tc: TestCase) {
         }
     }
 }
+
+/// Metamorphic (paper Eq 1): MaxSim `Σ_i max_j Q_i · D_j^T` has a
+/// commutative `max_j` over doc tokens, so shuffling tokens within a
+/// single doc must not change its search score. We run the check
+/// against a *fixed* codec via `apply_update`: upsert the original
+/// doc and a reordered copy side-by-side, then assert their scores
+/// agree under the same query.
+#[hegel::test(test_cases = 20)]
+fn prop_doc_token_shuffle_preserves_score(tc: TestCase) {
+    use docbert_plaid::{
+        index::{DocumentTokens, build_index},
+        search::{SearchParams, search},
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    // Pick the first non-empty doc as the shuffle target.
+    let target_idx = match docs.iter().position(|d| d.n_tokens >= 2) {
+        Some(i) => i,
+        None => return, // Nothing to shuffle meaningfully.
+    };
+    let target = &docs[target_idx];
+    let n = target.n_tokens;
+
+    // Draw a permutation of 0..n via Fisher-Yates over hegel draws,
+    // valid-by-construction.
+    let mut perm: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        let j = tc.draw(gs::integers::<usize>().min_value(0).max_value(i));
+        perm.swap(i, j);
+    }
+    let shuffled_tokens: Vec<f32> = perm
+        .iter()
+        .flat_map(|&i| target.tokens[i * dim..(i + 1) * dim].iter().copied())
+        .collect();
+    let shuffled_id = docs.iter().map(|d| d.doc_id).max().unwrap() + 1;
+    let shuffled_doc = DocumentTokens {
+        doc_id: shuffled_id,
+        tokens: shuffled_tokens,
+        n_tokens: n,
+    };
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &[],
+            upserts: std::slice::from_ref(&shuffled_doc),
+        },
+    );
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let sp = SearchParams {
+        top_k: updated.num_documents(),
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let results = search(&updated, &query, sp);
+
+    let original_score = results
+        .iter()
+        .find(|r| r.doc_id == target.doc_id)
+        .map(|r| r.score);
+    let shuffled_score = results
+        .iter()
+        .find(|r| r.doc_id == shuffled_id)
+        .map(|r| r.score);
+    match (original_score, shuffled_score) {
+        (Some(a), Some(b)) => assert!(
+            (a - b).abs() <= 1e-4,
+            "shuffle changed score: original={a} shuffled={b}",
+        ),
+        (None, None) => {
+            // Neither surfaced — the query doesn't match this doc
+            // in either orientation, which is fine.
+        }
+        other => panic!(
+            "only one orientation surfaced: original={:?} shuffled={:?}",
+            other.0, other.1,
+        ),
+    }
+}
