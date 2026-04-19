@@ -227,9 +227,43 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}.tar.gz*
 
+  publish:
+    name: Publish crates to crates.io
+    needs: bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.bump.outputs.commit_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish
+
+      # Library crates go up to crates.io. `docbert-pylate` and
+      # `docbert-plaid` have no workspace-local dependencies, so the order
+      # between them is not load-bearing, but we publish sequentially so a
+      # failure in one surfaces a clean log instead of interleaved output.
+      # `docbert-core` and `docbert` are not published: the former still
+      # depends on its siblings by path only, and the latter is the
+      # user-facing binary distributed as a GitHub Release artifact.
+      - name: Publish docbert-pylate
+        run: cargo publish -p docbert-pylate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish docbert-plaid
+        run: cargo publish -p docbert-plaid
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   release:
     name: Create GitHub Release
-    needs: [bump, build]
+    needs: [bump, build, publish]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
