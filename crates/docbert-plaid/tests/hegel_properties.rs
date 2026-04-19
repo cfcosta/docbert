@@ -673,3 +673,35 @@ fn prop_bucket_for_value_monotonic(tc: TestCase) {
         "bucket_for_value not monotone: v1={v1} → {b1}, v2={v2} → {b2}",
     );
 }
+
+/// Shape: every code produced by `encode_vector` lies in
+/// `[0, 2^nbits)`. Paired with the pack/read roundtrip this nails
+/// down both ends of the packing contract — bucket range upstream
+/// and lossless read downstream.
+#[hegel::test(test_cases = 100)]
+fn prop_bucket_for_value_range(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, read_code};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let num_buckets = 1u32 << nbits;
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let dim = n_bytes * codes_per_byte;
+
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids: vec![0.0; dim],
+        bucket_cutoffs: (1..num_buckets).map(|i| i as f32 - 0.5).collect(),
+        bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
+    };
+    let input = tc.draw(finite_floats(dim));
+
+    let encoded = codec.encode_vector(&input);
+    for i in 0..dim {
+        let code = read_code(&encoded.codes, i, nbits);
+        assert!(
+            (code as u32) < num_buckets,
+            "code {code} out of range 0..{num_buckets} at position {i}",
+        );
+    }
+}
