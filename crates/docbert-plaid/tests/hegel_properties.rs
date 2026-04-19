@@ -430,3 +430,40 @@ fn prop_farthest_first_init_rows_are_input_rows(tc: TestCase) {
         );
     }
 }
+
+/// Algebraic / monotonicity: across Lloyd iterations (`assign →
+/// update → repeat`) the within-cluster sum-of-squares is
+/// non-increasing within a small f32 slack. Generalises the
+/// single-seed test in `tests/properties.rs` across randomly drawn
+/// dims/n/k so shrinking can surface the minimal failing
+/// configuration if the invariant ever breaks.
+#[hegel::test(test_cases = 50)]
+fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
+    use docbert_plaid::{
+        distance::squared_l2,
+        kmeans::{assign_points, update_centroids},
+    };
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(2).max_value(6));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(32));
+    let points = tc.draw(unit_rows(dim, n));
+    let mut centroids = points[..k * dim].to_vec();
+
+    let mut prev = f64::INFINITY;
+    for iter in 0..8 {
+        let assignments = assign_points(&points, &centroids, dim);
+        let current: f64 = points
+            .chunks_exact(dim)
+            .zip(&assignments)
+            .map(|(p, &c)| {
+                squared_l2(p, &centroids[c * dim..(c + 1) * dim]) as f64
+            })
+            .sum();
+        assert!(
+            current <= prev + 1e-4,
+            "inertia rose from {prev} to {current} at iter {iter}",
+        );
+        prev = current;
+        centroids = update_centroids(&points, &assignments, &centroids, dim);
+    }
+}
