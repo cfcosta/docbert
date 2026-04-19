@@ -34,6 +34,7 @@
 use candle_core::Tensor;
 
 use crate::{
+    Result,
     codec::DecodeTable,
     device::default_device,
     distance::dot,
@@ -75,15 +76,22 @@ pub struct SearchResult {
 /// Results are sorted by score, highest first. Ties are broken by
 /// `doc_id` ascending to keep the output deterministic.
 ///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if the batched MaxSim matmul fails
+/// (e.g. CUDA OOM on the final decode tensor).
+///
 /// # Panics
 ///
 /// Panics if `query_tokens.len() % index.params.dim != 0`, if
 /// `params.top_k == 0`, or if `params.n_probe == 0`.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
 pub fn search(
     index: &Index,
     query_tokens: &[f32],
     params: SearchParams,
-) -> Vec<SearchResult> {
+) -> Result<Vec<SearchResult>> {
     let dim = index.params.dim;
     assert!(params.top_k > 0, "search: top_k must be positive");
     assert!(params.n_probe > 0, "search: n_probe must be positive");
@@ -95,7 +103,7 @@ pub fn search(
     );
 
     if query_tokens.is_empty() || index.num_documents() == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let n_centroids = index.codec.num_centroids();
@@ -199,7 +207,7 @@ pub fn search(
     let mut scored: Vec<SearchResult> = if candidate_idxs.is_empty() {
         Vec::new()
     } else {
-        batch_maxsim(query_tokens, &candidate_idxs, index, dim)
+        batch_maxsim(query_tokens, &candidate_idxs, index, dim)?
             .into_iter()
             .map(|(doc_idx, score)| SearchResult {
                 doc_id: index.doc_ids[doc_idx],
@@ -216,7 +224,7 @@ pub fn search(
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     });
     scored.truncate(params.top_k);
-    scored
+    Ok(scored)
 }
 
 /// Indices of the `n` centroids with the highest dot-product against
@@ -436,7 +444,7 @@ fn batch_maxsim(
     candidate_idxs: &[usize],
     index: &Index,
     dim: usize,
-) -> Vec<(usize, f32)> {
+) -> Result<Vec<(usize, f32)>> {
     let n_q = query_tokens.len() / dim;
 
     let decode_table = DecodeTable::new(&index.codec);
@@ -458,26 +466,18 @@ fn batch_maxsim(
     }
     let total_tokens = packed.len() / dim;
     if total_tokens == 0 || n_q == 0 {
-        return candidate_idxs.iter().map(|&i| (i, 0.0)).collect();
+        return Ok(candidate_idxs.iter().map(|&i| (i, 0.0)).collect());
     }
 
     // Single `[total_tokens, dim] × [dim, n_q]` GEMM. No padding, no
     // mask — the packed layout means every row is a real token.
     let device = default_device();
-    let docs_t = Tensor::from_vec(packed, (total_tokens, dim), device)
-        .expect("batch_maxsim: docs tensor allocation failed");
-    let q_t = Tensor::from_slice(query_tokens, (n_q, dim), device)
-        .expect("batch_maxsim: query tensor allocation failed");
-    let q_transposed = q_t
-        .t()
-        .expect("query transpose")
-        .contiguous()
-        .expect("query contiguous");
+    let docs_t = Tensor::from_vec(packed, (total_tokens, dim), device)?;
+    let q_t = Tensor::from_slice(query_tokens, (n_q, dim), device)?;
+    let q_transposed = q_t.t()?.contiguous()?;
     let scores_flat: Vec<f32> = docs_t
-        .matmul(&q_transposed)
-        .expect("batch_maxsim: docs × query.T matmul failed")
-        .to_vec2::<f32>()
-        .expect("scores to_vec2")
+        .matmul(&q_transposed)?
+        .to_vec2::<f32>()?
         .into_iter()
         .flatten()
         .collect();
@@ -506,7 +506,7 @@ fn batch_maxsim(
         }
         out.push((doc_idx, total));
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn search_returns_empty_for_empty_query() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[],
@@ -632,7 +632,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert!(out.is_empty());
     }
 
@@ -641,7 +642,7 @@ mod tests {
         // Unit-norm query pointing east. Doc 1 has three east tokens,
         // doc 3 has one east and one north token, doc 2 is entirely
         // north. MaxSim should prefer doc 1.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -651,14 +652,15 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert!(!out.is_empty(), "should surface at least one doc");
         assert_eq!(out[0].doc_id, 1, "closest doc should rank first");
     }
 
     #[test]
     fn search_respects_top_k() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -668,13 +670,14 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(out.len(), 1);
     }
 
     #[test]
     fn search_scores_are_non_increasing() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         // Two query tokens, one east, one north.
         let out = search(
             &index,
@@ -685,7 +688,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         for pair in out.windows(2) {
             assert!(
                 pair[0].score >= pair[1].score,
@@ -699,7 +703,7 @@ mod tests {
         // With n_probe=1, only one centroid is probed per query token.
         // A query firmly inside one cluster should still surface its
         // corresponding document first.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[0.0, 1.0],
@@ -709,7 +713,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(out[0].doc_id, 2);
     }
 
@@ -721,7 +726,7 @@ mod tests {
             tokens: vec![],
             n_tokens: 0,
         });
-        let index = build_index(&docs, params());
+        let index = build_index(&docs, params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -731,7 +736,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert!(
             out.iter().all(|r| r.doc_id != 42),
             "empty doc should not appear in results"
@@ -743,7 +749,7 @@ mod tests {
         // Sanity: the score we return should match a ground-truth
         // MaxSim computed with the same decoded tokens, confirming our
         // per-token similarity is dot product (not -squared_l2).
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let query = [1.0f32, 0.0];
 
         let out = search(
@@ -755,7 +761,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert!(!out.is_empty());
 
         let top = out[0];
@@ -793,7 +800,7 @@ mod tests {
             k_centroids: 2,
             max_kmeans_iters: 50,
         };
-        let index = build_index(&corpus(), params_4bit);
+        let index = build_index(&corpus(), params_4bit).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -803,7 +810,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(out[0].doc_id, 1);
     }
 
@@ -827,7 +835,7 @@ mod tests {
                 n_tokens: 1,
             });
         }
-        let index = build_index(&docs, params());
+        let index = build_index(&docs, params()).unwrap();
 
         let east = search(
             &index,
@@ -838,7 +846,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         for r in &east {
             assert!(
                 (100..120).contains(&r.doc_id),
@@ -856,7 +865,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         for r in &north {
             assert!(
                 (200..220).contains(&r.doc_id),
@@ -869,7 +879,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "top_k must be positive")]
     fn search_panics_on_zero_top_k() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let _ = search(
             &index,
             &[1.0, 0.0],
@@ -879,13 +889,14 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
     }
 
     #[test]
     #[should_panic(expected = "n_probe must be positive")]
     fn search_panics_on_zero_n_probe() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let _ = search(
             &index,
             &[1.0, 0.0],
@@ -895,13 +906,14 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
     }
 
     #[test]
     #[should_panic(expected = "query length")]
     fn search_panics_on_ragged_query() {
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let _ = search(
             &index,
             &[1.0, 0.0, 0.5],
@@ -911,7 +923,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
     }
 
     #[test]
@@ -919,7 +932,7 @@ mod tests {
         // With only one candidate allowed past centroid interaction we
         // should get exactly one doc in the results, and it must be the
         // best-scoring one under the approximate stage.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -929,7 +942,8 @@ mod tests {
                 n_candidate_docs: Some(1),
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(out.len(), 1, "shortlist of 1 must cap output at 1");
         assert_eq!(
             out[0].doc_id, 1,
@@ -943,7 +957,7 @@ mod tests {
         // is effectively no shortlisting — the centroid-interaction
         // stage picks everything through, so results must agree with
         // the legacy `None` path byte-for-byte.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let query = [1.0, 0.0, 0.0, 1.0];
 
         let legacy = search(
@@ -955,7 +969,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         let shortlisted = search(
             &index,
             &query,
@@ -965,7 +980,8 @@ mod tests {
                 n_candidate_docs: Some(1_000),
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(legacy, shortlisted);
     }
 
@@ -974,7 +990,7 @@ mod tests {
         // A threshold below every attainable centroid score is a
         // no-op. For unit-norm centroids the dot product ceiling is
         // ~1, so using −1.0 guarantees every centroid survives.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let query = [1.0, 0.0, 0.0, 1.0];
         let unpruned = search(
             &index,
@@ -985,7 +1001,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         let pruned = search(
             &index,
             &query,
@@ -995,7 +1012,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: Some(-1.0),
             },
-        );
+        )
+        .unwrap();
         assert_eq!(unpruned, pruned);
     }
 
@@ -1016,7 +1034,7 @@ mod tests {
                 n_tokens: 1,
             });
         }
-        let index = build_index(&docs, params());
+        let index = build_index(&docs, params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -1026,7 +1044,8 @@ mod tests {
                 n_candidate_docs: Some(16),
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         assert!(
             out.len() <= 4,
             "Stage 3 must cap the decoded set at ndocs/4 = 4; got {}",
@@ -1115,7 +1134,7 @@ mod tests {
         // near 0.0. A threshold of 0.5 prunes the north centroid,
         // so doc 2 (pure-north) must be filtered out — but doc 3
         // (mixed east + north) still has an east token and survives.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[1.0f32, 0.0],
@@ -1125,7 +1144,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: Some(0.5),
             },
-        );
+        )
+        .unwrap();
         let ids: Vec<u64> = out.iter().map(|r| r.doc_id).collect();
         assert!(
             !ids.contains(&2),
@@ -1142,7 +1162,7 @@ mod tests {
         // No centroid can score higher than ~1.0 against a unit-norm
         // query on unit-norm centroids. A threshold of 10.0 prunes
         // everything, so no docs survive.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let out = search(
             &index,
             &[1.0, 0.0],
@@ -1152,7 +1172,8 @@ mod tests {
                 n_candidate_docs: None,
                 centroid_score_threshold: Some(10.0),
             },
-        );
+        )
+        .unwrap();
         assert!(
             out.is_empty(),
             "every centroid below threshold should yield empty results",
@@ -1164,7 +1185,7 @@ mod tests {
         // The final ranking stage still runs exact decoded MaxSim.
         // With a shortlist that keeps everyone, the top-1 score must
         // equal the MaxSim over decoded tokens for that doc.
-        let index = build_index(&corpus(), params());
+        let index = build_index(&corpus(), params()).unwrap();
         let query = [1.0f32, 0.0];
         let out = search(
             &index,
@@ -1175,7 +1196,8 @@ mod tests {
                 n_candidate_docs: Some(1_000),
                 centroid_score_threshold: None,
             },
-        );
+        )
+        .unwrap();
         let top = out[0];
         let doc_idx = index.position_of(top.doc_id).unwrap();
         let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]

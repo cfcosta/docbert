@@ -23,7 +23,7 @@
 
 use candle_core::Tensor;
 
-use crate::{device::default_device, distance::squared_l2};
+use crate::{Result, device::default_device, distance::squared_l2};
 
 /// Index of the centroid nearest to `point` under squared L2 distance.
 ///
@@ -164,16 +164,23 @@ pub fn update_centroids(
 /// across iterations, so the only per-iteration cost is the centroids
 /// upload (`k × dim` floats — negligible) plus the matmul itself.
 ///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if any tensor allocation or matmul
+/// fails (e.g. CUDA OOM).
+///
 /// # Panics
 ///
 /// Panics on any shape violation between `points`, `initial`, and `dim`,
 /// or if `dim == 0`.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
 pub fn fit_with_init(
     points: &[f32],
     initial: &[f32],
     dim: usize,
     max_iters: usize,
-) -> Vec<f32> {
+) -> Result<Vec<f32>> {
     assert!(dim > 0, "fit_with_init: dim must be positive");
     assert!(
         initial.len().is_multiple_of(dim) && !initial.is_empty(),
@@ -190,7 +197,7 @@ pub fn fit_with_init(
 
     let mut centroids = initial.to_vec();
     if points.is_empty() || max_iters == 0 {
-        return centroids;
+        return Ok(centroids);
     }
 
     let n_points = points.len() / dim;
@@ -198,22 +205,19 @@ pub fn fit_with_init(
     let device = default_device();
     // Allocate the points tensor once and keep it on-device for the
     // entire Lloyd loop.
-    let p_tensor = Tensor::from_slice(points, (n_points, dim), device)
-        .expect("fit_with_init: failed to allocate points tensor");
+    let p_tensor = Tensor::from_slice(points, (n_points, dim), device)?;
 
     let mut previous_assignments: Option<Vec<usize>> = None;
     for _ in 0..max_iters {
-        let c_tensor = Tensor::from_slice(&centroids, (k, dim), device)
-            .expect("fit_with_init: failed to allocate centroids tensor");
-        let assignments = assign_tensor(&p_tensor, &c_tensor)
-            .expect("fit_with_init: assignment matmul failed");
+        let c_tensor = Tensor::from_slice(&centroids, (k, dim), device)?;
+        let assignments = assign_tensor(&p_tensor, &c_tensor)?;
         if previous_assignments.as_deref() == Some(assignments.as_slice()) {
             break;
         }
         centroids = update_centroids(points, &assignments, &centroids, dim);
         previous_assignments = Some(assignments);
     }
-    centroids
+    Ok(centroids)
 }
 
 /// Run k-means with deterministic farthest-first (Gonzalez) seeding.
@@ -232,11 +236,22 @@ pub fn fit_with_init(
 /// — and gives the bulk of the clustering-quality win without
 /// depending on an RNG, which keeps fixtures reproducible.
 ///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] on underlying tensor failure.
+///
 /// # Panics
 ///
 /// Panics if `k == 0`, if `dim == 0`, if `points` is empty, or if
 /// `points` has fewer than `k` rows.
-pub fn fit(points: &[f32], k: usize, dim: usize, max_iters: usize) -> Vec<f32> {
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn fit(
+    points: &[f32],
+    k: usize,
+    dim: usize,
+    max_iters: usize,
+) -> Result<Vec<f32>> {
     assert!(k > 0, "fit: k must be positive");
     assert!(dim > 0, "fit: dim must be positive");
     assert!(
@@ -318,6 +333,11 @@ pub fn farthest_first_init(points: &[f32], k: usize, dim: usize) -> Vec<f32> {
 /// flat row-major `k × dim` buffer. The returned vector has length
 /// `n_points` and each entry is in `0..k`.
 ///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if any tensor allocation or matmul
+/// fails (e.g. CUDA OOM).
+///
 /// # Panics
 ///
 /// Panics if `points.len() % dim != 0`, if `centroids.len() % dim != 0`,
@@ -330,13 +350,15 @@ pub fn farthest_first_init(points: &[f32], k: usize, dim: usize) -> Vec<f32> {
 ///
 /// let centroids = [0.0, 0.0, 10.0, 10.0];
 /// let points = [0.1, 0.1, 9.5, 9.5, -1.0, 0.0];
-/// assert_eq!(assign_points(&points, &centroids, 2), vec![0, 1, 0]);
+/// assert_eq!(assign_points(&points, &centroids, 2).unwrap(), vec![0, 1, 0]);
 /// ```
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
 pub fn assign_points(
     points: &[f32],
     centroids: &[f32],
     dim: usize,
-) -> Vec<usize> {
+) -> Result<Vec<usize>> {
     assert!(dim > 0, "assign_points: dim must be positive");
     assert!(
         points.len().is_multiple_of(dim),
@@ -346,7 +368,7 @@ pub fn assign_points(
     );
     let n_points = points.len() / dim;
     if n_points == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     assert!(
         !centroids.is_empty() && centroids.len().is_multiple_of(dim),
@@ -357,11 +379,9 @@ pub fn assign_points(
     let k = centroids.len() / dim;
 
     let device = default_device();
-    let p = Tensor::from_slice(points, (n_points, dim), device)
-        .expect("assign_points: failed to allocate points tensor");
-    let c = Tensor::from_slice(centroids, (k, dim), device)
-        .expect("assign_points: failed to allocate centroids tensor");
-    assign_tensor(&p, &c).expect("assign_points: matmul failed")
+    let p = Tensor::from_slice(points, (n_points, dim), device)?;
+    let c = Tensor::from_slice(centroids, (k, dim), device)?;
+    assign_tensor(&p, &c)
 }
 
 /// Cap on the transient bytes materialised by a single assignment
@@ -382,10 +402,7 @@ const ASSIGN_CHUNK_BYTES: usize = 128 * 1024 * 1024;
 /// from [`ASSIGN_CHUNK_BYTES`]. Splitting this into a pair lets tests
 /// drive the chunked path with tiny chunks without having to
 /// synthesise gigabytes of input.
-fn assign_tensor(
-    p: &Tensor,
-    c: &Tensor,
-) -> Result<Vec<usize>, candle_core::Error> {
+fn assign_tensor(p: &Tensor, c: &Tensor) -> Result<Vec<usize>> {
     let n = p.dim(0)?;
     if n == 0 {
         return Ok(Vec::new());
@@ -412,7 +429,7 @@ fn assign_tensor_chunked(
     p: &Tensor,
     c: &Tensor,
     chunk_rows: usize,
-) -> Result<Vec<usize>, candle_core::Error> {
+) -> Result<Vec<usize>> {
     assert!(
         chunk_rows > 0,
         "assign_tensor_chunked: chunk_rows must be positive",
@@ -484,13 +501,19 @@ mod tests {
     fn assign_points_maps_each_point_to_its_cluster() {
         let centroids = [0.0, 0.0, 10.0, 10.0];
         let points = [0.1, 0.2, 9.0, 9.5, 0.0, -0.1, 10.1, 10.1];
-        assert_eq!(assign_points(&points, &centroids, 2), vec![0, 1, 0, 1]);
+        assert_eq!(
+            assign_points(&points, &centroids, 2).unwrap(),
+            vec![0, 1, 0, 1],
+        );
     }
 
     #[test]
     fn assign_points_handles_empty_input() {
         let centroids = [0.0, 1.0];
-        assert_eq!(assign_points(&[], &centroids, 2), Vec::<usize>::new());
+        assert_eq!(
+            assign_points(&[], &centroids, 2).unwrap(),
+            Vec::<usize>::new(),
+        );
     }
 
     #[test]
@@ -587,7 +610,7 @@ mod tests {
         ];
         let initial = [0.5, 0.5, 9.5, 9.5];
 
-        let fitted = fit_with_init(&points, &initial, 2, 20);
+        let fitted = fit_with_init(&points, &initial, 2, 20).unwrap();
 
         assert_eq!(fitted.len(), 4);
         // Cluster 0 mean
@@ -605,8 +628,8 @@ mod tests {
         let points = vec![0.0, 0.0, 1.0, 0.0, 10.0, 0.0, 11.0, 0.0];
         let initial = [0.5, 0.0, 10.5, 0.0];
 
-        let once = fit_with_init(&points, &initial, 2, 50);
-        let twice = fit_with_init(&points, &once, 2, 50);
+        let once = fit_with_init(&points, &initial, 2, 50).unwrap();
+        let twice = fit_with_init(&points, &once, 2, 50).unwrap();
 
         assert_eq!(once, twice);
     }
@@ -615,7 +638,10 @@ mod tests {
     fn fit_with_init_returns_initial_when_no_iterations_allowed() {
         let points = vec![0.0, 0.0, 10.0, 10.0];
         let initial = [1.0, 1.0, 9.0, 9.0];
-        assert_eq!(fit_with_init(&points, &initial, 2, 0), initial.to_vec());
+        assert_eq!(
+            fit_with_init(&points, &initial, 2, 0).unwrap(),
+            initial.to_vec(),
+        );
     }
 
     #[test]
@@ -630,7 +656,7 @@ mod tests {
             0.0, 0.0, 0.1, 0.1, -0.1, 0.1, // cluster near origin
             10.0, 10.0, 10.1, 9.9, 9.9, 10.1, // cluster near (10, 10)
         ];
-        let seeds = fit(&points, 2, 2, 0);
+        let seeds = fit(&points, 2, 2, 0).unwrap();
         let c0 = &seeds[0..2];
         let c1 = &seeds[2..4];
         let dist = squared_l2(c0, c1);
@@ -644,8 +670,8 @@ mod tests {
     fn fit_is_deterministic_across_identical_calls() {
         // Farthest-first seeding must still be reproducible — no RNG.
         let points = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
-        let a = fit(&points, 3, 2, 10);
-        let b = fit(&points, 3, 2, 10);
+        let a = fit(&points, 3, 2, 10).unwrap();
+        let b = fit(&points, 3, 2, 10).unwrap();
         assert_eq!(a, b);
     }
 

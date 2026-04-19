@@ -23,6 +23,7 @@
 use std::collections::HashSet;
 
 use crate::{
+    Result,
     codec::EncodedVector,
     index::{DocumentTokens, Index, build_inverted_file},
 };
@@ -47,12 +48,19 @@ pub struct IndexUpdate<'a> {
 /// Produce a new [`Index`] reflecting `update` applied to `index`,
 /// reusing the existing codec and centroids.
 ///
+/// # Errors
+///
+/// Propagates [`PlaidError::Tensor`] from the batched
+/// nearest-centroid lookup used to re-encode upserted documents.
+///
 /// # Panics
 ///
 /// Panics if any upserted document's `tokens.len()` disagrees with
 /// `n_tokens * index.params.dim`, or if `upserts` contains two
 /// entries with the same `doc_id`.
-pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Index {
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Result<Index> {
     let params = index.params;
 
     for doc in update.upserts {
@@ -117,7 +125,7 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Index {
         for doc in update.upserts {
             pool.extend_from_slice(&doc.tokens);
         }
-        let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool);
+        let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool)?;
         let packed_per_token = codec.packed_bytes();
         let mut offset = 0usize;
         for doc in update.upserts {
@@ -151,13 +159,13 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Index {
     // positions inside each centroid's list.
     let ivf = build_inverted_file(&new_doc_tokens, params.k_centroids);
 
-    Index {
+    Ok(Index {
         params,
         codec,
         doc_ids: new_doc_ids,
         doc_tokens: new_doc_tokens,
         ivf,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -198,7 +206,7 @@ mod tests {
     }
 
     fn seed_index() -> Index {
-        build_index(&seed_corpus(), seed_params())
+        build_index(&seed_corpus(), seed_params()).unwrap()
     }
 
     fn assert_ivf_covers_every_doc_centroid_pair(index: &Index) {
@@ -238,7 +246,8 @@ mod tests {
                 deletions: &[],
                 upserts: &[],
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(updated.doc_ids, before_ids);
         assert_eq!(updated.doc_tokens, before_tokens);
@@ -263,7 +272,8 @@ mod tests {
                 deletions: &[2],
                 upserts: &[],
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(updated.doc_ids, vec![1, 3]);
         assert_eq!(updated.doc_tokens.len(), 2);
@@ -286,7 +296,8 @@ mod tests {
                 deletions: &[],
                 upserts: std::slice::from_ref(&new_doc),
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(updated.doc_ids, vec![1, 2, 3, 99]);
         let encoded = updated.doc_tokens.last().unwrap();
@@ -318,7 +329,8 @@ mod tests {
                 deletions: &[],
                 upserts: std::slice::from_ref(&replacement),
             },
-        );
+        )
+        .unwrap();
 
         // doc_id 1 moves to the end because deletions happen first,
         // then upserts are appended. Count stays the same.
@@ -350,7 +362,8 @@ mod tests {
                 deletions: &[2],
                 upserts: std::slice::from_ref(&upsert),
             },
-        );
+        )
+        .unwrap();
 
         // Incremental updates must never touch the trained codec.
         assert_eq!(updated.codec.centroids, before.centroids);
@@ -385,7 +398,8 @@ mod tests {
                 deletions: &[2],
                 upserts: &[],
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(updated.doc_ids, keep_ids);
         assert_eq!(updated.doc_tokens, keep_tokens);
@@ -406,7 +420,8 @@ mod tests {
                 deletions: &[],
                 upserts: std::slice::from_ref(&empty),
             },
-        );
+        )
+        .unwrap();
 
         assert!(updated.doc_ids.contains(&77));
         assert_eq!(
@@ -431,7 +446,8 @@ mod tests {
                 deletions: &[],
                 upserts: std::slice::from_ref(&bad),
             },
-        );
+        )
+        .unwrap();
     }
 
     #[test]
@@ -454,6 +470,7 @@ mod tests {
                 deletions: &[],
                 upserts: &[doc_a, doc_b],
             },
-        );
+        )
+        .unwrap();
     }
 }

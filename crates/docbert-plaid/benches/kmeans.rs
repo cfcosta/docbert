@@ -53,7 +53,8 @@ fn bench_update_centroids(c: &mut Criterion) {
     for &n in &[10_000usize, 50_000] {
         let points = shared::random_unit_vectors(0xDA7A, n, DIM);
         let centroids = shared::random_unit_vectors(0xC047, K, DIM);
-        let assignments: Vec<usize> = assign_points(&points, &centroids, DIM);
+        let assignments: Vec<usize> =
+            assign_points(&points, &centroids, DIM).unwrap();
         group.throughput(Throughput::Elements(n as u64));
         group.sample_size(if n >= 50_000 { 10 } else { 30 });
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {

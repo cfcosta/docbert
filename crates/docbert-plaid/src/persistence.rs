@@ -288,7 +288,7 @@ mod tests {
     fn round_trip_preserves_codec_parameters_and_doc_ids() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("index.plaid");
-        let index = build_index(&small_corpus(), default_params());
+        let index = build_index(&small_corpus(), default_params()).unwrap();
 
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
@@ -307,7 +307,7 @@ mod tests {
     fn round_trip_preserves_codec_tables_byte_for_byte() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("index.plaid");
-        let index = build_index(&small_corpus(), default_params());
+        let index = build_index(&small_corpus(), default_params()).unwrap();
 
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
@@ -321,7 +321,7 @@ mod tests {
     fn round_trip_preserves_encoded_tokens() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("index.plaid");
-        let index = build_index(&small_corpus(), default_params());
+        let index = build_index(&small_corpus(), default_params()).unwrap();
 
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
@@ -336,7 +336,7 @@ mod tests {
     fn round_trip_rebuilds_the_inverted_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("index.plaid");
-        let index = build_index(&small_corpus(), default_params());
+        let index = build_index(&small_corpus(), default_params()).unwrap();
 
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
@@ -357,7 +357,7 @@ mod tests {
     fn round_trip_preserves_search_results_exactly() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("index.plaid");
-        let index = build_index(&small_corpus(), default_params());
+        let index = build_index(&small_corpus(), default_params()).unwrap();
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
 
@@ -369,8 +369,8 @@ mod tests {
             centroid_score_threshold: None,
         };
 
-        let a = crate::search::search(&index, &query, params);
-        let b = crate::search::search(&loaded, &query, params);
+        let a = crate::search::search(&index, &query, params).unwrap();
+        let b = crate::search::search(&loaded, &query, params).unwrap();
         assert_eq!(a, b);
     }
 
@@ -384,7 +384,7 @@ mod tests {
             tokens: vec![],
             n_tokens: 0,
         });
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
 
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();

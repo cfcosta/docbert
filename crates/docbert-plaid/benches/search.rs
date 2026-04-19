@@ -32,6 +32,7 @@ fn make_index(seed: u64, n_docs: usize, tokens_per_doc: usize) -> Index {
             max_kmeans_iters: 5,
         },
     )
+    .unwrap()
 }
 
 fn bench_top_n_centroids(c: &mut Criterion) {

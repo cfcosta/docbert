@@ -15,6 +15,7 @@
 //! TDD cycles.
 
 use crate::{
+    Result,
     codec::{EncodedVector, ResidualCodec, train_quantizer},
     kmeans::{assign_points, fit},
 };
@@ -139,12 +140,22 @@ impl Index {
 /// slot in `doc_ids` so callers can resolve their position by `doc_id`
 /// later.
 ///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if the matmul-driven k-means
+/// training or nearest-centroid assignment fails.
+///
 /// # Panics
 ///
 /// Panics if any document's flat length is not a multiple of `dim`, if
 /// the total number of tokens is smaller than `params.k_centroids`, or
 /// if `params.k_centroids == 0`.
-pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn build_index(
+    documents: &[DocumentTokens],
+    params: IndexParams,
+) -> Result<Index> {
     assert!(params.dim > 0, "build_index: dim must be positive");
     assert!(
         params.k_centroids > 0,
@@ -187,11 +198,11 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
         params.k_centroids,
         params.dim,
         params.max_kmeans_iters.max(1),
-    );
+    )?;
 
     // 2. Compute residuals against trained centroids so we can train the
     //    quantizer on a representative sample of errors.
-    let assignments = assign_points(&pool, &centroids, params.dim);
+    let assignments = assign_points(&pool, &centroids, params.dim)?;
     let mut residual_sample: Vec<f32> = Vec::with_capacity(pool.len());
     for (token, &cluster) in pool.chunks_exact(params.dim).zip(&assignments) {
         let centroid =
@@ -220,7 +231,7 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
     //    (single matmul-driven nearest-centroid lookup), then split the
     //    flat result back into per-document EncodedVectors and populate
     //    the centroid → tokens inverted file along the way.
-    let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool);
+    let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool)?;
     let packed_per_token = codec.packed_bytes();
 
     let mut doc_ids = Vec::with_capacity(documents.len());
@@ -246,13 +257,13 @@ pub fn build_index(documents: &[DocumentTokens], params: IndexParams) -> Index {
 
     let ivf = build_inverted_file(&doc_tokens, params.k_centroids);
 
-    Index {
+    Ok(Index {
         params,
         codec,
         doc_ids,
         doc_tokens,
         ivf,
-    }
+    })
 }
 
 /// Build the centroid → unique-doc-ids inverted file from the encoded
@@ -316,7 +327,7 @@ mod tests {
         let params = default_params();
         let expected_total: usize = docs.iter().map(|d| d.n_tokens).sum();
 
-        let index = build_index(&docs, params);
+        let index = build_index(&docs, params).unwrap();
 
         assert_eq!(index.num_documents(), docs.len());
         assert_eq!(index.num_tokens(), expected_total);
@@ -329,7 +340,7 @@ mod tests {
     fn build_index_assigns_tokens_in_each_cluster_to_the_closest_centroid() {
         let docs = small_corpus();
         let params = default_params();
-        let index = build_index(&docs, params);
+        let index = build_index(&docs, params).unwrap();
 
         // The two tight clusters around (0,0) and (10,10) should produce
         // centroids close to those means.
@@ -351,7 +362,7 @@ mod tests {
     fn build_index_round_trip_reconstruction_error_is_bounded() {
         let docs = small_corpus();
         let params = default_params();
-        let index = build_index(&docs, params);
+        let index = build_index(&docs, params).unwrap();
 
         for (doc, encoded_doc) in docs.iter().zip(index.doc_tokens.iter()) {
             for (token, encoded) in
@@ -372,7 +383,7 @@ mod tests {
     #[test]
     fn build_index_preserves_document_id_order() {
         let docs = small_corpus();
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
         let expected_ids: Vec<u64> = docs.iter().map(|d| d.doc_id).collect();
         assert_eq!(index.doc_ids, expected_ids);
         assert_eq!(index.position_of(2), Some(1));
@@ -389,7 +400,7 @@ mod tests {
             tokens: vec![],
             n_tokens: 0,
         });
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
         assert_eq!(index.num_documents(), 4);
         assert_eq!(index.doc_tokens[3].len(), 0);
     }
@@ -402,13 +413,13 @@ mod tests {
             tokens: vec![0.0, 0.0, 1.0],
             n_tokens: 2, // says 2 but only 3 f32s and dim=2
         }];
-        let _ = build_index(&docs, default_params());
+        let _ = build_index(&docs, default_params()).unwrap();
     }
 
     #[test]
     fn build_index_ivf_has_one_list_per_centroid() {
         let docs = small_corpus();
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
 
         assert_eq!(
             index.ivf.num_centroids(),
@@ -423,7 +434,7 @@ mod tests {
         // that centroid's posting list. This is the PLAID "centroid →
         // unique passage ids" contract: postings are indexed by doc.
         let docs = small_corpus();
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
 
         for (doc_idx, encoded_doc) in index.doc_tokens.iter().enumerate() {
             for ev in encoded_doc {
@@ -444,7 +455,7 @@ mod tests {
         // with multiple tokens in the same centroid must appear at most
         // once in that centroid's list.
         let docs = small_corpus();
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
 
         for c in 0..index.ivf.num_centroids() {
             let postings = index.ivf.docs_for_centroid(c);
@@ -476,7 +487,7 @@ mod tests {
                 n_tokens: 2,
             },
         ];
-        let index = build_index(&docs, default_params());
+        let index = build_index(&docs, default_params()).unwrap();
 
         for c in 0..index.ivf.num_centroids() {
             let postings = index.ivf.docs_for_centroid(c);
@@ -511,6 +522,6 @@ mod tests {
             k_centroids: 4,
             max_kmeans_iters: 10,
         };
-        let _ = build_index(&docs, params);
+        let _ = build_index(&docs, params).unwrap();
     }
 }

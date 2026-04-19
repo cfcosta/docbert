@@ -26,7 +26,7 @@
 //! embedding at 2 bits, this is 32 bytes per token (vs. 128 bytes
 //! unpacked), matching the paper's §4.5 packed-index layout.
 
-use crate::{distance::squared_l2, kmeans::nearest_centroid};
+use crate::{Result, distance::squared_l2, kmeans::nearest_centroid};
 
 /// A trained residual-quantization codec.
 ///
@@ -192,7 +192,7 @@ impl ResidualCodec {
     /// Validate internal shape invariants. Called automatically by
     /// encode/decode; exposed so callers loading a codec from disk can
     /// fail fast.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> std::result::Result<(), String> {
         if self.dim == 0 {
             return Err("codec: dim must be positive".into());
         }
@@ -286,11 +286,21 @@ impl ResidualCodec {
     /// vector. Returning the codes flat avoids `n` `Vec<u8>`
     /// allocations; callers split into per-token slices as needed.
     ///
+    /// # Errors
+    ///
+    /// Propagates [`PlaidError::Tensor`] from the matmul-driven
+    /// nearest-centroid lookup.
+    ///
     /// # Panics
     ///
     /// Panics if the codec is malformed, if `tokens.len() % dim != 0`,
     /// or if `tokens` is empty.
-    pub fn batch_encode_tokens(&self, tokens: &[f32]) -> (Vec<u32>, Vec<u8>) {
+    ///
+    /// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+    pub fn batch_encode_tokens(
+        &self,
+        tokens: &[f32],
+    ) -> Result<(Vec<u32>, Vec<u8>)> {
         self.validate().unwrap();
         assert!(
             tokens.len().is_multiple_of(self.dim),
@@ -300,11 +310,11 @@ impl ResidualCodec {
         );
         let n = tokens.len() / self.dim;
         if n == 0 {
-            return (Vec::new(), Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let assignments =
-            crate::kmeans::assign_points(tokens, &self.centroids, self.dim);
+            crate::kmeans::assign_points(tokens, &self.centroids, self.dim)?;
 
         let packed_per_token = self.packed_bytes();
         let mut centroid_ids: Vec<u32> = Vec::with_capacity(n);
@@ -323,7 +333,7 @@ impl ResidualCodec {
             packed_codes.extend(pack_codes(&scratch, self.nbits));
             centroid_ids.push(cluster as u32);
         }
-        (centroid_ids, packed_codes)
+        Ok((centroid_ids, packed_codes))
     }
 
     /// Reconstruct an approximate token embedding from its codes.

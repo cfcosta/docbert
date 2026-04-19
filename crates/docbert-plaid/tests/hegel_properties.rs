@@ -320,7 +320,7 @@ fn prop_assign_points_matches_per_point_nearest_centroid(tc: TestCase) {
     let points = tc.draw(unit_rows(dim, n));
     let centroids = tc.draw(unit_rows(dim, k));
 
-    let batched = assign_points(&points, &centroids, dim);
+    let batched = assign_points(&points, &centroids, dim).unwrap();
     assert_eq!(batched.len(), n);
 
     for (i, (point, &cluster)) in
@@ -361,7 +361,7 @@ fn prop_assign_points_output_shape_and_range(tc: TestCase) {
     };
     let centroids = tc.draw(unit_rows(dim, k));
 
-    let out = assign_points(&points, &centroids, dim);
+    let out = assign_points(&points, &centroids, dim).unwrap();
     assert_eq!(out.len(), n);
     for &c in &out {
         assert!(c < k, "assignment {c} out of range 0..{k}");
@@ -501,7 +501,7 @@ fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
 
     let mut prev = f64::INFINITY;
     for iter in 0..8 {
-        let assignments = assign_points(&points, &centroids, dim);
+        let assignments = assign_points(&points, &centroids, dim).unwrap();
         let current: f64 = points
             .chunks_exact(dim)
             .zip(&assignments)
@@ -531,8 +531,8 @@ fn prop_fit_is_deterministic(tc: TestCase) {
     let iters = tc.draw(gs::integers::<usize>().min_value(0).max_value(8));
     let points = tc.draw(unit_rows(dim, n));
 
-    let a = fit(&points, k, dim, iters);
-    let b = fit(&points, k, dim, iters);
+    let a = fit(&points, k, dim, iters).unwrap();
+    let b = fit(&points, k, dim, iters).unwrap();
     assert_eq!(a, b);
 }
 
@@ -549,11 +549,11 @@ fn prop_fit_with_init_idempotent_after_convergence(tc: TestCase) {
     let points = tc.draw(unit_rows(dim, n));
     let initial = points[..k * dim].to_vec();
 
-    let once = fit_with_init(&points, &initial, dim, 50);
-    let twice = fit_with_init(&points, &once, dim, 50);
+    let once = fit_with_init(&points, &initial, dim, 50).unwrap();
+    let twice = fit_with_init(&points, &once, dim, 50).unwrap();
 
-    let assign_once = assign_points(&points, &once, dim);
-    let assign_twice = assign_points(&points, &twice, dim);
+    let assign_once = assign_points(&points, &once, dim).unwrap();
+    let assign_twice = assign_points(&points, &twice, dim).unwrap();
     assert_eq!(assign_once, assign_twice);
 }
 
@@ -957,7 +957,7 @@ fn prop_batch_encode_matches_per_token(tc: TestCase) {
     };
     let tokens = tc.draw(unit_rows(dim, n_tokens));
 
-    let (cids, packed) = codec.batch_encode_tokens(&tokens);
+    let (cids, packed) = codec.batch_encode_tokens(&tokens).unwrap();
     let packed_per = codec.packed_bytes();
     assert_eq!(cids.len(), n_tokens);
     assert_eq!(packed.len(), n_tokens * packed_per);
@@ -1055,7 +1055,7 @@ fn prop_build_index_shape(tc: TestCase) {
     let params = tc.draw(index_params(dim, 4, total_tokens));
     let expected_ids: Vec<u64> = docs.iter().map(|d| d.doc_id).collect();
 
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     assert_eq!(index.num_documents(), docs.len());
     assert_eq!(index.num_tokens(), total_tokens);
@@ -1077,7 +1077,7 @@ fn prop_build_index_codec_validates(tc: TestCase) {
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
 
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
     assert!(
         index.codec.validate().is_ok(),
         "build_index produced a codec that fails validate(): {:?}",
@@ -1102,7 +1102,7 @@ fn prop_build_inverted_file_invariants(tc: TestCase) {
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
 
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
     assert_eq!(index.ivf.num_centroids(), params.k_centroids);
 
     for (doc_idx, encoded) in index.doc_tokens.iter().enumerate() {
@@ -1143,7 +1143,7 @@ fn prop_search_scores_non_increasing_and_capped_by_top_k(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let n_q = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let query = tc.draw(unit_rows(dim, n_q));
@@ -1163,7 +1163,8 @@ fn prop_search_scores_non_increasing_and_capped_by_top_k(tc: TestCase) {
             n_candidate_docs: None,
             centroid_score_threshold: None,
         },
-    );
+    )
+    .unwrap();
 
     assert!(results.len() <= top_k);
     for pair in results.windows(2) {
@@ -1190,7 +1191,7 @@ fn prop_search_deterministic(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let n_q = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let query = tc.draw(unit_rows(dim, n_q));
@@ -1217,8 +1218,8 @@ fn prop_search_deterministic(tc: TestCase) {
         n_candidate_docs,
         centroid_score_threshold: threshold,
     };
-    let a = search(&index, &query, sp);
-    let b = search(&index, &query, sp);
+    let a = search(&index, &query, sp).unwrap();
+    let b = search(&index, &query, sp).unwrap();
     assert_eq!(a, b);
 }
 
@@ -1238,7 +1239,7 @@ fn prop_search_permutation_invariant_over_query_tokens(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let n_q = tc.draw(gs::integers::<usize>().min_value(2).max_value(5));
     let query = tc.draw(unit_rows(dim, n_q));
@@ -1261,8 +1262,8 @@ fn prop_search_permutation_invariant_over_query_tokens(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    let a = search(&index, &query, sp);
-    let b = search(&index, &permuted, sp);
+    let a = search(&index, &query, sp).unwrap();
+    let b = search(&index, &permuted, sp).unwrap();
 
     // Tie-break is doc_id asc so the vectors agree element-wise; scores
     // must match within a tiny ε since the only difference is the
@@ -1314,7 +1315,7 @@ fn prop_search_duplicated_doc_returns_both_with_same_score(tc: TestCase) {
 
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let sp = SearchParams {
@@ -1323,7 +1324,7 @@ fn prop_search_duplicated_doc_returns_both_with_same_score(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    let results = search(&index, &query, sp);
+    let results = search(&index, &query, sp).unwrap();
 
     let original_score = results
         .iter()
@@ -1363,7 +1364,7 @@ fn prop_search_large_shortlist_equals_none(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let base = SearchParams {
@@ -1376,8 +1377,8 @@ fn prop_search_large_shortlist_equals_none(tc: TestCase) {
         n_candidate_docs: Some(100_000),
         ..base
     };
-    let a = search(&index, &query, base);
-    let b = search(&index, &query, shortlisted);
+    let a = search(&index, &query, base).unwrap();
+    let b = search(&index, &query, shortlisted).unwrap();
     assert_eq!(a, b);
 }
 
@@ -1395,7 +1396,7 @@ fn prop_search_unreachable_threshold_equals_none(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let base = SearchParams {
@@ -1410,8 +1411,8 @@ fn prop_search_unreachable_threshold_equals_none(tc: TestCase) {
         centroid_score_threshold: Some(-1e6),
         ..base
     };
-    let a = search(&index, &query, base);
-    let b = search(&index, &query, very_negative);
+    let a = search(&index, &query, base).unwrap();
+    let b = search(&index, &query, very_negative).unwrap();
     assert_eq!(a, b);
 }
 
@@ -1431,7 +1432,7 @@ fn prop_centroid_interaction_result_subset_of_unfiltered(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let top_k = docs.len() + 4;
@@ -1448,8 +1449,8 @@ fn prop_centroid_interaction_result_subset_of_unfiltered(tc: TestCase) {
         ..base
     };
 
-    let unfiltered_results = search(&index, &query, base);
-    let filtered_results = search(&index, &query, filtered);
+    let unfiltered_results = search(&index, &query, base).unwrap();
+    let filtered_results = search(&index, &query, filtered).unwrap();
 
     let unfiltered_ids: std::collections::HashSet<u64> =
         unfiltered_results.iter().map(|r| r.doc_id).collect();
@@ -1480,7 +1481,7 @@ fn prop_centroid_pruning_result_subset_of_unfiltered(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let top_k = docs.len() + 4;
@@ -1505,8 +1506,8 @@ fn prop_centroid_pruning_result_subset_of_unfiltered(tc: TestCase) {
         ..base
     };
 
-    let unfiltered_results = search(&index, &query, base);
-    let pruned_results = search(&index, &query, pruned);
+    let unfiltered_results = search(&index, &query, base).unwrap();
+    let pruned_results = search(&index, &query, pruned).unwrap();
 
     let unfiltered_ids: std::collections::HashSet<u64> =
         unfiltered_results.iter().map(|r| r.doc_id).collect();
@@ -1534,7 +1535,7 @@ fn prop_search_empty_query_empty_result(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 1, 4, 4, 4));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let sp = SearchParams {
         top_k: 5,
@@ -1542,7 +1543,7 @@ fn prop_search_empty_query_empty_result(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    let results = search(&index, &[], sp);
+    let results = search(&index, &[], sp).unwrap();
     assert!(results.is_empty());
 }
 
@@ -1561,7 +1562,7 @@ fn prop_search_full_probe_considers_every_nonempty_doc(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 1, 5, 4, 4));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let query = tc.draw(unit_rows(dim, 1));
     let sp = SearchParams {
@@ -1570,7 +1571,7 @@ fn prop_search_full_probe_considers_every_nonempty_doc(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    let results = search(&index, &query, sp);
+    let results = search(&index, &query, sp).unwrap();
 
     let expected: std::collections::HashSet<u64> = docs
         .iter()
@@ -1603,7 +1604,7 @@ fn prop_save_load_roundtrip_exact(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("index.plaid");
@@ -1643,7 +1644,7 @@ fn prop_save_load_search_identical(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("index.plaid");
@@ -1657,7 +1658,10 @@ fn prop_save_load_search_identical(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    assert_eq!(search(&index, &query, sp), search(&loaded, &query, sp));
+    assert_eq!(
+        search(&index, &query, sp).unwrap(),
+        search(&loaded, &query, sp).unwrap(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,7 +1682,7 @@ fn prop_apply_update_empty_is_identity(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 1, 5, 5, 4));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let before_ids = index.doc_ids.clone();
     let before_tokens = index.doc_tokens.clone();
@@ -1692,7 +1696,8 @@ fn prop_apply_update_empty_is_identity(tc: TestCase) {
             deletions: &[],
             upserts: &[],
         },
-    );
+    )
+    .unwrap();
 
     assert_eq!(updated.doc_ids, before_ids);
     assert_eq!(updated.doc_tokens, before_tokens);
@@ -1715,7 +1720,7 @@ fn prop_apply_update_deletions_removed(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     // Draw a boolean per existing doc_id deciding whether to delete
     // it. Ensures at least one survives so we can assert equality
@@ -1741,7 +1746,8 @@ fn prop_apply_update_deletions_removed(tc: TestCase) {
             deletions: &deletions,
             upserts: &[],
         },
-    );
+    )
+    .unwrap();
 
     for id in &deletions {
         assert!(
@@ -1768,7 +1774,7 @@ fn prop_apply_update_upsert_codec_unchanged(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
     let before_codec = index.codec.clone();
 
     let next_id = docs.iter().map(|d| d.doc_id).max().unwrap_or(0) + 1;
@@ -1795,7 +1801,8 @@ fn prop_apply_update_upsert_codec_unchanged(tc: TestCase) {
             deletions: &deletions,
             upserts: &upserts,
         },
-    );
+    )
+    .unwrap();
 
     assert_eq!(updated.codec.dim, before_codec.dim);
     assert_eq!(updated.codec.nbits, before_codec.nbits);
@@ -1818,7 +1825,7 @@ fn prop_apply_update_ivf_invariants_preserved(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     let next_id = docs.iter().map(|d| d.doc_id).max().unwrap_or(0) + 1;
     let n_upsert = tc.draw(gs::integers::<usize>().min_value(0).max_value(3));
@@ -1849,7 +1856,8 @@ fn prop_apply_update_ivf_invariants_preserved(tc: TestCase) {
             deletions: &deletions,
             upserts: &upserts,
         },
-    );
+    )
+    .unwrap();
 
     assert_eq!(updated.ivf.num_centroids(), params.k_centroids);
     for (doc_idx, encoded) in updated.doc_tokens.iter().enumerate() {
@@ -1888,7 +1896,7 @@ fn prop_apply_update_full_upsert_matches_build_index(tc: TestCase) {
     let a = tc.draw(corpus(dim, 1, 3, 4, 4));
     let a_total: usize = a.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, a_total));
-    let index = build_index(&a, params);
+    let index = build_index(&a, params).unwrap();
 
     let a_max_id = a.iter().map(|d| d.doc_id).max().unwrap();
     let mut b = tc.draw(corpus(dim, 1, 3, 4, 0));
@@ -1905,7 +1913,8 @@ fn prop_apply_update_full_upsert_matches_build_index(tc: TestCase) {
             deletions: &[],
             upserts: &b,
         },
-    );
+    )
+    .unwrap();
 
     let expected_ids: std::collections::HashSet<u64> =
         a.iter().chain(b.iter()).map(|d| d.doc_id).collect();
@@ -1942,7 +1951,7 @@ fn prop_doc_token_shuffle_preserves_score(tc: TestCase) {
     let docs = tc.draw(corpus(dim, 2, 5, 5, 6));
     let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
     let params = tc.draw(index_params(dim, 4, total_tokens));
-    let index = build_index(&docs, params);
+    let index = build_index(&docs, params).unwrap();
 
     // Pick the first non-empty doc as the shuffle target.
     let target_idx = match docs.iter().position(|d| d.n_tokens >= 2) {
@@ -1976,7 +1985,8 @@ fn prop_doc_token_shuffle_preserves_score(tc: TestCase) {
             deletions: &[],
             upserts: std::slice::from_ref(&shuffled_doc),
         },
-    );
+    )
+    .unwrap();
 
     let query = tc.draw(unit_rows(dim, 2));
     let sp = SearchParams {
@@ -1985,7 +1995,7 @@ fn prop_doc_token_shuffle_preserves_score(tc: TestCase) {
         n_candidate_docs: None,
         centroid_score_threshold: None,
     };
-    let results = search(&updated, &query, sp);
+    let results = search(&updated, &query, sp).unwrap();
 
     let original_score = results
         .iter()

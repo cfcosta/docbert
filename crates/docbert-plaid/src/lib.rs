@@ -21,8 +21,11 @@
 pub mod codec;
 pub mod device;
 pub mod distance;
+pub mod error;
 pub mod index;
 pub mod kmeans;
 pub mod persistence;
 pub mod search;
 pub mod update;
+
+pub use error::{PlaidError, Result};

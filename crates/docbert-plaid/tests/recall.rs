@@ -128,7 +128,8 @@ fn plaid_search_recall_at_10_against_decoded_brute_force_is_high() {
             k_centroids: 32,
             max_kmeans_iters: 20,
         },
-    );
+    )
+    .unwrap();
 
     // Decoded-tokens snapshot: what the index "thinks" each doc looks
     // like after residual quantization.
@@ -160,6 +161,7 @@ fn plaid_search_recall_at_10_against_decoded_brute_force_is_high() {
                 centroid_score_threshold: None,
             },
         )
+        .unwrap()
         .into_iter()
         .map(|r| r.doc_id)
         .collect();
@@ -200,7 +202,8 @@ fn plaid_search_recall_at_10_against_original_brute_force_is_meaningful() {
             k_centroids: 32,
             max_kmeans_iters: 20,
         },
-    );
+    )
+    .unwrap();
 
     // Snapshot of original tokens, indexed by doc_id.
     let original_docs: Vec<(u64, Vec<f32>)> = corpus
@@ -223,6 +226,7 @@ fn plaid_search_recall_at_10_against_original_brute_force_is_meaningful() {
                 centroid_score_threshold: None,
             },
         )
+        .unwrap()
         .into_iter()
         .map(|r| r.doc_id)
         .collect();
@@ -258,7 +262,8 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
             k_centroids: 16,
             max_kmeans_iters: 20,
         },
-    );
+    )
+    .unwrap();
 
     let query = random_unit_vectors(0x9999, 12, DIM);
     let results = search(
@@ -270,7 +275,8 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
             n_candidate_docs: None,
             centroid_score_threshold: None,
         },
-    );
+    )
+    .unwrap();
 
     for r in &results {
         let doc_idx = index.position_of(r.doc_id).expect("doc present");
@@ -316,7 +322,8 @@ fn plaid_search_returns_results_sorted_descending_by_score() {
             k_centroids: 16,
             max_kmeans_iters: 10,
         },
-    );
+    )
+    .unwrap();
 
     let query = random_unit_vectors(0x7777, 10, DIM);
     let results = search(
@@ -328,7 +335,8 @@ fn plaid_search_returns_results_sorted_descending_by_score() {
             n_candidate_docs: None,
             centroid_score_threshold: None,
         },
-    );
+    )
+    .unwrap();
     assert!(results.len() >= 2);
     for pair in results.windows(2) {
         assert!(
@@ -368,7 +376,8 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
             k_centroids: 64,
             max_kmeans_iters: 20,
         },
-    );
+    )
+    .unwrap();
 
     let mut total_recall = 0.0f32;
     let n_queries = 5;
@@ -385,6 +394,7 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
                 centroid_score_threshold: None,
             },
         )
+        .unwrap()
         .into_iter()
         .map(|r| r.doc_id)
         .collect();
@@ -398,6 +408,7 @@ fn centroid_interaction_shortlist_keeps_recall_high_against_no_shortlist() {
                 centroid_score_threshold: None,
             },
         )
+        .unwrap()
         .into_iter()
         .map(|r| r.doc_id)
         .collect();
@@ -424,7 +435,8 @@ fn maxsim_score_for_unit_norm_query_is_at_most_q_times_one() {
             k_centroids: 8,
             max_kmeans_iters: 20,
         },
-    );
+    )
+    .unwrap();
 
     let query_len = 8;
     let query = random_unit_vectors(0x3333, query_len, DIM);
@@ -437,7 +449,8 @@ fn maxsim_score_for_unit_norm_query_is_at_most_q_times_one() {
             n_candidate_docs: None,
             centroid_score_threshold: None,
         },
-    );
+    )
+    .unwrap();
 
     // Quantization can push decoded tokens slightly off the unit
     // sphere, so we allow a small slack above the strict |Q| ceiling.
