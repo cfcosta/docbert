@@ -240,7 +240,7 @@ pub(crate) fn rollback_document(
             let mut writer = state.open_index_writer_blocking(50_000_000)?;
             state
                 .search_index
-                .delete_document(&writer, &prev.did.full_hex());
+                .delete_document(&writer, &prev.did.full_hex())?;
             if let Some(meta) = &prev.metadata {
                 let full_path = std::path::Path::new(
                     collection_root.to_str().unwrap_or(""),
@@ -318,7 +318,9 @@ pub(crate) fn delete_document(
     // return".  All metadata/embeddings are already gone, so no orphan
     // state is possible on Tantivy failure.
     let mut writer = state.open_index_writer_blocking(50_000_000)?;
-    state.search_index.delete_document(&writer, &did.full_hex());
+    state
+        .search_index
+        .delete_document(&writer, &did.full_hex())?;
     writer.commit()?;
 
     refresh_collection_snapshot(

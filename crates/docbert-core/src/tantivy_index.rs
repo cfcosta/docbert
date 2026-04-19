@@ -292,17 +292,27 @@ impl SearchIndex {
     }
 
     /// Get the resolved field handles for building custom queries.
-    pub fn fields(&self) -> SchemaFields {
-        let f = |name: &str| self.schema.get_field(name).unwrap();
-        SchemaFields {
-            doc_id: f(fields::DOC_ID),
-            doc_num_id: f(fields::DOC_NUM_ID),
-            collection: f(fields::COLLECTION),
-            path: f(fields::PATH),
-            title: f(fields::TITLE),
-            body: f(fields::BODY),
-            mtime: f(fields::MTIME),
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Tantivy`] if one of the fields is missing
+    /// from the schema — which shouldn't happen for an index built
+    /// through [`open_in_ram`] or [`open`] but is surfaced rather
+    /// than panicked on so the caller's `?` flows stay consistent.
+    ///
+    /// [`Error::Tantivy`]: crate::Error::Tantivy
+    /// [`open_in_ram`]: Self::open_in_ram
+    /// [`open`]: Self::open
+    pub fn fields(&self) -> Result<SchemaFields> {
+        Ok(SchemaFields {
+            doc_id: self.schema.get_field(fields::DOC_ID)?,
+            doc_num_id: self.schema.get_field(fields::DOC_NUM_ID)?,
+            collection: self.schema.get_field(fields::COLLECTION)?,
+            path: self.schema.get_field(fields::PATH)?,
+            title: self.schema.get_field(fields::TITLE)?,
+            body: self.schema.get_field(fields::BODY)?,
+            mtime: self.schema.get_field(fields::MTIME)?,
+        })
     }
 
     /// Create a writer with the given memory budget (in bytes).
@@ -329,7 +339,7 @@ impl SearchIndex {
         body: &str,
         mtime: u64,
     ) -> Result<()> {
-        let f = self.fields();
+        let f = self.fields()?;
 
         // Delete any existing document with this ID first.
         let term = tantivy::Term::from_field_text(f.doc_id, doc_id);
@@ -351,19 +361,29 @@ impl SearchIndex {
     /// Delete all documents belonging to a collection.
     ///
     /// The deletions are staged; call `writer.commit()` to apply them.
-    pub fn delete_collection(&self, writer: &IndexWriter, collection: &str) {
-        let f = self.fields();
+    pub fn delete_collection(
+        &self,
+        writer: &IndexWriter,
+        collection: &str,
+    ) -> Result<()> {
+        let f = self.fields()?;
         let term = tantivy::Term::from_field_text(f.collection, collection);
         writer.delete_term(term);
+        Ok(())
     }
 
     /// Delete a single document by its full-hex doc_id.
     ///
     /// The deletion is staged; call `writer.commit()` to apply it.
-    pub fn delete_document(&self, writer: &IndexWriter, doc_id: &str) {
-        let f = self.fields();
+    pub fn delete_document(
+        &self,
+        writer: &IndexWriter,
+        doc_id: &str,
+    ) -> Result<()> {
+        let f = self.fields()?;
         let term = tantivy::Term::from_field_text(f.doc_id, doc_id);
         writer.delete_term(term);
+        Ok(())
     }
 
     /// Look up a document by exact collection name and relative path.
@@ -372,7 +392,7 @@ impl SearchIndex {
         collection: &str,
         path: &str,
     ) -> Result<Option<SearchResult>> {
-        let fields = self.fields();
+        let fields = self.fields()?;
         let collection_term =
             tantivy::Term::from_field_text(fields.collection, collection);
         let path_term = tantivy::Term::from_field_text(fields.path, path);
@@ -401,7 +421,7 @@ impl SearchIndex {
         query: &dyn tantivy::query::Query,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let fields = self.fields();
+        let fields = self.fields()?;
         self.reader.reload()?;
         let searcher = self.reader.searcher();
         let top_docs = searcher
@@ -422,7 +442,7 @@ impl SearchIndex {
             return Ok(vec![]);
         };
 
-        let fields = self.fields();
+        let fields = self.fields()?;
         let parser = create_query_parser(&self.index, fields);
         let (query, _errors) = parser.parse_query_lenient(&normalized_query);
         self.execute_query(&*query, limit)
@@ -443,7 +463,7 @@ impl SearchIndex {
             return Ok(vec![]);
         };
 
-        let fields = self.fields();
+        let fields = self.fields()?;
         let parser = create_query_parser(&self.index, fields);
         let (user_query, _errors) =
             parser.parse_query_lenient(&normalized_query);
@@ -480,7 +500,7 @@ impl SearchIndex {
         };
         let fuzzy_terms = normalize_query_for_fuzzy(query_str);
 
-        let fields = self.fields();
+        let fields = self.fields()?;
 
         // BM25 query
         let parser = create_query_parser(&self.index, fields);
@@ -656,7 +676,7 @@ mod tests {
 
         assert_eq!(idx.search("hello", 10).unwrap().len(), 1);
 
-        idx.delete_document(&writer, "abc");
+        idx.delete_document(&writer, "abc").unwrap();
         writer.commit().unwrap();
 
         assert_eq!(idx.search("hello", 10).unwrap().len(), 0);
@@ -677,7 +697,7 @@ mod tests {
 
         assert_eq!(idx.search("hello", 10).unwrap().len(), 2);
 
-        idx.delete_collection(&writer, "notes");
+        idx.delete_collection(&writer, "notes").unwrap();
         writer.commit().unwrap();
 
         let results = idx.search("hello", 10).unwrap();

@@ -322,7 +322,7 @@ pub(crate) fn cmd_rebuild(
 
         if !args.embeddings_only {
             let mut writer = runtime.search_index.writer(15_000_000)?;
-            runtime.search_index.delete_collection(&writer, name);
+            runtime.search_index.delete_collection(&writer, name)?;
             writer.commit()?;
         }
 
@@ -499,7 +499,7 @@ pub(crate) fn cmd_sync(
 
                 let mut writer = runtime.search_index.writer(15_000_000)?;
                 for key in &tantivy_keys {
-                    runtime.search_index.delete_document(&writer, key);
+                    runtime.search_index.delete_document(&writer, key)?;
                 }
                 writer.commit()?;
                 eprintln!(

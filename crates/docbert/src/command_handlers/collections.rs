@@ -59,7 +59,7 @@ pub(crate) fn collection_remove(
 
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
     let mut writer = search_index.writer(15_000_000)?;
-    search_index.delete_collection(&writer, name);
+    search_index.delete_collection(&writer, name)?;
     writer.commit()?;
 
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
