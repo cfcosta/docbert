@@ -53,9 +53,10 @@ jobs:
           # mid-0.x) and we want `cargo publish` to see a single,
           # coherent release version across the whole workspace.
           workspace_crates = [
-              ("docbert",       pathlib.Path("crates/docbert/Cargo.toml")),
-              ("docbert-core",  pathlib.Path("crates/docbert-core/Cargo.toml")),
-              ("docbert-plaid", pathlib.Path("crates/docbert-plaid/Cargo.toml")),
+              ("docbert",        pathlib.Path("crates/docbert/Cargo.toml")),
+              ("docbert-core",   pathlib.Path("crates/docbert-core/Cargo.toml")),
+              ("docbert-plaid",  pathlib.Path("crates/docbert-plaid/Cargo.toml")),
+              ("docbert-pylate", pathlib.Path("crates/docbert-pylate/Cargo.toml")),
           ]
           cargo_lock_path = pathlib.Path("Cargo.lock")
 
@@ -143,7 +144,8 @@ jobs:
           git add Cargo.lock \
                   crates/docbert/Cargo.toml \
                   crates/docbert-core/Cargo.toml \
-                  crates/docbert-plaid/Cargo.toml
+                  crates/docbert-plaid/Cargo.toml \
+                  crates/docbert-pylate/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
 
       - name: Push release commit
