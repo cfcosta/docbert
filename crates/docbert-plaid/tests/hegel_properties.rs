@@ -721,3 +721,20 @@ fn prop_train_quantizer_cutoffs_monotonic(tc: TestCase) {
         assert!(pair[0] <= pair[1], "cutoffs not monotone: {:?}", &cutoffs,);
     }
 }
+
+/// Shape: `train_quantizer(_, nbits)` returns `2^nbits - 1` cutoffs
+/// and `2^nbits` weights. These two counts are load-bearing in
+/// `ResidualCodec::validate` and in the persistence layer's fixed
+/// header sizes, so any drift would make every downstream codec fail
+/// to construct.
+#[hegel::test(test_cases = 80)]
+fn prop_train_quantizer_shapes(tc: TestCase) {
+    use docbert_plaid::codec::train_quantizer;
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(256));
+    let residuals = tc.draw(finite_floats(n));
+    let num_buckets = 1usize << nbits;
+    let (cutoffs, weights) = train_quantizer(&residuals, nbits);
+    assert_eq!(cutoffs.len(), num_buckets - 1);
+    assert_eq!(weights.len(), num_buckets);
+}
