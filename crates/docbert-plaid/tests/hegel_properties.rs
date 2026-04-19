@@ -405,3 +405,28 @@ fn prop_update_centroids_shape_and_empty_cluster_preservation(tc: TestCase) {
         }
     }
 }
+
+/// Shape: every row of `farthest_first_init`'s output is byte-equal to
+/// one of the input rows, and the first output row equals `points[..dim]`
+/// (Gonzalez's algorithm picks row 0 as the first seed). Rules out the
+/// kind of bug where seeding accidentally averages or perturbs inputs.
+#[hegel::test(test_cases = 100)]
+fn prop_farthest_first_init_rows_are_input_rows(tc: TestCase) {
+    use docbert_plaid::kmeans::farthest_first_init;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(24));
+    let points = tc.draw(unit_rows(dim, n));
+
+    let seeds = farthest_first_init(&points, k, dim);
+    assert_eq!(seeds.len(), k * dim);
+    assert_eq!(&seeds[..dim], &points[..dim]);
+
+    let input_rows: Vec<&[f32]> = points.chunks_exact(dim).collect();
+    for seed in seeds.chunks_exact(dim) {
+        assert!(
+            input_rows.contains(&seed),
+            "seed row {seed:?} is not any input row",
+        );
+    }
+}
