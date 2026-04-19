@@ -597,7 +597,7 @@ fn prop_pack_read_roundtrip_all_nbits(tc: TestCase) {
     };
 
     let input: Vec<f32> = targets.iter().map(|&b| b as f32).collect();
-    let encoded = codec.encode_vector(&input);
+    let encoded = codec.encode_vector(&input).unwrap();
     for (i, &expected) in targets.iter().enumerate() {
         let got = read_code(&encoded.codes, i, nbits);
         assert_eq!(
@@ -630,7 +630,7 @@ fn prop_packed_bytes_formula(tc: TestCase) {
         bucket_cutoffs: (1..num_buckets).map(|i| i as f32 - 0.5).collect(),
         bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
     };
-    let encoded = codec.encode_vector(&vec![0.0; dim]);
+    let encoded = codec.encode_vector(&vec![0.0; dim]).unwrap();
     assert_eq!(encoded.codes.len(), expected);
 }
 
@@ -669,7 +669,7 @@ fn prop_bucket_for_value_monotonic(tc: TestCase) {
         if a <= b { (a, b) } else { (b, a) }
     };
 
-    let encoded = codec.encode_vector(&[v1, v2]);
+    let encoded = codec.encode_vector(&[v1, v2]).unwrap();
     let b1 = read_code(&encoded.codes, 0, nbits);
     let b2 = read_code(&encoded.codes, 1, nbits);
     assert!(
@@ -700,7 +700,7 @@ fn prop_bucket_for_value_range(tc: TestCase) {
     };
     let input = tc.draw(finite_floats(dim));
 
-    let encoded = codec.encode_vector(&input);
+    let encoded = codec.encode_vector(&input).unwrap();
     for i in 0..dim {
         let code = read_code(&encoded.codes, i, nbits);
         assert!(
@@ -767,7 +767,7 @@ fn prop_reconstruction_error_decreases_with_nbits(tc: TestCase) {
         };
         let mse: f64 = pool
             .iter()
-            .map(|v| codec.reconstruction_error(&[*v]) as f64)
+            .map(|v| codec.reconstruction_error(&[*v]).unwrap() as f64)
             .sum::<f64>()
             / pool.len() as f64;
         assert!(
@@ -799,7 +799,7 @@ fn prop_reconstruction_error_non_negative(tc: TestCase) {
     let probe_n = tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
     let probes = tc.draw(finite_floats(probe_n));
     for v in &probes {
-        assert!(codec.reconstruction_error(&[*v]) >= 0.0);
+        assert!(codec.reconstruction_error(&[*v]).unwrap() >= 0.0);
     }
 }
 
@@ -831,7 +831,7 @@ fn prop_encode_picks_nearest_centroid(tc: TestCase) {
     };
     let v = tc.draw(unit_rows(dim, 1));
 
-    let encoded = codec.encode_vector(&v);
+    let encoded = codec.encode_vector(&v).unwrap();
     let scalar = nearest_centroid(&v, &centroids, dim);
     if encoded.centroid_id as usize == scalar {
         return;
@@ -889,8 +889,8 @@ fn prop_codec_interior_error_bounded_by_half_bucket_width(tc: TestCase) {
             .allow_infinity(false),
     );
 
-    let encoded = codec.encode_vector(&[v]);
-    let decoded = codec.decode_vector(&encoded);
+    let encoded = codec.encode_vector(&[v]).unwrap();
+    let decoded = codec.decode_vector(&encoded).unwrap();
     let half_width = step / 2.0;
     assert!(
         (decoded[0] - v).abs() <= half_width + 1e-5,
@@ -921,11 +921,11 @@ fn prop_decode_table_matches_scalar(tc: TestCase) {
         bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
     };
     let input = tc.draw(finite_floats(dim));
-    let encoded = codec.encode_vector(&input);
+    let encoded = codec.encode_vector(&input).unwrap();
 
-    let scalar = codec.decode_vector(&encoded);
+    let scalar = codec.decode_vector(&encoded).unwrap();
     let table = DecodeTable::new(&codec);
-    let via_table = codec.decode_vector_with_table(&encoded, &table);
+    let via_table = codec.decode_vector_with_table(&encoded, &table).unwrap();
     assert_eq!(scalar, via_table);
 }
 
@@ -963,7 +963,7 @@ fn prop_batch_encode_matches_per_token(tc: TestCase) {
     assert_eq!(packed.len(), n_tokens * packed_per);
 
     for (i, token) in tokens.chunks_exact(dim).enumerate() {
-        let expected = codec.encode_vector(token);
+        let expected = codec.encode_vector(token).unwrap();
         let batch_slice = &packed[i * packed_per..(i + 1) * packed_per];
         if cids[i] == expected.centroid_id {
             assert_eq!(
@@ -1033,9 +1033,9 @@ fn prop_encode_decode_encode_idempotent(tc: TestCase) {
     };
 
     let v = tc.draw(unit_rows(dim, 1));
-    let enc1 = codec.encode_vector(&v);
-    let dec1 = codec.decode_vector(&enc1);
-    let enc2 = codec.encode_vector(&dec1);
+    let enc1 = codec.encode_vector(&v).unwrap();
+    let dec1 = codec.decode_vector(&enc1).unwrap();
+    let enc2 = codec.encode_vector(&dec1).unwrap();
     assert_eq!(enc1, enc2, "encode→decode→encode not idempotent");
 }
 

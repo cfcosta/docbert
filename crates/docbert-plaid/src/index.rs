@@ -223,9 +223,7 @@ pub fn build_index(
         bucket_cutoffs,
         bucket_weights,
     };
-    codec
-        .validate()
-        .expect("build_index produced an invalid codec");
+    codec.validate()?;
 
     // 4. Encode every token across the whole corpus in one batched pass
     //    (single matmul-driven nearest-centroid lookup), then split the
@@ -368,7 +366,7 @@ mod tests {
             for (token, encoded) in
                 doc.tokens.chunks_exact(params.dim).zip(encoded_doc.iter())
             {
-                let decoded = index.codec.decode_vector(encoded);
+                let decoded = index.codec.decode_vector(encoded).unwrap();
                 let err = squared_l2(token, &decoded).sqrt();
                 // Residuals on a 2-D toy corpus with tight clusters stay
                 // small; each bucket should cover well under 0.5 per dim.

@@ -69,7 +69,7 @@ fn bench_decode_vector(c: &mut Criterion) {
         let codec = build_codec(nbits);
         let encoded: Vec<EncodedVector> = vectors
             .chunks_exact(DIM)
-            .map(|v| codec.encode_vector(v))
+            .map(|v| codec.encode_vector(v).unwrap())
             .collect();
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(

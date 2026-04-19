@@ -459,7 +459,7 @@ fn batch_maxsim(
     for &doc_idx in candidate_idxs {
         for ev in &index.doc_tokens[doc_idx] {
             packed.extend(
-                index.codec.decode_vector_with_table(ev, &decode_table),
+                index.codec.decode_vector_with_table(ev, &decode_table)?,
             );
         }
         offsets.push(packed.len() / dim);
@@ -769,7 +769,7 @@ mod tests {
         let doc_idx = index.position_of(top.doc_id).expect("doc present");
         let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
             .iter()
-            .map(|ev| index.codec.decode_vector(ev))
+            .map(|ev| index.codec.decode_vector(ev).unwrap())
             .collect();
 
         // Standard MaxSim: Σ max_j q_i · d_j.
@@ -1202,7 +1202,7 @@ mod tests {
         let doc_idx = index.position_of(top.doc_id).unwrap();
         let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
             .iter()
-            .map(|ev| index.codec.decode_vector(ev))
+            .map(|ev| index.codec.decode_vector(ev).unwrap())
             .collect();
         let expected: f32 = query
             .chunks_exact(2)

@@ -21,6 +21,16 @@ pub enum PlaidError {
     /// cause but still propagate uniformly via `?`.
     #[error("tensor operation failed: {0}")]
     Tensor(#[from] candle_core::Error),
+
+    /// A [`ResidualCodec`] failed its shape/invariant checks. Raised
+    /// from `encode_vector`, `decode_vector`, `batch_encode_tokens`,
+    /// and `build_index`'s validate step. The wrapped `String`
+    /// describes the specific constraint violated (dim == 0, nbits
+    /// not in `{1,2,4,8}`, non-monotonic cutoffs, etc.).
+    ///
+    /// [`ResidualCodec`]: crate::codec::ResidualCodec
+    #[error("invalid codec: {0}")]
+    InvalidCodec(String),
 }
 
 /// Crate-level `Result` alias. Every public function that can fail

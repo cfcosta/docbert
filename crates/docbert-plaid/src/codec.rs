@@ -26,7 +26,12 @@
 //! embedding at 2 bits, this is 32 bytes per token (vs. 128 bytes
 //! unpacked), matching the paper's §4.5 packed-index layout.
 
-use crate::{Result, distance::squared_l2, kmeans::nearest_centroid};
+use crate::{
+    PlaidError,
+    Result,
+    distance::squared_l2,
+    kmeans::nearest_centroid,
+};
 
 /// A trained residual-quantization codec.
 ///
@@ -192,46 +197,53 @@ impl ResidualCodec {
     /// Validate internal shape invariants. Called automatically by
     /// encode/decode; exposed so callers loading a codec from disk can
     /// fail fast.
-    pub fn validate(&self) -> std::result::Result<(), String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] with a description of the
+    /// constraint that's violated.
+    pub fn validate(&self) -> Result<()> {
         if self.dim == 0 {
-            return Err("codec: dim must be positive".into());
+            return Err(PlaidError::InvalidCodec(
+                "codec: dim must be positive".into(),
+            ));
         }
         if !matches!(self.nbits, 1 | 2 | 4 | 8) {
-            return Err(format!(
+            return Err(PlaidError::InvalidCodec(format!(
                 "codec: nbits must be 1, 2, 4, or 8, got {}",
                 self.nbits
-            ));
+            )));
         }
         if !self.centroids.len().is_multiple_of(self.dim)
             || self.centroids.is_empty()
         {
-            return Err(format!(
+            return Err(PlaidError::InvalidCodec(format!(
                 "codec: centroids length {} is not a positive multiple of dim {}",
                 self.centroids.len(),
                 self.dim,
-            ));
+            )));
         }
         let expected_buckets = self.num_buckets();
         if self.bucket_weights.len() != expected_buckets {
-            return Err(format!(
+            return Err(PlaidError::InvalidCodec(format!(
                 "codec: expected {} bucket_weights, got {}",
                 expected_buckets,
                 self.bucket_weights.len(),
-            ));
+            )));
         }
         if self.bucket_cutoffs.len() != expected_buckets - 1 {
-            return Err(format!(
+            return Err(PlaidError::InvalidCodec(format!(
                 "codec: expected {} bucket_cutoffs, got {}",
                 expected_buckets - 1,
                 self.bucket_cutoffs.len(),
-            ));
+            )));
         }
         for pair in self.bucket_cutoffs.windows(2) {
             if pair[0] > pair[1] || pair[0].is_nan() || pair[1].is_nan() {
-                return Err(
+                return Err(PlaidError::InvalidCodec(
                     "codec: bucket_cutoffs must be non-decreasing and finite"
                         .into(),
-                );
+                ));
             }
         }
         Ok(())
@@ -242,11 +254,16 @@ impl ResidualCodec {
     /// Finds the nearest centroid, computes the residual, and quantizes
     /// each dimension against `bucket_cutoffs`.
     ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] if this codec fails its
+    /// shape invariants.
+    ///
     /// # Panics
     ///
-    /// Panics if the codec is malformed or if `vector.len() != dim`.
-    pub fn encode_vector(&self, vector: &[f32]) -> EncodedVector {
-        self.validate().unwrap();
+    /// Panics if `vector.len() != dim`.
+    pub fn encode_vector(&self, vector: &[f32]) -> Result<EncodedVector> {
+        self.validate()?;
         assert_eq!(
             vector.len(),
             self.dim,
@@ -266,10 +283,10 @@ impl ResidualCodec {
             .collect();
         let codes = pack_codes(&unpacked, self.nbits);
 
-        EncodedVector {
+        Ok(EncodedVector {
             centroid_id: centroid_id as u32,
             codes,
-        }
+        })
     }
 
     /// Encode every token in a flat `n × dim` buffer in one batched
@@ -288,20 +305,21 @@ impl ResidualCodec {
     ///
     /// # Errors
     ///
-    /// Propagates [`PlaidError::Tensor`] from the matmul-driven
-    /// nearest-centroid lookup.
+    /// Returns [`PlaidError::InvalidCodec`] if the codec fails its
+    /// shape invariants, or [`PlaidError::Tensor`] if the
+    /// matmul-driven nearest-centroid lookup fails.
     ///
     /// # Panics
     ///
-    /// Panics if the codec is malformed, if `tokens.len() % dim != 0`,
-    /// or if `tokens` is empty.
+    /// Panics if `tokens.len() % dim != 0` or if `tokens` is empty.
     ///
+    /// [`PlaidError::InvalidCodec`]: crate::PlaidError::InvalidCodec
     /// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
     pub fn batch_encode_tokens(
         &self,
         tokens: &[f32],
     ) -> Result<(Vec<u32>, Vec<u8>)> {
-        self.validate().unwrap();
+        self.validate()?;
         assert!(
             tokens.len().is_multiple_of(self.dim),
             "batch_encode_tokens: tokens length {} is not a multiple of dim {}",
@@ -338,11 +356,17 @@ impl ResidualCodec {
 
     /// Reconstruct an approximate token embedding from its codes.
     ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] if this codec fails its
+    /// shape invariants.
+    ///
     /// # Panics
     ///
-    /// Panics if the codec is malformed, if `codes.len() != dim`, or if
-    /// any code is out of range.
-    pub fn decode_vector(&self, encoded: &EncodedVector) -> Vec<f32> {
+    /// Panics if `codes.len() != dim` or if any code is out of range.
+    ///
+    /// [`PlaidError::InvalidCodec`]: crate::PlaidError::InvalidCodec
+    pub fn decode_vector(&self, encoded: &EncodedVector) -> Result<Vec<f32>> {
         let table = DecodeTable::new(self);
         self.decode_vector_with_table(encoded, &table)
     }
@@ -353,12 +377,19 @@ impl ResidualCodec {
     /// path's per-candidate decode loop) should build the table once
     /// outside the loop and reuse it here — each call then amounts to
     /// one table load per packed byte plus the centroid add.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] if this codec fails its
+    /// shape invariants.
+    ///
+    /// [`PlaidError::InvalidCodec`]: crate::PlaidError::InvalidCodec
     pub fn decode_vector_with_table(
         &self,
         encoded: &EncodedVector,
         table: &DecodeTable,
-    ) -> Vec<f32> {
-        self.validate().unwrap();
+    ) -> Result<Vec<f32>> {
+        self.validate()?;
         assert_eq!(
             table.nbits, self.nbits,
             "decode_vector_with_table: table nbits {} != codec nbits {}",
@@ -395,16 +426,23 @@ impl ResidualCodec {
                 out.push(centroid_slice[dim_idx] + w);
             }
         }
-        out
+        Ok(out)
     }
 
     /// Return the squared L2 reconstruction error for `vector` under
     /// this codec. Useful as a lightweight codec-quality probe in tests
     /// and evaluation scripts.
-    pub fn reconstruction_error(&self, vector: &[f32]) -> f32 {
-        let encoded = self.encode_vector(vector);
-        let decoded = self.decode_vector(&encoded);
-        squared_l2(vector, &decoded)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] if this codec fails its
+    /// shape invariants.
+    ///
+    /// [`PlaidError::InvalidCodec`]: crate::PlaidError::InvalidCodec
+    pub fn reconstruction_error(&self, vector: &[f32]) -> Result<f32> {
+        let encoded = self.encode_vector(vector)?;
+        let decoded = self.decode_vector(&encoded)?;
+        Ok(squared_l2(vector, &decoded))
     }
 }
 
@@ -532,11 +570,12 @@ mod tests {
             };
             let input: Vec<f32> =
                 (0..16).map(|i| i as f32 * 0.05 - 0.3).collect();
-            let encoded = codec.encode_vector(&input);
+            let encoded = codec.encode_vector(&input).unwrap();
 
-            let scalar = codec.decode_vector(&encoded);
+            let scalar = codec.decode_vector(&encoded).unwrap();
             let table = DecodeTable::new(&codec);
-            let via_table = codec.decode_vector_with_table(&encoded, &table);
+            let via_table =
+                codec.decode_vector_with_table(&encoded, &table).unwrap();
             assert_eq!(scalar, via_table, "mismatch at nbits={nbits}");
         }
     }
@@ -581,7 +620,7 @@ mod tests {
             bucket_cutoffs: vec![-0.5, 0.0, 0.5],
             bucket_weights: vec![-0.75, -0.25, 0.25, 0.75],
         };
-        let encoded = codec.encode_vector(&[0.1f32; 8]);
+        let encoded = codec.encode_vector(&[0.1f32; 8]).unwrap();
         assert_eq!(encoded.codes.len(), 2);
     }
 
@@ -595,7 +634,7 @@ mod tests {
             bucket_cutoffs: (0..15).map(|i| i as f32 / 15.0 - 0.5).collect(),
             bucket_weights: (0..16).map(|i| i as f32 / 16.0 - 0.5).collect(),
         };
-        let encoded = codec.encode_vector(&[0.1f32; 8]);
+        let encoded = codec.encode_vector(&[0.1f32; 8]).unwrap();
         assert_eq!(encoded.codes.len(), 4);
     }
 
@@ -621,8 +660,8 @@ mod tests {
                 bucket_weights,
             };
             let input = [-0.4f32, -0.1, 0.0, 0.25, 0.49, -0.25, 0.1, 0.3];
-            let encoded = codec.encode_vector(&input);
-            let decoded = codec.decode_vector(&encoded);
+            let encoded = codec.encode_vector(&input).unwrap();
+            let decoded = codec.decode_vector(&encoded).unwrap();
             let max_err = input
                 .iter()
                 .zip(decoded.iter())
@@ -676,7 +715,7 @@ mod tests {
         // Two 1-D centroids at 0 and 10. Input 9.0 should snap to
         // centroid 1 (distance 1) rather than centroid 0 (distance 9).
         let codec = two_bit_1d_codec_with_centroids(vec![0.0, 10.0]);
-        let encoded = codec.encode_vector(&[9.0]);
+        let encoded = codec.encode_vector(&[9.0]).unwrap();
         assert_eq!(encoded.centroid_id, 1);
     }
 
@@ -684,9 +723,9 @@ mod tests {
     fn decode_inverts_a_known_encoding() {
         let codec = two_bit_1d_codec_with_centroids(vec![0.0]);
         // Residual −0.3 → bucket 1 (between −0.5 and 0.0) → weight −0.25.
-        let encoded = codec.encode_vector(&[-0.3]);
+        let encoded = codec.encode_vector(&[-0.3]).unwrap();
         assert_eq!(encoded.codes, vec![1]);
-        let decoded = codec.decode_vector(&encoded);
+        let decoded = codec.decode_vector(&encoded).unwrap();
         assert_eq!(decoded, vec![-0.25]);
     }
 
@@ -697,8 +736,8 @@ mod tests {
         // the middle buckets.
         let codec = two_bit_1d_codec_with_centroids(vec![0.0]);
         for &value in &[-0.4f32, -0.1, 0.0, 0.2, 0.4] {
-            let encoded = codec.encode_vector(&[value]);
-            let decoded = codec.decode_vector(&encoded);
+            let encoded = codec.encode_vector(&[value]).unwrap();
+            let decoded = codec.decode_vector(&encoded).unwrap();
             assert!(
                 (decoded[0] - value).abs() <= 0.25,
                 "value {value} -> decoded {d}",
@@ -711,7 +750,7 @@ mod tests {
     fn reconstruction_error_is_zero_when_residual_exactly_matches_weight() {
         let codec = two_bit_1d_codec_with_centroids(vec![0.0]);
         // Residual −0.25 lives in bucket 1, which decodes to −0.25.
-        assert_eq!(codec.reconstruction_error(&[-0.25]), 0.0);
+        assert_eq!(codec.reconstruction_error(&[-0.25]).unwrap(), 0.0);
     }
 
     #[test]
@@ -738,7 +777,7 @@ mod tests {
             centroid_id: 0,
             codes: vec![0, 0],
         };
-        let _ = codec.decode_vector(&bad);
+        let _ = codec.decode_vector(&bad).unwrap();
     }
 
     #[test]
@@ -822,7 +861,7 @@ mod tests {
 
         let mut max_err: f32 = 0.0;
         for v in &[-0.4f32, -0.1, 0.0, 0.25, 0.49] {
-            let err = codec.reconstruction_error(&[*v]).sqrt();
+            let err = codec.reconstruction_error(&[*v]).unwrap().sqrt();
             max_err = max_err.max(err);
         }
         // 16 buckets spanning ~1.0 of range ⇒ each bucket ≈ 0.0625 wide,
@@ -846,8 +885,8 @@ mod tests {
             bucket_weights: vec![-0.75, -0.25, 0.25, 0.75],
         };
         let input = [1.1f32, 0.7];
-        let encoded = codec.encode_vector(&input);
-        let decoded = codec.decode_vector(&encoded);
+        let encoded = codec.encode_vector(&input).unwrap();
+        let decoded = codec.decode_vector(&encoded).unwrap();
         for (d, i) in decoded.iter().zip(input.iter()) {
             assert!((d - i).abs() <= 0.25);
         }
