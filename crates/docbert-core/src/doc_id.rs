@@ -86,7 +86,10 @@ impl DocumentId {
         // The `short` / `full_hex` displays continue to carry the
         // full blake3 digest, so user-facing disambiguation is
         // unaffected.
-        let numeric_raw = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        let numeric_raw = u64::from_be_bytes([
+            hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6],
+            hash[7],
+        ]);
         let numeric = numeric_raw & crate::chunking::CHUNK_FAMILY_MASK;
         let full = hex_encode(&hash);
         let short = full[..MIN_SHORT_LEN].to_string();

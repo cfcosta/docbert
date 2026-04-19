@@ -15,8 +15,10 @@ fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
         return None;
     }
 
-    let num_tokens = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    let dimension = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let num_tokens =
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let dimension =
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     let expected_len =
         HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
     if bytes.len() != expected_len {
