@@ -123,10 +123,7 @@
                       cargoPackage
                     ];
                     doCheck = false;
-                    cargoLock = {
-                      lockFile = ./Cargo.lock;
-                      outputHashes."pylate-rs-1.0.4" = "sha256-eCLCX7+MGMpUumGq3oLPv3cTepHBmSFdVDVhcpEXiZY=";
-                    };
+                    cargoLock.lockFile = ./Cargo.lock;
                     RUSTFLAGS = "-C target-cpu=native";
                     preBuild =
                       pkgs.lib.optionalString (uiPath != null) ''
