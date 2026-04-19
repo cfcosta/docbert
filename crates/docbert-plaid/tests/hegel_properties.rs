@@ -1100,3 +1100,58 @@ fn prop_search_deterministic(tc: TestCase) {
     let b = search(&index, &query, sp);
     assert_eq!(a, b);
 }
+
+/// Metamorphic: MaxSim is a sum-of-max over query tokens, so the
+/// *set* of (doc_id, score) results must be identical under any
+/// permutation of query-token order. We shuffle via a drawn
+/// permutation of token indices, rerun search, and assert the two
+/// result sets are equal after sorting by doc_id. Tie-break order
+/// by doc_id means the returned vectors also agree element-wise.
+#[hegel::test(test_cases = 30)]
+fn prop_search_permutation_invariant_over_query_tokens(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let n_q = tc.draw(gs::integers::<usize>().min_value(2).max_value(5));
+    let query = tc.draw(unit_rows(dim, n_q));
+
+    // Build a drawn permutation of 0..n_q via a Fisher-Yates-ish
+    // shuffle using hegel draws — valid-by-construction.
+    let mut perm: Vec<usize> = (0..n_q).collect();
+    for i in (1..n_q).rev() {
+        let j = tc.draw(gs::integers::<usize>().min_value(0).max_value(i));
+        perm.swap(i, j);
+    }
+    let permuted: Vec<f32> = perm
+        .iter()
+        .flat_map(|&i| query[i * dim..(i + 1) * dim].iter().copied())
+        .collect();
+
+    let sp = SearchParams {
+        top_k: 10,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let a = search(&index, &query, sp);
+    let b = search(&index, &permuted, sp);
+
+    // Tie-break is doc_id asc so the vectors agree element-wise; scores
+    // must match within a tiny ε since the only difference is the
+    // order of the per-query-token partial maxes the reducer sums.
+    assert_eq!(a.len(), b.len());
+    for (ra, rb) in a.iter().zip(b.iter()) {
+        assert_eq!(ra.doc_id, rb.doc_id);
+        assert!(
+            (ra.score - rb.score).abs() <= 1e-4,
+            "permutation changed score: {ra:?} vs {rb:?}",
+        );
+    }
+}
