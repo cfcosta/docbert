@@ -1,6 +1,6 @@
 use anyhow::Result;
 use candle_core::Device;
-use docbert_pylate::{hierarchical_pooling, ColBERT};
+use docbert_pylate::{ColBERT, hierarchical_pooling};
 
 fn main() -> Result<()> {
     let device = Device::Cpu;
