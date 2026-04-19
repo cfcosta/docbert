@@ -43,7 +43,7 @@ accelerate = [
 ]
 
 [dev-dependencies]
-hegeltest = "0.5"
+hegeltest = "0.6"
 
 [[bin]]
 name = "benchmark"

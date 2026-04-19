@@ -32,5 +32,5 @@ metal = ["docbert-pylate/metal"]
 cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
-hegeltest = "0.5"
+hegeltest = "0.6"
 tempfile = "3"
