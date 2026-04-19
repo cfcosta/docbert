@@ -904,7 +904,26 @@ mod hegel_tests {
         normalize_mask_and_truncate_right_padded,
     };
 
-    const DEV: Device = Device::Cpu;
+    /// Selects the test device based on compile-time features, falling back
+    /// to CPU if the preferred accelerator can't be initialised at runtime
+    /// (e.g., the `cuda` feature is on but no GPU is present in this
+    /// environment). Picks CUDA, then Metal, then CPU — matches how
+    /// `ColBERT::with_device` prioritises them in production.
+    fn test_device() -> Device {
+        #[cfg(feature = "cuda")]
+        {
+            if let Ok(d) = Device::new_cuda(0) {
+                return d;
+            }
+        }
+        #[cfg(feature = "metal")]
+        {
+            if let Ok(d) = Device::new_metal(0) {
+                return d;
+            }
+        }
+        Device::Cpu
+    }
 
     // -----------------------------------------------------------------------
     // Shared generators
@@ -914,7 +933,10 @@ mod hegel_tests {
     /// The mask is arbitrary 0/1 — used for properties that don't require
     /// right-padding (E1, E2).
     #[hegel::composite]
-    fn embeddings_with_free_mask(tc: TestCase) -> (Tensor, Tensor) {
+    fn embeddings_with_free_mask(
+        tc: TestCase,
+        dev: Device,
+    ) -> (Tensor, Tensor) {
         let b: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
         let s: usize =
@@ -937,8 +959,8 @@ mod hegel_tests {
                 .min_size(b * s)
                 .max_size(b * s),
         );
-        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &DEV).unwrap();
-        let mask = Tensor::from_vec(mask_data, (b, s), &DEV).unwrap();
+        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &dev).unwrap();
+        let mask = Tensor::from_vec(mask_data, (b, s), &dev).unwrap();
         (embeddings, mask)
     }
 
@@ -949,6 +971,7 @@ mod hegel_tests {
     #[hegel::composite]
     fn embeddings_with_right_padded_mask(
         tc: TestCase,
+        dev: Device,
     ) -> (Tensor, Tensor, usize) {
         let b: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
@@ -977,8 +1000,8 @@ mod hegel_tests {
                 mask_flat.push(u32::from(j < valid));
             }
         }
-        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &DEV).unwrap();
-        let mask = Tensor::from_vec(mask_flat, (b, s), &DEV).unwrap();
+        let embeddings = Tensor::from_vec(emb_data, (b, s, d), &dev).unwrap();
+        let mask = Tensor::from_vec(mask_flat, (b, s), &dev).unwrap();
         (embeddings, mask, max_valid)
     }
 
@@ -986,7 +1009,7 @@ mod hegel_tests {
     /// varying per-batch sequence length. Used to exercise
     /// `concatenate_embedding_batches`.
     #[hegel::composite]
-    fn embedding_batch_list(tc: TestCase) -> Vec<Tensor> {
+    fn embedding_batch_list(tc: TestCase, dev: Device) -> Vec<Tensor> {
         let n_batches: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
         let batch: usize =
@@ -1010,7 +1033,7 @@ mod hegel_tests {
                     .max_size(batch * tokens * dim),
             );
             out.push(
-                Tensor::from_vec(data, (batch, tokens, dim), &DEV).unwrap(),
+                Tensor::from_vec(data, (batch, tokens, dim), &dev).unwrap(),
             );
         }
         out
@@ -1019,7 +1042,7 @@ mod hegel_tests {
     /// Draws query and document embeddings that share the last dim but can
     /// differ in batch size and token count. Used for every C-tier property.
     #[hegel::composite]
-    fn query_doc_pair(tc: TestCase) -> (Tensor, Tensor) {
+    fn query_doc_pair(tc: TestCase, dev: Device) -> (Tensor, Tensor) {
         let dim: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
         let q_batch: usize =
@@ -1048,9 +1071,9 @@ mod hegel_tests {
                 .max_size(d_batch * d_tokens * dim),
         );
         let q =
-            Tensor::from_vec(q_data, (q_batch, q_tokens, dim), &DEV).unwrap();
+            Tensor::from_vec(q_data, (q_batch, q_tokens, dim), &dev).unwrap();
         let d =
-            Tensor::from_vec(d_data, (d_batch, d_tokens, dim), &DEV).unwrap();
+            Tensor::from_vec(d_data, (d_batch, d_tokens, dim), &dev).unwrap();
         (q, d)
     }
 
@@ -1064,7 +1087,8 @@ mod hegel_tests {
     /// shared.
     #[hegel::test(test_cases = 200)]
     fn normalize_and_mask_padded_respects_mask(tc: TestCase) {
-        let (emb, mask) = tc.draw(embeddings_with_free_mask());
+        let dev = test_device();
+        let (emb, mask) = tc.draw(embeddings_with_free_mask(dev));
         let out = normalize_and_mask_padded(&emb, &mask).unwrap();
         assert_eq!(out.dims(), emb.dims(), "shape must be preserved");
 
@@ -1095,8 +1119,9 @@ mod hegel_tests {
     /// `(batch, max(max_len, 1), dim)`.
     #[hegel::test(test_cases = 200)]
     fn truncate_right_padded_has_expected_shape(tc: TestCase) {
+        let dev = test_device();
         let (emb, mask, max_valid) =
-            tc.draw(embeddings_with_right_padded_mask());
+            tc.draw(embeddings_with_right_padded_mask(dev));
         let (b, _, d) = emb.dims3().unwrap();
         let out =
             normalize_mask_and_truncate_right_padded(&emb, &mask, max_valid)
@@ -1112,13 +1137,14 @@ mod hegel_tests {
     /// corrupt document embeddings.
     #[hegel::test(test_cases = 200)]
     fn truncate_right_padded_matches_compact(tc: TestCase) {
+        let dev = test_device();
         let (emb, mask, max_valid) =
-            tc.draw(embeddings_with_right_padded_mask());
+            tc.draw(embeddings_with_right_padded_mask(dev.clone()));
         let fast =
             normalize_mask_and_truncate_right_padded(&emb, &mask, max_valid)
                 .unwrap();
         let compact =
-            filter_normalize_and_pad_compact(&emb, &mask, &DEV).unwrap();
+            filter_normalize_and_pad_compact(&emb, &mask, &dev).unwrap();
 
         // When every row in a given batch is masked out, the compact path
         // emits one zero row while the fast path emits `max(max_valid, 1)`
@@ -1150,7 +1176,8 @@ mod hegel_tests {
     /// input — the fast-path clone returns the tensor unchanged.
     #[hegel::test(test_cases = 100)]
     fn concatenate_single_is_identity(tc: TestCase) {
-        let list = tc.draw(embedding_batch_list());
+        let dev = test_device();
+        let list = tc.draw(embedding_batch_list(dev));
         let only = list.into_iter().next().unwrap();
         let clone = only.to_vec3::<f32>().unwrap();
         let out = concatenate_embedding_batches(vec![only.clone()]).unwrap();
@@ -1163,7 +1190,8 @@ mod hegel_tests {
     /// original token count is zero.
     #[hegel::test(test_cases = 150)]
     fn concatenate_shape_and_zero_padding(tc: TestCase) {
-        let list = tc.draw(embedding_batch_list());
+        let dev = test_device();
+        let list = tc.draw(embedding_batch_list(dev));
         let expected_batch: usize =
             list.iter().map(|t| t.dim(0).unwrap()).sum();
         let expected_tokens: usize =
@@ -1270,7 +1298,8 @@ mod hegel_tests {
     /// C1: `compute_similarities` agrees with a hand-rolled MaxSim reference.
     #[hegel::test(test_cases = 200)]
     fn similarity_matches_naive_maxsim(tc: TestCase) {
-        let (q, d) = tc.draw(query_doc_pair());
+        let dev = test_device();
+        let (q, d) = tc.draw(query_doc_pair(dev));
         let got = compute_similarities(&q, &d).unwrap();
         let want = naive_max_sim(&q, &d);
         approx_eq_matrix(&got.data, &want, 1e-4);
@@ -1282,7 +1311,8 @@ mod hegel_tests {
     /// reference in the same order.
     #[hegel::test(test_cases = 150)]
     fn raw_similarity_matches_naive(tc: TestCase) {
-        let (q, d) = tc.draw(query_doc_pair());
+        let dev = test_device();
+        let (q, d) = tc.draw(query_doc_pair(dev));
         let raw = compute_raw_similarity(&q, &d).unwrap();
         let (nq, nd, qt, dt) = raw.dims4().unwrap();
         let flat = raw.reshape((nq * nd, qt, dt)).unwrap();
@@ -1313,7 +1343,8 @@ mod hegel_tests {
     /// drop or duplicate rows.
     #[hegel::test(test_cases = 100)]
     fn similarity_shape_contract(tc: TestCase) {
-        let (q, d) = tc.draw(query_doc_pair());
+        let dev = test_device();
+        let (q, d) = tc.draw(query_doc_pair(dev));
         let nq = q.dim(0).unwrap();
         let nd = d.dim(0).unwrap();
         let out = compute_similarities(&q, &d).unwrap();
@@ -1328,9 +1359,10 @@ mod hegel_tests {
     /// query-token max is non-decreasing and the sum follows.
     #[hegel::test(test_cases = 150)]
     fn zero_doc_token_is_non_decreasing(tc: TestCase) {
-        let (q, d) = tc.draw(query_doc_pair());
+        let dev = test_device();
+        let (q, d) = tc.draw(query_doc_pair(dev.clone()));
         let (db, dt, dd) = d.dims3().unwrap();
-        let zeros = Tensor::zeros((db, 1, dd), d.dtype(), &DEV).unwrap();
+        let zeros = Tensor::zeros((db, 1, dd), d.dtype(), &dev).unwrap();
         let d_padded = Tensor::cat(&[&d, &zeros], 1).unwrap();
         assert_eq!(d_padded.dim(1).unwrap(), dt + 1);
 
@@ -1352,7 +1384,8 @@ mod hegel_tests {
     /// per-q-token inner dot-product row.
     #[hegel::test(test_cases = 150)]
     fn similarity_linear_in_positive_query_scale(tc: TestCase) {
-        let (q, d) = tc.draw(query_doc_pair());
+        let dev = test_device();
+        let (q, d) = tc.draw(query_doc_pair(dev));
         let k: f32 = tc.draw(
             gs::floats::<f32>()
                 .min_value(0.25)

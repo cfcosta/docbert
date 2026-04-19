@@ -25,7 +25,26 @@ use docbert_pylate::{
 };
 use hegel::{TestCase, generators as gs};
 
-const DEV: Device = Device::Cpu;
+/// Selects the test device based on compile-time features, falling back to
+/// CPU if the preferred accelerator can't be initialised at runtime (e.g.,
+/// the `cuda` feature is on but no GPU is present in this environment).
+/// Picks CUDA, then Metal, then CPU — matches how `ColBERT::with_device`
+/// prioritises them in production.
+fn test_device() -> Device {
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(d) = Device::new_cuda(0) {
+            return d;
+        }
+    }
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(d) = Device::new_metal(0) {
+            return d;
+        }
+    }
+    Device::Cpu
+}
 
 // ---------------------------------------------------------------------------
 // Reusable composite generators
@@ -93,8 +112,14 @@ fn tensor_3d_parts_nonzero(tc: TestCase) -> (usize, usize, usize, Vec<f32>) {
     (batch, seq, dim, data)
 }
 
-fn mk_tensor(b: usize, s: usize, d: usize, data: Vec<f32>) -> Tensor {
-    Tensor::from_vec(data, (b, s, d), &DEV).unwrap()
+fn mk_tensor(
+    dev: &Device,
+    b: usize,
+    s: usize,
+    d: usize,
+    data: Vec<f32>,
+) -> Tensor {
+    Tensor::from_vec(data, (b, s, d), dev).unwrap()
 }
 
 /// Row-wise squared L2 norm over the last dim of a 3-D tensor.
@@ -116,8 +141,9 @@ fn row_sq_norms(t: &Tensor) -> Vec<f32> {
 /// A1+A5: every row's L2 norm is at most `1 + ε`, and the shape is preserved.
 #[hegel::test(test_cases = 300)]
 fn normalize_l2_bounds_and_shape(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts());
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
 
     let y = normalize_l2(&x).unwrap();
     assert_eq!(y.dims(), x.dims(), "shape must be preserved");
@@ -133,6 +159,7 @@ fn normalize_l2_bounds_and_shape(tc: TestCase) {
 /// strictly scale-invariant by design.
 #[hegel::test(test_cases = 200)]
 fn normalize_l2_positive_scale_invariance(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts_nonzero());
     // Keep `v * k` well above the 1e-12 epsilon for every element.
     let k: f32 = tc.draw(
@@ -142,8 +169,8 @@ fn normalize_l2_positive_scale_invariance(tc: TestCase) {
             .allow_nan(false)
             .allow_infinity(false),
     );
-    let x = mk_tensor(b, s, d, data.clone());
-    let scaled = mk_tensor(b, s, d, data.iter().map(|v| v * k).collect());
+    let x = mk_tensor(&dev, b, s, d, data.clone());
+    let scaled = mk_tensor(&dev, b, s, d, data.iter().map(|v| v * k).collect());
 
     let y = normalize_l2(&x).unwrap().to_vec3::<f32>().unwrap();
     let y_scaled = normalize_l2(&scaled).unwrap().to_vec3::<f32>().unwrap();
@@ -165,8 +192,9 @@ fn normalize_l2_positive_scale_invariance(tc: TestCase) {
 /// unit on the second, so idempotence does not hold there.
 #[hegel::test(test_cases = 200)]
 fn normalize_l2_idempotent(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts_nonzero());
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
 
     let once = normalize_l2(&x).unwrap();
     let twice = normalize_l2(&once).unwrap();
@@ -187,10 +215,11 @@ fn normalize_l2_idempotent(tc: TestCase) {
 /// B1: `pool_factor ∈ {0, 1}` returns the input clone exactly.
 #[hegel::test(test_cases = 200)]
 fn hierarchical_pooling_trivial_is_identity(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts());
     let pf: usize = tc.draw(gs::sampled_from(vec![0usize, 1]));
 
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
     let y = hierarchical_pooling(&x, pf).unwrap();
 
     assert_eq!(y.dims(), x.dims());
@@ -204,11 +233,12 @@ fn hierarchical_pooling_trivial_is_identity(tc: TestCase) {
 /// with `max(1)`), so we generate it up to `seq + 4` to cover that path.
 #[hegel::test(test_cases = 200)]
 fn hierarchical_pooling_shape_contract(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts());
     let pf: usize =
         tc.draw(gs::integers::<usize>().min_value(1).max_value(s + 4));
 
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
     let y = hierarchical_pooling(&x, pf).unwrap();
 
     assert_eq!(y.dim(0).unwrap(), b, "batch dim must match");
@@ -227,11 +257,12 @@ fn hierarchical_pooling_shape_contract(tc: TestCase) {
 /// in must still be somewhere in the output (at the tail) unchanged.
 #[hegel::test(test_cases = 150)]
 fn hierarchical_pooling_protects_token_zero(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts());
     let pf: usize =
         tc.draw(gs::integers::<usize>().min_value(2).max_value(s + 2));
 
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
     let y = hierarchical_pooling(&x, pf).unwrap();
 
     let xv: Vec<Vec<Vec<f32>>> = x.to_vec3::<f32>().unwrap();
@@ -249,6 +280,7 @@ fn hierarchical_pooling_protects_token_zero(tc: TestCase) {
 /// `pool_factor` means more aggressive clustering, never less.
 #[hegel::test(test_cases = 150)]
 fn hierarchical_pooling_seq_len_monotone_in_pf(tc: TestCase) {
+    let dev = test_device();
     let (b, s, d, data) = tc.draw(tensor_3d_parts());
     let pf_small: usize =
         tc.draw(gs::integers::<usize>().min_value(1).max_value(s.max(1)));
@@ -258,7 +290,7 @@ fn hierarchical_pooling_seq_len_monotone_in_pf(tc: TestCase) {
             .max_value(pf_small + s + 2),
     );
 
-    let x = mk_tensor(b, s, d, data);
+    let x = mk_tensor(&dev, b, s, d, data);
     let len_small = hierarchical_pooling(&x, pf_small).unwrap().dim(1).unwrap();
     let len_large = hierarchical_pooling(&x, pf_large).unwrap().dim(1).unwrap();
     assert!(
@@ -291,7 +323,8 @@ fn hierarchical_pooling_rejects_non_3d(tc: TestCase) {
         .min_size(n)
         .max_size(n),
     );
-    let t = Tensor::from_vec(data, dims, &DEV).unwrap();
+    let dev = test_device();
+    let t = Tensor::from_vec(data, dims, &dev).unwrap();
     assert!(hierarchical_pooling(&t, 2).is_err());
 }
 
