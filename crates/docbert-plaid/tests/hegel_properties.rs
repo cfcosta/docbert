@@ -223,3 +223,25 @@ fn prop_squared_l2_non_negative(tc: TestCase) {
     let b = tc.draw(finite_floats(n));
     assert!(squared_l2(&a, &b) >= 0.0);
 }
+
+/// Algebraic: `‖a‖² − 2·dot(a,b) + ‖b‖² == squared_l2(a,b)` within a
+/// small tolerance. This is the exact identity `assign_tensor_chunked`
+/// relies on (`||c||² − 2·p·c` with the `||p||²` constant dropped for
+/// argmin); the formula only sees unit-norm inputs in practice, so we
+/// test that regime — it avoids the catastrophic cancellation that
+/// would otherwise dominate when `a ≈ b` and both are large.
+#[hegel::test(test_cases = 200)]
+fn prop_squared_l2_expansion_identity(tc: TestCase) {
+    use docbert_plaid::distance::{dot, squared_l2};
+    let dim = tc.draw(codec_dim());
+    let ab = tc.draw(unit_rows(dim, 2));
+    let (a, b) = ab.split_at(dim);
+    let lhs = dot(a, a) - 2.0 * dot(a, b) + dot(b, b);
+    let rhs = squared_l2(a, b);
+    // Unit-norm inputs keep every term ≤ 4, so 1e-5 absolute is a
+    // generous tolerance against per-element f32 rounding.
+    assert!(
+        (lhs - rhs).abs() <= 1e-5,
+        "expansion identity drifted: lhs={lhs} rhs={rhs}",
+    );
+}
