@@ -629,3 +629,47 @@ fn prop_packed_bytes_formula(tc: TestCase) {
     let encoded = codec.encode_vector(&vec![0.0; dim]);
     assert_eq!(encoded.codes.len(), expected);
 }
+
+/// Algebraic: `bucket_for_value` is monotone — if `v1 ≤ v2` then the
+/// bucket containing v1 is ≤ the bucket containing v2 for any
+/// ascending cutoff vector. `bucket_for_value` is module-private, so
+/// we test it indirectly via `encode_vector` + `read_code` on a 2-dim
+/// codec fed `(v1, v2)`.
+#[hegel::test(test_cases = 200)]
+fn prop_bucket_for_value_monotonic(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, read_code};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![2u32, 4]));
+    let num_buckets = 1u32 << nbits;
+    let codec = ResidualCodec {
+        nbits,
+        dim: 2,
+        centroids: vec![0.0, 0.0],
+        bucket_cutoffs: (1..num_buckets).map(|i| i as f32 - 0.5).collect(),
+        bucket_weights: (0..num_buckets).map(|i| i as f32).collect(),
+    };
+    let (v1, v2): (f32, f32) = {
+        let a: f32 = tc.draw(
+            gs::floats::<f32>()
+                .min_value(-2.0)
+                .max_value((num_buckets + 2) as f32)
+                .allow_nan(false)
+                .allow_infinity(false),
+        );
+        let b: f32 = tc.draw(
+            gs::floats::<f32>()
+                .min_value(-2.0)
+                .max_value((num_buckets + 2) as f32)
+                .allow_nan(false)
+                .allow_infinity(false),
+        );
+        if a <= b { (a, b) } else { (b, a) }
+    };
+
+    let encoded = codec.encode_vector(&[v1, v2]);
+    let b1 = read_code(&encoded.codes, 0, nbits);
+    let b2 = read_code(&encoded.codes, 1, nbits);
+    assert!(
+        b1 <= b2,
+        "bucket_for_value not monotone: v1={v1} → {b1}, v2={v2} → {b2}",
+    );
+}
