@@ -828,3 +828,51 @@ fn prop_decode_table_matches_scalar(tc: TestCase) {
     let via_table = codec.decode_vector_with_table(&encoded, &table);
     assert_eq!(scalar, via_table);
 }
+
+/// Differential: `batch_encode_tokens` must produce the same
+/// `(centroid_id, codes)` per-token as calling `encode_vector` on
+/// each row independently. Catches any divergence between the
+/// matmul-driven batched assignment and the scalar single-token
+/// path — a drift there would poison every index built via
+/// `build_index`.
+#[hegel::test(test_cases = 50)]
+fn prop_batch_encode_matches_per_token(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let dim = n_bytes * codes_per_byte;
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let n_tokens = tc.draw(gs::integers::<usize>().min_value(1).max_value(16));
+
+    let centroids = tc.draw(unit_rows(dim, k));
+    let residual_pool = tc.draw(finite_floats(64));
+    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids,
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+    let tokens = tc.draw(unit_rows(dim, n_tokens));
+
+    let (cids, packed) = codec.batch_encode_tokens(&tokens);
+    let packed_per = codec.packed_bytes();
+    assert_eq!(cids.len(), n_tokens);
+    assert_eq!(packed.len(), n_tokens * packed_per);
+
+    for (i, token) in tokens.chunks_exact(dim).enumerate() {
+        let expected = codec.encode_vector(token);
+        assert_eq!(
+            cids[i], expected.centroid_id,
+            "token {i}: batched centroid_id differs",
+        );
+        let batch_slice = &packed[i * packed_per..(i + 1) * packed_per];
+        assert_eq!(
+            batch_slice,
+            expected.codes.as_slice(),
+            "token {i}: batched codes differ from per-token encode",
+        );
+    }
+}
