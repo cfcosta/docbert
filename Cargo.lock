@@ -1328,6 +1328,7 @@ dependencies = [
  "candle-flash-attn",
  "candle-nn",
  "candle-transformers",
+ "hegeltest",
  "hf-hub 0.4.3",
  "kodama",
  "rayon",

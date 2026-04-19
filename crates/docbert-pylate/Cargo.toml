@@ -42,6 +42,9 @@ accelerate = [
   "candle-transformers/accelerate",
 ]
 
+[dev-dependencies]
+hegeltest = "0.5"
+
 [[bin]]
 name = "benchmark"
 path = "benchmark/main.rs"
