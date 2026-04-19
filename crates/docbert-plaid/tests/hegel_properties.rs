@@ -738,3 +738,38 @@ fn prop_train_quantizer_shapes(tc: TestCase) {
     assert_eq!(cutoffs.len(), num_buckets - 1);
     assert_eq!(weights.len(), num_buckets);
 }
+
+/// Algebraic / monotonicity: MSE reconstruction error trained and
+/// evaluated on the same pool is non-increasing as `nbits` grows from
+/// 1 → 2 → 4 → 8. More buckets ⇒ narrower buckets ⇒ weights sit
+/// closer to the residuals they represent. Generalises the
+/// hand-rolled test in `tests/properties.rs` across random residual
+/// distributions.
+#[hegel::test(test_cases = 30)]
+fn prop_reconstruction_error_decreases_with_nbits(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    let n = tc.draw(gs::integers::<usize>().min_value(32).max_value(512));
+    let pool = tc.draw(finite_floats(n));
+
+    let mut prev = f64::INFINITY;
+    for nbits in [1u32, 2, 4, 8] {
+        let (cutoffs, weights) = train_quantizer(&pool, nbits);
+        let codec = ResidualCodec {
+            nbits,
+            dim: 1,
+            centroids: vec![0.0],
+            bucket_cutoffs: cutoffs,
+            bucket_weights: weights,
+        };
+        let mse: f64 = pool
+            .iter()
+            .map(|v| codec.reconstruction_error(&[*v]) as f64)
+            .sum::<f64>()
+            / pool.len() as f64;
+        assert!(
+            mse <= prev + 1e-6,
+            "MSE rose from {prev} to {mse} at nbits={nbits}",
+        );
+        prev = mse;
+    }
+}
