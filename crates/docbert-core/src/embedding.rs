@@ -8,7 +8,7 @@ use crate::{
 
 /// How many documents to hand to `encode_documents` in one outer batch.
 ///
-/// This stays above pylate-rs' internal 32-document batch so CPU work can fan
+/// This stays above docbert-pylate' internal 32-document batch so CPU work can fan
 /// out across several inner batches, but not so large that the returned tensor
 /// becomes awkward to serialize into `EmbeddingDb`.
 pub const EMBEDDING_SUBMISSION_BATCH_SIZE: usize = 128;
@@ -62,7 +62,7 @@ pub fn embed_and_store(
 
 /// Encode and store many documents using larger submission batches.
 ///
-/// docbert hands `pylate-rs` groups that are bigger than its internal
+/// docbert hands `docbert-pylate` groups that are bigger than its internal
 /// 32-document batch size so CPU work can spread across multiple inner batches.
 /// `on_progress` receives the cumulative document count after each batch is stored.
 pub fn embed_and_store_in_batches<F>(
@@ -188,7 +188,7 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
     Ok(flat)
 }
 
-/// Trim trailing all-zero token rows introduced by pylate-rs batch padding.
+/// Trim trailing all-zero token rows introduced by docbert-pylate batch padding.
 fn trim_trailing_padding_rows(data: &[f32], dimension: usize) -> &[f32] {
     if dimension == 0 || data.len() <= dimension {
         return data;

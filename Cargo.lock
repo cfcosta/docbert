@@ -1291,11 +1291,11 @@ dependencies = [
  "bytemuck",
  "candle-core",
  "docbert-plaid",
+ "docbert-pylate",
  "hegeltest",
  "hf-hub 0.5.0",
  "ignore",
  "pdf_oxide",
- "pylate-rs",
  "rayon",
  "redb",
  "rkyv",
@@ -3598,26 +3598,6 @@ name = "pulp-wasm-simd-flag"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40e24eee682d89fb193496edf918a7f407d30175b2e785fe057e4392dfd182e0"
-
-[[package]]
-name = "pylate-rs"
-version = "1.0.4"
-source = "git+https://github.com/cfcosta/pylate-rs#20cba8834830e42cad131db0ceb618332ded26bb"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-flash-attn",
- "candle-nn",
- "candle-transformers",
- "hf-hub 0.4.3",
- "kodama",
- "rayon",
- "safetensors 0.7.0",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokenizers",
-]
 
 [[package]]
 name = "quick-error"

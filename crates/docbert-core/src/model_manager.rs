@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use candle_core::{Device, Tensor};
-use pylate_rs::{ColBERT, Similarities};
+use docbert_pylate::{ColBERT, Similarities};
 
 use crate::error::{Error, Result};
 
@@ -17,13 +17,13 @@ pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 /// override it explicitly.
 pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
 
-/// Environment variable checked for a pylate-rs internal batch size override.
+/// Environment variable checked for a docbert-pylate internal batch size override.
 pub const EMBEDDING_BATCH_SIZE_ENV_VAR: &str = "DOCBERT_EMBEDDING_BATCH_SIZE";
 
-/// Default pylate-rs internal batch size for CPU execution.
+/// Default docbert-pylate internal batch size for CPU execution.
 pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
 
-/// Default pylate-rs internal batch size for accelerated execution.
+/// Default docbert-pylate internal batch size for accelerated execution.
 pub const DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE: usize = 64;
 
 #[allow(dead_code)]
@@ -353,7 +353,7 @@ impl ModelManager {
         self
     }
 
-    /// Sets pylate-rs' internal batch size for encoding.
+    /// Sets docbert-pylate' internal batch size for encoding.
     ///
     /// Useful for increasing GPU utilization when the default batch size is
     /// too conservative for the available memory.

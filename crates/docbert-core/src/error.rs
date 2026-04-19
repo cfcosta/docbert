@@ -67,7 +67,7 @@ pub enum Error {
     DataDir(PathBuf),
 
     #[error("model error: {0}")]
-    Colbert(#[from] pylate_rs::ColbertError),
+    Colbert(#[from] docbert_pylate::ColbertError),
 
     #[error("tensor error: {0}")]
     Candle(#[from] candle_core::Error),

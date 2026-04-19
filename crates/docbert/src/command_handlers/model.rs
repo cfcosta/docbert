@@ -162,7 +162,7 @@ pub(crate) fn cmd_model_set(
         let st_config = model_path.join("config_sentence_transformers.json");
         if !st_config.exists() {
             eprintln!(
-                "Warning: {} is missing config_sentence_transformers.json; pylate-rs may not load this model.",
+                "Warning: {} is missing config_sentence_transformers.json; docbert-pylate may not load this model.",
                 model_path.display()
             );
         }

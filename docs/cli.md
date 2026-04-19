@@ -385,7 +385,7 @@ Persist a default model id or local path in `config.db`.
 Behavior notes:
 
 - This stores the value under `model_name`.
-- If `<model>` is a local directory and it lacks `config_sentence_transformers.json`, docbert warns that `pylate-rs` may not load it.
+- If `<model>` is a local directory and it lacks `config_sentence_transformers.json`, docbert warns that `docbert-pylate` may not load it.
 - Changing the default model does not re-embed existing documents. You usually need `docbert rebuild` afterward.
 
 #### `docbert model clear`

@@ -114,22 +114,22 @@ Used for:
 
 ### Direct dependencies
 
-| Dependency    | Version                                                         | Role in current code                                                      |
-| ------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `blake3`      | `1.8.2`                                                         | Merkle snapshot hashing                                                   |
-| `bytemuck`    | `1.25.0`                                                        | Efficient `f32`/byte conversions in embedding storage                     |
-| `candle-core` | `0.9.1`                                                         | Tensor representation and tensor operations for model/embedding work      |
-| `hf-hub`      | `0.5.0`                                                         | Fetches remote model metadata such as `config_sentence_transformers.json` |
-| `ignore`      | `0.4`                                                           | Filesystem walking with optional Git-ignore-aware discovery               |
-| `pylate-rs`   | `1.0.4` from git rev `4a014da31ab13faef5155aefb92851100cca5035` | ColBERT model loading, query/document encoding, and similarity scoring    |
-| `rayon`       | `1.11.0`                                                        | Parallel document loading/preparation work                                |
-| `redb`        | `3.1.0`                                                         | `config.db` and `embeddings.db` storage                                   |
-| `rkyv`        | `0.8.15`                                                        | Binary serialization for typed stored data                                |
-| `pdf_oxide`   | `0.3.21`                                                        | PDF-to-markdown/text extraction during preparation                        |
-| `serde`       | `1`                                                             | Serialization support for public/config/runtime-facing data types         |
-| `serde_json`  | `1`                                                             | JSON values and parsing for metadata, settings, and conversation payloads |
-| `tantivy`     | `0.25`                                                          | Lexical indexing and BM25/fuzzy retrieval                                 |
-| `thiserror`   | `2`                                                             | Error definition for `docbert_core::Error`                                |
+| Dependency       | Version                                                                  | Role in current code                                                      |
+| ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `blake3`         | `1.8.2`                                                                  | Merkle snapshot hashing                                                   |
+| `bytemuck`       | `1.25.0`                                                                 | Efficient `f32`/byte conversions in embedding storage                     |
+| `candle-core`    | `0.9.1`                                                                  | Tensor representation and tensor operations for model/embedding work      |
+| `hf-hub`         | `0.5.0`                                                                  | Fetches remote model metadata such as `config_sentence_transformers.json` |
+| `ignore`         | `0.4`                                                                    | Filesystem walking with optional Git-ignore-aware discovery               |
+| `docbert-pylate` | workspace path `crates/docbert-pylate` (vendored from `pylate-rs` 1.0.4) | ColBERT model loading, query/document encoding, and similarity scoring    |
+| `rayon`          | `1.11.0`                                                                 | Parallel document loading/preparation work                                |
+| `redb`           | `3.1.0`                                                                  | `config.db` and `embeddings.db` storage                                   |
+| `rkyv`           | `0.8.15`                                                                 | Binary serialization for typed stored data                                |
+| `pdf_oxide`      | `0.3.21`                                                                 | PDF-to-markdown/text extraction during preparation                        |
+| `serde`          | `1`                                                                      | Serialization support for public/config/runtime-facing data types         |
+| `serde_json`     | `1`                                                                      | JSON values and parsing for metadata, settings, and conversation payloads |
+| `tantivy`        | `0.25`                                                                   | Lexical indexing and BM25/fuzzy retrieval                                 |
+| `thiserror`      | `2`                                                                      | Error definition for `docbert_core::Error`                                |
 
 ### Direct dev-dependencies
 
@@ -144,17 +144,17 @@ Used for:
 ```toml
 [features]
 default = []
-mkl = ["pylate-rs/mkl"]
-accelerate = ["pylate-rs/accelerate"]
-metal = ["pylate-rs/metal"]
-cuda = ["pylate-rs/cuda"]
+mkl = ["docbert-pylate/mkl"]
+accelerate = ["docbert-pylate/accelerate"]
+metal = ["docbert-pylate/metal"]
+cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 ```
 
 These are the main build-time switches for accelerated inference.
 
 ### Notes on major core dependencies
 
-#### `pylate-rs`
+#### `docbert-pylate`
 
 This is the main ColBERT integration layer.
 
@@ -164,13 +164,11 @@ Current uses include:
 - query/document encoding
 - similarity computation used by reranking
 
-Important current manifest detail: this is **not just a crates.io version pin**. The project depends on:
-
-- version: `1.0.4`
-- git source: `https://github.com/cfcosta/pylate-rs`
-- rev: `4a014da31ab13faef5155aefb92851100cca5035`
-
-That should stay documented because it affects reproducibility and debugging.
+`docbert-pylate` is vendored into the workspace under `crates/docbert-pylate` as a
+Rust-only fork of [`pylate-rs`](https://github.com/lightonai/pylate-rs) (originally
+based on upstream 1.0.4). The upstream Python, WebAssembly, and npm packaging
+layers have been removed; the crate is consumed exclusively from inside the
+workspace and tracks the workspace release version rather than upstream's.
 
 #### `tantivy`
 
@@ -253,12 +251,12 @@ The application crate reuses the core crate for:
 
 That is why most search/storage dependency weight lives in `docbert-core`, not `docbert`.
 
-### Feature flags flow from app to core to `pylate-rs`
+### Feature flags flow from app to core to `docbert-pylate`
 
 The feature chain is:
 
 ```text
-docbert feature -> docbert-core feature -> pylate-rs backend feature
+docbert feature -> docbert-core feature -> docbert-pylate backend feature
 ```
 
 For example:
@@ -266,7 +264,8 @@ For example:
 ```text
 cargo build -p docbert --features cuda
     -> enables docbert-core/cuda
-    -> enables pylate-rs/cuda
+    -> enables docbert-pylate/cuda
+    -> enables docbert-plaid/cuda
 ```
 
 ### Some crates appear in both manifests for different reasons
