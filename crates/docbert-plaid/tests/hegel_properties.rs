@@ -1461,6 +1461,54 @@ fn prop_search_unreachable_threshold_equals_none(tc: TestCase) {
     assert_eq!(a, b);
 }
 
+/// Metamorphic (paper §4.2): centroid interaction is a *filter*, so
+/// with `top_k` ≥ every candidate the doc_ids surfaced with a
+/// shortlist are always a subset of those surfaced without one. The
+/// existing `prop_search_large_shortlist_equals_none` only tests the
+/// no-op end of the spectrum; this pins down the general filter
+/// semantics.
+#[hegel::test(test_cases = 20)]
+fn prop_centroid_interaction_result_subset_of_unfiltered(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let top_k = docs.len() + 4;
+    let base = SearchParams {
+        top_k,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let n_candidate_docs =
+        tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
+    let filtered = SearchParams {
+        n_candidate_docs: Some(n_candidate_docs),
+        ..base
+    };
+
+    let unfiltered_results = search(&index, &query, base);
+    let filtered_results = search(&index, &query, filtered);
+
+    let unfiltered_ids: std::collections::HashSet<u64> =
+        unfiltered_results.iter().map(|r| r.doc_id).collect();
+    for r in &filtered_results {
+        assert!(
+            unfiltered_ids.contains(&r.doc_id),
+            "shortlisted doc {} is not in the unfiltered result set {:?}",
+            r.doc_id,
+            unfiltered_ids,
+        );
+    }
+}
+
 /// Shape: `search(index, &[], _)` returns an empty vector for every
 /// non-degenerate index. The early-return is easy to lose when
 /// refactoring the cascade, so it's worth a property-level check
