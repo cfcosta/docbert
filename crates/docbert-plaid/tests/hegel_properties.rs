@@ -1509,6 +1509,63 @@ fn prop_centroid_interaction_result_subset_of_unfiltered(tc: TestCase) {
     }
 }
 
+/// Metamorphic (paper §4.3, Eq 5): centroid pruning is a *filter*, so
+/// with `top_k` ≥ every reachable candidate the doc_ids surfaced
+/// under `centroid_score_threshold=Some(_)` are always a subset of
+/// those surfaced under `None`. Our existing
+/// `prop_search_unreachable_threshold_equals_none` only pins down
+/// the no-op floor — this covers any threshold including ones that
+/// drop a real fraction of centroids.
+#[hegel::test(test_cases = 20)]
+fn prop_centroid_pruning_result_subset_of_unfiltered(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let top_k = docs.len() + 4;
+    let base = SearchParams {
+        top_k,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    // Dot products of unit-norm vectors lie in [-1, 1], so drawing
+    // from that range gives us non-trivial thresholds that sometimes
+    // prune and sometimes don't.
+    let threshold: f32 = tc.draw(
+        gs::floats::<f32>()
+            .min_value(-1.0)
+            .max_value(1.0)
+            .allow_nan(false)
+            .allow_infinity(false),
+    );
+    let pruned = SearchParams {
+        centroid_score_threshold: Some(threshold),
+        ..base
+    };
+
+    let unfiltered_results = search(&index, &query, base);
+    let pruned_results = search(&index, &query, pruned);
+
+    let unfiltered_ids: std::collections::HashSet<u64> =
+        unfiltered_results.iter().map(|r| r.doc_id).collect();
+    for r in &pruned_results {
+        assert!(
+            unfiltered_ids.contains(&r.doc_id),
+            "pruned doc {} is not in the unfiltered result set {:?}",
+            r.doc_id,
+            unfiltered_ids,
+        );
+    }
+}
+
 /// Shape: `search(index, &[], _)` returns an empty vector for every
 /// non-degenerate index. The early-return is easy to lose when
 /// refactoring the cascade, so it's worth a property-level check
