@@ -31,6 +31,20 @@ pub enum PlaidError {
     /// [`ResidualCodec`]: crate::codec::ResidualCodec
     #[error("invalid codec: {0}")]
     InvalidCodec(String),
+
+    /// An on-disk index file was readable but its contents violated
+    /// the expected format (wrong magic bytes, unknown format
+    /// version, out-of-range header fields, or a centroid_id above
+    /// the advertised `k_centroids`). Distinct from `Io` — the file
+    /// was reached, it's just malformed.
+    #[error("invalid index file: {0}")]
+    InvalidIndex(String),
+
+    /// Low-level I/O failure (open/read/write/flush). Wraps
+    /// `std::io::Error` verbatim so callers retain the original
+    /// error kind when they need it.
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Crate-level `Result` alias. Every public function that can fail

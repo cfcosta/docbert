@@ -30,11 +30,13 @@
 
 use std::{
     fs::File,
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{BufReader, BufWriter, Read, Write},
     path::Path,
 };
 
 use crate::{
+    PlaidError,
+    Result,
     codec::{EncodedVector, ResidualCodec, packed_bytes_per_vector},
     index::{Index, IndexParams, build_inverted_file},
 };
@@ -48,21 +50,42 @@ const MAGIC: &[u8; 8] = b"PLAIDIDX";
 const FORMAT_VERSION: u32 = 2;
 
 /// Write `index` to `path`, creating or truncating the file as needed.
-pub fn save(index: &Index, path: &Path) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Io`] for any underlying I/O failure, or
+/// [`PlaidError::InvalidIndex`] if an encoded token's `codes` buffer
+/// doesn't match the codec's advertised packed length (a caller bug
+/// worth flagging loudly on write rather than producing a file that
+/// would fail to load back).
+///
+/// [`PlaidError::Io`]: crate::PlaidError::Io
+/// [`PlaidError::InvalidIndex`]: crate::PlaidError::InvalidIndex
+pub fn save(index: &Index, path: &Path) -> Result<()> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
     write_index(index, &mut writer)?;
-    writer.flush()
+    writer.flush()?;
+    Ok(())
 }
 
 /// Read an [`Index`] back from `path`.
-pub fn load(path: &Path) -> io::Result<Index> {
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Io`] for any read failure, or
+/// [`PlaidError::InvalidIndex`] if the file's magic, version, or
+/// header fields don't match this crate's format.
+///
+/// [`PlaidError::Io`]: crate::PlaidError::Io
+/// [`PlaidError::InvalidIndex`]: crate::PlaidError::InvalidIndex
+pub fn load(path: &Path) -> Result<Index> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     read_index(&mut reader)
 }
 
-fn write_index<W: Write>(index: &Index, w: &mut W) -> io::Result<()> {
+fn write_index<W: Write>(index: &Index, w: &mut W) -> Result<()> {
     w.write_all(MAGIC)?;
     write_u32(w, FORMAT_VERSION)?;
 
@@ -91,13 +114,10 @@ fn write_index<W: Write>(index: &Index, w: &mut W) -> io::Result<()> {
         for ev in encoded_doc {
             write_u32(w, ev.centroid_id)?;
             if ev.codes.len() != packed_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "encoded token has {} packed bytes but codec expects {packed_bytes}",
-                        ev.codes.len(),
-                    ),
-                ));
+                return Err(PlaidError::InvalidIndex(format!(
+                    "encoded token has {} packed bytes but codec expects {packed_bytes}",
+                    ev.codes.len(),
+                )));
             }
             w.write_all(&ev.codes)?;
         }
@@ -106,24 +126,20 @@ fn write_index<W: Write>(index: &Index, w: &mut W) -> io::Result<()> {
     Ok(())
 }
 
-fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
+fn read_index<R: Read>(r: &mut R) -> Result<Index> {
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic)?;
     if &magic != MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "not a docbert-plaid index (magic bytes mismatch)",
+        return Err(PlaidError::InvalidIndex(
+            "not a docbert-plaid index (magic bytes mismatch)".into(),
         ));
     }
 
     let version = read_u32(r)?;
     if version != FORMAT_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "unsupported plaid index version {version}, expected {FORMAT_VERSION}",
-            ),
-        ));
+        return Err(PlaidError::InvalidIndex(format!(
+            "unsupported plaid index version {version}, expected {FORMAT_VERSION}",
+        )));
     }
 
     let dim = read_u32(r)? as usize;
@@ -133,9 +149,8 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
     let n_documents = read_u64(r)? as usize;
 
     if dim == 0 || k_centroids == 0 || !matches!(nbits, 1 | 2 | 4 | 8) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "plaid index header has invalid dim/k_centroids/nbits",
+        return Err(PlaidError::InvalidIndex(
+            "plaid index header has invalid dim/k_centroids/nbits".into(),
         ));
     }
 
@@ -162,12 +177,9 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
         for _ in 0..*count {
             let centroid_id = read_u32(r)?;
             if (centroid_id as usize) >= k_centroids {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "centroid_id {centroid_id} out of range 0..{k_centroids}",
-                    ),
-                ));
+                return Err(PlaidError::InvalidIndex(format!(
+                    "centroid_id {centroid_id} out of range 0..{k_centroids}",
+                )));
             }
             let mut codes = vec![0u8; packed_bytes];
             r.read_exact(&mut codes)?;
@@ -184,12 +196,7 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
         bucket_cutoffs,
         bucket_weights,
     };
-    codec.validate().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("loaded codec is invalid: {e}"),
-        )
-    })?;
+    codec.validate()?;
 
     Ok(Index {
         params,
@@ -200,51 +207,56 @@ fn read_index<R: Read>(r: &mut R) -> io::Result<Index> {
     })
 }
 
-fn write_u32<W: Write>(w: &mut W, v: u32) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
+fn write_u32<W: Write>(w: &mut W, v: u32) -> Result<()> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
 }
 
-fn write_u64<W: Write>(w: &mut W, v: u64) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
+fn write_u64<W: Write>(w: &mut W, v: u64) -> Result<()> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
 }
 
-fn write_f32_slice<W: Write>(w: &mut W, slice: &[f32]) -> io::Result<()> {
-    w.write_all(bytemuck::cast_slice(slice))
+fn write_f32_slice<W: Write>(w: &mut W, slice: &[f32]) -> Result<()> {
+    w.write_all(bytemuck::cast_slice(slice))?;
+    Ok(())
 }
 
-fn write_u32_slice<W: Write>(w: &mut W, slice: &[u32]) -> io::Result<()> {
-    w.write_all(bytemuck::cast_slice(slice))
+fn write_u32_slice<W: Write>(w: &mut W, slice: &[u32]) -> Result<()> {
+    w.write_all(bytemuck::cast_slice(slice))?;
+    Ok(())
 }
 
-fn write_u64_slice<W: Write>(w: &mut W, slice: &[u64]) -> io::Result<()> {
-    w.write_all(bytemuck::cast_slice(slice))
+fn write_u64_slice<W: Write>(w: &mut W, slice: &[u64]) -> Result<()> {
+    w.write_all(bytemuck::cast_slice(slice))?;
+    Ok(())
 }
 
-fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
+fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
 }
 
-fn read_u64<R: Read>(r: &mut R) -> io::Result<u64> {
+fn read_u64<R: Read>(r: &mut R) -> Result<u64> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf)?;
     Ok(u64::from_le_bytes(buf))
 }
 
-fn read_f32_vec<R: Read>(r: &mut R, n: usize) -> io::Result<Vec<f32>> {
+fn read_f32_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; n];
     r.read_exact(bytemuck::cast_slice_mut(&mut out))?;
     Ok(out)
 }
 
-fn read_u32_vec<R: Read>(r: &mut R, n: usize) -> io::Result<Vec<u32>> {
+fn read_u32_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<u32>> {
     let mut out = vec![0u32; n];
     r.read_exact(bytemuck::cast_slice_mut(&mut out))?;
     Ok(out)
 }
 
-fn read_u64_vec<R: Read>(r: &mut R, n: usize) -> io::Result<Vec<u64>> {
+fn read_u64_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<u64>> {
     let mut out = vec![0u64; n];
     r.read_exact(bytemuck::cast_slice_mut(&mut out))?;
     Ok(out)
@@ -400,8 +412,10 @@ mod tests {
         std::fs::write(&path, b"NOTPLAID").unwrap();
 
         let err = load(&path).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("magic"));
+        assert!(
+            matches!(err, PlaidError::InvalidIndex(ref m) if m.contains("magic")),
+            "expected InvalidIndex with magic message, got {err:?}",
+        );
     }
 
     #[test]
@@ -414,8 +428,10 @@ mod tests {
         std::fs::write(&path, &buf).unwrap();
 
         let err = load(&path).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("version"));
+        assert!(
+            matches!(err, PlaidError::InvalidIndex(ref m) if m.contains("version")),
+            "expected InvalidIndex with version message, got {err:?}",
+        );
     }
 
     #[test]
@@ -430,7 +446,9 @@ mod tests {
         std::fs::write(&path, &buf).unwrap();
 
         let err = load(&path).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("version"));
+        assert!(
+            matches!(err, PlaidError::InvalidIndex(ref m) if m.contains("version")),
+            "expected InvalidIndex with version message, got {err:?}",
+        );
     }
 }
