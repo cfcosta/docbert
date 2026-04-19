@@ -1474,3 +1474,55 @@ fn prop_apply_update_empty_is_identity(tc: TestCase) {
         assert_eq!(updated.ivf.docs_for_centroid(c), expected.as_slice());
     }
 }
+
+/// Metamorphic: after `apply_update` deletes a subset of doc_ids,
+/// those ids are gone from `updated.doc_ids`, and every surviving
+/// doc retains its encoded tokens verbatim. Catches regressions that
+/// accidentally drop or re-encode surviving documents.
+#[hegel::test(test_cases = 20)]
+fn prop_apply_update_deletions_removed(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        update::{IndexUpdate, apply_update},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    // Draw a boolean per existing doc_id deciding whether to delete
+    // it. Ensures at least one survives so we can assert equality
+    // on the preserved state.
+    let survive_mask: Vec<bool> = (0..index.doc_ids.len())
+        .map(|_| tc.draw(gs::booleans()))
+        .collect();
+    let mut deletions: Vec<u64> = Vec::new();
+    let mut survivors_ids: Vec<u64> = Vec::new();
+    let mut survivors_tokens: Vec<_> = Vec::new();
+    for (i, &survives) in survive_mask.iter().enumerate() {
+        if survives || i == 0 {
+            survivors_ids.push(index.doc_ids[i]);
+            survivors_tokens.push(index.doc_tokens[i].clone());
+        } else {
+            deletions.push(index.doc_ids[i]);
+        }
+    }
+
+    let updated = apply_update(
+        index,
+        IndexUpdate {
+            deletions: &deletions,
+            upserts: &[],
+        },
+    );
+
+    for id in &deletions {
+        assert!(
+            !updated.doc_ids.contains(id),
+            "deleted doc_id {id} still present",
+        );
+    }
+    assert_eq!(updated.doc_ids, survivors_ids);
+    assert_eq!(updated.doc_tokens, survivors_tokens);
+}
