@@ -1259,3 +1259,37 @@ fn prop_search_large_shortlist_equals_none(tc: TestCase) {
     let b = search(&index, &query, shortlisted);
     assert_eq!(a, b);
 }
+
+/// Metamorphic: `centroid_score_threshold = Some(-very_large)` is a
+/// no-op — every centroid clears a threshold below the attainable
+/// dot-product floor, so pruning drops nothing. Results must match
+/// `None` byte-for-byte.
+#[hegel::test(test_cases = 20)]
+fn prop_search_unreachable_threshold_equals_none(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 6, 5, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let query = tc.draw(unit_rows(dim, 2));
+    let base = SearchParams {
+        top_k: 10,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    // Dot product of two unit-norm vectors is bounded below by -dim,
+    // well above -1e6.
+    let very_negative = SearchParams {
+        centroid_score_threshold: Some(-1e6),
+        ..base
+    };
+    let a = search(&index, &query, base);
+    let b = search(&index, &query, very_negative);
+    assert_eq!(a, b);
+}
