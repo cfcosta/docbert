@@ -1293,3 +1293,29 @@ fn prop_search_unreachable_threshold_equals_none(tc: TestCase) {
     let b = search(&index, &query, very_negative);
     assert_eq!(a, b);
 }
+
+/// Shape: `search(index, &[], _)` returns an empty vector for every
+/// non-degenerate index. The early-return is easy to lose when
+/// refactoring the cascade, so it's worth a property-level check
+/// rather than a single example.
+#[hegel::test(test_cases = 20)]
+fn prop_search_empty_query_empty_result(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 4, 4, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params);
+
+    let sp = SearchParams {
+        top_k: 5,
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let results = search(&index, &[], sp);
+    assert!(results.is_empty());
+}
