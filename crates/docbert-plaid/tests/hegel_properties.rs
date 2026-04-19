@@ -966,3 +966,40 @@ fn prop_build_index_codec_validates(tc: TestCase) {
     assert_eq!(index.codec.nbits, params.nbits);
     assert_eq!(index.codec.num_centroids(), params.k_centroids);
 }
+
+/// Shape: every `(doc_idx, centroid_id)` pair implied by the encoded
+/// tokens appears in the IVF's posting list for that centroid; each
+/// list is sorted ascending with no duplicates; and
+/// `ivf.num_centroids() == params.k_centroids`. This is the paper's
+/// "centroid → unique passage ids" contract and the foundation of
+/// candidate generation at query time.
+#[hegel::test(test_cases = 30)]
+fn prop_build_inverted_file_invariants(tc: TestCase) {
+    use docbert_plaid::index::build_index;
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 5, 6, 4));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+
+    let index = build_index(&docs, params);
+    assert_eq!(index.ivf.num_centroids(), params.k_centroids);
+
+    for (doc_idx, encoded) in index.doc_tokens.iter().enumerate() {
+        for ev in encoded {
+            let list = index.ivf.docs_for_centroid(ev.centroid_id as usize);
+            assert!(
+                list.contains(&(doc_idx as u32)),
+                "doc_idx={doc_idx} missing from centroid {} postings",
+                ev.centroid_id,
+            );
+        }
+    }
+
+    for c in 0..index.ivf.num_centroids() {
+        let postings = index.ivf.docs_for_centroid(c);
+        assert!(
+            postings.windows(2).all(|w| w[0] < w[1]),
+            "centroid {c} postings not strictly ascending: {postings:?}",
+        );
+    }
+}
