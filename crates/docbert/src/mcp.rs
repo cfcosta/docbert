@@ -233,7 +233,7 @@ impl DocbertMcpServer {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
 
-        let mut results = search::execute_search(
+        let mut results = search::run(
             &args,
             &self.state.search_index,
             &config_db,
@@ -276,7 +276,7 @@ impl DocbertMcpServer {
             rmcp::ErrorData::internal_error("model lock poisoned", None)
         })?;
 
-        let mut results = search::execute_semantic_search(
+        let mut results = search::semantic(
             &args,
             &config_db,
             &self.state.data_dir,

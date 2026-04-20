@@ -77,7 +77,7 @@ pub(crate) async fn search(
         .model
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut results = search::execute_search_mode(
+    let mut results = search::by_mode(
         mode,
         &request,
         &state.search_index,

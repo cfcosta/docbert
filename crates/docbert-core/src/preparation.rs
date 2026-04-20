@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use pdf_oxide::{converters::ConversionOptions, document::PdfDocument};
 
 use crate::{
-    chunking::{self, ChunkingConfig},
+    chunking::{self, Config},
     doc_id::DocumentId,
     ingestion,
     text,
@@ -26,10 +26,7 @@ pub struct SearchDocument {
     pub mtime: u64,
 }
 
-pub fn prepare_markdown(
-    relative_path: &Path,
-    raw_markdown: &str,
-) -> MarkdownBody {
+pub fn markdown(relative_path: &Path, raw_markdown: &str) -> MarkdownBody {
     let searchable_body =
         text::strip_yaml_frontmatter(raw_markdown).to_string();
     let title = ingestion::extract_title(&searchable_body, relative_path);
@@ -40,14 +37,14 @@ pub fn prepare_markdown(
     }
 }
 
-pub fn prepare_uploaded(
+pub fn uploaded(
     collection: &str,
     relative_path: &str,
     raw_markdown: &str,
     metadata: Option<serde_json::Value>,
     mtime: u64,
 ) -> SearchDocument {
-    let prepared = prepare_markdown(Path::new(relative_path), raw_markdown);
+    let prepared = markdown(Path::new(relative_path), raw_markdown);
     let did = DocumentId::new(collection, relative_path);
 
     SearchDocument {
@@ -61,13 +58,13 @@ pub fn prepare_uploaded(
     }
 }
 
-pub fn prepare_filesystem(
+pub fn filesystem(
     collection: &str,
     relative_path: &Path,
     raw_markdown: &str,
     mtime: u64,
 ) -> SearchDocument {
-    let prepared = prepare_markdown(relative_path, raw_markdown);
+    let prepared = markdown(relative_path, raw_markdown);
     let relative_path = relative_path.to_string_lossy().to_string();
     let did = DocumentId::new(collection, &relative_path);
 
@@ -93,19 +90,14 @@ pub fn load_preview_content(
     Ok(fs::read_to_string(full_path)?)
 }
 
-pub fn prepare_supported_filesystem(
+pub fn supported_filesystem(
     collection: &str,
     relative_path: &Path,
     full_path: &Path,
     mtime: u64,
 ) -> crate::Result<SearchDocument> {
     let raw_content = load_preview_content(relative_path, full_path)?;
-    Ok(prepare_filesystem(
-        collection,
-        relative_path,
-        &raw_content,
-        mtime,
-    ))
+    Ok(filesystem(collection, relative_path, &raw_content, mtime))
 }
 
 pub fn extract_pdf_markdown(pdf_bytes: &[u8]) -> crate::Result<String> {
@@ -179,7 +171,7 @@ fn is_pdf(path: &Path) -> bool {
 
 pub fn embedding_chunks(
     document: &SearchDocument,
-    chunking_config: ChunkingConfig,
+    chunking_config: Config,
 ) -> Vec<(u64, String)> {
     chunking::chunk_text(
         &document.searchable_body,
@@ -198,7 +190,7 @@ pub fn embedding_chunks(
 
 pub fn collect_chunks<F>(
     documents: &[SearchDocument],
-    chunking_config: ChunkingConfig,
+    chunking_config: Config,
     mut on_document_processed: F,
 ) -> Vec<(u64, String)>
 where
@@ -221,8 +213,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepare_markdown_strips_frontmatter() {
-        let prepared = prepare_markdown(
+    fn markdown_strips_frontmatter() {
+        let prepared = markdown(
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Real Title\n\nBody",
         );
@@ -232,34 +224,32 @@ mod tests {
     }
 
     #[test]
-    fn prepare_markdown_uses_first_h1_as_title() {
-        let prepared =
-            prepare_markdown(Path::new("note.md"), "# Hello\n\n# Later");
+    fn markdown_uses_first_h1_as_title() {
+        let prepared = markdown(Path::new("note.md"), "# Hello\n\n# Later");
 
         assert_eq!(prepared.title, "Hello");
     }
 
     #[test]
-    fn prepare_markdown_falls_back_to_filename() {
-        let prepared =
-            prepare_markdown(Path::new("docs/note.md"), "plain body");
+    fn markdown_falls_back_to_filename() {
+        let prepared = markdown(Path::new("docs/note.md"), "plain body");
 
         assert_eq!(prepared.title, "note");
         assert_eq!(prepared.searchable_body, "plain body");
     }
 
     #[test]
-    fn prepare_markdown_frontmatter_only_yields_empty_body() {
+    fn markdown_frontmatter_only_yields_empty_body() {
         let prepared =
-            prepare_markdown(Path::new("note.md"), "---\ntitle: Hidden\n---\n");
+            markdown(Path::new("note.md"), "---\ntitle: Hidden\n---\n");
 
         assert_eq!(prepared.title, "note");
         assert!(prepared.searchable_body.is_empty());
     }
 
     #[test]
-    fn prepare_uploaded_preserves_raw_content() {
-        let prepared = prepare_uploaded(
+    fn uploaded_preserves_raw_content() {
+        let prepared = uploaded(
             "notes",
             "note.md",
             "# Hello\n\nBody",
@@ -275,13 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn prepare_filesystem_omits_raw_content() {
-        let prepared = prepare_filesystem(
-            "notes",
-            Path::new("note.md"),
-            "# Hello\n\nBody",
-            42,
-        );
+    fn filesystem_omits_raw_content() {
+        let prepared =
+            filesystem("notes", Path::new("note.md"), "# Hello\n\nBody", 42);
 
         assert_eq!(prepared.raw_content, None);
         assert_eq!(prepared.mtime, 42);
@@ -289,14 +275,14 @@ mod tests {
 
     #[test]
     fn uploaded_and_filesystem_documents_share_title_and_searchable_body() {
-        let uploaded = prepare_uploaded(
+        let uploaded = uploaded(
             "notes",
             "note.md",
             "---\ntitle: ignored\n---\n# Hello\n\nBody",
             None,
             0,
         );
-        let filesystem = prepare_filesystem(
+        let filesystem = filesystem(
             "notes",
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Hello\n\nBody",
@@ -310,7 +296,7 @@ mod tests {
 
     #[test]
     fn embedding_chunks_uses_chunk_doc_ids() {
-        let document = prepare_filesystem(
+        let document = filesystem(
             "notes",
             Path::new("note.md"),
             &"a".repeat(DEFAULT_TEST_CHUNK_SIZE * 3),
@@ -328,7 +314,7 @@ mod tests {
 
     #[test]
     fn embedding_chunks_returns_empty_for_empty_searchable_body() {
-        let document = prepare_filesystem(
+        let document = filesystem(
             "notes",
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n",
@@ -341,10 +327,8 @@ mod tests {
 
     #[test]
     fn collect_chunks_preserves_document_order() {
-        let first =
-            prepare_filesystem("notes", Path::new("a.md"), "# A\n\nAlpha", 1);
-        let second =
-            prepare_filesystem("notes", Path::new("b.md"), "# B\n\nBeta", 2);
+        let first = filesystem("notes", Path::new("a.md"), "# A\n\nAlpha", 1);
+        let second = filesystem("notes", Path::new("b.md"), "# B\n\nBeta", 2);
         let mut processed = Vec::new();
 
         let chunks = collect_chunks(
@@ -361,8 +345,8 @@ mod tests {
 
     const DEFAULT_TEST_CHUNK_SIZE: usize = 100;
 
-    fn test_chunking_config() -> ChunkingConfig {
-        ChunkingConfig {
+    fn test_chunking_config() -> Config {
+        Config {
             chunk_size: DEFAULT_TEST_CHUNK_SIZE,
             overlap: 0,
             document_length: None,

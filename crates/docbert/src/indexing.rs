@@ -346,7 +346,7 @@ mod tests {
             mtime: 1,
         }];
 
-        let chunking_config = docbert_core::chunking::ChunkingConfig {
+        let chunking_config = docbert_core::chunking::Config {
             chunk_size: 100,
             overlap: 0,
             document_length: None,

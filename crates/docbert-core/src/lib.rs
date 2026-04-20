@@ -51,7 +51,7 @@
 //!     all: false,
 //! };
 //!
-//! let results = search::execute_search(
+//! let results = search::run(
 //!     &params,
 //!     &search_index,
 //!     &config_db,

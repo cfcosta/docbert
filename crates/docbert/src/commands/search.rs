@@ -38,13 +38,7 @@ pub(crate) fn run(
             all: args.all,
         };
 
-        search::execute_search(
-            &params,
-            &search_index,
-            config_db,
-            data_dir,
-            &mut model,
-        )?
+        search::run(&params, &search_index, config_db, data_dir, &mut model)?
     } else {
         let request = search::SearchQuery {
             query: args.query.clone(),
@@ -52,7 +46,7 @@ pub(crate) fn run(
             count: args.count,
             min_score: args.min_score,
         };
-        search::execute_search_mode(
+        search::by_mode(
             search::SearchMode::Hybrid,
             &request,
             &search_index,
@@ -92,9 +86,8 @@ pub(crate) fn semantic(
         all: args.all,
     };
 
-    let mut results = search::execute_semantic_search(
-        &params, config_db, data_dir, &mut model,
-    )?;
+    let mut results =
+        search::semantic(&params, config_db, data_dir, &mut model)?;
 
     search::disambiguate_doc_ids(&mut results, config_db);
 

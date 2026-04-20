@@ -32,7 +32,7 @@ pub(crate) fn load_document(
     let raw_content =
         preparation::load_preview_content(Path::new(relative_path), full_path)?;
 
-    Ok(preparation::prepare_uploaded(
+    Ok(preparation::uploaded(
         collection,
         relative_path,
         &raw_content,

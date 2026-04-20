@@ -74,7 +74,7 @@ pub fn load_documents(
     let outcomes: Vec<_> = files
         .par_iter()
         .map(|file| {
-            match preparation::prepare_supported_filesystem(
+            match preparation::supported_filesystem(
                 collection,
                 &file.relative_path,
                 &file.absolute_path,
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn load_documents_matches_prepare_markdown() {
+    fn load_documents_matches_markdown_preparation() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("note.md"),
@@ -306,7 +306,7 @@ mod tests {
 
         let files = crate::walker::discover_files(tmp.path()).unwrap();
         let loaded = load_documents("notes", &files);
-        let prepared = preparation::prepare_markdown(
+        let prepared = preparation::markdown(
             Path::new("note.md"),
             "---\ntitle: ignored\n---\n# Heading\n\nBody content.",
         );

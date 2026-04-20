@@ -27,21 +27,21 @@ pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 
 /// Chunking settings resolved from the model configuration.
 ///
-/// [`resolve_chunking_config`] reads `config_sentence_transformers.json` and,
+/// [`resolve_config`] reads `config_sentence_transformers.json` and,
 /// when it can, uses the model's `document_length` value.
 ///
 /// # Examples
 ///
 /// ```
-/// use docbert_core::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
+/// use docbert_core::chunking::{resolve_config, DEFAULT_CHUNK_SIZE};
 ///
 /// // Remote model IDs use defaults
-/// let config = resolve_chunking_config("lightonai/ColBERT-Zero");
+/// let config = resolve_config("lightonai/ColBERT-Zero");
 /// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
 /// assert_eq!(config.document_length, None);
 /// ```
 #[derive(Debug, Clone, Copy)]
-pub struct ChunkingConfig {
+pub struct Config {
     /// Maximum chunk size in characters.
     pub chunk_size: usize,
     /// Overlap between adjacent chunks in characters.
@@ -79,24 +79,24 @@ fn load_document_length(model_dir: &Path) -> Option<usize> {
 /// # Examples
 ///
 /// ```
-/// use docbert_core::chunking::{resolve_chunking_config, DEFAULT_CHUNK_SIZE};
+/// use docbert_core::chunking::{resolve_config, DEFAULT_CHUNK_SIZE};
 ///
-/// let config = resolve_chunking_config("lightonai/ColBERT-Zero");
+/// let config = resolve_config("lightonai/ColBERT-Zero");
 /// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
 /// ```
-pub fn resolve_chunking_config(model_id: &str) -> ChunkingConfig {
+pub fn resolve_config(model_id: &str) -> Config {
     let model_path = Path::new(model_id);
     if model_path.is_dir()
         && let Some(doc_len) = load_document_length(model_path)
     {
-        return ChunkingConfig {
+        return Config {
             chunk_size: chars_for_tokens(doc_len),
             overlap: DEFAULT_CHUNK_OVERLAP,
             document_length: Some(doc_len),
         };
     }
 
-    ChunkingConfig {
+    Config {
         chunk_size: DEFAULT_CHUNK_SIZE,
         overlap: DEFAULT_CHUNK_OVERLAP,
         document_length: None,
@@ -411,30 +411,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_chunking_config_from_model_dir() {
+    fn resolve_config_from_model_dir() {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config_sentence_transformers.json");
         std::fs::write(&config_path, "{\"document_length\": 512}").unwrap();
 
-        let config = resolve_chunking_config(&dir.path().to_string_lossy());
+        let config = resolve_config(&dir.path().to_string_lossy());
         assert_eq!(config.document_length, Some(512));
         assert_eq!(config.chunk_size, 512 * CHARS_PER_TOKEN);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
     }
 
     #[test]
-    fn resolve_chunking_config_defaults_without_config() {
+    fn resolve_config_defaults_without_config() {
         let dir = tempdir().unwrap();
-        let config = resolve_chunking_config(&dir.path().to_string_lossy());
+        let config = resolve_config(&dir.path().to_string_lossy());
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
     }
 
     #[test]
-    fn resolve_chunking_config_remote_model_uses_defaults() {
+    fn resolve_config_remote_model_uses_defaults() {
         // Remote model IDs (not local directories) use defaults
-        let config = resolve_chunking_config("lightonai/ColBERT-Zero");
+        let config = resolve_config("lightonai/ColBERT-Zero");
         assert_eq!(DEFAULT_CHUNK_SIZE, 519 * CHARS_PER_TOKEN);
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);

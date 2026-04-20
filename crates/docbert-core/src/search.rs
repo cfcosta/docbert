@@ -24,7 +24,7 @@ use crate::{
 pub const RRF_K: usize = 60;
 
 /// Number of candidates pulled from each retriever before RRF fusion in
-/// [`execute_search`].
+/// [`run`].
 pub const RRF_CANDIDATE_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +127,7 @@ pub struct SemanticSearchParams {
     pub all: bool,
 }
 
-/// Search result returned by [`execute_search`] or [`execute_semantic_search`].
+/// Search result returned by [`run`] or [`semantic`].
 ///
 /// Results are sorted by score, highest first, and ranks are assigned after
 /// filtering and limiting.
@@ -174,7 +174,7 @@ pub struct FinalResult {
 ///
 /// ```no_run
 /// use docbert_core::{ConfigDb, DataDir, SearchIndex, ModelManager};
-/// use docbert_core::search::{execute_search, SearchParams};
+/// use docbert_core::search::{run, SearchParams};
 ///
 /// # let tmp = tempfile::tempdir().unwrap();
 /// let data_dir = DataDir::new(tmp.path());
@@ -193,12 +193,12 @@ pub struct FinalResult {
 /// };
 ///
 /// // bm25_only skips the semantic leg; no PLAID index is required.
-/// let results = execute_search(&params, &index, &config_db, &data_dir, &mut model).unwrap();
+/// let results = run(&params, &index, &config_db, &data_dir, &mut model).unwrap();
 /// for r in &results {
 ///     println!("{}: {} (score {:.3})", r.rank, r.title, r.score);
 /// }
 /// ```
-pub fn execute_search(
+pub fn run(
     args: &SearchParams,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
@@ -209,7 +209,7 @@ pub fn execute_search(
         return execute_bm25_only(args, search_index);
     }
 
-    execute_rrf(args, search_index, config_db, data_dir, model)
+    rrf(args, search_index, config_db, data_dir, model)
 }
 
 fn execute_bm25_only(
@@ -246,7 +246,7 @@ fn execute_bm25_only(
         .collect())
 }
 
-fn execute_rrf(
+fn rrf(
     args: &SearchParams,
     search_index: &SearchIndex,
     config_db: &ConfigDb,
@@ -534,13 +534,13 @@ fn semantic_final_results_from_ranked(
 
 /// Run semantic-only search across all indexed documents.
 ///
-/// Unlike [`execute_search`], this skips BM25 entirely and returns
+/// Unlike [`run`], this skips BM25 entirely and returns
 /// results purely from the PLAID index. If the index has not been built
 /// yet, the call fails with [`Error::PlaidIndexMissing`]; the caller
 /// should surface this as a clear "run `docbert sync`" message.
 ///
 /// The ColBERT model is loaded on first use.
-pub fn execute_semantic_search(
+pub fn semantic(
     args: &SemanticSearchParams,
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -612,7 +612,7 @@ pub fn execute_semantic_search(
     Ok(results)
 }
 
-pub fn execute_search_mode(
+pub fn by_mode(
     mode: SearchMode,
     request: &SearchQuery,
     search_index: &SearchIndex,
@@ -621,7 +621,7 @@ pub fn execute_search_mode(
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
     match mode {
-        SearchMode::Semantic => execute_semantic_search(
+        SearchMode::Semantic => semantic(
             &SemanticSearchParams {
                 query: request.query.clone(),
                 collection: request.collection.clone(),
@@ -633,7 +633,7 @@ pub fn execute_search_mode(
             data_dir,
             model,
         ),
-        SearchMode::Hybrid => execute_search(
+        SearchMode::Hybrid => run(
             &SearchParams {
                 query: request.query.clone(),
                 count: request.count,
@@ -1417,8 +1417,7 @@ mod tests {
         let args = make_search_args("rust programming");
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty(), "search should return results");
         // The Rust guide should be the top result
@@ -1435,8 +1434,7 @@ mod tests {
         let args = make_search_args("programming");
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(results.len() >= 2, "should find multiple programming docs");
         for (i, r) in results.iter().enumerate() {
@@ -1456,8 +1454,7 @@ mod tests {
         args.count = 1;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert_eq!(results.len(), 1, "should respect count limit");
     }
@@ -1470,8 +1467,7 @@ mod tests {
         args.min_score = 999.0; // impossibly high threshold
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(
             results.is_empty(),
@@ -1488,8 +1484,7 @@ mod tests {
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty());
         for r in &results {
@@ -1507,8 +1502,7 @@ mod tests {
         let args = make_search_args("xyzzy_nonexistent_term_12345");
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(results.is_empty(), "should return no results for gibberish");
     }
@@ -1522,8 +1516,7 @@ mod tests {
         args.count = 1; // should be ignored when all=true
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(
             results.len() > 1,
@@ -1538,8 +1531,7 @@ mod tests {
         let args = make_search_args("programming language");
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         for window in results.windows(2) {
             assert!(
@@ -1557,8 +1549,7 @@ mod tests {
         let args = make_search_args("programing");
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(
             !results.is_empty(),
@@ -1574,8 +1565,7 @@ mod tests {
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty(), "exact search should find 'rust'");
         assert_eq!(results[0].path, "rust-guide.md");
@@ -1589,8 +1579,7 @@ mod tests {
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert_eq!(results.len(), 1);
         let r = &results[0];
@@ -1827,8 +1816,7 @@ mod tests {
         let args = make_semantic_args("anything");
 
         let err =
-            execute_semantic_search(&args, &config_db, &data_dir, &mut model)
-                .unwrap_err();
+            semantic(&args, &config_db, &data_dir, &mut model).unwrap_err();
 
         assert!(matches!(err, Error::PlaidIndexMissing));
         assert!(err.to_string().contains("docbert sync"));
@@ -1843,8 +1831,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty(), "reranked search should return results");
         // Rust guide should be the top result for "rust programming language"
@@ -1861,8 +1848,7 @@ mod tests {
         let args = make_semantic_args("rust programming language");
 
         let results =
-            execute_semantic_search(&args, &config_db, &data_dir, &mut model)
-                .unwrap();
+            semantic(&args, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty(), "semantic search should return results");
         assert_eq!(
@@ -1881,8 +1867,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty());
         assert_eq!(
@@ -1900,8 +1885,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(results.len() >= 2);
         for window in results.windows(2) {
@@ -1925,8 +1909,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(
             !results.is_empty(),
@@ -1949,8 +1932,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty());
         let r = &results[0];
@@ -1974,8 +1956,7 @@ mod tests {
         args.no_fuzzy = true;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(!results.is_empty());
         for r in &results {
@@ -2002,8 +1983,7 @@ mod tests {
         args.all = true;
 
         let all_results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
         assert!(
             all_results.len() >= 2,
             "should have multiple results to test filtering"
@@ -2013,8 +1993,7 @@ mod tests {
         args.all = false;
         args.count = 1;
         let limited =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
         assert_eq!(limited.len(), 1, "count=1 should limit to 1 result");
         assert_eq!(
             limited[0].path, all_results[0].path,
@@ -2031,8 +2010,7 @@ mod tests {
         args.bm25_only = false;
 
         let results =
-            execute_search(&args, &idx, &config_db, &data_dir, &mut model)
-                .unwrap();
+            run(&args, &idx, &config_db, &data_dir, &mut model).unwrap();
 
         assert!(results.len() >= 2);
         for (i, r) in results.iter().enumerate() {

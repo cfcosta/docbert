@@ -90,7 +90,7 @@ struct IndexingRuntime {
     search_index: SearchIndex,
     embedding_db: EmbeddingDb,
     model: ModelManager,
-    chunking_config: chunking::ChunkingConfig,
+    chunking_config: chunking::Config,
 }
 
 fn initialize_indexing_runtime(
@@ -101,7 +101,7 @@ fn initialize_indexing_runtime(
     let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::with_model_id(model_id.to_string());
     log_model_runtime(&mut model)?;
-    let chunking_config = chunking::resolve_chunking_config(model_id);
+    let chunking_config = chunking::resolve_config(model_id);
     if let Some(doc_len) = chunking_config.document_length {
         eprintln!(
             "Using document_length {doc_len} from config_sentence_transformers.json (chunk size ~{} chars).",
@@ -720,7 +720,7 @@ mod tests {
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let model = ModelManager::new();
-        let chunking_config = chunking::ChunkingConfig {
+        let chunking_config = chunking::Config {
             chunk_size: 100,
             overlap: 0,
             document_length: None,
@@ -792,7 +792,7 @@ mod tests {
         let embedding_db =
             EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let model = ModelManager::new();
-        let chunking_config = chunking::ChunkingConfig {
+        let chunking_config = chunking::Config {
             chunk_size: 100,
             overlap: 0,
             document_length: None,

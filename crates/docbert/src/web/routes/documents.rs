@@ -93,8 +93,8 @@ fn title_from_disk(relative_path: &str, content: &str) -> String {
     ingestion::extract_title(content, Path::new(relative_path))
 }
 
-fn upload_chunking_config() -> chunking::ChunkingConfig {
-    chunking::ChunkingConfig {
+fn upload_chunking_config() -> chunking::Config {
+    chunking::Config {
         chunk_size: chunking::DEFAULT_CHUNK_SIZE,
         overlap: chunking::DEFAULT_CHUNK_OVERLAP,
         document_length: None,
