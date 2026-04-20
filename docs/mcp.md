@@ -128,7 +128,9 @@ Structured example:
       "title": "Rust",
       "score": 0.95,
       "context": "Personal notes",
-      "snippet": "1: Rust is fast.\n2: Ownership keeps memory safe."
+      "snippet": "1: Rust is fast.\n2: Ownership keeps memory safe.",
+      "lineCount": 2,
+      "byteCount": 43
     }
   ]
 }
@@ -139,6 +141,7 @@ Structured example:
 - `docId` is normalized through `format_document_ref(...)`, so it has a single leading `#`.
 - The structured JSON uses camelCase field names like `resultCount` and `docId`.
 - No snippet is included when `includeSnippet` is false or when the file cannot be read.
+- `lineCount` and `byteCount` describe the preview content the document returns through `docbert_get`, so callers can pick a `startLine`/`endLine` or `startByte`/`endByte` without a second round-trip. Both are `null` when the file cannot be read.
 
 ## `semantic_search`
 

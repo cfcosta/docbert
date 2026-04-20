@@ -140,7 +140,8 @@ fn build_search_result_item(
 ) -> SearchResultItem {
     let file = format!("{}/{}", result.collection, result.path);
     let context = context_for_doc(config_db, &result.collection, &result.path);
-    let snippet = if include_snippet {
+
+    let content =
         resolve_full_path(config_db, &result.collection, &result.path)
             .and_then(|full_path| {
                 docbert_core::preparation::load_preview_content(
@@ -148,8 +149,13 @@ fn build_search_result_item(
                     &full_path,
                 )
                 .ok()
-            })
-            .and_then(|content| text_util::extract_snippet(&content, query))
+            });
+    let line_count = content.as_ref().map(|c| c.lines().count());
+    let byte_count = content.as_ref().map(|c| c.len() as u64);
+    let snippet = if include_snippet {
+        content
+            .as_ref()
+            .and_then(|c| text_util::extract_snippet(c, query))
             .map(|(snippet, start_line)| {
                 text_util::add_line_numbers(&snippet, start_line)
             })
@@ -166,6 +172,8 @@ fn build_search_result_item(
         score: result.score,
         context,
         snippet,
+        line_count,
+        byte_count,
     }
 }
 
@@ -780,6 +788,8 @@ struct SearchResultItem {
     score: f32,
     context: Option<String>,
     snippet: Option<String>,
+    line_count: Option<usize>,
+    byte_count: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1212,10 +1222,46 @@ mod tests {
                     "title": "rust.md",
                     "score": 1.25,
                     "context": "Personal notes",
-                    "snippet": "1: Rust is fast.\n2: Ownership keeps memory safe."
+                    "snippet": "1: Rust is fast.\n2: Ownership keeps memory safe.",
+                    "lineCount": 2,
+                    "byteCount": 43,
                 }]
             })
         );
+    }
+
+    #[test]
+    fn search_result_exposes_size_metadata_without_snippet() {
+        // Even when include_snippet=false, callers need lineCount/byteCount so
+        // they can pick a sensible startLine/endLine or startByte/endByte for
+        // a follow-up docbert_get.
+        let (server, _tmp, doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let result = build_search_tool_result(
+            &server.state.open_config_db().unwrap(),
+            vec![search::FinalResult {
+                rank: 1,
+                score: 1.0,
+                doc_id: doc_id.short.clone(),
+                doc_num_id: doc_id.numeric,
+                collection: "notes".to_string(),
+                path: "rust.md".to_string(),
+                title: "rust.md".to_string(),
+            }],
+            "Rust".to_string(),
+            false,
+        )
+        .unwrap();
+
+        let structured = result.structured_content.expect("structured");
+        let first = &structured["results"][0];
+        assert_eq!(first["lineCount"].as_u64(), Some(2));
+        assert_eq!(first["byteCount"].as_u64(), Some(43));
+        assert!(first["snippet"].is_null());
     }
 
     #[test]
