@@ -350,12 +350,6 @@ fn run_bm25_leg(
     }
 }
 
-/// Default number of IVF centroids each query token probes during PLAID
-/// search. Small enough to stay fast on a laptop, large enough that the
-/// recall loss relative to exact MaxSim is negligible on typical personal
-/// corpora. Expose later as a knob if workloads want finer control.
-const PLAID_DEFAULT_N_PROBE: usize = 8;
-
 fn run_semantic_leg(
     config_db: &ConfigDb,
     data_dir: &DataDir,
@@ -392,12 +386,8 @@ fn run_semantic_leg(
     // Oversample PLAID so a collection filter + chunk-family collapse
     // don't starve the fused result set of candidates.
     let oversample = limit.saturating_mul(8).max(limit).max(64);
-    let raw_results = plaid::search(
-        &plaid_index,
-        &query_embedding,
-        oversample,
-        PLAID_DEFAULT_N_PROBE,
-    )?;
+    let raw_results =
+        plaid::search(&plaid_index, &query_embedding, oversample)?;
 
     // Collapse chunk families to a single base-document score (keep the
     // best chunk score per family), then drop anything outside the
@@ -578,12 +568,8 @@ pub fn execute_semantic_search(
     let query_embedding = model.encode_query(&args.query)?;
 
     let oversample = args.count.saturating_mul(8).max(args.count).max(64);
-    let raw_results = plaid::search(
-        &plaid_index,
-        &query_embedding,
-        oversample,
-        PLAID_DEFAULT_N_PROBE,
-    )?;
+    let raw_results =
+        plaid::search(&plaid_index, &query_embedding, oversample)?;
 
     // Collapse chunk families, filter by collection/metadata presence,
     // keep the best score per family.

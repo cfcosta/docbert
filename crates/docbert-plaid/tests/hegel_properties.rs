@@ -2020,3 +2020,70 @@ fn prop_doc_token_shuffle_preserves_score(tc: TestCase) {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Paper Table 2 defaults
+// ---------------------------------------------------------------------------
+
+/// Invariant: for every top_k, `paper_defaults` returns params that are
+/// valid to feed into `search` and preserve the paper's key promises —
+/// pruning always on, nprobe positive, ndocs large enough for Stage 3
+/// to return `top_k` results.
+#[hegel::test(test_cases = 200)]
+fn prop_paper_defaults_always_valid(tc: TestCase) {
+    use docbert_plaid::search::SearchParams;
+    let top_k: usize =
+        tc.draw(gs::integers::<usize>().min_value(1).max_value(100_000));
+    let p = SearchParams::paper_defaults(top_k);
+
+    assert!(
+        p.n_probe >= 1,
+        "n_probe must be positive, got {}",
+        p.n_probe
+    );
+    let t_cs = p.centroid_score_threshold.expect("pruning must be on");
+    assert!(
+        (0.0..=1.0).contains(&t_cs),
+        "t_cs {t_cs} outside [0, 1]: unit-norm dot products can't exceed that range"
+    );
+    let ndocs = p.n_candidate_docs.expect("centroid interaction must be on");
+    assert!(
+        ndocs >= top_k.saturating_mul(4),
+        "ndocs {ndocs} < 4 * top_k = {} — Stage 3 shortlist (ndocs/4) would drop below top_k",
+        top_k * 4,
+    );
+    assert_eq!(p.top_k, top_k, "top_k not threaded through");
+}
+
+/// Monotonic: growing `top_k` should never make the algorithm
+/// cheaper / more aggressive. That is, moving into a larger bucket
+/// keeps `nprobe` and `ndocs` monotonically non-decreasing and
+/// `t_cs` monotonically non-increasing, which is the direction the
+/// paper's empirical tuning runs.
+#[hegel::test(test_cases = 200)]
+fn prop_paper_defaults_monotonic_in_top_k(tc: TestCase) {
+    use docbert_plaid::search::SearchParams;
+    let a: usize =
+        tc.draw(gs::integers::<usize>().min_value(1).max_value(10_000));
+    let delta: usize =
+        tc.draw(gs::integers::<usize>().min_value(0).max_value(10_000));
+    let b = a.saturating_add(delta);
+
+    let pa = SearchParams::paper_defaults(a);
+    let pb = SearchParams::paper_defaults(b);
+
+    assert!(
+        pb.n_probe >= pa.n_probe,
+        "nprobe decreased when top_k grew: a={a} pa={} b={b} pb={}",
+        pa.n_probe,
+        pb.n_probe,
+    );
+    assert!(
+        pb.n_candidate_docs >= pa.n_candidate_docs,
+        "ndocs decreased when top_k grew: a={a} b={b}",
+    );
+    assert!(
+        pb.centroid_score_threshold <= pa.centroid_score_threshold,
+        "t_cs increased when top_k grew: a={a} b={b}",
+    );
+}

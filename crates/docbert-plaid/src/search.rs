@@ -62,6 +62,43 @@ pub struct SearchParams {
     pub centroid_score_threshold: Option<f32>,
 }
 
+impl SearchParams {
+    /// Defaults from Table 2 of the PLAID paper (Santhanam et al., 2022),
+    /// bucketed by requested `top_k`.
+    ///
+    /// | top_k bucket | nprobe | t_cs | ndocs |
+    /// |---           |---     |---   |---    |
+    /// | ≤ 10         | 1      | 0.5  | 256   |
+    /// | ≤ 100        | 2      | 0.45 | 1024  |
+    /// | > 100        | 4      | 0.4  | 4096  |
+    ///
+    /// The paper derives these empirically on MS MARCO and LoTTE; they
+    /// trade a small recall hit for large latency wins versus an
+    /// exhaustive probe. `ndocs` is always at least `4 * top_k` so
+    /// Stage 3's `ndocs/4` shortlist can still return enough candidates
+    /// for the caller's requested result count.
+    pub const fn paper_defaults(top_k: usize) -> Self {
+        let (n_probe, t_cs, ndocs) = if top_k <= 10 {
+            (1, 0.5_f32, 256)
+        } else if top_k <= 100 {
+            (2, 0.45_f32, 1024)
+        } else {
+            (4, 0.4_f32, 4096)
+        };
+        let ndocs = if ndocs < top_k.saturating_mul(4) {
+            top_k.saturating_mul(4)
+        } else {
+            ndocs
+        };
+        Self {
+            top_k,
+            n_probe,
+            n_candidate_docs: Some(ndocs),
+            centroid_score_threshold: Some(t_cs),
+        }
+    }
+}
+
 /// One entry in a ranked search result list.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SearchResult {
@@ -1222,5 +1259,54 @@ mod tests {
             })
             .sum();
         assert!((expected - top.score).abs() < 1e-5);
+    }
+
+    // -- Paper Table 2 defaults --
+
+    #[test]
+    fn paper_defaults_match_table_2_verbatim() {
+        // PLAID paper Table 2: (nprobe, t_cs, ndocs)
+        //   k=10   → (1, 0.50, 256)
+        //   k=100  → (2, 0.45, 1024)
+        //   k=1000 → (4, 0.40, 4096)
+        let p10 = SearchParams::paper_defaults(10);
+        assert_eq!(p10.n_probe, 1);
+        assert_eq!(p10.centroid_score_threshold, Some(0.5));
+        assert_eq!(p10.n_candidate_docs, Some(256));
+
+        let p100 = SearchParams::paper_defaults(100);
+        assert_eq!(p100.n_probe, 2);
+        assert_eq!(p100.centroid_score_threshold, Some(0.45));
+        assert_eq!(p100.n_candidate_docs, Some(1024));
+
+        let p1000 = SearchParams::paper_defaults(1000);
+        assert_eq!(p1000.n_probe, 4);
+        assert_eq!(p1000.centroid_score_threshold, Some(0.4));
+        assert_eq!(p1000.n_candidate_docs, Some(4096));
+    }
+
+    #[test]
+    fn paper_defaults_clamp_ndocs_to_at_least_4x_top_k() {
+        // If a caller asks for top_k = 2000, Table 2's 4096 ndocs would
+        // leave Stage 3's ndocs/4 shortlist at 1024 — less than the
+        // caller's requested 2000. The constructor bumps ndocs to
+        // 4 * top_k so Stage 3 can still return enough candidates.
+        let p = SearchParams::paper_defaults(2000);
+        assert!(p.n_candidate_docs.unwrap() >= 4 * 2000);
+    }
+
+    #[test]
+    fn paper_defaults_always_enable_pruning() {
+        // Stage 2 centroid pruning is the single biggest algorithmic
+        // win in Figure 6 of the paper. `paper_defaults` must never
+        // leave it off by accident.
+        for &k in &[1_usize, 10, 50, 100, 500, 1000, 10_000] {
+            assert!(
+                SearchParams::paper_defaults(k)
+                    .centroid_score_threshold
+                    .is_some(),
+                "paper_defaults({k}) left pruning disabled"
+            );
+        }
     }
 }
