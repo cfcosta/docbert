@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use candle_core::{Device, Tensor};
 use docbert_pylate::{ColBERT, Similarities};
 
@@ -299,8 +297,6 @@ pub struct ModelManager {
     document_length: usize,
     embedding_batch_size: Option<usize>,
     runtime_config: Option<ModelRuntimeConfig>,
-    query_prompt: String,
-    document_prompt: String,
 }
 
 impl Default for ModelManager {
@@ -317,8 +313,6 @@ impl ModelManager {
             document_length: DEFAULT_DOCUMENT_LENGTH,
             embedding_batch_size: None,
             runtime_config: None,
-            query_prompt: String::new(),
-            document_prompt: String::new(),
         }
     }
 
@@ -379,9 +373,9 @@ impl ModelManager {
 
     /// Ensures the model is loaded, downloading from HuggingFace Hub if needed.
     ///
-    /// Also resolves the `prompts` field from `config_sentence_transformers.json`
-    /// for prepending to queries and documents (e.g. `"search_query: "` for
-    /// ColBERT-Zero). Falls back to empty strings for models without prompts.
+    /// Prompts from `config_sentence_transformers.json` (e.g. `"search_query: "`
+    /// for ColBERT-Zero) are resolved and applied inside pylate itself, so
+    /// callers of `encode_*` don't need to prepend anything.
     fn ensure_loaded(&mut self) -> Result<&mut ColBERT> {
         Ok(self.ensure_loaded_and_config()?.0)
     }
@@ -395,12 +389,6 @@ impl ModelManager {
         &mut self,
     ) -> Result<(&mut ColBERT, &ModelRuntimeConfig)> {
         if self.model.is_none() {
-            // Resolve prompts from model config before loading.
-            let (query_prompt, document_prompt) =
-                resolve_prompts(&self.model_id);
-            self.query_prompt = query_prompt;
-            self.document_prompt = document_prompt;
-
             let selected_device = default_device();
             let env_batch_size =
                 std::env::var(EMBEDDING_BATCH_SIZE_ENV_VAR).ok();
@@ -438,27 +426,20 @@ impl ModelManager {
 
     /// Encodes document texts into ColBERT token-level embeddings.
     ///
-    /// Prepends the model's document prompt (e.g. `"search_document: "`) if
-    /// configured in `config_sentence_transformers.json`.
+    /// Pylate prepends the model's document prompt (e.g. `"search_document: "`)
+    /// internally when one is configured in `config_sentence_transformers.json`.
     ///
     /// Returns a 3D tensor of shape `[batch_size, num_tokens, dimension]`.
     /// Downloads the model on first call if not already cached.
     pub fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
-        let prompt = self.document_prompt.clone();
         let model = self.ensure_loaded()?;
-        if prompt.is_empty() {
-            Ok(model.encode(texts, false)?)
-        } else {
-            let prompted: Vec<String> =
-                texts.iter().map(|t| format!("{prompt}{t}")).collect();
-            Ok(model.encode(&prompted, false)?)
-        }
+        Ok(model.encode(texts, false)?)
     }
 
     /// Encodes a query string into ColBERT token-level embeddings.
     ///
-    /// Prepends the model's query prompt (e.g. `"search_query: "`) if
-    /// configured in `config_sentence_transformers.json`.
+    /// Pylate prepends the model's query prompt (e.g. `"search_query: "`)
+    /// internally when one is configured in `config_sentence_transformers.json`.
     ///
     /// Returns a 2D tensor of shape `[Q, D]` where Q is the number of query
     /// tokens and D is the embedding dimension.
@@ -473,14 +454,8 @@ impl ModelManager {
             return Tensor::from_vec(vec![1.0f32, 0.0], (1, 2), &Device::Cpu)
                 .map_err(|e| crate::Error::Config(e.to_string()));
         }
-        let prompt = self.query_prompt.clone();
         let model = self.ensure_loaded()?;
-        let text = if prompt.is_empty() {
-            query.to_string()
-        } else {
-            format!("{prompt}{query}")
-        };
-        let embeddings = model.encode(&[text], true)?;
+        let embeddings = model.encode(&[query.to_string()], true)?;
         // Squeeze the batch dimension: [1, Q, D] -> [Q, D]
         Ok(embeddings.squeeze(0)?)
     }
@@ -516,53 +491,6 @@ impl ModelManager {
         })?;
         Ok(model.similarity(query_embeddings, document_embeddings)?)
     }
-}
-
-/// Read the `prompts` section from a model's `config_sentence_transformers.json`.
-///
-/// Returns `(query_prompt, document_prompt)`. If the config is missing, or the
-/// model does not use prompts, both strings are empty.
-fn resolve_prompts(model_id: &str) -> (String, String) {
-    let st_config_path = if Path::new(model_id).is_dir() {
-        // Local model directory
-        Path::new(model_id).join("config_sentence_transformers.json")
-    } else {
-        // HuggingFace Hub model -- resolve via hf-hub (uses cache)
-        let api = match hf_hub::api::sync::Api::new() {
-            Ok(api) => api,
-            Err(_) => return (String::new(), String::new()),
-        };
-        let repo = api.repo(hf_hub::Repo::with_revision(
-            model_id.to_string(),
-            hf_hub::RepoType::Model,
-            "main".to_string(),
-        ));
-        match repo.get("config_sentence_transformers.json") {
-            Ok(path) => path,
-            Err(_) => return (String::new(), String::new()),
-        }
-    };
-
-    let bytes = match std::fs::read(&st_config_path) {
-        Ok(b) => b,
-        Err(_) => return (String::new(), String::new()),
-    };
-
-    let config: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(c) => c,
-        Err(_) => return (String::new(), String::new()),
-    };
-
-    let query_prompt = config["prompts"]["query"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let document_prompt = config["prompts"]["document"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    (query_prompt, document_prompt)
 }
 
 /// Where the chosen model ID came from.
@@ -919,60 +847,5 @@ mod tests {
         assert_eq!(ModelSource::Env.as_str(), "env");
         assert_eq!(ModelSource::Config.as_str(), "config");
         assert_eq!(ModelSource::Default.as_str(), "default");
-    }
-
-    #[test]
-    fn prompts_default_to_empty() {
-        let manager = ModelManager::new();
-        assert!(manager.query_prompt.is_empty());
-        assert!(manager.document_prompt.is_empty());
-    }
-
-    #[test]
-    fn resolve_prompts_from_local_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = serde_json::json!({
-            "prompts": {
-                "query": "search_query: ",
-                "document": "search_document: "
-            },
-            "query_prefix": "[Q] ",
-            "document_prefix": "[D] "
-        });
-        std::fs::write(
-            tmp.path().join("config_sentence_transformers.json"),
-            serde_json::to_string(&config).unwrap(),
-        )
-        .unwrap();
-
-        let (qp, dp) = resolve_prompts(tmp.path().to_str().unwrap());
-        assert_eq!(qp, "search_query: ");
-        assert_eq!(dp, "search_document: ");
-    }
-
-    #[test]
-    fn resolve_prompts_missing_prompts_field() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = serde_json::json!({
-            "query_prefix": "[Q] ",
-            "document_prefix": "[D] "
-        });
-        std::fs::write(
-            tmp.path().join("config_sentence_transformers.json"),
-            serde_json::to_string(&config).unwrap(),
-        )
-        .unwrap();
-
-        let (qp, dp) = resolve_prompts(tmp.path().to_str().unwrap());
-        assert!(qp.is_empty());
-        assert!(dp.is_empty());
-    }
-
-    #[test]
-    fn resolve_prompts_missing_config_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (qp, dp) = resolve_prompts(tmp.path().to_str().unwrap());
-        assert!(qp.is_empty());
-        assert!(dp.is_empty());
     }
 }

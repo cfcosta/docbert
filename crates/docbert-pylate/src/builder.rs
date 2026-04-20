@@ -13,6 +13,8 @@ pub struct ColbertBuilder {
     repo_id: String,
     query_prefix: Option<String>,
     document_prefix: Option<String>,
+    query_prompt: Option<String>,
+    document_prompt: Option<String>,
     mask_token: Option<String>,
     do_query_expansion: Option<bool>,
     attend_to_expansion_tokens: Option<bool>,
@@ -29,6 +31,8 @@ impl ColbertBuilder {
             repo_id: repo_id.to_string(),
             query_prefix: None,
             document_prefix: None,
+            query_prompt: None,
+            document_prompt: None,
             mask_token: None,
             do_query_expansion: None,
             attend_to_expansion_tokens: None,
@@ -48,6 +52,20 @@ impl ColbertBuilder {
     /// Sets the document prefix token. Overrides the value from the config file.
     pub fn with_document_prefix(mut self, document_prefix: String) -> Self {
         self.document_prefix = Some(document_prefix);
+        self
+    }
+
+    /// Sets the SentenceTransformers-style query prompt (e.g. `"search_query: "`).
+    /// Overrides the `prompts.query` field from `config_sentence_transformers.json`.
+    pub fn with_query_prompt(mut self, query_prompt: String) -> Self {
+        self.query_prompt = Some(query_prompt);
+        self
+    }
+
+    /// Sets the SentenceTransformers-style document prompt (e.g. `"search_document: "`).
+    /// Overrides the `prompts.document` field from `config_sentence_transformers.json`.
+    pub fn with_document_prompt(mut self, document_prompt: String) -> Self {
+        self.document_prompt = Some(document_prompt);
         self
     }
 
@@ -187,6 +205,20 @@ impl TryFrom<ColbertBuilder> for ColBERT {
                     .to_string()
             });
 
+        let final_query_prompt = builder.query_prompt.unwrap_or_else(|| {
+            st_config["prompts"]["query"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        });
+        let final_document_prompt =
+            builder.document_prompt.unwrap_or_else(|| {
+                st_config["prompts"]["document"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            });
+
         let mask_token = builder.mask_token.unwrap_or_else(|| {
             special_tokens_map["mask_token"]
                 .as_str()
@@ -220,6 +252,8 @@ impl TryFrom<ColbertBuilder> for ColBERT {
             dense_config_bytes,
             final_query_prefix,
             final_document_prefix,
+            final_query_prompt,
+            final_document_prompt,
             mask_token,
             final_do_query_expansion,
             final_attend_to_expansion_tokens,

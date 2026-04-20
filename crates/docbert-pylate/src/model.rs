@@ -232,6 +232,8 @@ pub struct ColBERT {
     pub(crate) mask_token: String,
     pub(crate) query_prefix: String,
     pub(crate) document_prefix: String,
+    pub(crate) query_prompt: String,
+    pub(crate) document_prompt: String,
     pub(crate) do_query_expansion: bool,
     pub(crate) attend_to_expansion_tokens: bool,
     pub(crate) query_length: usize,
@@ -252,6 +254,8 @@ impl ColBERT {
         dense_config_bytes: Vec<u8>,
         query_prefix: String,
         document_prefix: String,
+        query_prompt: String,
+        document_prompt: String,
         mask_token: String,
         do_query_expansion: bool,
         attend_to_expansion_tokens: bool,
@@ -350,6 +354,8 @@ impl ColBERT {
             mask_token,
             query_prefix,
             document_prefix,
+            query_prompt,
+            document_prompt,
             do_query_expansion,
             attend_to_expansion_tokens: final_attend_to_expansion_tokens,
             query_length: query_length.unwrap_or(32),
@@ -400,6 +406,20 @@ impl ColBERT {
                 "Input sentences cannot be empty.".into(),
             ));
         }
+
+        let prompt = if is_query {
+            &self.query_prompt
+        } else {
+            &self.document_prompt
+        };
+        let prompted: Vec<String>;
+        let sentences: &[String] = if prompt.is_empty() {
+            sentences
+        } else {
+            prompted =
+                sentences.iter().map(|s| format!("{prompt}{s}")).collect();
+            &prompted
+        };
 
         if self.device.is_cpu() {
             let mut tokenized_batches = Vec::new();
