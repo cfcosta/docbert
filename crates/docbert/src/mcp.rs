@@ -58,7 +58,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::runtime_resources;
+use crate::runtime;
 
 const DEFAULT_SEARCH_LIMIT: usize = 10;
 
@@ -70,7 +70,7 @@ struct DocbertState {
 
 impl DocbertState {
     fn open_config_db(&self) -> error::Result<ConfigDb> {
-        runtime_resources::open_config_db_blocking(&self.data_dir)
+        runtime::open_config_db_blocking(&self.data_dir)
     }
 }
 

@@ -79,7 +79,7 @@ pub struct MerkleDiffResult {
 ///
 /// This classifies file paths as new, changed, or deleted using Merkle leaf
 /// hashes instead of filesystem modification times.
-pub fn diff_collection_snapshots(
+pub fn diff_snapshots(
     previous: Option<&CollectionMerkleSnapshot>,
     current: &CollectionMerkleSnapshot,
 ) -> MerkleDiffResult {
@@ -233,7 +233,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let current = write_snapshot(&tmp, &[("a.md", "hello", 1)]);
 
-        let diff = diff_collection_snapshots(None, &current);
+        let diff = diff_snapshots(None, &current);
 
         assert_eq!(
             diff,
@@ -253,7 +253,7 @@ mod tests {
         let previous = write_snapshot(&previous_tmp, &[("a.md", "hello", 1)]);
         let current = write_snapshot(&current_tmp, &[("a.md", "hello!", 1)]);
 
-        let diff = diff_collection_snapshots(Some(&previous), &current);
+        let diff = diff_snapshots(Some(&previous), &current);
 
         assert_eq!(
             diff,
@@ -273,7 +273,7 @@ mod tests {
         let previous = write_snapshot(&previous_tmp, &[("a.md", "hello", 1)]);
         let current = write_snapshot(&current_tmp, &[]);
 
-        let diff = diff_collection_snapshots(Some(&previous), &current);
+        let diff = diff_snapshots(Some(&previous), &current);
 
         assert_eq!(
             diff,
@@ -294,7 +294,7 @@ mod tests {
         let current =
             write_snapshot(&current_tmp, &[("a.md", "hello", 999_999)]);
 
-        let diff = diff_collection_snapshots(Some(&previous), &current);
+        let diff = diff_snapshots(Some(&previous), &current);
 
         assert_eq!(diff, MerkleDiffResult::default());
     }
@@ -313,7 +313,7 @@ mod tests {
         );
         let current = write_snapshot(&current_tmp, &[]);
 
-        let diff = diff_collection_snapshots(Some(&previous), &current);
+        let diff = diff_snapshots(Some(&previous), &current);
 
         assert_eq!(
             diff.deleted_paths,

@@ -19,7 +19,7 @@ use super::{
     model::{EMBEDDING_MODEL_KEY, log_model_runtime},
     style,
 };
-use crate::{cli, indexing_workflow};
+use crate::{cli, indexing};
 
 pub(super) fn remove_document_embeddings_for_ids(
     embedding_db: &EmbeddingDb,
@@ -121,7 +121,7 @@ fn process_document_batch(
     config_db: &ConfigDb,
     runtime: &mut IndexingRuntime,
     collection: &str,
-    document_batch: &indexing_workflow::DocumentLoadBatch,
+    document_batch: &indexing::DocumentLoadBatch,
     index_documents: bool,
     embed_documents: bool,
 ) -> error::Result<()> {
@@ -315,7 +315,7 @@ pub(crate) fn cmd_rebuild(
     args: &cli::RebuildArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections = indexing_workflow::resolve_target_collections(
+    let collections = indexing::resolve_target_collections(
         config_db,
         args.collection.as_deref(),
     )?;
@@ -370,8 +370,7 @@ pub(crate) fn cmd_rebuild(
         if !args.embeddings_only || !args.index_only {
             eprintln!("  Loading {} files...", files.len());
         }
-        let document_batch =
-            indexing_workflow::load_rebuild_batch(name, &files, args);
+        let document_batch = indexing::load_rebuild_batch(name, &files, args);
         // Rebuild also advances the stored Merkle snapshot only after the
         // collection has been processed successfully.
         let rebuild_result = process_document_batch(
@@ -382,7 +381,7 @@ pub(crate) fn cmd_rebuild(
             !args.embeddings_only,
             !args.index_only,
         );
-        indexing_workflow::finalize_rebuild_snapshot(
+        indexing::finalize_rebuild_snapshot(
             config_db,
             name,
             root,
@@ -413,7 +412,7 @@ pub(crate) fn cmd_sync(
     args: &cli::SyncArgs,
     model_id: &str,
 ) -> error::Result<()> {
-    let collections = indexing_workflow::resolve_target_collections(
+    let collections = indexing::resolve_target_collections(
         config_db,
         args.collection.as_deref(),
     )?;
@@ -461,8 +460,7 @@ pub(crate) fn cmd_sync(
             continue;
         }
 
-        let selection =
-            indexing_workflow::select_sync_work(config_db, name, root)?;
+        let selection = indexing::select_sync_work(config_db, name, root)?;
 
         if selection.new_files.is_empty()
             && selection.changed_files.is_empty()
@@ -550,7 +548,7 @@ pub(crate) fn cmd_sync(
             if !files_to_process.is_empty() {
                 eprintln!("  Loading {} files...", files_to_process.len());
                 let document_batch =
-                    indexing_workflow::load_sync_batch(name, &files_to_process);
+                    indexing::load_sync_batch(name, &files_to_process);
                 process_document_batch(
                     config_db,
                     &mut runtime,
@@ -564,11 +562,7 @@ pub(crate) fn cmd_sync(
             Ok(())
         })();
 
-        indexing_workflow::finalize_sync_snapshot(
-            config_db,
-            &selection,
-            sync_result,
-        )?;
+        indexing::finalize_sync_snapshot(config_db, &selection, sync_result)?;
 
         eprintln!(
             "  Done in {}.",
@@ -739,7 +733,7 @@ mod tests {
             chunking_config,
         };
 
-        let batch = indexing_workflow::load_rebuild_batch(
+        let batch = indexing::load_rebuild_batch(
             "notes",
             &files,
             &crate::cli::RebuildArgs {
@@ -811,7 +805,7 @@ mod tests {
             chunking_config,
         };
 
-        let batch = indexing_workflow::load_rebuild_batch(
+        let batch = indexing::load_rebuild_batch(
             "notes",
             &files,
             &crate::cli::RebuildArgs {

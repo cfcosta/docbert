@@ -3,7 +3,7 @@ use std::path::Path;
 use docbert_core::{
     ConfigDb,
     error,
-    incremental::{MerkleDiffResult, diff_collection_snapshots},
+    incremental::{MerkleDiffResult, diff_snapshots},
     merkle::{CollectionMerkleSnapshot, build_collection_snapshot},
     walker::{self, DiscoveredFile},
 };
@@ -37,10 +37,7 @@ pub(crate) fn compute_collection_snapshot_change_for_discovered(
 ) -> error::Result<CollectionSnapshotChange> {
     let previous_snapshot = load_collection_snapshot(config_db, collection)?;
     let current_snapshot = build_collection_snapshot(collection, discovered)?;
-    let diff = diff_collection_snapshots(
-        previous_snapshot.as_ref(),
-        &current_snapshot,
-    );
+    let diff = diff_snapshots(previous_snapshot.as_ref(), &current_snapshot);
 
     Ok(CollectionSnapshotChange {
         previous_snapshot,

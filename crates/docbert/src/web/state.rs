@@ -10,7 +10,7 @@ use docbert_core::{
 };
 use tantivy::IndexWriter;
 
-use crate::runtime_resources;
+use crate::runtime;
 
 #[allow(dead_code)]
 pub(crate) struct Inner {
@@ -23,27 +23,24 @@ pub(crate) type AppState = Arc<Inner>;
 
 impl Inner {
     pub(crate) fn open_config_db(&self) -> error::Result<ConfigDb> {
-        runtime_resources::open_config_db_blocking(&self.data_dir)
+        runtime::open_config_db_blocking(&self.data_dir)
     }
 
     pub(crate) fn open_config_db_blocking(&self) -> error::Result<ConfigDb> {
-        runtime_resources::open_config_db_blocking(&self.data_dir)
+        runtime::open_config_db_blocking(&self.data_dir)
     }
 
     pub(crate) fn open_embedding_db_blocking(
         &self,
     ) -> error::Result<EmbeddingDb> {
-        runtime_resources::open_embedding_db_blocking(&self.data_dir)
+        runtime::open_embedding_db_blocking(&self.data_dir)
     }
 
     pub(crate) fn open_index_writer_blocking(
         &self,
         memory_budget: usize,
     ) -> error::Result<IndexWriter> {
-        runtime_resources::open_index_writer_blocking(
-            &self.search_index,
-            memory_budget,
-        )
+        runtime::open_index_writer_blocking(&self.search_index, memory_budget)
     }
 }
 

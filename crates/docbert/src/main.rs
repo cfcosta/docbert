@@ -5,11 +5,11 @@ use docbert_core::{ConfigDb, DataDir, error, model_manager::resolve_model};
 use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod collection_snapshots;
-mod command_handlers;
-mod indexing_workflow;
+mod commands;
+mod indexing;
 mod mcp;
-mod runtime_resources;
+mod runtime;
+mod snapshots;
 mod web;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
@@ -72,7 +72,7 @@ fn main() -> error::Result<()> {
         return Ok(());
     }
     if let Command::Doctor(args) = &cli.command {
-        command_handlers::cmd_doctor(args.json)?;
+        commands::cmd_doctor(args.json)?;
         return Ok(());
     }
 
@@ -104,30 +104,28 @@ fn main() -> error::Result<()> {
         Command::Doctor(_) => unreachable!(),      // Handled above
         Command::Collection { action } => match action {
             CollectionAction::Add { path, name } => {
-                command_handlers::collection_add(&config_db, &path, &name)?;
+                commands::collection_add(&config_db, &path, &name)?;
             }
             CollectionAction::Remove { name } => {
-                command_handlers::collection_remove(
-                    &config_db, &data_dir, &name,
-                )?;
+                commands::collection_remove(&config_db, &data_dir, &name)?;
             }
             CollectionAction::List { json } => {
-                command_handlers::collection_list(&config_db, json)?;
+                commands::collection_list(&config_db, json)?;
             }
         },
         Command::Context { action } => match action {
             ContextAction::Add { uri, description } => {
-                command_handlers::context_add(&config_db, &uri, &description)?;
+                commands::context_add(&config_db, &uri, &description)?;
             }
             ContextAction::Remove { uri } => {
-                command_handlers::context_remove(&config_db, &uri)?;
+                commands::context_remove(&config_db, &uri)?;
             }
             ContextAction::List { json } => {
-                command_handlers::context_list(&config_db, json)?;
+                commands::context_list(&config_db, json)?;
             }
         },
         Command::Search(args) => {
-            command_handlers::run_search(
+            commands::run_search(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -135,7 +133,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Ssearch(args) => {
-            command_handlers::run_semantic_search(
+            commands::run_semantic_search(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -143,13 +141,13 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Get(args) => {
-            command_handlers::cmd_get(&config_db, &args)?;
+            commands::cmd_get(&config_db, &args)?;
         }
         Command::MultiGet(args) => {
-            command_handlers::cmd_multi_get(&config_db, &args)?;
+            commands::cmd_multi_get(&config_db, &args)?;
         }
         Command::Rebuild(args) => {
-            command_handlers::cmd_rebuild(
+            commands::cmd_rebuild(
                 &config_db,
                 &data_dir,
                 &args,
@@ -157,7 +155,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Sync(args) => {
-            command_handlers::cmd_sync(
+            commands::cmd_sync(
                 &config_db,
                 &data_dir,
                 &args,
@@ -165,7 +163,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Status(args) => {
-            command_handlers::cmd_status(
+            commands::cmd_status(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -176,13 +174,13 @@ fn main() -> error::Result<()> {
         Command::Web(_) => unreachable!(), // Handled above
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {
-                command_handlers::cmd_model_show(&model_resolution, json)?;
+                commands::cmd_model_show(&model_resolution, json)?;
             }
             cli::ModelAction::Set { model } => {
-                command_handlers::cmd_model_set(&config_db, &model)?;
+                commands::cmd_model_set(&config_db, &model)?;
             }
             cli::ModelAction::Clear => {
-                command_handlers::cmd_model_clear(&config_db)?;
+                commands::cmd_model_clear(&config_db)?;
             }
         },
     }

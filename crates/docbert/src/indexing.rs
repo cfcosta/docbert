@@ -9,7 +9,7 @@ use docbert_core::{
     walker::{self, DiscoveredFile},
 };
 
-use crate::{cli, collection_snapshots};
+use crate::{cli, snapshots};
 
 #[derive(Debug, Default)]
 pub(crate) struct DocumentLoadBatch {
@@ -81,7 +81,7 @@ pub(crate) fn select_sync_work(
     root: &Path,
 ) -> error::Result<SyncSelection> {
     let discovered = walker::discover_files(root)?;
-    let change = collection_snapshots::compute_collection_snapshot_change_for_discovered(
+    let change = snapshots::compute_collection_snapshot_change_for_discovered(
         config_db,
         collection,
         &discovered,
@@ -121,7 +121,7 @@ pub(crate) fn finalize_sync_snapshot(
     sync_result: error::Result<()>,
 ) -> error::Result<()> {
     sync_result?;
-    collection_snapshots::replace_collection_snapshot(
+    snapshots::replace_collection_snapshot(
         config_db,
         &selection.current_snapshot,
     )
@@ -134,9 +134,8 @@ pub(crate) fn finalize_rebuild_snapshot(
     rebuild_result: error::Result<()>,
 ) -> error::Result<()> {
     rebuild_result?;
-    let snapshot =
-        collection_snapshots::compute_collection_snapshot(collection, root)?;
-    collection_snapshots::replace_collection_snapshot(config_db, &snapshot)
+    let snapshot = snapshots::compute_collection_snapshot(collection, root)?;
+    snapshots::replace_collection_snapshot(config_db, &snapshot)
 }
 
 #[cfg(test)]

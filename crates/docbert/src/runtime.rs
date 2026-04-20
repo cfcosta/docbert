@@ -72,7 +72,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_resources_retries_redb_open_contention_classification() {
+    fn runtime_retries_redb_open_contention_classification() {
         let tmp = tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
         let _first = ConfigDb::open(&data_dir.config_db()).unwrap();
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_resources_retries_tantivy_lock_classification() {
+    fn runtime_retries_tantivy_lock_classification() {
         let tmp = tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
         let search_index =

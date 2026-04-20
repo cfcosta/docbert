@@ -67,11 +67,11 @@ Important modules:
 
 - `src/main.rs` — process entrypoint, command dispatch, data-dir resolution, model resolution
 - `src/cli.rs` — clap command surface
-- `src/command_handlers/*` — CLI behaviors
-- `src/indexing_workflow.rs` — sync/rebuild planning and snapshot finalization
+- `src/commands/*` — CLI behaviors
+- `src/indexing.rs` — sync/rebuild planning and snapshot finalization
 - `src/web/*` — web runtime
 - `src/mcp.rs` — MCP runtime
-- `src/collection_snapshots.rs` — collection snapshot support around indexing/web mutations
+- `src/snapshots.rs` — collection snapshot support around indexing/web mutations
 
 ## `crates/docbert-core`
 
@@ -139,7 +139,7 @@ This layer is shared across CLI, web, and MCP surfaces.
 
 ## 2. Discovery and ingestion layer
 
-Implemented across `walker`, `ingestion`, `preparation`, and `indexing_workflow`.
+Implemented across `walker`, `ingestion`, `preparation`, and `indexing`.
 
 Responsibilities:
 

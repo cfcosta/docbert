@@ -74,7 +74,7 @@ The exact planning step depends on whether docbert is running `sync`, `rebuild`,
 
 ### `docbert sync`
 
-`sync` performs incremental selection in `crates/docbert/src/indexing_workflow.rs`.
+`sync` performs incremental selection in `crates/docbert/src/indexing.rs`.
 
 The flow is:
 

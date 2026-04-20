@@ -10,7 +10,7 @@ use docbert_core::{
     preparation::{self, SearchDocument},
 };
 
-use crate::{collection_snapshots, web::state::AppState};
+use crate::{snapshots, web::state::AppState};
 
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
@@ -51,7 +51,7 @@ pub(crate) fn ingest_prepared_document(
     let embedding_db = state.open_embedding_db_blocking()?;
     let collection_root = collection_root(&config_db, collection)?;
     let previous_snapshot =
-        collection_snapshots::load_collection_snapshot(&config_db, collection)?;
+        snapshots::load_collection_snapshot(&config_db, collection)?;
     let existing_embeddings =
         load_document_family_embeddings(&embedding_db, document.did.numeric)?;
     let existing_embedding_ids: Vec<u64> = existing_embeddings
@@ -213,9 +213,7 @@ pub(crate) fn rollback_document(
             let embedding_db = state.open_embedding_db_blocking()?;
             let collection_root = collection_root(&config_db, collection)?;
             let previous_snapshot =
-                collection_snapshots::load_collection_snapshot(
-                    &config_db, collection,
-                )?;
+                snapshots::load_collection_snapshot(&config_db, collection)?;
 
             // Remove the current (bad) embeddings for this document family.
             embedding_db.remove_document_family(prev.did.numeric)?;
@@ -304,7 +302,7 @@ pub(crate) fn delete_document(
     let config_db = state.open_config_db_blocking()?;
     let collection_root = collection_root(&config_db, collection)?;
     let previous_snapshot =
-        collection_snapshots::load_collection_snapshot(&config_db, collection)?;
+        snapshots::load_collection_snapshot(&config_db, collection)?;
     let did = DocumentId::new(collection, relative_path);
 
     // Remove embeddings and metadata first (cheap, idempotent).
@@ -376,14 +374,11 @@ fn refresh_collection_snapshot(
     collection_root: &Path,
     previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
 ) -> error::Result<()> {
-    let current_snapshot = collection_snapshots::compute_collection_snapshot(
-        collection,
-        collection_root,
-    )?;
-    if let Err(err) = collection_snapshots::replace_collection_snapshot(
-        config_db,
-        &current_snapshot,
-    ) {
+    let current_snapshot =
+        snapshots::compute_collection_snapshot(collection, collection_root)?;
+    if let Err(err) =
+        snapshots::replace_collection_snapshot(config_db, &current_snapshot)
+    {
         restore_previous_collection_snapshot(
             config_db,
             collection,
@@ -400,9 +395,9 @@ fn restore_previous_collection_snapshot(
     previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
 ) -> error::Result<()> {
     match previous_snapshot {
-        Some(snapshot) => collection_snapshots::replace_collection_snapshot(
-            config_db, snapshot,
-        ),
+        Some(snapshot) => {
+            snapshots::replace_collection_snapshot(config_db, snapshot)
+        }
         None => {
             config_db.remove_collection_merkle_snapshot(collection)?;
             Ok(())
