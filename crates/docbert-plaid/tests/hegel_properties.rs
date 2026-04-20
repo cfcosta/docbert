@@ -2055,6 +2055,72 @@ fn prop_paper_defaults_always_valid(tc: TestCase) {
     assert_eq!(p.top_k, top_k, "top_k not threaded through");
 }
 
+// ---------------------------------------------------------------------------
+// GPU-side decode parity
+// ---------------------------------------------------------------------------
+
+/// Differential: the on-device (candle `index_select`) decode path
+/// used by `search::batch_maxsim` must produce the same MaxSim scores
+/// as the per-token CPU decode path (`codec.decode_vector`) followed
+/// by a hand-rolled dot product. If the gather/reshape/narrow pipeline
+/// diverges from the bit-unpacking reference even for one token, this
+/// property catches it on the minimal corpus that triggers the drift.
+///
+/// This is the key correctness guard added alongside the move from a
+/// CPU decode loop to candle `index_select` gathers in `batch_maxsim`.
+#[hegel::test(test_cases = 30)]
+fn prop_gpu_decode_scores_match_cpu_decode(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 2, 5, 5, 8));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params).unwrap();
+
+    // Reach every candidate so the GPU decode is what's actually being
+    // scored against the CPU reference — with no pruning or shortlist
+    // filtering there's no scoring-stage divergence to hide behind.
+    let query = tc.draw(unit_rows(dim, 2));
+    let sp = SearchParams {
+        top_k: docs.len(),
+        n_probe: params.k_centroids,
+        n_candidate_docs: None,
+        centroid_score_threshold: None,
+    };
+    let got = search(&index, &query, sp).unwrap();
+
+    for r in &got {
+        let doc_idx = index
+            .position_of(r.doc_id)
+            .expect("returned doc must exist");
+        // Reference: CPU decode every token, then compute MaxSim by hand.
+        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+            .iter()
+            .map(|ev| index.codec.decode_vector(ev).unwrap())
+            .collect();
+        let mut expected = 0.0f32;
+        for q in query.chunks_exact(dim) {
+            let best = decoded
+                .iter()
+                .map(|d| d.iter().zip(q).map(|(a, b)| a * b).sum::<f32>())
+                .fold(f32::NEG_INFINITY, f32::max);
+            if best.is_finite() {
+                expected += best;
+            }
+        }
+        assert!(
+            (expected - r.score).abs() < 1e-4,
+            "GPU decode score {} diverged from CPU-decode MaxSim {} for doc {}",
+            r.score,
+            expected,
+            r.doc_id,
+        );
+    }
+}
+
 /// Monotonic: growing `top_k` should never make the algorithm
 /// cheaper / more aggressive. That is, moving into a larger bucket
 /// keeps `nprobe` and `ndocs` monotonically non-decreasing and

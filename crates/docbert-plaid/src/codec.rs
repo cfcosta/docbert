@@ -167,6 +167,16 @@ impl DecodeTable {
         &self.weights[start..start + self.codes_per_byte]
     }
 
+    /// Raw row-major `[256, codes_per_byte]` weights buffer.
+    ///
+    /// Exposed so the search path can upload the table once per query
+    /// and decode residuals via batched `index_select` on the device,
+    /// matching the GPU decompression kernel described in PLAID §4.5
+    /// (one thread per packed byte).
+    pub fn weights_flat(&self) -> &[f32] {
+        &self.weights
+    }
+
     /// Number of codes packed into one byte at this table's `nbits`.
     pub fn codes_per_byte(&self) -> usize {
         self.codes_per_byte

@@ -31,7 +31,7 @@
 //! probed candidate decodes, no pruning) can pass
 //! `n_candidate_docs = None` and `centroid_score_threshold = None`.
 
-use candle_core::Tensor;
+use candle_core::{Device, Tensor};
 
 use crate::{
     Result,
@@ -470,20 +470,22 @@ fn approx_centroid_interaction_score(
 /// Score a batch of candidate docs against `query_tokens` with a
 /// padding-free packed MaxSim, matching PLAID §4.5.
 ///
-/// All candidate tokens are decoded into a single `[total_tokens, dim]`
-/// buffer concatenated along the doc axis — no padding between docs,
-/// no mask. A single GEMM produces `[total_tokens, n_q]` scores, and
-/// per-doc MaxSim is a scalar max-then-sum over the slice of rows
-/// belonging to each candidate. On uniform-length corpora this costs
-/// roughly the same as the old padded path, but on ragged corpora
-/// (short + long docs mixed) it avoids the `max_len - doc_len` wasted
-/// rows and the `[n_c, max_len, n_q]` masking broadcast the old path
-/// had to materialise.
+/// Two decode strategies share the downstream MaxSim reduction:
 ///
-/// Final scoring still matches the ColBERT/PLAID reference definition
-/// `S = Σ_i max_j q_i · d_j`. Decoding uses the `DecodeTable` lookup
-/// so each packed byte lands in the output buffer as a single table
-/// read plus the centroid add.
+/// - On CPU the fastest path is the hand-rolled LUT walk — a byte
+///   lookup per packed slot beats candle's generic `index_select`
+///   because there's no kernel-launch overhead to amortise.
+/// - On CUDA the right move is to keep the whole flow on-device:
+///   upload the centroid bank and weights LUT once, gather token
+///   residuals via two `index_select` ops, add, and feed straight
+///   into the MaxSim GEMM. This mirrors PLAID's §4.5 CUDA kernel
+///   (one thread per packed byte, centroid-add, matmul) without
+///   re-implementing it by hand.
+///
+/// The per-doc max-then-sum reduction still runs on the host because
+/// candle doesn't expose a native segmented-max primitive and we want
+/// to avoid materialising the padded `[n_docs, max_len, n_q]` tensor
+/// the paper explicitly rejects.
 fn batch_maxsim(
     query_tokens: &[f32],
     candidate_idxs: &[usize],
@@ -493,34 +495,37 @@ fn batch_maxsim(
     let n_q = query_tokens.len() / dim;
 
     let decode_table = DecodeTable::new(&index.codec);
-    let total_tokens_bound: usize = candidate_idxs
+    let total_tokens: usize = candidate_idxs
         .iter()
         .map(|&i| index.doc_tokens[i].len())
         .sum();
-    // Packed (concatenated) decoded tokens and per-doc row offsets.
-    let mut packed: Vec<f32> = Vec::with_capacity(total_tokens_bound * dim);
     let mut offsets: Vec<usize> = Vec::with_capacity(candidate_idxs.len() + 1);
     offsets.push(0);
-    for &doc_idx in candidate_idxs {
-        for ev in &index.doc_tokens[doc_idx] {
-            packed.extend(
-                index.codec.decode_vector_with_table(ev, &decode_table)?,
-            );
-        }
-        offsets.push(packed.len() / dim);
-    }
-    let total_tokens = packed.len() / dim;
+
     if total_tokens == 0 || n_q == 0 {
         return Ok(candidate_idxs.iter().map(|&i| (i, 0.0)).collect());
     }
 
+    let device = default_device();
+    let ctx = DecodeCtx {
+        index,
+        candidate_idxs,
+        dim,
+        total_tokens,
+        decode_table: &decode_table,
+        device,
+    };
+    let decoded = if matches!(device, Device::Cpu) {
+        decode_on_cpu(&ctx, &mut offsets)?
+    } else {
+        decode_on_device(&ctx, &mut offsets)?
+    };
+
     // Single `[total_tokens, dim] × [dim, n_q]` GEMM. No padding, no
     // mask — the packed layout means every row is a real token.
-    let device = default_device();
-    let docs_t = Tensor::from_vec(packed, (total_tokens, dim), device)?;
     let q_t = Tensor::from_slice(query_tokens, (n_q, dim), device)?;
     let q_transposed = q_t.t()?.contiguous()?;
-    let scores_flat: Vec<f32> = docs_t
+    let scores_flat: Vec<f32> = decoded
         .matmul(&q_transposed)?
         .to_vec2::<f32>()?
         .into_iter()
@@ -552,6 +557,113 @@ fn batch_maxsim(
         out.push((doc_idx, total));
     }
     Ok(out)
+}
+
+/// Inputs the two decode strategies share. Grouping them keeps the
+/// call-site readable and satisfies clippy's `too_many_arguments`
+/// without leaking implementation details into the public API.
+struct DecodeCtx<'a> {
+    index: &'a Index,
+    candidate_idxs: &'a [usize],
+    dim: usize,
+    total_tokens: usize,
+    decode_table: &'a DecodeTable,
+    device: &'a Device,
+}
+
+/// CPU decode path: walk every candidate token, look up each packed
+/// byte in the precomputed LUT, add the centroid dimensions, push
+/// into one big row-major buffer, then upload as a single tensor.
+///
+/// Fast on CPU because the whole loop is contiguous writes plus a
+/// 256-entry table of 4 KiB at `nbits=2` that lives in L1 the entire
+/// call — measurably faster than routing every token through candle
+/// `index_select`, which pays kernel-launch overhead per gather.
+fn decode_on_cpu(
+    ctx: &DecodeCtx<'_>,
+    offsets: &mut Vec<usize>,
+) -> Result<Tensor> {
+    let mut packed: Vec<f32> = Vec::with_capacity(ctx.total_tokens * ctx.dim);
+    for &doc_idx in ctx.candidate_idxs {
+        for ev in &ctx.index.doc_tokens[doc_idx] {
+            packed.extend(
+                ctx.index
+                    .codec
+                    .decode_vector_with_table(ev, ctx.decode_table)?,
+            );
+        }
+        offsets.push(packed.len() / ctx.dim);
+    }
+    Ok(Tensor::from_vec(
+        packed,
+        (ctx.total_tokens, ctx.dim),
+        ctx.device,
+    )?)
+}
+
+/// GPU decode path: upload the centroid bank and the 256-entry LUT,
+/// then recover every candidate token via two `index_select` gathers
+/// and an add — all on-device. This keeps the decode inside the same
+/// kernel stream as the MaxSim matmul, which is the win PLAID §4.5
+/// describes for its CUDA implementation.
+///
+/// When `dim` isn't a multiple of `codes_per_byte`, the packed
+/// residual buffer has `packed_bytes * codes_per_byte - dim` trailing
+/// slack slots. We decode the padded row width and `narrow` back to
+/// `dim` so the output tensor has exactly the expected shape.
+fn decode_on_device(
+    ctx: &DecodeCtx<'_>,
+    offsets: &mut Vec<usize>,
+) -> Result<Tensor> {
+    let packed_bytes_per_vec = ctx.index.codec.packed_bytes();
+    let codes_per_byte = ctx.decode_table.codes_per_byte();
+    let decoded_row_width = packed_bytes_per_vec * codes_per_byte;
+    debug_assert!(decoded_row_width >= ctx.dim);
+
+    // Flat gather buffers — the doc-level offsets piggy-back on the
+    // same iteration so we keep the per-doc row ranges aligned with
+    // the downstream MaxSim reduction.
+    let mut centroid_ids: Vec<u32> = Vec::with_capacity(ctx.total_tokens);
+    let mut packed_bytes: Vec<u32> =
+        Vec::with_capacity(ctx.total_tokens * packed_bytes_per_vec);
+    for &doc_idx in ctx.candidate_idxs {
+        for ev in &ctx.index.doc_tokens[doc_idx] {
+            debug_assert_eq!(ev.codes.len(), packed_bytes_per_vec);
+            centroid_ids.push(ev.centroid_id);
+            packed_bytes.extend(ev.codes.iter().map(|&b| b as u32));
+        }
+        offsets.push(centroid_ids.len());
+    }
+
+    let n_centroids = ctx.index.codec.num_centroids();
+    let centroids_t = Tensor::from_slice(
+        ctx.index.codec.centroids.as_slice(),
+        (n_centroids, ctx.dim),
+        ctx.device,
+    )?;
+    let weights_t = Tensor::from_slice(
+        ctx.decode_table.weights_flat(),
+        (256, codes_per_byte),
+        ctx.device,
+    )?;
+    let cent_idx_t =
+        Tensor::from_vec(centroid_ids, (ctx.total_tokens,), ctx.device)?;
+    let byte_idx_t = Tensor::from_vec(
+        packed_bytes,
+        (ctx.total_tokens * packed_bytes_per_vec,),
+        ctx.device,
+    )?;
+
+    let centroid_emb = centroids_t.index_select(&cent_idx_t, 0)?;
+    let residuals_flat = weights_t.index_select(&byte_idx_t, 0)?;
+    let residuals_padded =
+        residuals_flat.reshape((ctx.total_tokens, decoded_row_width))?;
+    let residuals = if decoded_row_width == ctx.dim {
+        residuals_padded
+    } else {
+        residuals_padded.narrow(1, 0, ctx.dim)?
+    };
+    Ok((centroid_emb + residuals)?)
 }
 
 #[cfg(test)]
@@ -1259,6 +1371,61 @@ mod tests {
             })
             .sum();
         assert!((expected - top.score).abs() < 1e-5);
+    }
+
+    // -- GPU decode parity --
+
+    /// When run on CPU-backed candle, `decode_on_device` still lives on
+    /// the code path the CUDA build takes. This test forces that path
+    /// and compares every decoded row to the byte-walking CPU decoder
+    /// at f32 precision. Any drift in the gather/reshape/narrow chain
+    /// would show up here without needing a real GPU.
+    #[test]
+    fn gpu_decode_path_matches_cpu_decode_element_wise() {
+        let index = build_index(&corpus(), params()).unwrap();
+        let candidate_idxs: Vec<usize> = (0..index.num_documents()).collect();
+        let total_tokens: usize = candidate_idxs
+            .iter()
+            .map(|&i| index.doc_tokens[i].len())
+            .sum();
+        let decode_table = DecodeTable::new(&index.codec);
+        let device = Device::Cpu;
+
+        let ctx = DecodeCtx {
+            index: &index,
+            candidate_idxs: &candidate_idxs,
+            dim: index.params.dim,
+            total_tokens,
+            decode_table: &decode_table,
+            device: &device,
+        };
+
+        let mut offsets_gpu = vec![0usize];
+        let decoded_gpu = decode_on_device(&ctx, &mut offsets_gpu).unwrap();
+        let gpu_rows: Vec<f32> = decoded_gpu
+            .to_vec2::<f32>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let mut offsets_cpu = vec![0usize];
+        let decoded_cpu = decode_on_cpu(&ctx, &mut offsets_cpu).unwrap();
+        let cpu_rows: Vec<f32> = decoded_cpu
+            .to_vec2::<f32>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect();
+
+        assert_eq!(offsets_gpu, offsets_cpu);
+        assert_eq!(gpu_rows.len(), cpu_rows.len());
+        for (g, c) in gpu_rows.iter().zip(cpu_rows.iter()) {
+            assert!(
+                (g - c).abs() < 1e-6,
+                "GPU decode value {g} != CPU decode value {c}",
+            );
+        }
     }
 
     // -- Paper Table 2 defaults --
