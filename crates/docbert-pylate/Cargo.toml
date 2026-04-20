@@ -44,7 +44,3 @@ accelerate = [
 
 [dev-dependencies]
 hegeltest = "0.6"
-
-[[bin]]
-name = "benchmark"
-path = "benchmark/main.rs"
