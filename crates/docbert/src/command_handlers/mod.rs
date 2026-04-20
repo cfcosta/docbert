@@ -4,6 +4,7 @@ mod indexing;
 mod json_output;
 mod model;
 mod search;
+mod style;
 
 pub(crate) use collections::{
     collection_add,

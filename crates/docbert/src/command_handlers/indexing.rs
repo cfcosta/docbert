@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use docbert_core::{
     ConfigDb,
     DataDir,
@@ -13,7 +15,10 @@ use docbert_core::{
 };
 use kdam::{BarExt, Spinner, tqdm};
 
-use super::model::{EMBEDDING_MODEL_KEY, log_model_runtime};
+use super::{
+    model::{EMBEDDING_MODEL_KEY, log_model_runtime},
+    style,
+};
 use crate::{cli, indexing_workflow};
 
 pub(super) fn remove_document_embeddings_for_ids(
@@ -35,7 +40,8 @@ pub(super) fn remove_document_artifacts_for_ids(
 fn log_load_failures(failures: &[ingestion::LoadFailure]) {
     for failure in failures {
         eprintln!(
-            "  Warning: failed to read {}: {}",
+            "  {} failed to read {}: {}",
+            style::warn(&"Warning:"),
             failure.file.relative_path.display(),
             failure.error
         );
@@ -231,8 +237,10 @@ fn sync_plaid_index(
         return rebuild_plaid_index(data_dir, embedding_db);
     };
 
+    let start = Instant::now();
     eprintln!(
-        "Updating PLAID index ({} touched base doc(s))...",
+        "{} ({} touched base doc(s))...",
+        style::subheader(&"Updating PLAID index"),
         touched_bases.len(),
     );
     let updated = docbert_core::plaid::update_index_for_touched_bases(
@@ -241,7 +249,11 @@ fn sync_plaid_index(
         touched_bases,
     )?;
     docbert_core::plaid::save_index(&updated, data_dir)?;
-    eprintln!("  Indexed {} documents.", updated.num_documents());
+    eprintln!(
+        "  Indexed {} documents in {}.",
+        updated.num_documents(),
+        style::accent(&style::format_duration(start.elapsed())),
+    );
     Ok(())
 }
 
@@ -279,15 +291,21 @@ fn rebuild_plaid_index(
         ..default_params
     };
 
+    let start = Instant::now();
     eprintln!(
-        "Rebuilding PLAID semantic index ({total_tokens} tokens, {k_centroids} centroids)...",
+        "{} ({total_tokens} tokens, {k_centroids} centroids)...",
+        style::subheader(&"Rebuilding PLAID semantic index"),
     );
     let index = docbert_core::plaid::build_index_from_embedding_db(
         embedding_db,
         params,
     )?;
     docbert_core::plaid::save_index(&index, data_dir)?;
-    eprintln!("  Indexed {} documents.", index.num_documents());
+    eprintln!(
+        "  Indexed {} documents in {}.",
+        index.num_documents(),
+        style::accent(&style::format_duration(start.elapsed())),
+    );
     Ok(())
 }
 
@@ -307,18 +325,21 @@ pub(crate) fn cmd_rebuild(
         return Ok(());
     }
 
+    let total_start = Instant::now();
     let mut runtime = initialize_indexing_runtime(data_dir, model_id)?;
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
         if !root.is_dir() {
             eprintln!(
-                "Warning: collection '{name}' path does not exist: {path}"
+                "{} collection '{name}' path does not exist: {path}",
+                style::warn(&"Warning:"),
             );
             continue;
         }
 
-        eprintln!("Rebuilding collection '{name}'...");
+        let collection_start = Instant::now();
+        eprintln!("{} '{name}'...", style::subheader(&"Rebuilding collection"),);
 
         if !args.embeddings_only {
             let mut writer = runtime.search_index.writer(15_000_000)?;
@@ -368,14 +389,21 @@ pub(crate) fn cmd_rebuild(
             rebuild_result,
         )?;
 
-        eprintln!("  Done.");
+        eprintln!(
+            "  Done in {}.",
+            style::accent(&style::format_duration(collection_start.elapsed())),
+        );
     }
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
     rebuild_plaid_index(data_dir, &runtime.embedding_db)?;
 
-    eprintln!("Rebuild complete.");
+    eprintln!(
+        "{} in {}.",
+        style::header(&"Rebuild complete"),
+        style::accent(&style::format_duration(total_start.elapsed())),
+    );
     Ok(())
 }
 
@@ -399,7 +427,8 @@ pub(crate) fn cmd_sync(
         && prev_model != model_id
     {
         eprintln!(
-            "Warning: embeddings were computed with '{prev_model}', but current model is '{model_id}'."
+            "{} embeddings were computed with '{prev_model}', but current model is '{model_id}'.",
+            style::warn(&"Warning:"),
         );
         eprintln!(
             "Mixing embeddings from different models produces invalid results."
@@ -412,6 +441,7 @@ pub(crate) fn cmd_sync(
         )));
     }
 
+    let total_start = Instant::now();
     let mut runtime = initialize_indexing_runtime(data_dir, model_id)?;
 
     // Accumulate base doc_ids whose embeddings get re-written during
@@ -425,7 +455,8 @@ pub(crate) fn cmd_sync(
         let root = std::path::Path::new(path);
         if !root.is_dir() {
             eprintln!(
-                "Warning: collection '{name}' path does not exist: {path}"
+                "{} collection '{name}' path does not exist: {path}",
+                style::warn(&"Warning:"),
             );
             continue;
         }
@@ -437,11 +468,12 @@ pub(crate) fn cmd_sync(
             && selection.changed_files.is_empty()
             && selection.deleted_ids.is_empty()
         {
-            eprintln!("Collection '{name}' is up to date.");
+            eprintln!("{} '{name}' is up to date.", style::dim(&"Collection"),);
             continue;
         }
 
-        eprintln!("Syncing collection '{name}'...");
+        let collection_start = Instant::now();
+        eprintln!("{} '{name}'...", style::subheader(&"Syncing collection"),);
         eprintln!(
             "  {} new, {} changed, {} deleted",
             selection.new_files.len(),
@@ -538,14 +570,21 @@ pub(crate) fn cmd_sync(
             sync_result,
         )?;
 
-        eprintln!("  Done.");
+        eprintln!(
+            "  Done in {}.",
+            style::accent(&style::format_duration(collection_start.elapsed())),
+        );
     }
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
     sync_plaid_index(data_dir, &runtime.embedding_db, &touched_bases)?;
 
-    eprintln!("Sync complete.");
+    eprintln!(
+        "{} in {}.",
+        style::header(&"Sync complete"),
+        style::accent(&style::format_duration(total_start.elapsed())),
+    );
     Ok(())
 }
 
