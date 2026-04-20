@@ -106,7 +106,7 @@ pub mod search;
 pub mod storage_codec;
 pub mod stored_json;
 pub mod tantivy_index;
-pub mod text_util;
+pub mod text;
 pub mod walker;
 
 #[cfg(test)]

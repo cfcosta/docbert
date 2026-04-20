@@ -248,14 +248,14 @@ impl MerkleDirectoryNode {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
-pub struct CollectionMerkleSnapshot {
+pub struct Snapshot {
     pub collection: String,
     pub root_hash: MerkleHash,
     pub directories: Vec<MerkleDirectoryNode>,
     pub files: Vec<MerkleFileLeaf>,
 }
 
-impl CollectionMerkleSnapshot {
+impl Snapshot {
     pub fn new(
         collection: impl Into<String>,
         root_hash: MerkleHash,
@@ -340,10 +340,10 @@ fn ensure_directory_ancestors(
 ///
 /// This reads each discovered file, hashes its contents, creates file leaves,
 /// builds directory nodes bottom-up, and computes the collection root hash.
-pub fn build_collection_snapshot(
+pub fn build_snapshot(
     collection: &str,
     discovered: &[DiscoveredFile],
-) -> Result<CollectionMerkleSnapshot> {
+) -> Result<Snapshot> {
     let mut directory_children: BTreeMap<String, Vec<MerkleChildEntry>> =
         BTreeMap::new();
     directory_children.entry(String::new()).or_default();
@@ -408,12 +408,7 @@ pub fn build_collection_snapshot(
         directory_children.get("").map(Vec::as_slice).unwrap_or(&[]),
     );
 
-    Ok(CollectionMerkleSnapshot::new(
-        collection,
-        root_hash,
-        directories,
-        files,
-    ))
+    Ok(Snapshot::new(collection, root_hash, directories, files))
 }
 
 #[cfg(test)]
@@ -504,8 +499,8 @@ mod tests {
     }
 
     #[test]
-    fn build_collection_snapshot_handles_empty_collection() {
-        let snapshot = build_collection_snapshot("notes", &[]).unwrap();
+    fn build_snapshot_handles_empty_collection() {
+        let snapshot = build_snapshot("notes", &[]).unwrap();
 
         assert_eq!(snapshot.collection, "notes");
         assert!(snapshot.files.is_empty());
@@ -520,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn build_collection_snapshot_includes_nested_directories_and_files() {
+    fn build_snapshot_includes_nested_directories_and_files() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("nested/deeper")).unwrap();
         std::fs::write(tmp.path().join("top.md"), "top-level").unwrap();
@@ -533,7 +528,7 @@ mod tests {
             discovered_file(&tmp, "nested/child.md", 2),
             discovered_file(&tmp, "nested/deeper/leaf.txt", 3),
         ];
-        let snapshot = build_collection_snapshot("notes", &discovered).unwrap();
+        let snapshot = build_snapshot("notes", &discovered).unwrap();
 
         assert_eq!(
             snapshot
@@ -588,24 +583,22 @@ mod tests {
     }
 
     #[test]
-    fn build_collection_snapshot_ignores_mtime_when_content_matches() {
+    fn build_snapshot_ignores_mtime_when_content_matches() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("note.md"), "same content").unwrap();
 
         let original = [discovered_file(&tmp, "note.md", 1)];
         let updated = [discovered_file(&tmp, "note.md", 999_999)];
 
-        let original_snapshot =
-            build_collection_snapshot("notes", &original).unwrap();
-        let updated_snapshot =
-            build_collection_snapshot("notes", &updated).unwrap();
+        let original_snapshot = build_snapshot("notes", &original).unwrap();
+        let updated_snapshot = build_snapshot("notes", &updated).unwrap();
 
         assert_eq!(original_snapshot, updated_snapshot);
     }
 
     #[test]
     fn collection_snapshot_roundtrips_through_rkyv() {
-        let snapshot = CollectionMerkleSnapshot::new(
+        let snapshot = Snapshot::new(
             "notes",
             hash(9),
             vec![
@@ -633,14 +626,14 @@ mod tests {
         );
 
         let bytes = snapshot.serialize().unwrap();
-        let restored = CollectionMerkleSnapshot::deserialize(&bytes).unwrap();
+        let restored = Snapshot::deserialize(&bytes).unwrap();
 
         assert_eq!(restored, snapshot);
     }
 
     #[test]
     fn collection_snapshot_new_sorts_children_directories_and_files() {
-        let snapshot = CollectionMerkleSnapshot::new(
+        let snapshot = Snapshot::new(
             "notes",
             hash(9),
             vec![
@@ -709,8 +702,6 @@ mod tests {
 
     #[test]
     fn collection_snapshot_invalid_bytes_return_none() {
-        assert!(
-            CollectionMerkleSnapshot::deserialize(b"not a snapshot").is_none()
-        );
+        assert!(Snapshot::deserialize(b"not a snapshot").is_none());
     }
 }

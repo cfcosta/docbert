@@ -71,7 +71,7 @@ pub fn sanitize_relative_path(relative_path: &str) -> Result<PathBuf> {
 ///
 /// **Note:** if the file doesn't exist yet (e.g. pre-upload), we verify the
 /// nearest existing ancestor stays under root.
-pub fn resolve_safe_document_path(
+pub fn resolve_document_path(
     collection_root: &Path,
     relative_path: &str,
 ) -> Result<PathBuf> {
@@ -184,7 +184,7 @@ mod tests {
         assert!(sanitize_relative_path(".").is_err());
     }
 
-    // -- resolve_safe_document_path tests --
+    // -- resolve_document_path tests --
 
     #[test]
     fn resolve_safe_accepts_nested_relative() {
@@ -192,8 +192,7 @@ mod tests {
         let root = tmp.path().join("col");
         fs::create_dir_all(&root).unwrap();
 
-        let result =
-            resolve_safe_document_path(&root, "nested/file.md").unwrap();
+        let result = resolve_document_path(&root, "nested/file.md").unwrap();
         assert_eq!(result, root.join("nested/file.md"));
     }
 
@@ -203,7 +202,7 @@ mod tests {
         let root = tmp.path().join("col");
         fs::create_dir_all(&root).unwrap();
 
-        assert!(resolve_safe_document_path(&root, "../secret.md").is_err());
+        assert!(resolve_document_path(&root, "../secret.md").is_err());
     }
 
     #[cfg(unix)]
@@ -219,7 +218,7 @@ mod tests {
         fs::write(outside.join("secret.md"), "secret").unwrap();
         symlink(outside.join("secret.md"), root.join("linked.md")).unwrap();
 
-        assert!(resolve_safe_document_path(&root, "linked.md").is_err());
+        assert!(resolve_document_path(&root, "linked.md").is_err());
     }
 
     // -- Property tests --
@@ -287,9 +286,9 @@ mod tests {
             tc.draw(gs::vecs(segment_gen).min_size(1).max_size(4));
         let path_str = segments.join("/");
 
-        match resolve_safe_document_path(&root, &path_str) {
+        match resolve_document_path(&root, &path_str) {
             Ok(resolved) => {
-                // resolve_safe_document_path returns a non-canonicalized join,
+                // resolve_document_path returns a non-canonicalized join,
                 // so compare against the non-canonical root. The real safety
                 // check (ensure_path_within_root) canonicalizes both sides.
                 assert!(

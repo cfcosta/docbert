@@ -4,30 +4,30 @@ use docbert_core::{
     ConfigDb,
     error,
     incremental::{MerkleDiffResult, diff_snapshots},
-    merkle::{CollectionMerkleSnapshot, build_collection_snapshot},
+    merkle::{Snapshot, build_snapshot},
     walker::{self, DiscoveredFile},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectionSnapshotChange {
-    pub(crate) previous_snapshot: Option<CollectionMerkleSnapshot>,
-    pub(crate) current_snapshot: CollectionMerkleSnapshot,
+    pub(crate) previous_snapshot: Option<Snapshot>,
+    pub(crate) current_snapshot: Snapshot,
     pub(crate) diff: MerkleDiffResult,
 }
 
 pub(crate) fn load_collection_snapshot(
     config_db: &ConfigDb,
     collection: &str,
-) -> error::Result<Option<CollectionMerkleSnapshot>> {
+) -> error::Result<Option<Snapshot>> {
     config_db.get_collection_merkle_snapshot(collection)
 }
 
 pub(crate) fn compute_collection_snapshot(
     collection: &str,
     root: &Path,
-) -> error::Result<CollectionMerkleSnapshot> {
+) -> error::Result<Snapshot> {
     let discovered = walker::discover_files(root)?;
-    build_collection_snapshot(collection, &discovered)
+    build_snapshot(collection, &discovered)
 }
 
 pub(crate) fn compute_collection_snapshot_change_for_discovered(
@@ -36,7 +36,7 @@ pub(crate) fn compute_collection_snapshot_change_for_discovered(
     discovered: &[DiscoveredFile],
 ) -> error::Result<CollectionSnapshotChange> {
     let previous_snapshot = load_collection_snapshot(config_db, collection)?;
-    let current_snapshot = build_collection_snapshot(collection, discovered)?;
+    let current_snapshot = build_snapshot(collection, discovered)?;
     let diff = diff_snapshots(previous_snapshot.as_ref(), &current_snapshot);
 
     Ok(CollectionSnapshotChange {
@@ -62,7 +62,7 @@ pub(crate) fn compute_collection_snapshot_change(
 
 pub(crate) fn replace_collection_snapshot(
     config_db: &ConfigDb,
-    snapshot: &CollectionMerkleSnapshot,
+    snapshot: &Snapshot,
 ) -> error::Result<()> {
     config_db.set_collection_merkle_snapshot(&snapshot.collection, snapshot)
 }

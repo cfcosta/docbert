@@ -24,7 +24,7 @@ pub(super) fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_doctor(json: bool) -> error::Result<()> {
+pub(crate) fn doctor(json: bool) -> error::Result<()> {
     let report = docbert_core::model_manager::doctor_report();
 
     if json {
@@ -81,7 +81,7 @@ pub(crate) fn cmd_doctor(json: bool) -> error::Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_status(
+pub(crate) fn status(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     model_resolution: &ModelResolution,
@@ -127,7 +127,7 @@ pub(crate) fn cmd_status(
     Ok(())
 }
 
-pub(crate) fn cmd_model_show(
+pub(crate) fn show(
     model_resolution: &ModelResolution,
     json: bool,
 ) -> error::Result<()> {
@@ -151,10 +151,7 @@ pub(crate) fn cmd_model_show(
     Ok(())
 }
 
-pub(crate) fn cmd_model_set(
-    config_db: &ConfigDb,
-    model: &str,
-) -> error::Result<()> {
+pub(crate) fn set(config_db: &ConfigDb, model: &str) -> error::Result<()> {
     config_db.set_setting("model_name", model)?;
 
     let model_path = Path::new(model);
@@ -172,7 +169,7 @@ pub(crate) fn cmd_model_set(
     Ok(())
 }
 
-pub(crate) fn cmd_model_clear(config_db: &ConfigDb) -> error::Result<()> {
+pub(crate) fn clear(config_db: &ConfigDb) -> error::Result<()> {
     if config_db.remove_setting("model_name")? {
         println!("Cleared model_name setting.");
     } else {

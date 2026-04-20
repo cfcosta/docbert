@@ -2,7 +2,7 @@ use docbert_core::{ConfigDb, error};
 
 use super::json_output::context_list_json_string;
 
-pub(crate) fn context_add(
+pub(crate) fn add(
     config_db: &ConfigDb,
     uri: &str,
     description: &str,
@@ -12,10 +12,7 @@ pub(crate) fn context_add(
     Ok(())
 }
 
-pub(crate) fn context_remove(
-    config_db: &ConfigDb,
-    uri: &str,
-) -> error::Result<()> {
+pub(crate) fn remove(config_db: &ConfigDb, uri: &str) -> error::Result<()> {
     if !config_db.remove_context(uri)? {
         return Err(error::Error::NotFound {
             kind: "context",
@@ -26,10 +23,7 @@ pub(crate) fn context_remove(
     Ok(())
 }
 
-pub(crate) fn context_list(
-    config_db: &ConfigDb,
-    json: bool,
-) -> error::Result<()> {
+pub(crate) fn list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let contexts = config_db.list_contexts()?;
 
     if json {

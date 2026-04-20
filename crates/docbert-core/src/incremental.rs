@@ -2,7 +2,7 @@ use crate::{
     config_db::ConfigDb,
     doc_id::DocumentId,
     error::Result,
-    merkle::CollectionMerkleSnapshot,
+    merkle::Snapshot,
     storage_codec::{decode_bytes, encode_bytes},
     walker::DiscoveredFile,
 };
@@ -80,8 +80,8 @@ pub struct MerkleDiffResult {
 /// This classifies file paths as new, changed, or deleted using Merkle leaf
 /// hashes instead of filesystem modification times.
 pub fn diff_snapshots(
-    previous: Option<&CollectionMerkleSnapshot>,
-    current: &CollectionMerkleSnapshot,
+    previous: Option<&Snapshot>,
+    current: &Snapshot,
 ) -> MerkleDiffResult {
     let mut result = MerkleDiffResult::default();
 
@@ -177,12 +177,12 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::*;
-    use crate::merkle::build_collection_snapshot;
+    use crate::merkle::build_snapshot;
 
     fn write_snapshot(
         root: &tempfile::TempDir,
         files: &[(&str, &str, u64)],
-    ) -> CollectionMerkleSnapshot {
+    ) -> Snapshot {
         for (relative_path, content, _) in files {
             let full_path = root.path().join(relative_path);
             if let Some(parent) = full_path.parent() {
@@ -200,7 +200,7 @@ mod tests {
             })
             .collect();
 
-        build_collection_snapshot("notes", &discovered).unwrap()
+        build_snapshot("notes", &discovered).unwrap()
     }
 
     #[test]

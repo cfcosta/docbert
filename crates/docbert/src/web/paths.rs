@@ -38,7 +38,7 @@ pub(crate) fn resolve_document_path(
     relative_path: &str,
 ) -> error::Result<PathBuf> {
     let root = resolve_collection_root(config_db, collection)?;
-    path_safety::resolve_safe_document_path(&root, relative_path)
+    path_safety::resolve_document_path(&root, relative_path)
 }
 
 #[cfg(test)]

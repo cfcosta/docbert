@@ -8,7 +8,7 @@ use super::{
     json_output::collection_list_json_string,
 };
 
-pub(crate) fn collection_add(
+pub(crate) fn add(
     config_db: &ConfigDb,
     path: &std::path::Path,
     name: &str,
@@ -45,7 +45,7 @@ pub(crate) fn collection_add(
     Ok(())
 }
 
-pub(crate) fn collection_remove(
+pub(crate) fn remove(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     name: &str,
@@ -80,10 +80,7 @@ pub(crate) fn collection_remove(
     Ok(())
 }
 
-pub(crate) fn collection_list(
-    config_db: &ConfigDb,
-    json: bool,
-) -> error::Result<()> {
+pub(crate) fn list(config_db: &ConfigDb, json: bool) -> error::Result<()> {
     let collections = config_db.list_collections()?;
 
     if json {

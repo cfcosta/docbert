@@ -7,7 +7,7 @@ use crate::{
     Error,
     error::Result,
     incremental::DocumentMetadata,
-    merkle::CollectionMerkleSnapshot,
+    merkle::Snapshot,
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
 };
@@ -635,7 +635,7 @@ impl ConfigDb {
     pub fn set_collection_merkle_snapshot(
         &self,
         collection: &str,
-        snapshot: &CollectionMerkleSnapshot,
+        snapshot: &Snapshot,
     ) -> Result<()> {
         let data = snapshot.serialize()?;
         let txn = self.db.begin_write()?;
@@ -651,14 +651,12 @@ impl ConfigDb {
     pub fn get_collection_merkle_snapshot(
         &self,
         collection: &str,
-    ) -> Result<Option<CollectionMerkleSnapshot>> {
+    ) -> Result<Option<Snapshot>> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
         table
             .get(collection)?
-            .map(|bytes| {
-                decode_aligned::<CollectionMerkleSnapshot>(bytes.value())
-            })
+            .map(|bytes| decode_aligned::<Snapshot>(bytes.value()))
             .transpose()
     }
 
@@ -910,8 +908,8 @@ impl std::fmt::Debug for ConfigDb {
 mod tests {
     use super::*;
 
-    fn test_snapshot(collection: &str, byte: u8) -> CollectionMerkleSnapshot {
-        CollectionMerkleSnapshot::new(
+    fn test_snapshot(collection: &str, byte: u8) -> Snapshot {
+        Snapshot::new(
             collection,
             [byte; crate::merkle::MERKLE_HASH_LEN],
             vec![crate::merkle::MerkleDirectoryNode::new(

@@ -72,7 +72,7 @@ fn main() -> error::Result<()> {
         return Ok(());
     }
     if let Command::Doctor(args) = &cli.command {
-        commands::cmd_doctor(args.json)?;
+        commands::model::doctor(args.json)?;
         return Ok(());
     }
 
@@ -104,28 +104,28 @@ fn main() -> error::Result<()> {
         Command::Doctor(_) => unreachable!(),      // Handled above
         Command::Collection { action } => match action {
             CollectionAction::Add { path, name } => {
-                commands::collection_add(&config_db, &path, &name)?;
+                commands::collections::add(&config_db, &path, &name)?;
             }
             CollectionAction::Remove { name } => {
-                commands::collection_remove(&config_db, &data_dir, &name)?;
+                commands::collections::remove(&config_db, &data_dir, &name)?;
             }
             CollectionAction::List { json } => {
-                commands::collection_list(&config_db, json)?;
+                commands::collections::list(&config_db, json)?;
             }
         },
         Command::Context { action } => match action {
             ContextAction::Add { uri, description } => {
-                commands::context_add(&config_db, &uri, &description)?;
+                commands::contexts::add(&config_db, &uri, &description)?;
             }
             ContextAction::Remove { uri } => {
-                commands::context_remove(&config_db, &uri)?;
+                commands::contexts::remove(&config_db, &uri)?;
             }
             ContextAction::List { json } => {
-                commands::context_list(&config_db, json)?;
+                commands::contexts::list(&config_db, json)?;
             }
         },
         Command::Search(args) => {
-            commands::run_search(
+            commands::search::run(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -133,7 +133,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Ssearch(args) => {
-            commands::run_semantic_search(
+            commands::search::semantic(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -141,13 +141,13 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Get(args) => {
-            commands::cmd_get(&config_db, &args)?;
+            commands::search::get(&config_db, &args)?;
         }
         Command::MultiGet(args) => {
-            commands::cmd_multi_get(&config_db, &args)?;
+            commands::search::multi_get(&config_db, &args)?;
         }
         Command::Rebuild(args) => {
-            commands::cmd_rebuild(
+            commands::indexing::rebuild(
                 &config_db,
                 &data_dir,
                 &args,
@@ -155,7 +155,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Sync(args) => {
-            commands::cmd_sync(
+            commands::indexing::sync(
                 &config_db,
                 &data_dir,
                 &args,
@@ -163,7 +163,7 @@ fn main() -> error::Result<()> {
             )?;
         }
         Command::Status(args) => {
-            commands::cmd_status(
+            commands::model::status(
                 &config_db,
                 &data_dir,
                 &model_resolution,
@@ -174,13 +174,13 @@ fn main() -> error::Result<()> {
         Command::Web(_) => unreachable!(), // Handled above
         Command::Model { action } => match action {
             cli::ModelAction::Show { json } => {
-                commands::cmd_model_show(&model_resolution, json)?;
+                commands::model::show(&model_resolution, json)?;
             }
             cli::ModelAction::Set { model } => {
-                commands::cmd_model_set(&config_db, &model)?;
+                commands::model::set(&config_db, &model)?;
             }
             cli::ModelAction::Clear => {
-                commands::cmd_model_clear(&config_db)?;
+                commands::model::clear(&config_db)?;
             }
         },
     }

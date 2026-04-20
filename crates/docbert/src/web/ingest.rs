@@ -372,7 +372,7 @@ fn refresh_collection_snapshot(
     config_db: &docbert_core::ConfigDb,
     collection: &str,
     collection_root: &Path,
-    previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
+    previous_snapshot: Option<&docbert_core::merkle::Snapshot>,
 ) -> error::Result<()> {
     let current_snapshot =
         snapshots::compute_collection_snapshot(collection, collection_root)?;
@@ -392,7 +392,7 @@ fn refresh_collection_snapshot(
 fn restore_previous_collection_snapshot(
     config_db: &docbert_core::ConfigDb,
     collection: &str,
-    previous_snapshot: Option<&docbert_core::merkle::CollectionMerkleSnapshot>,
+    previous_snapshot: Option<&docbert_core::merkle::Snapshot>,
 ) -> error::Result<()> {
     match previous_snapshot {
         Some(snapshot) => {

@@ -201,7 +201,7 @@ fn process_document_batch(
 /// Rebuild the PLAID semantic index from whatever is currently in
 /// `embedding_db` and persist it under `data_dir`.
 ///
-/// Called at the end of `cmd_sync` and `cmd_rebuild` once the embedding
+/// Called at the end of `sync` and `rebuild` once the embedding
 /// database is in its post-sync state. When the embedding db is empty
 /// (no collections have been indexed yet, or every doc was deleted), we
 /// skip with a short message — there's nothing to train centroids on.
@@ -309,7 +309,7 @@ fn rebuild_plaid_index(
     Ok(())
 }
 
-pub(crate) fn cmd_rebuild(
+pub(crate) fn rebuild(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     args: &cli::RebuildArgs,
@@ -406,7 +406,7 @@ pub(crate) fn cmd_rebuild(
     Ok(())
 }
 
-pub(crate) fn cmd_sync(
+pub(crate) fn sync(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     args: &cli::SyncArgs,
@@ -588,7 +588,7 @@ mod tests {
 
     use super::*;
 
-    /// Simulate the metadata deletion logic from cmd_rebuild for a given mode.
+    /// Simulate the metadata deletion logic from rebuild for a given mode.
     /// Returns whether document metadata and user metadata survived.
     fn simulate_rebuild_metadata_lifecycle(
         embeddings_only: bool,

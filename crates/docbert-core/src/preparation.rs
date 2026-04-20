@@ -6,7 +6,7 @@ use crate::{
     chunking::{self, ChunkingConfig},
     doc_id::DocumentId,
     ingestion,
-    text_util,
+    text,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub fn prepare_markdown(
     raw_markdown: &str,
 ) -> MarkdownBody {
     let searchable_body =
-        text_util::strip_yaml_frontmatter(raw_markdown).to_string();
+        text::strip_yaml_frontmatter(raw_markdown).to_string();
     let title = ingestion::extract_title(&searchable_body, relative_path);
 
     MarkdownBody {

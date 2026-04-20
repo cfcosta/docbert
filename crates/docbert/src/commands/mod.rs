@@ -1,31 +1,10 @@
-mod collections;
-mod contexts;
-mod indexing;
+pub(crate) mod collections;
+pub(crate) mod contexts;
+pub(crate) mod indexing;
 mod json_output;
-mod model;
-mod search;
+pub(crate) mod model;
+pub(crate) mod search;
 mod style;
-
-pub(crate) use collections::{
-    collection_add,
-    collection_list,
-    collection_remove,
-};
-pub(crate) use contexts::{context_add, context_list, context_remove};
-pub(crate) use indexing::{cmd_rebuild, cmd_sync};
-pub(crate) use model::{
-    cmd_doctor,
-    cmd_model_clear,
-    cmd_model_set,
-    cmd_model_show,
-    cmd_status,
-};
-pub(crate) use search::{
-    cmd_get,
-    cmd_multi_get,
-    run_search,
-    run_semantic_search,
-};
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +21,7 @@ mod tests {
     };
 
     use super::{
-        collection_remove,
+        collections,
         indexing::{
             remove_document_artifacts_for_ids,
             remove_document_embeddings_for_ids,
@@ -186,7 +165,7 @@ mod tests {
         let doc_id = seed_document_artifacts(&config_db, "notes", "hello.md");
         seed_document_embeddings(&data_dir, &doc_id, &[1]);
 
-        collection_remove(&config_db, &data_dir, "notes").unwrap();
+        collections::remove(&config_db, &data_dir, "notes").unwrap();
 
         assert!(config_db.get_collection("notes").unwrap().is_none());
         assert!(

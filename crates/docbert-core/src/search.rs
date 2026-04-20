@@ -13,7 +13,7 @@ use crate::{
     plaid,
     reranker::{self, RankedDocument},
     tantivy_index::{SearchIndex, SearchResult},
-    text_util,
+    text,
 };
 
 /// Reciprocal Rank Fusion constant.
@@ -825,9 +825,7 @@ fn document_has_semantic_body(
         return false;
     };
 
-    !text_util::strip_yaml_frontmatter(&content)
-        .trim()
-        .is_empty()
+    !text::strip_yaml_frontmatter(&content).trim().is_empty()
 }
 
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {

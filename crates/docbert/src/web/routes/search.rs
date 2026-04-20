@@ -3,7 +3,7 @@ use std::path::Path;
 use axum::{Json, extract::State, http::StatusCode};
 use docbert_core::{
     search::{self, SearchMode, SearchQuery},
-    text_util,
+    text,
 };
 use serde::{Deserialize, Serialize};
 
@@ -161,7 +161,7 @@ fn load_title_and_excerpts(
 
     let title =
         docbert_core::ingestion::extract_title(&content, Path::new(path));
-    let excerpts = text_util::extract_excerpts(&content, query, 3)
+    let excerpts = text::extract_excerpts(&content, query, 3)
         .into_iter()
         .map(|excerpt| SearchExcerpt {
             text: excerpt.text,

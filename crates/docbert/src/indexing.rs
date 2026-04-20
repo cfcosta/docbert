@@ -4,7 +4,7 @@ use docbert_core::{
     ConfigDb,
     error,
     ingestion::{self, LoadFailure},
-    merkle::CollectionMerkleSnapshot,
+    merkle::Snapshot,
     preparation::SearchDocument,
     walker::{self, DiscoveredFile},
 };
@@ -72,7 +72,7 @@ pub(crate) struct SyncSelection {
     pub new_files: Vec<DiscoveredFile>,
     pub changed_files: Vec<DiscoveredFile>,
     pub deleted_ids: Vec<u64>,
-    pub current_snapshot: CollectionMerkleSnapshot,
+    pub current_snapshot: Snapshot,
 }
 
 pub(crate) fn select_sync_work(
@@ -150,11 +150,10 @@ mod tests {
         config_db: &ConfigDb,
         collection: &str,
         root: &std::path::Path,
-    ) -> docbert_core::merkle::CollectionMerkleSnapshot {
+    ) -> docbert_core::merkle::Snapshot {
         let files = docbert_core::walker::discover_files(root).unwrap();
         let snapshot =
-            docbert_core::merkle::build_collection_snapshot(collection, &files)
-                .unwrap();
+            docbert_core::merkle::build_snapshot(collection, &files).unwrap();
         config_db
             .set_collection_merkle_snapshot(collection, &snapshot)
             .unwrap();

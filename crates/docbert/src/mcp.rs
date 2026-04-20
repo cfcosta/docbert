@@ -11,7 +11,7 @@ use docbert_core::{
     model_manager::{DEFAULT_MODEL_ID, ModelManager},
     search,
     tantivy_index::SearchIndex,
-    text_util,
+    text,
 };
 use globset::Glob;
 use percent_encoding::{
@@ -155,9 +155,9 @@ fn build_search_result_item(
     let snippet = if include_snippet {
         content
             .as_ref()
-            .and_then(|c| text_util::extract_snippet(c, query))
+            .and_then(|c| text::extract_snippet(c, query))
             .map(|(snippet, start_line)| {
-                text_util::add_line_numbers(&snippet, start_line)
+                text::add_line_numbers(&snippet, start_line)
             })
     } else {
         None
@@ -347,7 +347,7 @@ impl DocbertMcpServer {
         let mut body = range.apply(&content);
 
         if params.line_numbers.unwrap_or(false) {
-            body = text_util::add_line_numbers(&body, number_from);
+            body = text::add_line_numbers(&body, number_from);
         }
 
         if let Some(context) = context_for_doc(&config_db, &collection, &path) {
@@ -446,10 +446,8 @@ impl DocbertMcpServer {
 
             let mut body = range.apply(&file_content);
             if params.line_numbers.unwrap_or(false) {
-                body = text_util::add_line_numbers(
-                    &body,
-                    range.line_numbering_start(),
-                );
+                body =
+                    text::add_line_numbers(&body, range.line_numbering_start());
             }
 
             if let Some(context) =
@@ -749,10 +747,10 @@ impl RangeSelection {
         match *self {
             RangeSelection::Full => content.to_string(),
             RangeSelection::Lines { start, end } => {
-                text_util::apply_line_range(content, start, end)
+                text::apply_line_range(content, start, end)
             }
             RangeSelection::Bytes { start, end } => {
-                text_util::apply_byte_range(content, start, end)
+                text::apply_byte_range(content, start, end)
             }
         }
     }
@@ -921,7 +919,7 @@ fn read_resource_contents(
         &full_path,
     )
     .map_err(|e| mcp_error("failed to read resource", e))?;
-    text = text_util::add_line_numbers(&text, 1);
+    text = text::add_line_numbers(&text, 1);
 
     if let Some(context) = context_for_doc(config_db, &collection, &path) {
         text = format!("<!-- Context: {context} -->\n\n{text}");
@@ -942,7 +940,7 @@ fn resolve_full_path(
 ) -> Option<PathBuf> {
     let base = config_db.get_collection(collection).ok()??;
     let root = PathBuf::from(base);
-    docbert_core::path_safety::resolve_safe_document_path(&root, path).ok()
+    docbert_core::path_safety::resolve_document_path(&root, path).ok()
 }
 
 fn context_for_doc(

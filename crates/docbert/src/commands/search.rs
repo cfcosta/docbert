@@ -14,7 +14,7 @@ use super::{
 };
 use crate::cli;
 
-pub(crate) fn run_search(
+pub(crate) fn run(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     model_resolution: &ModelResolution,
@@ -74,7 +74,7 @@ pub(crate) fn run_search(
     Ok(())
 }
 
-pub(crate) fn run_semantic_search(
+pub(crate) fn semantic(
     config_db: &ConfigDb,
     data_dir: &DataDir,
     model_resolution: &ModelResolution,
@@ -108,7 +108,7 @@ pub(crate) fn run_semantic_search(
     Ok(())
 }
 
-pub(crate) fn cmd_get(
+pub(crate) fn get(
     config_db: &ConfigDb,
     args: &cli::GetArgs,
 ) -> error::Result<()> {
@@ -128,7 +128,7 @@ pub(crate) fn cmd_get(
             }
         })?;
 
-    let full_path = docbert_core::path_safety::resolve_safe_document_path(
+    let full_path = docbert_core::path_safety::resolve_document_path(
         std::path::Path::new(&collection_path),
         &path,
     )?;
@@ -157,7 +157,7 @@ pub(crate) fn cmd_get(
     Ok(())
 }
 
-pub(crate) fn cmd_multi_get(
+pub(crate) fn multi_get(
     config_db: &ConfigDb,
     args: &cli::MultiGetArgs,
 ) -> error::Result<()> {
