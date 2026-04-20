@@ -69,7 +69,15 @@
 
                     formatter = {
                       nixfmt.options = [ "--strict" ];
-                      rustfmt.package = rust;
+
+                      rustfmt = {
+                        package = rust;
+
+                        options = [
+                          "--config-path"
+                          (toString ./rustfmt.toml)
+                        ];
+                      };
                     };
                   };
 
