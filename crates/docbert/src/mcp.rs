@@ -61,7 +61,6 @@ use serde_json::json;
 use crate::runtime_resources;
 
 const DEFAULT_SEARCH_LIMIT: usize = 10;
-const DEFAULT_MULTI_GET_MAX_BYTES: u64 = 10_240;
 
 struct DocbertState {
     data_dir: DataDir,
@@ -286,7 +285,7 @@ impl DocbertMcpServer {
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
     #[tool(
         name = "docbert_get",
-        description = "Retrieve a document by reference (collection:path, #doc_id, or path). Supports optional line ranges."
+        description = "Retrieve a document by reference (collection:path, #doc_id, or path). Supports optional line or byte ranges."
     )]
     pub async fn docbert_get(
         &self,
@@ -295,16 +294,26 @@ impl DocbertMcpServer {
         let params = params.0;
 
         let mut reference = params.reference.clone();
-        let mut from_line = params.from_line;
+        let mut start_line = params.start_line;
 
-        if from_line.is_none()
+        if start_line.is_none()
+            && params.end_line.is_none()
+            && params.start_byte.is_none()
+            && params.end_byte.is_none()
             && let Some((base, line_str)) = reference.rsplit_once(':')
             && !line_str.is_empty()
             && line_str.chars().all(|c| c.is_ascii_digit())
         {
-            from_line = line_str.parse::<usize>().ok();
+            start_line = line_str.parse::<usize>().ok();
             reference = base.to_string();
         }
+
+        let range = RangeSelection::from_params(
+            start_line,
+            params.end_line,
+            params.start_byte,
+            params.end_byte,
+        )?;
 
         let config_db = self
             .state
@@ -320,37 +329,17 @@ impl DocbertMcpServer {
                 )
             })?;
 
-        if let Some(max_bytes) = params.max_bytes {
-            let size = std::fs::metadata(&full_path)
-                .map(|m| m.len())
-                .unwrap_or_default();
-            if size > max_bytes {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    format!(
-                        "File too large ({} bytes > {}): {}",
-                        size,
-                        max_bytes,
-                        full_path.display()
-                    ),
-                )]));
-            }
-        }
-
         let content = docbert_core::preparation::load_preview_content(
             std::path::Path::new(&path),
             &full_path,
         )
         .map_err(|e| mcp_error("failed to read document", e))?;
 
-        let start_line = from_line.unwrap_or(1);
-        let mut body = text_util::apply_line_limits(
-            &content,
-            start_line,
-            params.max_lines,
-        );
+        let number_from = range.line_numbering_start();
+        let mut body = range.apply(&content);
 
         if params.line_numbers.unwrap_or(false) {
-            body = text_util::add_line_numbers(&body, start_line);
+            body = text_util::add_line_numbers(&body, number_from);
         }
 
         if let Some(context) = context_for_doc(&config_db, &collection, &path) {
@@ -371,7 +360,7 @@ impl DocbertMcpServer {
     /// Retrieve multiple documents by glob pattern.
     #[tool(
         name = "docbert_multi_get",
-        description = "Retrieve multiple documents by glob pattern. Supports collection filters and size limits."
+        description = "Retrieve multiple documents by glob pattern. Supports collection filters and per-file line/byte ranges."
     )]
     pub async fn docbert_multi_get(
         &self,
@@ -386,6 +375,13 @@ impl DocbertMcpServer {
                 )
             })?
             .compile_matcher();
+
+        let range = RangeSelection::from_params(
+            params.start_line,
+            params.end_line,
+            params.start_byte,
+            params.end_byte,
+        )?;
 
         let mut matches: Vec<(String, String)> = Vec::new();
         let config_db = self
@@ -417,7 +413,6 @@ impl DocbertMcpServer {
             ))]));
         }
 
-        let max_bytes = params.max_bytes.unwrap_or(DEFAULT_MULTI_GET_MAX_BYTES);
         let mut content: Vec<Content> = Vec::new();
 
         for (collection, path) in matches {
@@ -429,29 +424,24 @@ impl DocbertMcpServer {
                 continue;
             };
 
-            let size = std::fs::metadata(&full_path)
-                .map(|m| m.len())
-                .unwrap_or_default();
-            if size > max_bytes {
-                content.push(Content::text(format!(
-                    "[SKIPPED: {collection}:{path} - {size} bytes exceeds limit {max_bytes}]"
-                )));
-                continue;
-            }
-
-            let Ok(mut body) = docbert_core::preparation::load_preview_content(
-                std::path::Path::new(&path),
-                &full_path,
-            ) else {
+            let Ok(file_content) =
+                docbert_core::preparation::load_preview_content(
+                    std::path::Path::new(&path),
+                    &full_path,
+                )
+            else {
                 content.push(Content::text(format!(
                     "[SKIPPED: {collection}:{path} - failed to read]"
                 )));
                 continue;
             };
 
-            body = text_util::apply_line_limits(&body, 1, params.max_lines);
+            let mut body = range.apply(&file_content);
             if params.line_numbers.unwrap_or(false) {
-                body = text_util::add_line_numbers(&body, 1);
+                body = text_util::add_line_numbers(
+                    &body,
+                    range.line_numbering_start(),
+                );
             }
 
             if let Some(context) =
@@ -561,7 +551,7 @@ docbert indexes local document collections and provides MCP tools for search and
 
 - Use min_score to filter low-confidence results
 - Use bm25_only for fast keyword-only search
-- docbert_get supports from_line/max_lines and optional line numbers
+- docbert_get supports startLine/endLine or startByte/endByte (inclusive) and optional line numbers
 "#,
         )]
     }
@@ -668,12 +658,14 @@ pub struct SemanticSearchParams {
 pub struct GetParams {
     /// Document reference: collection:path, #doc_id, or path.
     pub reference: String,
-    /// Start from this line number (1-indexed).
-    pub from_line: Option<usize>,
-    /// Maximum number of lines to return.
-    pub max_lines: Option<usize>,
-    /// Maximum bytes to read before skipping.
-    pub max_bytes: Option<u64>,
+    /// First line to include (1-indexed, inclusive).
+    pub start_line: Option<usize>,
+    /// Last line to include (1-indexed, inclusive).
+    pub end_line: Option<usize>,
+    /// First byte to include (0-indexed, inclusive).
+    pub start_byte: Option<u64>,
+    /// Last byte to include (0-indexed, inclusive).
+    pub end_byte: Option<u64>,
     /// Include line numbers in the output.
     pub line_numbers: Option<bool>,
 }
@@ -685,12 +677,88 @@ pub struct MultiGetParams {
     pub pattern: String,
     /// Restrict to a specific collection.
     pub collection: Option<String>,
-    /// Maximum lines per file.
-    pub max_lines: Option<usize>,
-    /// Maximum bytes per file (default: 10240).
-    pub max_bytes: Option<u64>,
+    /// First line to include per file (1-indexed, inclusive).
+    pub start_line: Option<usize>,
+    /// Last line to include per file (1-indexed, inclusive).
+    pub end_line: Option<usize>,
+    /// First byte to include per file (0-indexed, inclusive).
+    pub start_byte: Option<u64>,
+    /// Last byte to include per file (0-indexed, inclusive).
+    pub end_byte: Option<u64>,
     /// Include line numbers in output.
     pub line_numbers: Option<bool>,
+}
+
+/// A resolved slice request derived from the optional line/byte range params.
+///
+/// Line and byte ranges are mutually exclusive: supplying any of `start_byte`
+/// or `end_byte` together with any of `start_line` or `end_line` is a
+/// client-side error.
+#[derive(Debug, Clone, Copy)]
+enum RangeSelection {
+    Full,
+    Lines {
+        start: Option<usize>,
+        end: Option<usize>,
+    },
+    Bytes {
+        start: Option<u64>,
+        end: Option<u64>,
+    },
+}
+
+impl RangeSelection {
+    fn from_params(
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+        start_byte: Option<u64>,
+        end_byte: Option<u64>,
+    ) -> Result<Self, rmcp::ErrorData> {
+        let has_line = start_line.is_some() || end_line.is_some();
+        let has_byte = start_byte.is_some() || end_byte.is_some();
+        if has_line && has_byte {
+            return Err(rmcp::ErrorData::invalid_params(
+                "line range and byte range are mutually exclusive".to_string(),
+                None,
+            ));
+        }
+        if has_line {
+            Ok(RangeSelection::Lines {
+                start: start_line,
+                end: end_line,
+            })
+        } else if has_byte {
+            Ok(RangeSelection::Bytes {
+                start: start_byte,
+                end: end_byte,
+            })
+        } else {
+            Ok(RangeSelection::Full)
+        }
+    }
+
+    fn apply(&self, content: &str) -> String {
+        match *self {
+            RangeSelection::Full => content.to_string(),
+            RangeSelection::Lines { start, end } => {
+                text_util::apply_line_range(content, start, end)
+            }
+            RangeSelection::Bytes { start, end } => {
+                text_util::apply_byte_range(content, start, end)
+            }
+        }
+    }
+
+    /// Line number to display for the first line of the sliced output.
+    ///
+    /// Byte ranges don't map to a line offset, so we leave numbering at 1 in
+    /// that case — the caller asked for bytes, not lines.
+    fn line_numbering_start(&self) -> usize {
+        match *self {
+            RangeSelection::Lines { start, .. } => start.unwrap_or(1),
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1205,9 +1273,10 @@ mod tests {
 
         let params = GetParams {
             reference: format!("#{}", doc_id.short),
-            from_line: Some(1),
-            max_lines: Some(1),
-            max_bytes: None,
+            start_line: Some(1),
+            end_line: Some(1),
+            start_byte: None,
+            end_byte: None,
             line_numbers: Some(true),
         };
 
@@ -1221,14 +1290,75 @@ mod tests {
         match &resource.resource {
             ResourceContents::TextResourceContents { text, .. } => {
                 assert!(text.contains("1: Rust is fast."));
-                assert!(text.contains("truncated"));
+                assert!(text.contains("more line remaining"));
             }
             _ => panic!("expected text resource"),
         }
     }
 
     #[tokio::test]
-    async fn multi_get_skips_large_files() {
+    async fn get_tool_byte_range_slices_single_long_line() {
+        // Regression: a transcript-style file with one giant line couldn't be
+        // partially read — line-based slicing returned the whole line and
+        // maxBytes rejected the file. Byte ranges must cut cleanly instead.
+        let body = "a ".repeat(5_000);
+        let (server, _tmp, doc_ids) =
+            build_server(&[("transcript.md", body.as_str())]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let params = GetParams {
+            reference: format!("#{}", doc_id.short),
+            start_line: None,
+            end_line: None,
+            start_byte: Some(0),
+            end_byte: Some(19),
+            line_numbers: None,
+        };
+
+        let result = server.docbert_get(Parameters(params)).await.unwrap();
+        let resource = result
+            .content
+            .first()
+            .and_then(|c| c.as_resource())
+            .expect("resource content");
+
+        match &resource.resource {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(text.contains("a a a a a a a a a a"));
+                assert!(text.contains("more bytes remaining"));
+            }
+            _ => panic!("expected text resource"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_tool_rejects_line_and_byte_range_together() {
+        let (server, _tmp, doc_ids) =
+            build_server(&[("rust.md", "Rust is fast.\n")]);
+        let doc_id = doc_ids.first().unwrap();
+
+        let params = GetParams {
+            reference: format!("#{}", doc_id.short),
+            start_line: Some(1),
+            end_line: None,
+            start_byte: None,
+            end_byte: Some(5),
+            line_numbers: None,
+        };
+
+        let err = server
+            .docbert_get(Parameters(params))
+            .await
+            .expect_err("expected invalid_params error");
+        assert!(
+            err.message.contains("mutually exclusive"),
+            "expected mutual-exclusion hint, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_get_reads_all_matching_files() {
         let (server, _tmp, _doc_ids) = build_server(&[
             ("small.md", "tiny\n"),
             ("large.md", "this is a larger file\nwith more content\n"),
@@ -1237,30 +1367,22 @@ mod tests {
         let params = MultiGetParams {
             pattern: "*.md".to_string(),
             collection: Some("notes".to_string()),
-            max_lines: None,
-            max_bytes: Some(10),
+            start_line: None,
+            end_line: None,
+            start_byte: None,
+            end_byte: None,
             line_numbers: None,
         };
 
         let result =
             server.docbert_multi_get(Parameters(params)).await.unwrap();
 
-        let mut saw_resource = false;
-        let mut saw_skip = false;
-
-        for item in &result.content {
-            if item.as_resource().is_some() {
-                saw_resource = true;
-            }
-            if let Some(text) = item.as_text()
-                && text.text.contains("SKIPPED")
-            {
-                saw_skip = true;
-            }
-        }
-
-        assert!(saw_resource);
-        assert!(saw_skip);
+        let resource_count = result
+            .content
+            .iter()
+            .filter(|c| c.as_resource().is_some())
+            .count();
+        assert_eq!(resource_count, 2);
     }
 
     #[tokio::test]
@@ -1271,8 +1393,10 @@ mod tests {
         let params = MultiGetParams {
             pattern: "*.md".to_string(),
             collection: Some("notes".to_string()),
-            max_lines: Some(1),
-            max_bytes: Some(1024),
+            start_line: Some(1),
+            end_line: Some(1),
+            start_byte: None,
+            end_byte: None,
             line_numbers: Some(true),
         };
 
@@ -1291,7 +1415,7 @@ mod tests {
                 assert_eq!(uri, "bert://notes/rust%2Emd");
                 assert_eq!(
                     text,
-                    "<!-- Context: Personal notes -->\n\n1: Rust is fast.\n2: \n3: [... truncated 1 more lines]"
+                    "<!-- Context: Personal notes -->\n\n1: Rust is fast.\n2: \n3: [... 1 more line remaining]"
                 );
             }
             _ => panic!("expected text resource"),

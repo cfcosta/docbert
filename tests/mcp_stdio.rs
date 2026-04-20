@@ -193,7 +193,7 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
         let get_args = json!({
             "reference": reference,
             "lineNumbers": true,
-            "maxLines": 1
+            "endLine": 1
         });
         let get_result = client
             .peer()

@@ -168,55 +168,133 @@ pub fn extract_snippet(text: &str, query: &str) -> Option<(String, usize)> {
     Some((snippet, start + 1))
 }
 
-/// Apply a line offset and optional line limit to a block of text.
+/// Slice text to an inclusive 1-indexed line range.
 ///
-/// `start_line` is 1-indexed. If `max_lines` is `Some(n)`, at most `n` lines
-/// are returned and a truncation notice is appended.
+/// `start_line` and `end_line` are both inclusive and 1-indexed. `None` on
+/// either bound means "open-ended" — `None` for `start_line` is treated as line
+/// 1, and `None` for `end_line` means "until the last line".
+///
+/// When the range omits trailing content, a `[... N more lines remaining]`
+/// footer is appended so callers know more content exists beyond the window.
 ///
 /// # Examples
 ///
 /// ```
-/// use docbert_core::text_util::apply_line_limits;
+/// use docbert_core::text_util::apply_line_range;
 ///
 /// let text = "line1\nline2\nline3\nline4\nline5";
 ///
-/// // Start from line 2, no limit
-/// assert_eq!(apply_line_limits(text, 2, None), "line2\nline3\nline4\nline5");
+/// assert_eq!(apply_line_range(text, Some(2), None), "line2\nline3\nline4\nline5");
 ///
-/// // Start from line 1, take 2 lines
-/// let result = apply_line_limits(text, 1, Some(2));
+/// let result = apply_line_range(text, Some(1), Some(2));
 /// assert!(result.starts_with("line1\nline2"));
-/// assert!(result.contains("truncated"));
+/// assert!(result.contains("more lines remaining"));
 /// ```
-pub fn apply_line_limits(
+pub fn apply_line_range(
     text: &str,
-    start_line: usize,
-    max_lines: Option<usize>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
 ) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return String::new();
     }
 
-    let start_idx = start_line.saturating_sub(1).min(lines.len());
+    let start_idx = start_line.unwrap_or(1).saturating_sub(1).min(lines.len());
     if start_idx >= lines.len() {
         return String::new();
     }
 
-    let end_idx = match max_lines {
-        Some(max) => (start_idx + max).min(lines.len()),
+    let end_idx = match end_line {
+        Some(end) => end.min(lines.len()),
         None => lines.len(),
     };
 
+    if end_idx <= start_idx {
+        return String::new();
+    }
+
     let mut slice = lines[start_idx..end_idx].join("\n");
-    if max_lines.is_some() && end_idx < lines.len() {
+    let remaining = lines.len() - end_idx;
+    if end_line.is_some() && remaining > 0 {
+        let suffix = if remaining == 1 { "line" } else { "lines" };
         slice.push_str(&format!(
-            "\n\n[... truncated {} more lines]",
-            lines.len() - end_idx
+            "\n\n[... {remaining} more {suffix} remaining]"
         ));
     }
 
     slice
+}
+
+/// Slice text to an inclusive byte range.
+///
+/// `start_byte` and `end_byte` are both inclusive and 0-indexed. `None` on
+/// either bound means "open-ended". Byte offsets that land inside a multi-byte
+/// UTF-8 character are rounded down to the previous character boundary so the
+/// returned string is always valid UTF-8.
+///
+/// When the range omits trailing content, a `[... N more bytes remaining]`
+/// footer is appended.
+///
+/// # Examples
+///
+/// ```
+/// use docbert_core::text_util::apply_byte_range;
+///
+/// assert_eq!(apply_byte_range("hello world", Some(6), None), "world");
+///
+/// let result = apply_byte_range("hello world", Some(0), Some(4));
+/// assert!(result.starts_with("hello"));
+/// assert!(result.contains("more bytes remaining"));
+/// ```
+pub fn apply_byte_range(
+    text: &str,
+    start_byte: Option<u64>,
+    end_byte: Option<u64>,
+) -> String {
+    let total = text.len();
+    if total == 0 {
+        return String::new();
+    }
+
+    let start = start_byte.unwrap_or(0) as usize;
+    let start = floor_char_boundary(text, start.min(total));
+    if start >= total {
+        return String::new();
+    }
+
+    let end_exclusive = match end_byte {
+        Some(end) => {
+            let end = end as usize;
+            if end < start {
+                return String::new();
+            }
+            floor_char_boundary(text, end.saturating_add(1).min(total))
+        }
+        None => total,
+    };
+
+    if end_exclusive <= start {
+        return String::new();
+    }
+
+    let mut slice = text[start..end_exclusive].to_string();
+    let remaining = total - end_exclusive;
+    if end_byte.is_some() && remaining > 0 {
+        let suffix = if remaining == 1 { "byte" } else { "bytes" };
+        slice.push_str(&format!(
+            "\n\n[... {remaining} more {suffix} remaining]"
+        ));
+    }
+
+    slice
+}
+
+fn floor_char_boundary(text: &str, mut byte: usize) -> usize {
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
 }
 
 fn truncate_snippet(mut snippet: String) -> String {
@@ -414,38 +492,130 @@ mod tests {
     }
 
     #[test]
-    fn apply_line_limits_full_text() {
+    fn apply_line_range_full_text() {
         let text = "line1\nline2\nline3";
-        assert_eq!(apply_line_limits(text, 1, None), text);
+        assert_eq!(apply_line_range(text, None, None), text);
     }
 
     #[test]
-    fn apply_line_limits_with_offset() {
+    fn apply_line_range_start_only() {
         let text = "line1\nline2\nline3\nline4\nline5";
-        let result = apply_line_limits(text, 3, None);
-        assert_eq!(result, "line3\nline4\nline5");
+        assert_eq!(
+            apply_line_range(text, Some(3), None),
+            "line3\nline4\nline5"
+        );
     }
 
     #[test]
-    fn apply_line_limits_with_max() {
+    fn apply_line_range_end_only_truncates() {
         let text = "line1\nline2\nline3\nline4\nline5";
-        let result = apply_line_limits(text, 1, Some(2));
-        assert!(result.starts_with("line1\nline2"));
-        assert!(result.contains("truncated"));
+        assert_eq!(
+            apply_line_range(text, None, Some(2)),
+            "line1\nline2\n\n[... 3 more lines remaining]"
+        );
     }
 
     #[test]
-    fn apply_line_limits_past_end() {
+    fn apply_line_range_inclusive_both_bounds() {
+        let text = "line1\nline2\nline3\nline4\nline5";
+        assert_eq!(
+            apply_line_range(text, Some(2), Some(4)),
+            "line2\nline3\nline4\n\n[... 1 more line remaining]"
+        );
+    }
+
+    #[test]
+    fn apply_line_range_end_at_last_line_has_no_footer() {
+        let text = "line1\nline2\nline3";
+        assert_eq!(
+            apply_line_range(text, Some(1), Some(3)),
+            "line1\nline2\nline3"
+        );
+    }
+
+    #[test]
+    fn apply_line_range_past_end_returns_empty() {
         let text = "line1\nline2";
-        let result = apply_line_limits(text, 100, None);
-        assert!(result.is_empty());
+        assert!(apply_line_range(text, Some(100), None).is_empty());
     }
 
     #[test]
-    fn apply_line_limits_offset_and_max() {
-        let text = "line1\nline2\nline3\nline4\nline5";
-        let result = apply_line_limits(text, 2, Some(2));
-        assert!(result.starts_with("line2\nline3"));
-        assert!(result.contains("truncated"));
+    fn apply_line_range_inverted_returns_empty() {
+        let text = "line1\nline2\nline3";
+        assert!(apply_line_range(text, Some(3), Some(1)).is_empty());
+    }
+
+    #[test]
+    fn apply_byte_range_full_text() {
+        let text = "hello world";
+        assert_eq!(apply_byte_range(text, None, None), text);
+    }
+
+    #[test]
+    fn apply_byte_range_slices_prefix_with_footer() {
+        let text = "hello world";
+        assert_eq!(
+            apply_byte_range(text, Some(0), Some(4)),
+            "hello\n\n[... 6 more bytes remaining]"
+        );
+    }
+
+    #[test]
+    fn apply_byte_range_slices_suffix_without_footer() {
+        let text = "hello world";
+        assert_eq!(apply_byte_range(text, Some(6), Some(10)), "world");
+    }
+
+    #[test]
+    fn apply_byte_range_start_only_reads_to_end() {
+        let text = "hello world";
+        assert_eq!(apply_byte_range(text, Some(6), None), "world");
+    }
+
+    #[test]
+    fn apply_byte_range_past_end_returns_empty() {
+        let text = "hello";
+        assert!(apply_byte_range(text, Some(100), None).is_empty());
+    }
+
+    #[test]
+    fn apply_byte_range_inverted_returns_empty() {
+        let text = "hello world";
+        assert!(apply_byte_range(text, Some(5), Some(2)).is_empty());
+    }
+
+    #[test]
+    fn apply_byte_range_clamps_to_utf8_char_boundary() {
+        // Greek αβγ: each char is 2 bytes, total 6 bytes.
+        // end_byte = 2 (inclusive) => exclusive end = 3, which lands mid-β;
+        // we clamp to the previous char boundary (byte 2), yielding "α".
+        let text = "αβγ";
+        assert_eq!(text.len(), 6);
+        assert_eq!(
+            apply_byte_range(text, Some(0), Some(2)),
+            "α\n\n[... 4 more bytes remaining]"
+        );
+    }
+
+    #[test]
+    fn apply_byte_range_start_on_mid_char_clamps_back() {
+        // start=1 is mid-α → clamped to byte 0; end=3 exclusive-ends at byte 4
+        // which is a char boundary → slice covers "αβ".
+        let text = "αβγ";
+        assert_eq!(
+            apply_byte_range(text, Some(1), Some(3)),
+            "αβ\n\n[... 2 more bytes remaining]"
+        );
+    }
+
+    #[test]
+    fn apply_byte_range_single_long_line_slices_cleanly() {
+        // The case that broke in the real world: one giant line that
+        // line-based slicing can't cut.
+        let text = "this is one big line with no newlines at all";
+        assert_eq!(
+            apply_byte_range(text, Some(0), Some(10)),
+            "this is one\n\n[... 33 more bytes remaining]"
+        );
     }
 }

@@ -188,9 +188,8 @@ Fetch one document by reference.
 ```json
 {
   "reference": "notes:rust.md",
-  "fromLine": 10,
-  "maxLines": 50,
-  "maxBytes": 4096,
+  "startLine": 10,
+  "endLine": 60,
   "lineNumbers": true
 }
 ```
@@ -201,28 +200,32 @@ Fields:
   - `collection:path`
   - `#doc_id`
   - plain path
-- `fromLine` — optional 1-based starting line
-- `maxLines` — optional maximum number of lines
-- `maxBytes` — optional byte-size limit; if exceeded, the tool returns an error-like text result instead of a resource
+- `startLine` — optional 1-based inclusive first line
+- `endLine` — optional 1-based inclusive last line
+- `startByte` — optional 0-based inclusive first byte
+- `endByte` — optional 0-based inclusive last byte
 - `lineNumbers` — optional boolean; when true, adds line numbers
+
+Line and byte ranges are mutually exclusive. Supplying any of `startLine`/`endLine` alongside any of `startByte`/`endByte` returns an MCP `invalid_params` error.
 
 ### Reference parsing detail
 
 There is one extra convenience behavior:
 
-- if `fromLine` is omitted and `reference` ends in `:<digits>`, the server interprets that suffix as the starting line
+- if no range fields are given and `reference` ends in `:<digits>`, the server interprets that suffix as the starting line
 
 For example:
 
-- `notes:rust.md:25` is parsed as document `notes:rust.md` with `fromLine = 25`
+- `notes:rust.md:25` is parsed as document `notes:rust.md` with `startLine = 25`
 
 ### Behavior
 
 - Resolves the document reference via `search::resolve_reference(...)`.
 - Resolves the collection root from `config.db`.
 - Reads the file from disk.
-- Applies line slicing with `text_util::apply_line_limits(...)`.
-- Adds line numbers when requested.
+- Slices the content: `text_util::apply_line_range(...)` for line ranges, `text_util::apply_byte_range(...)` for byte ranges. Byte offsets landing inside a multi-byte UTF-8 character round down to the previous character boundary.
+- When the requested range omits trailing content, a `[... N more lines remaining]` or `[... N more bytes remaining]` footer is appended.
+- Adds line numbers when requested. For byte ranges, numbering restarts at 1 since byte offsets don't map to line numbers.
 - Prepends an HTML comment context header if collection- or document-level context exists.
 
 ### Tool output
@@ -249,13 +252,7 @@ Example resource shape conceptually:
 - missing document reference → MCP resource-not-found style error
 - missing collection root → MCP resource-not-found style error
 - read failure → internal error
-- file larger than `maxBytes` → successful tool result containing a plain text message like:
-
-```text
-File too large (12345 bytes > 4096): /full/path/to/file.md
-```
-
-That size-limit case is not returned as a resource.
+- line range and byte range both supplied → `invalid_params` error
 
 ## `docbert_multi_get`
 
@@ -267,8 +264,8 @@ Fetch multiple documents by glob pattern.
 {
   "pattern": "**/*.md",
   "collection": "notes",
-  "maxLines": 50,
-  "maxBytes": 10240,
+  "startLine": 1,
+  "endLine": 50,
   "lineNumbers": true
 }
 ```
@@ -277,9 +274,13 @@ Fields:
 
 - `pattern` — required glob against relative paths
 - `collection` — optional collection filter
-- `maxLines` — optional per-file line limit
-- `maxBytes` — optional per-file byte limit; default `10240`
+- `startLine` — optional inclusive per-file first line
+- `endLine` — optional inclusive per-file last line
+- `startByte` — optional inclusive per-file first byte
+- `endByte` — optional inclusive per-file last byte
 - `lineNumbers` — optional boolean
+
+Line and byte ranges are mutually exclusive, as in `docbert_get`.
 
 ### Behavior
 
@@ -287,9 +288,8 @@ Fields:
 - Collects matching `(collection, path)` pairs and sorts them.
 - For each match:
   - resolves the full file path
-  - enforces the per-file size limit
   - reads file content from disk
-  - applies line limits and optional line numbering
+  - applies the configured line or byte range
   - prepends the context HTML comment if present
   - emits the file as a resource
 
@@ -298,12 +298,12 @@ Fields:
 This tool may return a **mixed content list**:
 
 - `Content::resource(...)` entries for successfully read files
-- plain text entries for skipped files
+- plain text entries for files that could not be resolved or read
 
 Example skip text:
 
 ```text
-[SKIPPED: notes:large.md - 25000 bytes exceeds limit 10240]
+[SKIPPED: notes:large.md - failed to read]
 ```
 
 ### No-match behavior
@@ -452,9 +452,8 @@ Where it appears:
 Important defaults from the implementation:
 
 - default search limit: `10`
-- default multi-get max bytes per file: `10240`
 - search snippets are included by default
-- `docbert_get` has no built-in max-bytes default; the caller opts into that limit
+- neither `docbert_get` nor `docbert_multi_get` impose a size cap — callers slice explicitly with `startLine`/`endLine` or `startByte`/`endByte`
 
 ## Error-handling notes
 
@@ -475,8 +474,7 @@ Typical examples:
 
 Typical examples:
 
-- `docbert_get` when `maxBytes` is exceeded
-- `docbert_multi_get` skip notices for unreadable or oversized files
+- `docbert_multi_get` skip notices for unreadable files or missing collections
 - `docbert_multi_get` with no matches
 
 This distinction matters when building clients:
