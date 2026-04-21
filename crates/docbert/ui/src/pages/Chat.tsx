@@ -43,6 +43,14 @@ const STARTER_PROMPTS = [
 const MIN_COMPOSER_HEIGHT = 56;
 const MAX_COMPOSER_HEIGHT = 220;
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 120;
+const CONVERSATION_PREFETCH_TTL_MS = 10_000;
+
+type LoadedConversation = Awaited<ReturnType<typeof loadConversationById>>;
+
+type ConversationPrefetchEntry = {
+  startedAt: number;
+  promise: Promise<LoadedConversation>;
+};
 
 type GetModelProvider = Parameters<typeof getModel>[0];
 type GetModelId = Parameters<typeof getModel>[1];
@@ -120,7 +128,30 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const pendingLocalConversationIdRef = useRef<string | null>(null);
   const atTranscriptBottomRef = useRef(true);
+  const conversationPrefetchRef = useRef(new Map<string, ConversationPrefetchEntry>());
   const now = useTickingNow(30_000);
+
+  const prefetchConversation = useCallback((id: string) => {
+    const cache = conversationPrefetchRef.current;
+    const existing = cache.get(id);
+    if (existing && Date.now() - existing.startedAt < CONVERSATION_PREFETCH_TTL_MS) {
+      return;
+    }
+    cache.set(id, { startedAt: Date.now(), promise: loadConversationById(id) });
+  }, []);
+
+  const consumePrefetchedConversation = useCallback(
+    (id: string): Promise<LoadedConversation> | null => {
+      const cache = conversationPrefetchRef.current;
+      const existing = cache.get(id);
+      cache.delete(id);
+      if (existing && Date.now() - existing.startedAt < CONVERSATION_PREFETCH_TTL_MS) {
+        return existing.promise;
+      }
+      return null;
+    },
+    [],
+  );
 
   const reloadConversations = useCallback(async () => {
     const nextConversations = await loadConversationSummaries();
@@ -230,7 +261,8 @@ export default function Chat() {
 
   const selectConversation = useCallback(
     async (id: string) => {
-      const loadedConversation = await loadConversationById(id);
+      const prefetched = consumePrefetchedConversation(id);
+      const loadedConversation = await (prefetched ?? loadConversationById(id));
       if (!loadedConversation) {
         return;
       }
@@ -242,7 +274,7 @@ export default function Chat() {
       setConfirmDelete(null);
       navigate(`/chat/${id}`);
     },
-    [navigate],
+    [consumePrefetchedConversation, navigate],
   );
 
   const startNewChat = useCallback(() => {
@@ -261,6 +293,7 @@ export default function Chat() {
         return;
       }
 
+      conversationPrefetchRef.current.delete(id);
       setConfirmDelete(null);
       if (activeId === id) {
         startNewChat();
@@ -433,6 +466,8 @@ export default function Chat() {
                 type="button"
                 className="chat-conv-btn"
                 onClick={() => void selectConversation(conversation.id)}
+                onMouseEnter={() => prefetchConversation(conversation.id)}
+                onFocus={() => prefetchConversation(conversation.id)}
                 title={conversation.title}
               >
                 <span className="chat-conv-title">{conversation.title}</span>
