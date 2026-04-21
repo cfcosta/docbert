@@ -57,8 +57,8 @@ function uuid(): string {
   });
 }
 
-function formatRelativeTime(ms: number): string {
-  const diff = Date.now() - ms;
+function formatRelativeTime(ms: number, now: number = Date.now()): string {
+  const diff = now - ms;
   const minutes = Math.floor(diff / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
@@ -66,6 +66,24 @@ function formatRelativeTime(ms: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function formatAbsoluteTime(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function useTickingNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+
+  return now;
 }
 
 function chatScrollBehavior(): ScrollBehavior {
@@ -102,6 +120,7 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const pendingLocalConversationIdRef = useRef<string | null>(null);
   const atTranscriptBottomRef = useRef(true);
+  const now = useTickingNow(30_000);
 
   const reloadConversations = useCallback(async () => {
     const nextConversations = await loadConversationSummaries();
@@ -417,9 +436,13 @@ export default function Chat() {
                 title={conversation.title}
               >
                 <span className="chat-conv-title">{conversation.title}</span>
-                <span className="chat-conv-time">
-                  {formatRelativeTime(conversation.updated_at)}
-                </span>
+                <time
+                  className="chat-conv-time"
+                  dateTime={new Date(conversation.updated_at).toISOString()}
+                  title={formatAbsoluteTime(conversation.updated_at)}
+                >
+                  {formatRelativeTime(conversation.updated_at, now)}
+                </time>
               </button>
               {confirmDelete === conversation.id ? (
                 <div className="chat-conv-confirm">
