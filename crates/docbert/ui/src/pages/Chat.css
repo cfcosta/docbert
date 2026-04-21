@@ -226,6 +226,7 @@
   font-size: var(--text-caption);
   color: var(--text-muted);
   letter-spacing: var(--tracking-ui);
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-conv-delete {
