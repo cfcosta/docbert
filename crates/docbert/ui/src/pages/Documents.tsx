@@ -204,7 +204,7 @@ export default function Documents() {
   }, [loadCollections]);
 
   useEffect(() => {
-    if (!status || status.tone === "loading") {
+    if (!status || status.tone === "loading" || status.tone === "error") {
       return undefined;
     }
 
@@ -509,7 +509,17 @@ export default function Documents() {
           role={status.tone === "error" ? "alert" : "status"}
           aria-live="polite"
         >
-          {status.text}
+          <span className="ingest-toast-text">{status.text}</span>
+          {status.tone === "error" && (
+            <button
+              type="button"
+              className="ingest-toast-dismiss"
+              onClick={() => setStatus(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          )}
         </div>
       )}
 
