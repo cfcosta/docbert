@@ -263,7 +263,7 @@ export default function Search() {
             </div>
           </div>
 
-          <button type="submit" className="search-submit-button" aria-disabled={submitBlocked}>
+          <button type="submit" className="search-submit-button" disabled={submitBlocked}>
             {searching ? "Searching…" : "Run search"}
           </button>
         </form>
