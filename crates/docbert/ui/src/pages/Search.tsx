@@ -280,14 +280,7 @@ export default function Search() {
             <p className="search-state-title">Could not load collections</p>
             <p className="search-state-text">{collectionsError}</p>
           </div>
-        ) : !trimmedQuery ? null : hasPendingChanges ? (
-          <div className="search-state-card search-state-card-blank">
-            <p className="search-state-title">Ready to search</p>
-            <p className="search-state-text">
-              Review the query and filters above, then run search to refresh the results.
-            </p>
-          </div>
-        ) : searching ? (
+        ) : !trimmedQuery || hasPendingChanges ? null : searching ? (
           <div className="search-state-card">
             <p className="search-state-title">Searching…</p>
             <p className="search-state-text">Looking for matching documents.</p>

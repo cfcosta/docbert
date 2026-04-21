@@ -244,10 +244,6 @@
   box-shadow: none;
 }
 
-.search-state-card-blank {
-  max-width: 38rem;
-}
-
 .search-state-card-error {
   padding: var(--space-md) var(--space-lg);
   border: 1px solid var(--error-border);
