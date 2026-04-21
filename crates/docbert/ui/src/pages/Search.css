@@ -138,10 +138,9 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  min-width: min(11rem, 100%);
-  min-height: 3rem;
-  margin: var(--space-md) auto 0;
-  padding: 0.75rem 1.5rem;
+  min-height: 2.5rem;
+  margin-left: auto;
+  padding: 0.5rem 1.25rem;
   border: 1px solid color-mix(in oklab, var(--accent-cyan) 14%, var(--border-strong));
   border-radius: 999px;
   background: linear-gradient(

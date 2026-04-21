@@ -260,12 +260,12 @@ export default function Search() {
                   ))}
                 </select>
               </div>
+
+              <button type="submit" className="search-submit-button" disabled={submitBlocked}>
+                {searching ? "Searching…" : "Run search"}
+              </button>
             </div>
           </div>
-
-          <button type="submit" className="search-submit-button" disabled={submitBlocked}>
-            {searching ? "Searching…" : "Run search"}
-          </button>
         </form>
 
         {loadingCollections ? (
