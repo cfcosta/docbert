@@ -42,6 +42,7 @@ const STARTER_PROMPTS = [
 
 const MIN_COMPOSER_HEIGHT = 56;
 const MAX_COMPOSER_HEIGHT = 220;
+const AUTO_SCROLL_BOTTOM_THRESHOLD = 120;
 
 type GetModelProvider = Parameters<typeof getModel>[0];
 type GetModelId = Parameters<typeof getModel>[1];
@@ -100,6 +101,7 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const pendingLocalConversationIdRef = useRef<string | null>(null);
+  const atTranscriptBottomRef = useRef(true);
 
   const reloadConversations = useCallback(async () => {
     const nextConversations = await loadConversationSummaries();
@@ -169,6 +171,31 @@ export default function Chat() {
   }, [conversationId, activeId, navigate]);
 
   useEffect(() => {
+    const container = bottomRef.current?.parentElement;
+    if (!container) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const distanceFromBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      atTranscriptBottomRef.current = distanceFromBottom < AUTO_SCROLL_BOTTOM_THRESHOLD;
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    atTranscriptBottomRef.current = true;
+  }, [activeId]);
+
+  useEffect(() => {
+    const lastRole = messages[messages.length - 1]?.role;
+    const shouldFollow = atTranscriptBottomRef.current || lastRole === "user";
+    if (!shouldFollow) {
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: chatScrollBehavior() });
   }, [messages]);
 
