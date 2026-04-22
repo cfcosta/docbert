@@ -14,13 +14,10 @@
 //! and the query-time search path will be added on top in later
 //! TDD cycles.
 
-use candle_core::Tensor;
-
 use crate::{
     Result,
     codec::{EncodedVector, ResidualCodec, train_quantizer},
-    device::default_device,
-    kmeans::{assign_points, fit_on_tensor},
+    kmeans::{assign_points, fit},
 };
 
 /// Cap on tokens used to train the residual quantizer.
@@ -382,7 +379,6 @@ pub fn build_index_from_pool(
     // cudarc's caching allocator held the stale block, and the PLAID
     // build tipped a 12 GB card into CUDA OOM as soon as the encoder
     // model was also resident.
-    let device = default_device();
     let pool_bytes = pool.len() * std::mem::size_of::<f32>();
     let device_info = crate::device::device_memory_info();
     eprintln!(
@@ -398,30 +394,12 @@ pub fn build_index_from_pool(
             None => String::new(),
         },
     );
-    if let Some((free, _)) = device_info
-        && pool_bytes > free
-    {
-        // Fail fast with a diagnostic a user can act on, rather than
-        // the bare `CUDA_ERROR_OUT_OF_MEMORY` cudarc returns when the
-        // async mempool can't extend.
-        return Err(candle_core::Error::Msg(format!(
-            "pool tensor would need {} MiB on device but only {} MiB are free \
-             ({} tokens × {} dim × 4 bytes). Re-embed the corpus with a \
-             smaller-dimension model, or build the PLAID index on a host with \
-             enough VRAM.",
-            pool_bytes / (1 << 20),
-            free / (1 << 20),
-            total_tokens,
-            params.dim,
-        ))
-        .into());
-    }
-    let p_tensor =
-        Tensor::from_slice(&pool, (total_tokens, params.dim), device)?;
 
-    // 1. Train coarse centroids with k-means.
-    let centroids = fit_on_tensor(
-        &p_tensor,
+    // 1. Train coarse centroids with k-means. `fit` subsamples to
+    //    `k * MAX_POINTS_PER_CENTROID` rows and uploads only that
+    //    subsample, so peak VRAM here is bounded regardless of pool
+    //    size or `dim`.
+    let centroids = fit(
         &pool,
         params.k_centroids,
         params.dim,
@@ -473,13 +451,18 @@ pub fn build_index_from_pool(
     };
     codec.validate()?;
 
-    // 4. Encode every token across the whole corpus in one batched pass
-    //    (single matmul-driven nearest-centroid lookup) and store the
-    //    flat result directly as the index's StridedTensor-style
-    //    storage — no per-token Vec<EncodedVector> intermediate.
+    // 4. Encode every token across the whole corpus. The encoder
+    //    walks the host `pool` in `[chunk_rows, dim]` tiles, uploads
+    //    each tile, runs assign + bucketize + pack on it, drains the
+    //    results back to host, and drops the tile before the next
+    //    one uploads. Peak VRAM is bounded by
+    //    `codec state + one chunk` (≈128 MiB at default settings) —
+    //    unchanged by corpus size or embedding dimension, so a
+    //    1536-dim model on a 6.8M-token corpus builds without the
+    //    40 GB contiguous allocation the old single-shot path
+    //    required.
     let (doc_centroid_ids, doc_residual_bytes) =
-        codec.batch_encode_tokens_on_tensor(&p_tensor, &pool)?;
-    drop(p_tensor);
+        codec.batch_encode_tokens(&pool)?;
     drop(pool);
     debug_assert_eq!(doc_centroid_ids.len(), total_tokens);
     debug_assert_eq!(

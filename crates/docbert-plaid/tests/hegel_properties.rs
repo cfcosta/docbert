@@ -981,6 +981,61 @@ fn prop_decode_table_matches_scalar(tc: TestCase) {
     assert_eq!(scalar, via_table);
 }
 
+/// Partition invariance: encoding the same token stream with any two
+/// chunk sizes must produce byte-identical output. This is the
+/// correctness guard on the "upload tile → encode → drop" pipeline
+/// — any per-chunk bookkeeping bug (off-by-one offsets, shared
+/// state leaking across chunks, slice windows not sliding right)
+/// lands as a mismatch between a small-chunk run and a large-chunk
+/// run. Fixing the corpus + codec and shrinking only `chunk_rows`
+/// keeps the counter-example readable.
+#[hegel::test(test_cases = 30)]
+fn prop_batch_encode_chunked_is_partition_invariant(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
+    let codes_per_byte = (8 / nbits) as usize;
+    let n_bytes = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let dim = n_bytes * codes_per_byte;
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let n_tokens = tc.draw(gs::integers::<usize>().min_value(8).max_value(64));
+    // Chunk sizes both smaller and larger than the full batch — the
+    // `> n_tokens` case exercises the "one chunk covers everything"
+    // degenerate split that should still agree with the multi-chunk
+    // path below.
+    let chunk_rows =
+        tc.draw(gs::integers::<usize>().min_value(1).max_value(n_tokens + 3));
+
+    let centroids = tc.draw(unit_rows(dim, k));
+    let residual_pool = tc.draw(finite_floats(64));
+    let (cutoffs, weights) = train_quantizer(residual_pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids,
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+    let tokens = tc.draw(unit_rows(dim, n_tokens));
+
+    // Reference: single chunk covers the whole batch.
+    let (ref_cids, ref_codes) = codec
+        .batch_encode_tokens_with_chunk_rows(&tokens, n_tokens)
+        .unwrap();
+    // System under test: caller-specified chunk size.
+    let (got_cids, got_codes) = codec
+        .batch_encode_tokens_with_chunk_rows(&tokens, chunk_rows)
+        .unwrap();
+
+    assert_eq!(
+        got_cids, ref_cids,
+        "chunked centroid ids diverge at chunk_rows={chunk_rows}",
+    );
+    assert_eq!(
+        got_codes, ref_codes,
+        "chunked residual codes diverge at chunk_rows={chunk_rows}",
+    );
+}
+
 /// Differential: `batch_encode_tokens` on a large batch must produce
 /// the same bytes as the scalar per-token encode. The default chunk
 /// budget (128 MiB) means realistic corpora traverse multiple chunks
