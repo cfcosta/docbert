@@ -304,6 +304,24 @@ pub fn load_index(data_dir: &DataDir) -> Result<Option<PlaidIndex>> {
     Ok(Some(persistence::load(&path)?))
 }
 
+/// Release CUDA's async memory pool back to the driver.
+///
+/// Thin re-export of [`docbert_plaid::device::release_cached_device_memory`]
+/// so downstream callers (notably the CLI's `rebuild`/`sync` commands)
+/// can request the trim without adding `docbert-plaid` as a direct
+/// dependency. See the inner function's doc comment for why this
+/// matters: without it, the encoder's ModernBert caches keep the
+/// ~3.47 GB pool tensor the PLAID builder needs out of reach on 12 GB
+/// cards.
+///
+/// Returns the underlying candle error as [`Error::Config`] so callers
+/// don't have to know about candle.
+pub fn release_cached_device_memory() -> Result<()> {
+    docbert_plaid::device::release_cached_device_memory().map_err(|e| {
+        Error::Config(format!("failed to release CUDA memory pool: {e}"))
+    })
+}
+
 /// Search `index` with a ColBERT-shaped `query_embedding` and return the
 /// top-`top_k` `(doc_id, score)` pairs.
 ///

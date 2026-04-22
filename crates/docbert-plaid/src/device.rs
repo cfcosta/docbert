@@ -36,6 +36,61 @@ fn select_device() -> Device {
     Device::Cpu
 }
 
+/// Release cached but currently-unused device memory back to the
+/// driver.
+///
+/// Candle hands every dropped `Tensor` back to CUDA's async memory
+/// pool (via `cuMemFreeAsync`). The pool keeps the bytes around for
+/// fast reuse, which is normally what you want — but when the encoder
+/// model finishes embedding, its ~2 GB of ModernBert per-batch
+/// caches stay committed to the pool even after the callers drop the
+/// model. That's enough to block a subsequent 3.47 GB `Tensor`
+/// allocation on a 12 GB card and surface as `CUDA_ERROR_OUT_OF_MEMORY`.
+///
+/// This function asks CUDA to trim the default mempool to zero
+/// retained bytes, handing the freed blocks back to the driver so
+/// the next large allocation can grow into them. Without the `cuda`
+/// feature (or when running on CPU) it's a no-op.
+///
+/// Safe wrapper around `cuDeviceGetDefaultMemPool` +
+/// `cuMemPoolTrimTo`. Only trims device 0 — docbert currently only
+/// ever uses the default CUDA device.
+pub fn release_cached_device_memory() -> Result<(), candle_core::Error> {
+    #[cfg(feature = "cuda")]
+    {
+        if let Device::Cuda(_) = default_device() {
+            use candle_core::cuda_backend::cudarc::driver::result;
+            // Safety: `result::device::get` is a safe wrapper that
+            // returns a valid device handle; `get_default_mem_pool`
+            // and `trim_to` are unsafe because they take raw CUDA
+            // handles, but we only ever pass handles produced by
+            // cudarc in the same call — the documented preconditions
+            // ("valid device", "valid pool") hold. Trimming the pool
+            // while no outstanding allocations reference it is
+            // always-safe per the CUDA docs.
+            unsafe {
+                let dev = result::device::get(0).map_err(|e| {
+                    candle_core::Error::Msg(format!(
+                        "release_cached_device_memory: cuDeviceGet(0) failed: {e}"
+                    ))
+                })?;
+                let pool =
+                    result::device::get_default_mem_pool(dev).map_err(|e| {
+                        candle_core::Error::Msg(format!(
+                            "release_cached_device_memory: cuDeviceGetDefaultMemPool failed: {e}"
+                        ))
+                    })?;
+                result::mem_pool::trim_to(pool, 0).map_err(|e| {
+                    candle_core::Error::Msg(format!(
+                        "release_cached_device_memory: cuMemPoolTrimTo failed: {e}"
+                    ))
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

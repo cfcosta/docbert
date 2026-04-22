@@ -396,7 +396,8 @@ pub(crate) fn rebuild(
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
-    rebuild_plaid_index(data_dir, &runtime.embedding_db)?;
+    let embedding_db = release_encoder_before_plaid(runtime)?;
+    rebuild_plaid_index(data_dir, &embedding_db)?;
 
     eprintln!(
         "{} in {}.",
@@ -404,6 +405,38 @@ pub(crate) fn rebuild(
         style::accent(&style::format_duration(total_start.elapsed())),
     );
     Ok(())
+}
+
+/// Drop the encoder model and trim CUDA's async mempool before the
+/// PLAID build kicks off.
+///
+/// ModernBert's per-batch `packed_cos_sin` and `varlen_positions`
+/// caches accumulate on the order of 1–2 GB of VRAM over a full
+/// embedding pass (one entry per unique combination of sequence
+/// lengths seen in a batch). The caches live on the model, and the
+/// `ModelManager` stays alive until `rebuild`/`sync` returns —
+/// exactly when the PLAID builder wants to allocate a ~3.47 GB
+/// contiguous points tensor. Without releasing the encoder first,
+/// CUDA's async mempool stays committed to the old allocations and
+/// `cuMemAllocAsync` returns `CUDA_ERROR_OUT_OF_MEMORY` on a 12 GB
+/// card.
+///
+/// Returns the retained `EmbeddingDb` handle so callers can continue
+/// with the PLAID build; every other field of the runtime is dropped
+/// together with the encoder.
+fn release_encoder_before_plaid(
+    runtime: IndexingRuntime,
+) -> error::Result<EmbeddingDb> {
+    let IndexingRuntime {
+        search_index,
+        embedding_db,
+        model,
+        chunking_config: _,
+    } = runtime;
+    drop(search_index);
+    drop(model);
+    docbert_core::plaid::release_cached_device_memory()?;
+    Ok(embedding_db)
 }
 
 pub(crate) fn sync(
@@ -572,7 +605,8 @@ pub(crate) fn sync(
 
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
-    sync_plaid_index(data_dir, &runtime.embedding_db, &touched_bases)?;
+    let embedding_db = release_encoder_before_plaid(runtime)?;
+    sync_plaid_index(data_dir, &embedding_db, &touched_bases)?;
 
     eprintln!(
         "{} in {}.",
