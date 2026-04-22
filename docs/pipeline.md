@@ -276,7 +276,7 @@ Different surfaces choose different defaults:
 
 ## Hybrid search flow
 
-Hybrid search is implemented in `docbert_core::search::execute_search`.
+Hybrid search is implemented in `docbert_core::search::run`.
 
 ### Step 1: BM25 leg
 
@@ -291,7 +291,7 @@ Current behavior:
 
 ### Step 2: semantic leg
 
-In parallel, the semantic leg runs the same pipeline as `execute_semantic_search`:
+In parallel, the semantic leg runs the same pipeline as `search::semantic`:
 
 1. load all stored document metadata from `config.db`
 2. filter to the requested collection, if any
@@ -321,7 +321,7 @@ After fusion, docbert:
 
 ## Semantic-only search flow
 
-Semantic-only search is implemented in `docbert_core::search::execute_semantic_search`.
+Semantic-only search is implemented in `docbert_core::search::semantic`.
 
 Current behavior:
 

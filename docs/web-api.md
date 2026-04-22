@@ -188,6 +188,7 @@ Response body (`201 Created`):
 Status codes:
 
 - `201 Created`
+- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites — use PUT to update)
 - `500 Internal Server Error`
 
 ### `GET /v1/conversations/{id}`
@@ -470,6 +471,7 @@ Status codes:
 
 - `200 OK`
 - `400 Bad Request` for an unknown `mode`
+- `503 Service Unavailable` if the PLAID semantic index has not been built yet — both `semantic` and `hybrid` modes require it. The server logs the query and returns an empty body; run `docbert sync` to build the index.
 - `500 Internal Server Error`
 
 ## LLM settings

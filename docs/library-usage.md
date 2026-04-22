@@ -21,7 +21,7 @@ At a high level, the public library gives you:
 - lexical indexing (`SearchIndex`)
 - model management (`ModelManager`)
 - document discovery and preparation (`walker`, `ingestion`, `preparation`, `chunking`)
-- search entrypoints (`execute_search`, `execute_semantic_search`, `execute_search_mode`)
+- search entrypoints (`search::run`, `search::semantic`, `search::by_mode`)
 - document identifiers (`DocumentId`)
 - result enrichment helpers (`results::enrich`)
 - a shared error type (`docbert_core::Error` / `docbert_core::Result`)
@@ -57,14 +57,13 @@ This is the smallest useful end-to-end library example: open the local stores, r
 ```rust,no_run
 use std::path::Path;
 
-use docbert_core::{ConfigDb, DataDir, EmbeddingDb, ModelManager, SearchIndex};
-use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+use docbert_core::{ConfigDb, DataDir, ModelManager, SearchIndex};
+use docbert_core::search::{self, SearchMode, SearchQuery};
 
 fn main() -> docbert_core::Result<()> {
     let data_dir = DataDir::new(Path::new("/home/user/.local/share/docbert"));
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let mut model = ModelManager::new();
 
     let request = SearchQuery {
@@ -74,12 +73,12 @@ fn main() -> docbert_core::Result<()> {
         min_score: 0.0,
     };
 
-    let results = execute_search_mode(
+    let results = search::by_mode(
         SearchMode::Hybrid,
         &request,
         &search_index,
         &config_db,
-        &embedding_db,
+        &data_dir,
         &mut model,
     )?;
 
@@ -98,6 +97,8 @@ fn main() -> docbert_core::Result<()> {
 }
 ```
 
+Note that `search::by_mode` takes `&DataDir`, not `&EmbeddingDb`. The semantic leg reads from the PLAID index file (`<data-dir>/plaid.idx`) internally, not from the embedding rows — embeddings only feed the index at build time. If `plaid.idx` is missing, the hybrid and semantic paths both fail with `Error::PlaidIndexMissing`; run `docbert sync` (or `docbert reindex` if embeddings already exist) to build it.
+
 ## Core public types
 
 ## `DataDir`
@@ -108,6 +109,7 @@ It gives you paths for:
 
 - `config.db`
 - `embeddings.db`
+- `plaid.idx`
 - `tantivy/`
 
 It does **not** resolve XDG defaults for you. That is application behavior; as a library embedder, you choose the root yourself.
@@ -121,10 +123,12 @@ fn main() -> docbert_core::Result<()> {
 
     let config = data_dir.config_db();
     let embeddings = data_dir.embeddings_db();
+    let plaid_index = data_dir.plaid_index();
     let tantivy = data_dir.tantivy_dir()?; // creates tantivy/ if needed
 
     println!("{}", config.display());
     println!("{}", embeddings.display());
+    println!("{}", plaid_index.display());
     println!("{}", tantivy.display());
     Ok(())
 }
@@ -162,7 +166,7 @@ fn main() -> docbert_core::Result<()> {
 
     db.set_collection("notes", "/home/user/notes")?;
     db.set_context("bert://notes", "Personal notes")?;
-    db.set_setting("model_name", "lightonai/ColBERT-Zero")?;
+    db.set_setting("model_name", "lightonai/LateOn")?;
 
     let doc_meta = DocumentMetadata {
         collection: "notes".to_string(),
@@ -295,7 +299,7 @@ use docbert_core::ModelManager;
 
 fn main() -> docbert_core::Result<()> {
     let mut model = ModelManager::with_model_id(
-        "lightonai/ColBERT-Zero".to_string(),
+        "lightonai/LateOn".to_string(),
     )
     .with_document_length(512);
 
@@ -347,26 +351,27 @@ fn main() -> docbert_core::Result<()> {
 
 The main shared prepared-document type is `preparation::SearchDocument`.
 
-You typically build it through one of these helpers:
+You typically build it through one of these helpers (note the flat,
+unprefixed names — `preparation::markdown`, not `prepare_markdown`):
 
-- `prepare_markdown(...)`
-- `prepare_uploaded(...)`
-- `prepare_filesystem(...)`
-- `prepare_supported_filesystem(...)`
+- `preparation::markdown(...)` — returns the lightweight `MarkdownBody` (title + searchable body); used as a building block by the other helpers
+- `preparation::uploaded(...)` — builds a full `SearchDocument` and keeps the raw content for later ingest/re-embedding
+- `preparation::filesystem(...)` — builds a `SearchDocument` without retaining the raw content
+- `preparation::supported_filesystem(...)` — reads a supported file from disk (markdown/text/PDF) and feeds it through `filesystem`
 
 ```rust,no_run
 use std::path::Path;
-use docbert_core::preparation::{prepare_markdown, prepare_uploaded, prepare_filesystem};
+use docbert_core::preparation;
 
 fn main() -> docbert_core::Result<()> {
-    let prepared = prepare_markdown(
+    let prepared = preparation::markdown(
         Path::new("guide.md"),
         "---\ntitle: ignored\n---\n# Guide\n\nBody",
     );
     assert_eq!(prepared.title, "Guide");
     assert_eq!(prepared.searchable_body, "# Guide\n\nBody");
 
-    let uploaded = prepare_uploaded(
+    let uploaded = preparation::uploaded(
         "notes",
         "guide.md",
         "# Guide\n\nBody",
@@ -375,7 +380,7 @@ fn main() -> docbert_core::Result<()> {
     );
     assert!(uploaded.raw_content.is_some());
 
-    let filesystem = prepare_filesystem(
+    let filesystem = preparation::filesystem(
         "notes",
         Path::new("guide.md"),
         "# Guide\n\nBody",
@@ -444,26 +449,26 @@ The chunking and embedding layers are library-accessible too.
 
 ### Chunking helpers
 
-Use `chunking::resolve_chunking_config(...)` if you want the same chunk-size selection logic the application uses for a given model path.
+Use `chunking::resolve_config(...)` if you want the same chunk-size selection logic the application uses for a given model path.
 
 Use `preparation::embedding_chunks(...)` or `preparation::collect_chunks(...)` if you already have `SearchDocument` values.
 
 ```rust,no_run
 use std::path::Path;
-use docbert_core::chunking::resolve_chunking_config;
-use docbert_core::preparation::{collect_chunks, prepare_filesystem};
+use docbert_core::chunking;
+use docbert_core::preparation;
 
 fn main() -> docbert_core::Result<()> {
-    let config = resolve_chunking_config("lightonai/ColBERT-Zero");
+    let config = chunking::resolve_config("lightonai/LateOn");
 
-    let doc = prepare_filesystem(
+    let doc = preparation::filesystem(
         "notes",
         Path::new("long.md"),
         "Long document text...",
         0,
     );
 
-    let chunks = collect_chunks(&[doc], config, |_| {});
+    let chunks = preparation::collect_chunks(&[doc], config, |_| {});
     println!("chunks={}", chunks.len());
     Ok(())
 }
@@ -502,7 +507,7 @@ fn main() -> docbert_core::Result<()> {
 
 The main public search APIs live in `docbert_core::search`.
 
-## `execute_search(...)`
+## `search::run(...)`
 
 Use this when you want the full hybrid-search parameter surface, including:
 
@@ -511,16 +516,17 @@ Use this when you want the full hybrid-search parameter surface, including:
 - `all`
 
 By default, BM25 and semantic retrieval run in parallel and are fused with
-Reciprocal Rank Fusion. Setting `bm25_only = true` skips the semantic leg.
+Reciprocal Rank Fusion. Setting `bm25_only = true` skips the semantic leg
+entirely and does not touch the PLAID index.
 
 ```rust,no_run
-use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
-use docbert_core::search::{SearchParams, execute_search};
+use docbert_core::{ConfigDb, DataDir, ModelManager, SearchIndex};
+use docbert_core::search::{self, SearchParams};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let data_dir = DataDir::new(std::path::Path::new("/tmp/docbert-state"));
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open_in_ram()?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
 
     let params = SearchParams {
@@ -533,28 +539,30 @@ fn main() -> docbert_core::Result<()> {
         all: false,
     };
 
-    let _results = execute_search(
+    let _results = search::run(
         &params,
         &search_index,
         &config_db,
-        &embedding_db,
+        &data_dir,
         &mut model,
     )?;
     Ok(())
 }
 ```
 
-## `execute_semantic_search(...)`
+## `search::semantic(...)`
 
 Use this when you want semantic-only retrieval over the stored document set.
+It requires a prebuilt PLAID index and returns `Error::PlaidIndexMissing`
+otherwise.
 
 ```rust,no_run
-use docbert_core::{ConfigDb, EmbeddingDb, ModelManager};
-use docbert_core::search::{SemanticSearchParams, execute_semantic_search};
+use docbert_core::{ConfigDb, DataDir, ModelManager};
+use docbert_core::search::{self, SemanticSearchParams};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
+    let data_dir = DataDir::new(std::path::Path::new("/tmp/docbert-state"));
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let mut model = ModelManager::new();
 
     let params = SemanticSearchParams {
@@ -565,23 +573,23 @@ fn main() -> docbert_core::Result<()> {
         all: false,
     };
 
-    let _results = execute_semantic_search(&params, &config_db, &embedding_db, &mut model)?;
+    let _results = search::semantic(&params, &config_db, &data_dir, &mut model)?;
     Ok(())
 }
 ```
 
-## `execute_search_mode(...)`
+## `search::by_mode(...)`
 
-Use this when your app wants a simpler mode-switching wrapper around `hybrid` vs `semantic` behavior.
+Use this when your app wants a simpler mode-switching wrapper around `hybrid` vs `semantic` behavior. It takes the smaller `SearchQuery` shape (no `bm25_only`/`no_fuzzy`/`all`) and dispatches to `run` or `semantic` internally.
 
 ```rust,no_run
-use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
-use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+use docbert_core::{ConfigDb, DataDir, ModelManager, SearchIndex};
+use docbert_core::search::{self, SearchMode, SearchQuery};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let data_dir = DataDir::new(std::path::Path::new("/tmp/docbert-state"));
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open_in_ram()?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
 
     let query = SearchQuery {
@@ -591,12 +599,12 @@ fn main() -> docbert_core::Result<()> {
         min_score: 0.0,
     };
 
-    let _results = execute_search_mode(
+    let _results = search::by_mode(
         SearchMode::Hybrid,
         &query,
         &search_index,
         &config_db,
-        &embedding_db,
+        &data_dir,
         &mut model,
     )?;
     Ok(())
@@ -620,17 +628,17 @@ That type contains:
 If you want to attach JSON metadata for your own API/UI surface, use `results::enrich(...)`.
 
 ```rust,no_run
-use docbert_core::{ConfigDb, EmbeddingDb, ModelManager, SearchIndex};
+use docbert_core::{ConfigDb, DataDir, ModelManager, SearchIndex};
 use docbert_core::results::enrich;
-use docbert_core::search::{SearchMode, SearchQuery, execute_search_mode};
+use docbert_core::search::{self, SearchMode, SearchQuery};
 
 fn main() -> docbert_core::Result<()> {
-    let config_db = ConfigDb::open(std::path::Path::new("config.db"))?;
+    let data_dir = DataDir::new(std::path::Path::new("/tmp/docbert-state"));
+    let config_db = ConfigDb::open(&data_dir.config_db())?;
     let search_index = SearchIndex::open_in_ram()?;
-    let embedding_db = EmbeddingDb::open(std::path::Path::new("emb.db"))?;
     let mut model = ModelManager::new();
 
-    let results = execute_search_mode(
+    let results = search::by_mode(
         SearchMode::Hybrid,
         &SearchQuery {
             query: "rust".to_string(),
@@ -640,7 +648,7 @@ fn main() -> docbert_core::Result<()> {
         },
         &search_index,
         &config_db,
-        &embedding_db,
+        &data_dir,
         &mut model,
     )?;
 

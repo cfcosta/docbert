@@ -141,7 +141,7 @@ Options:
 Behavior notes:
 
 - By default, docbert runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion (`SearchMode::Hybrid`).
-- If any of `--bm25-only`, `--no-fuzzy`, or `--all` are set, docbert calls `execute_search` directly with the corresponding parameters.
+- If any of `--bm25-only`, `--no-fuzzy`, or `--all` are set, docbert calls `search::run` directly with the corresponding parameters.
 - Output mode is chosen in this order:
   1. `--json`
   2. `--files`
@@ -304,6 +304,25 @@ docbert rebuild
 docbert rebuild -c notes
 docbert rebuild --embeddings-only
 docbert rebuild --index-only
+```
+
+### `docbert reindex`
+
+Rebuild the PLAID semantic index from the embeddings already stored in `embeddings.db`, without re-encoding any documents.
+
+Behavior notes:
+
+- Reindex does not walk collection roots, does not read source files, and does not call the model.
+- It reads every stored embedding, retrains the PLAID centroids/codec, and replaces the on-disk PLAID file at `<data-dir>/plaid.idx`.
+- Typical use is after a PLAID builder change (centroid count, codec bit-width, k-means iterations, …) where `rebuild` would unnecessarily re-embed every document against the unchanged model.
+- If you changed the embedding model itself, run `docbert rebuild` instead — reindex won't regenerate embeddings.
+
+This command takes no flags.
+
+Example:
+
+```bash
+docbert reindex
 ```
 
 ### `docbert status`

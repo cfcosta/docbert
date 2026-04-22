@@ -80,6 +80,7 @@ Example response:
 Status codes:
 
 - `201 Created`
+- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites — use PUT to update)
 - `500 Internal Server Error`
 
 ### List

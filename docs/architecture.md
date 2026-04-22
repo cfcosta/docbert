@@ -98,6 +98,33 @@ Important public types re-exported by `docbert-core` include:
 - `ModelManager`
 - `Conversation`
 
+## `crates/docbert-plaid`
+
+This crate implements the PLAID (Performance-optimized Late Interaction Driver) multi-vector index used for semantic retrieval.
+
+It owns:
+
+- k-means centroid training over stored ColBERT token embeddings
+- compressed codec for residual quantization
+- MaxSim-based query evaluation against the compressed index
+- on-disk `plaid.idx` file format
+- CUDA-accelerated paths for k-means and MaxSim matmul when the `cuda` feature is enabled
+
+`docbert-core::search::semantic` and the semantic leg of `docbert-core::search::run` both load this crate's index file from `DataDir::plaid_index()` and ask it to rank documents for an encoded query.
+
+## `crates/docbert-pylate`
+
+This crate is a Rust-only fork of [pylate-rs](https://github.com/lightonai/pylate-rs) (originally based on upstream 1.0.4), vendored into the workspace. The upstream Python, WebAssembly, and npm packaging layers have been removed; the crate tracks the workspace release version rather than upstream's.
+
+It owns:
+
+- ColBERT / LateOn model loading from HuggingFace or local paths
+- query and document encoding
+- token-level MaxSim similarity computation
+- `candle`-backed inference with CPU, CUDA, Metal, MKL, and Accelerate backends selected via feature flags
+
+`docbert-core::ModelManager` is a thin wrapper around this crate.
+
 ## Core persistent state
 
 docbert keeps local state under a resolved data directory managed by `DataDir`.
@@ -188,17 +215,24 @@ Collections on disk
         v                   v
    SearchIndex          EmbeddingDb
    (Tantivy)            (ColBERT vectors)
+                            |
+                            v
+                       plaid.idx
+                       (docbert-plaid multi-vector index)
         |                   |
         +---------+---------+
                   |
                   v
-              search.rs
+          docbert-core::search
+          (BM25 + ColBERT/PLAID + RRF)
                   |
      +------------+-------------+
      |            |             |
      v            v             v
    CLI        Web runtime    MCP runtime
 ```
+
+ModelManager (wrapping `docbert-pylate`) sits alongside `search` and is passed into every query path to encode the query tokens on demand.
 
 ## Runtime boundaries
 

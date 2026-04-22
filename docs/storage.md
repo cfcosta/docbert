@@ -16,13 +16,14 @@ The actual location is resolved in this order:
 2. `DOCBERT_DATA_DIR`
 3. the XDG data directory (`$XDG_DATA_HOME/docbert` or the platform equivalent)
 
-Within that root, docbert currently uses four storage layers:
+Within that root, docbert currently uses five storage layers:
 
 | Path / system            | Role                                                                                        |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
 | `config.db`              | collections, contexts, document metadata, conversations, collection snapshots, and settings |
 | `embeddings.db`          | stored ColBERT embedding matrices keyed by numeric document or chunk ID                     |
 | `tantivy/`               | lexical search index                                                                        |
+| `plaid.idx`              | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim  |
 | collection roots on disk | source document content used for indexing, document reads, titles, and excerpts             |
 
 A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
@@ -35,10 +36,11 @@ A key architectural point is that docbert is **not** purely index-backed. The so
 <docbert-data-dir>/
   config.db
   embeddings.db
+  plaid.idx
   tantivy/
 ```
 
-`tantivy/` is created on demand when the search index is opened.
+`tantivy/` is created on demand when the search index is opened. `plaid.idx` is built by `sync`, `rebuild`, or `reindex` and is not present on a fresh data directory; both `semantic` and `hybrid` search fail with `PlaidIndexMissing` until one of those commands has run.
 
 The collection roots themselves are **not** stored inside the data directory unless you explicitly register paths there. They can live anywhere on disk.
 

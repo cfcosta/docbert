@@ -92,7 +92,7 @@ Fields:
 
 ### Behavior
 
-- Uses `search::execute_search(...)`, which runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion unless `bm25Only` is set.
+- Uses `search::run(...)`, which runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion unless `bm25Only` is set.
 - Opens `config.db` and `embeddings.db` for the call.
 - Locks the shared `ModelManager` while searching.
 - If `includeSnippet` is true, the server tries to read the matching file from disk and extract a snippet for the query.
@@ -169,7 +169,7 @@ Fields:
 
 ### Behavior
 
-- Uses `search::execute_semantic_search(...)`.
+- Uses `search::semantic(...)`.
 - Does **not** accept a collection parameter in the MCP schema.
 - Shares the same result formatting path as `docbert_search`.
 
@@ -349,7 +349,7 @@ Plain text example:
 ```text
 Docbert index status:
   Data dir: /home/user/.local/share/docbert
-  Model: lightonai/ColBERT-Zero
+  Model: lightonai/LateOn
   Documents: 42
   Collections: 2
     - notes (30 docs) /home/user/notes
@@ -361,7 +361,7 @@ Structured example:
 ```json
 {
   "dataDir": "/home/user/.local/share/docbert",
-  "model": "lightonai/ColBERT-Zero",
+  "model": "lightonai/LateOn",
   "documents": 42,
   "collections": [
     {

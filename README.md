@@ -290,6 +290,7 @@ That state includes:
 
 - `config.db`
 - `embeddings.db`
+- `plaid.idx`
 - `tantivy/`
 
 The collection roots themselves can live anywhere on disk.
@@ -300,13 +301,16 @@ See:
 
 ## How search works
 
-Hybrid search currently works like this:
+Hybrid search runs BM25 and ColBERT in parallel and fuses the two rankings with Reciprocal Rank Fusion:
 
-1. Tantivy retrieves up to 1000 lexical candidates
-2. ColBERT reranks those candidates semantically
-3. docbert filters and formats the final results
+1. Tantivy produces up to 100 BM25 candidates (fuzzy matching on by default).
+2. In parallel, the prebuilt PLAID semantic index produces up to 100 ColBERT MaxSim candidates for the same query.
+3. The two ranked lists are combined with RRF (`k = 60`); each document contributes `1 / (k + rank_i)` from each list it appears in.
+4. The top `--count` fused results are returned (or all results, with `--all`).
 
-Semantic-only search skips the BM25 candidate stage and scores the stored document set semantically.
+`--min-score` is ignored under RRF because fused scores are not on the BM25 scale; it only applies in `--bm25-only` mode, which skips the semantic leg entirely.
+
+Semantic-only search (`docbert ssearch`, `POST /v1/search` with `mode=semantic`) skips the BM25 leg and ranks all stored documents directly against the PLAID index. Both modes require a prebuilt PLAID index — run `docbert sync` if the server returns `PlaidIndexMissing`.
 
 See:
 

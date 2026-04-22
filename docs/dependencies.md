@@ -5,6 +5,8 @@ This page tracks the **direct Cargo dependencies** declared in the current manif
 - workspace root `Cargo.toml`
 - `crates/docbert/Cargo.toml`
 - `crates/docbert-core/Cargo.toml`
+- `crates/docbert-plaid/Cargo.toml`
+- `crates/docbert-pylate/Cargo.toml`
 
 It focuses on what each direct dependency is for in the current codebase, plus the major feature relationships that matter when changing builds or runtime behavior.
 
@@ -17,6 +19,8 @@ It only defines:
 - workspace members:
   - `crates/docbert`
   - `crates/docbert-core`
+  - `crates/docbert-plaid`
+  - `crates/docbert-pylate`
 - resolver:
   - `resolver = "3"`
 
@@ -32,18 +36,21 @@ All dependency versions live in the crate manifests.
 | -------------------- | ---------------------- | ----------------------------------------------------------------------------------------------- |
 | `docbert-core`       | path `../docbert-core` | Shared storage, indexing, search, embedding, and model primitives used by the application crate |
 | `axum`               | `0.8`                  | HTTP routing and handlers for `docbert web`                                                     |
-| `clap`               | `4.5.57`               | CLI parsing and command definitions in `src/cli.rs`                                             |
-| `include_dir`        | `0.7`                  | Embeds built UI assets for the web runtime                                                      |
-| `clap_complete`      | `4.5`                  | Generates shell completion scripts                                                              |
-| `globset`            | `0.4`                  | Glob filtering for MCP resource handling and some search/file filtering paths                   |
 | `base64`             | `0.22`                 | PDF upload encoding/decoding in web document routes                                             |
+| `clap`               | `4.6.1`                | CLI parsing and command definitions in `src/cli.rs`                                             |
+| `clap_complete`      | `4.6`                  | Generates shell completion scripts                                                              |
+| `globset`            | `0.4`                  | Glob filtering for MCP resource handling and some search/file filtering paths                   |
+| `include_dir`        | `0.7`                  | Embeds built UI assets for the web runtime                                                      |
 | `kdam`               | `0.6.4`                | Progress bars/spinners for indexing and embedding work in CLI flows                             |
 | `percent-encoding`   | `2`                    | URI/resource encoding helpers in the MCP layer                                                  |
-| `rmcp`               | `1.2.0`                | MCP server implementation over stdio                                                            |
+| `rand`               | `0.10`                 | OAuth state / PKCE verifier generation for the ChatGPT Codex login flow                         |
+| `reqwest`            | `0.13.2`               | Outbound HTTP client for the OAuth token exchange (JSON + form bodies, no default features)     |
+| `rmcp`               | `1.5.0`                | MCP server implementation over stdio (`transport-io` feature)                                   |
 | `schemars`           | `1.2.1`                | JSON schema generation for MCP tool/input shapes                                                |
 | `serde`              | `1`                    | Serialization/deserialization for web and MCP request/response types                            |
 | `serde_json`         | `1`                    | JSON values and serialization for web/MCP payloads                                              |
-| `tantivy`            | `0.25`                 | Direct access to Tantivy writer/lock types in runtime resource handling                         |
+| `sha2`               | `0.11`                 | PKCE code-challenge hashing for the ChatGPT Codex OAuth flow                                    |
+| `tantivy`            | `=0.26.0`              | Direct access to Tantivy writer/lock types in runtime resource handling                         |
 | `tokio`              | `1`                    | Async runtime for web server and MCP runtime                                                    |
 | `tracing`            | `0.1`                  | Runtime logging instrumentation                                                                 |
 | `tracing-subscriber` | `0.3`                  | Logging initialization and env-filter support                                                   |
@@ -51,12 +58,13 @@ All dependency versions live in the crate manifests.
 
 ### Direct dev-dependencies
 
-| Dependency  | Version  | Role in current tests                                    |
-| ----------- | -------- | -------------------------------------------------------- |
-| `pdf_oxide` | `0.3.21` | Test PDF generation/helpers for web document route tests |
-| `rmcp`      | `1.2.0`  | MCP client-side test support                             |
-| `tempfile`  | `3`      | Temporary directories/files in tests                     |
-| `tower`     | `0.5`    | Test utilities for Axum services                         |
+| Dependency  | Version  | Role in current tests                                               |
+| ----------- | -------- | ------------------------------------------------------------------- |
+| `hegeltest` | `0.6`    | Property-based / parameterized test helpers                         |
+| `pdf_oxide` | `0.3.35` | Test PDF generation/helpers for web document route tests            |
+| `rmcp`      | `1.5.0`  | MCP client-side test support (`client` + `transport-child-process`) |
+| `tempfile`  | `3`      | Temporary directories/files in tests                                |
+| `tower`     | `0.5`    | Test utilities for Axum services                                    |
 
 ### `docbert` feature relationships
 
@@ -116,26 +124,27 @@ Used for:
 
 | Dependency       | Version                                                                  | Role in current code                                                      |
 | ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `blake3`         | `1.8.2`                                                                  | Merkle snapshot hashing                                                   |
+| `blake3`         | `1.8.4`                                                                  | Merkle snapshot hashing                                                   |
 | `bytemuck`       | `1.25.0`                                                                 | Efficient `f32`/byte conversions in embedding storage                     |
-| `candle-core`    | `0.9.1`                                                                  | Tensor representation and tensor operations for model/embedding work      |
-| `hf-hub`         | `0.5.0`                                                                  | Fetches remote model metadata such as `config_sentence_transformers.json` |
-| `ignore`         | `0.4`                                                                    | Filesystem walking with optional Git-ignore-aware discovery               |
+| `candle-core`    | `0.10.2`                                                                 | Tensor representation and tensor operations for model/embedding work      |
+| `docbert-plaid`  | workspace path `crates/docbert-plaid`                                    | PLAID multi-vector index used by the semantic leg of search               |
 | `docbert-pylate` | workspace path `crates/docbert-pylate` (vendored from `pylate-rs` 1.0.4) | ColBERT model loading, query/document encoding, and similarity scoring    |
-| `rayon`          | `1.11.0`                                                                 | Parallel document loading/preparation work                                |
-| `redb`           | `3.1.0`                                                                  | `config.db` and `embeddings.db` storage                                   |
+| `ignore`         | `0.4`                                                                    | Filesystem walking with optional Git-ignore-aware discovery               |
+| `pdf_oxide`      | `0.3.35`                                                                 | PDF-to-markdown/text extraction during preparation                        |
+| `rayon`          | `1.12.0`                                                                 | Parallel document loading/preparation work                                |
+| `redb`           | `4.1.0`                                                                  | `config.db` and `embeddings.db` storage                                   |
 | `rkyv`           | `0.8.15`                                                                 | Binary serialization for typed stored data                                |
-| `pdf_oxide`      | `0.3.21`                                                                 | PDF-to-markdown/text extraction during preparation                        |
 | `serde`          | `1`                                                                      | Serialization support for public/config/runtime-facing data types         |
 | `serde_json`     | `1`                                                                      | JSON values and parsing for metadata, settings, and conversation payloads |
-| `tantivy`        | `0.25`                                                                   | Lexical indexing and BM25/fuzzy retrieval                                 |
+| `tantivy`        | `0.26.0`                                                                 | Lexical indexing and BM25/fuzzy retrieval                                 |
 | `thiserror`      | `2`                                                                      | Error definition for `docbert_core::Error`                                |
 
 ### Direct dev-dependencies
 
-| Dependency | Version | Role in current tests                     |
-| ---------- | ------- | ----------------------------------------- |
-| `tempfile` | `3`     | Temporary directories/files in unit tests |
+| Dependency  | Version | Role in current tests                                              |
+| ----------- | ------- | ------------------------------------------------------------------ |
+| `hegeltest` | `0.6`   | Property-based / parameterized test helpers used by the core tests |
+| `tempfile`  | `3`     | Temporary directories/files in unit tests                          |
 
 ### `docbert-core` feature relationships
 
@@ -223,15 +232,64 @@ Used in `preparation.rs` to:
 - convert PDFs to markdown when possible
 - fall back to extracted text when markdown conversion is empty
 
-#### `hf-hub`
+## `crates/docbert-plaid`
 
-Used to resolve remote model metadata needed by the model manager, especially when docbert wants to read prompt/document-length-related configuration from Sentence Transformers exports.
+`docbert-plaid` is the workspace-local crate that implements the PLAID multi-vector index used for ColBERT late-interaction retrieval. It has no dependency on `docbert-core`; `docbert-core` depends on it.
 
-The current manifest disables default features and enables `ureq`:
+### Direct dependencies
+
+| Dependency    | Version  | Role in current code                                                                  |
+| ------------- | -------- | ------------------------------------------------------------------------------------- |
+| `bytemuck`    | `1.25.0` | Efficient `f32`/byte conversions for on-disk index serialization                      |
+| `candle-core` | `0.10.2` | Tensor ops for k-means assignment and MaxSim batch matmul (GPU under the `cuda` flag) |
+| `rand`        | `0.10`   | Randomized centroid initialization                                                    |
+| `thiserror`   | `2`      | Error definitions                                                                     |
+
+### `docbert-plaid` feature relationships
 
 ```toml
-hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
+[features]
+default = []
+cuda = ["candle-core/cuda"]
 ```
+
+## `crates/docbert-pylate`
+
+`docbert-pylate` is the Rust-only fork of [pylate-rs](https://github.com/lightonai/pylate-rs) (originally based on upstream 1.0.4) that has been vendored into the workspace. The upstream Python, WebAssembly, and npm packaging layers were removed; the crate tracks the workspace release version rather than upstream's.
+
+It owns the ColBERT / LateOn model loading, query/document encoding, and token-level similarity work used by `docbert-core::ModelManager`.
+
+### Direct dependencies
+
+| Dependency            | Version   | Role in current code                                                     |
+| --------------------- | --------- | ------------------------------------------------------------------------ |
+| `candle-core`         | `0.10.2`  | Tensor representation and ops for inference                              |
+| `candle-nn`           | `0.10.2`  | Neural-network primitives used by the model stack                        |
+| `candle-transformers` | `0.10.2`  | Transformer building blocks (ModernBERT encoder, pooling, etc.)          |
+| `candle-flash-attn`   | `0.10.2`  | Optional flash-attention kernel; enabled only through the `cuda` feature |
+| `tokenizers`          | `0.22.2`  | HuggingFace tokenizer runtime (`onig` backend)                           |
+| `serde`               | `1.0.228` | Model config / metadata deserialization                                  |
+| `serde_json`          | `1.0.149` | JSON parsing for model configuration files                               |
+| `safetensors`         | `0.7.0`   | Zero-copy safetensors loading for weights                                |
+| `thiserror`           | `2.0.18`  | Error definitions                                                        |
+| `anyhow`              | `1.0.102` | Loose error chaining internal to the crate                               |
+| `hf-hub`              | `0.5.0`   | Downloads model weights and configs from HuggingFace (rustls + ureq)     |
+| `kodama`              | `0.3.0`   | Clustering / tokenizer auxiliary support                                 |
+| `rayon`               | `1.12.0`  | Parallelism in encoding/batching paths                                   |
+
+### `docbert-pylate` feature relationships
+
+```toml
+[features]
+default = []
+metal      = ["candle-core/metal",      "candle-nn/metal",      "candle-transformers/metal"]
+cuda       = ["candle-core/cuda",       "candle-nn/cuda",       "candle-transformers/cuda",
+              "dep:candle-flash-attn"]
+mkl        = ["candle-core/mkl",        "candle-nn/mkl",        "candle-transformers/mkl"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+```
+
+These are the leaf flags that `docbert-core`'s `mkl`/`accelerate`/`metal`/`cuda` features ultimately enable.
 
 ## Cross-crate relationships
 
@@ -286,10 +344,11 @@ This page intentionally reflects the current manifests and removes stale or inco
 
 Important current realities include:
 
-- `hf-hub` is `0.5.0`, not `0.4.3`
-- `docbert` now has direct runtime/web/MCP dependencies such as `axum`, `rmcp`, `tokio`, `schemars`, `include_dir`, and `tracing`
+- the workspace has four members, not two: `docbert`, `docbert-core`, `docbert-plaid`, `docbert-pylate`
+- `docbert-core` depends directly on `docbert-plaid` (PLAID index) and `docbert-pylate` (ColBERT inference) — `hf-hub` is only pulled in transitively through `docbert-pylate`
+- `docbert` now has direct runtime/web/MCP dependencies such as `axum`, `rmcp`, `tokio`, `schemars`, `include_dir`, `reqwest`, `sha2`, `rand`, and `tracing`
 - `docbert-core` has direct dependencies for Merkle snapshots and PDF handling (`blake3`, `pdf_oxide`, `ignore`)
-- feature mapping is split across both crate manifests, not just one top-level example
+- feature mapping flows app → core → `docbert-pylate` / `docbert-plaid`, not just one top-level example
 - the workspace root has no direct dependency list of its own
 
 ## Related references
