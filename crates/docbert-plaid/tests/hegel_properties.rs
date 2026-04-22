@@ -1189,8 +1189,8 @@ fn prop_build_index_shape(tc: TestCase) {
     assert_eq!(index.num_documents(), docs.len());
     assert_eq!(index.num_tokens(), total_tokens);
     assert_eq!(index.doc_ids, expected_ids);
-    for (encoded, doc) in index.doc_tokens.iter().zip(docs.iter()) {
-        assert_eq!(encoded.len(), doc.n_tokens);
+    for (i, doc) in docs.iter().enumerate() {
+        assert_eq!(index.doc_token_count(i), doc.n_tokens);
     }
 }
 
@@ -1234,13 +1234,12 @@ fn prop_build_inverted_file_invariants(tc: TestCase) {
     let index = build_index(&docs, params).unwrap();
     assert_eq!(index.ivf.num_centroids(), params.k_centroids);
 
-    for (doc_idx, encoded) in index.doc_tokens.iter().enumerate() {
-        for ev in encoded {
-            let list = index.ivf.docs_for_centroid(ev.centroid_id as usize);
+    for doc_idx in 0..index.num_documents() {
+        for &cid in index.doc_centroid_ids(doc_idx) {
+            let list = index.ivf.docs_for_centroid(cid as usize);
             assert!(
                 list.contains(&(doc_idx as u32)),
-                "doc_idx={doc_idx} missing from centroid {} postings",
-                ev.centroid_id,
+                "doc_idx={doc_idx} missing from centroid {cid} postings",
             );
         }
     }
@@ -1747,7 +1746,9 @@ fn prop_save_load_roundtrip_exact(tc: TestCase) {
     assert_eq!(loaded.codec.centroids, index.codec.centroids);
     assert_eq!(loaded.codec.bucket_cutoffs, index.codec.bucket_cutoffs);
     assert_eq!(loaded.codec.bucket_weights, index.codec.bucket_weights);
-    assert_eq!(loaded.doc_tokens, index.doc_tokens);
+    assert_eq!(loaded.doc_centroid_ids, index.doc_centroid_ids);
+    assert_eq!(loaded.doc_residual_bytes, index.doc_residual_bytes);
+    assert_eq!(loaded.doc_offsets, index.doc_offsets);
     assert_eq!(loaded.ivf.num_centroids(), index.ivf.num_centroids());
     for c in 0..index.ivf.num_centroids() {
         assert_eq!(
@@ -1814,7 +1815,9 @@ fn prop_apply_update_empty_is_identity(tc: TestCase) {
     let index = build_index(&docs, params).unwrap();
 
     let before_ids = index.doc_ids.clone();
-    let before_tokens = index.doc_tokens.clone();
+    let before_tokens: Vec<Vec<_>> = (0..index.num_documents())
+        .map(|i| index.doc_tokens_vec(i))
+        .collect();
     let before_ivf: Vec<Vec<u32>> = (0..index.ivf.num_centroids())
         .map(|c| index.ivf.docs_for_centroid(c).to_vec())
         .collect();
@@ -1829,7 +1832,10 @@ fn prop_apply_update_empty_is_identity(tc: TestCase) {
     .unwrap();
 
     assert_eq!(updated.doc_ids, before_ids);
-    assert_eq!(updated.doc_tokens, before_tokens);
+    let after_tokens: Vec<Vec<_>> = (0..updated.num_documents())
+        .map(|i| updated.doc_tokens_vec(i))
+        .collect();
+    assert_eq!(after_tokens, before_tokens);
     for (c, expected) in before_ivf.iter().enumerate() {
         assert_eq!(updated.ivf.docs_for_centroid(c), expected.as_slice());
     }
@@ -1863,7 +1869,7 @@ fn prop_apply_update_deletions_removed(tc: TestCase) {
     for (i, &survives) in survive_mask.iter().enumerate() {
         if survives || i == 0 {
             survivors_ids.push(index.doc_ids[i]);
-            survivors_tokens.push(index.doc_tokens[i].clone());
+            survivors_tokens.push(index.doc_tokens_vec(i));
         } else {
             deletions.push(index.doc_ids[i]);
         }
@@ -1885,7 +1891,10 @@ fn prop_apply_update_deletions_removed(tc: TestCase) {
         );
     }
     assert_eq!(updated.doc_ids, survivors_ids);
-    assert_eq!(updated.doc_tokens, survivors_tokens);
+    let updated_tokens: Vec<Vec<_>> = (0..updated.num_documents())
+        .map(|i| updated.doc_tokens_vec(i))
+        .collect();
+    assert_eq!(updated_tokens, survivors_tokens);
 }
 
 /// Metamorphic: `apply_update` with any mix of deletions and upserts
@@ -1989,13 +1998,12 @@ fn prop_apply_update_ivf_invariants_preserved(tc: TestCase) {
     .unwrap();
 
     assert_eq!(updated.ivf.num_centroids(), params.k_centroids);
-    for (doc_idx, encoded) in updated.doc_tokens.iter().enumerate() {
-        for ev in encoded {
-            let list = updated.ivf.docs_for_centroid(ev.centroid_id as usize);
+    for doc_idx in 0..updated.num_documents() {
+        for &cid in updated.doc_centroid_ids(doc_idx) {
+            let list = updated.ivf.docs_for_centroid(cid as usize);
             assert!(
                 list.contains(&(doc_idx as u32)),
-                "doc_idx={doc_idx} missing from centroid {} postings",
-                ev.centroid_id,
+                "doc_idx={doc_idx} missing from centroid {cid} postings",
             );
         }
     }
@@ -2055,9 +2063,9 @@ fn prop_apply_update_full_upsert_matches_build_index(tc: TestCase) {
         a.iter().chain(b.iter()).map(|d| d.n_tokens).sum();
     assert_eq!(updated.num_tokens(), expected_tokens);
 
-    for (doc_idx, encoded) in updated.doc_tokens.iter().enumerate() {
-        for ev in encoded {
-            let list = updated.ivf.docs_for_centroid(ev.centroid_id as usize);
+    for doc_idx in 0..updated.num_documents() {
+        for &cid in updated.doc_centroid_ids(doc_idx) {
+            let list = updated.ivf.docs_for_centroid(cid as usize);
             assert!(list.contains(&(doc_idx as u32)));
         }
     }
@@ -2226,7 +2234,8 @@ fn prop_gpu_decode_scores_match_cpu_decode(tc: TestCase) {
             .position_of(r.doc_id)
             .expect("returned doc must exist");
         // Reference: CPU decode every token, then compute MaxSim by hand.
-        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+        let decoded: Vec<Vec<f32>> = index
+            .doc_tokens_vec(doc_idx)
             .iter()
             .map(|ev| index.codec.decode_vector(ev).unwrap())
             .collect();

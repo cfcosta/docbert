@@ -114,22 +114,89 @@ pub struct IndexParams {
 
 /// A fully-built PLAID index over a corpus of multi-vector embeddings.
 ///
-/// Holds the trained codec, the encoded token embeddings of every
-/// document, and an inverted file mapping centroids back to the tokens
-/// clustered in them. Future layers (search) will read from this state
-/// directly without mutating it.
+/// Stored in a **flat, StridedTensor-style layout** — every document's
+/// encoded tokens live in one of two big contiguous buffers,
+/// `doc_centroid_ids` (one u32 per token) and `doc_residual_bytes`
+/// (`packed_bytes_per_token` u8s per token). Per-document slicing
+/// happens through the precomputed `doc_offsets` cumulative lengths.
+///
+/// This layout matches fast-plaid's `StridedTensor` and buys three
+/// things over the older `Vec<Vec<EncodedVector>>` we used to keep:
+///
+/// 1. Search doesn't have to walk per-document `Vec`s on every query
+///    to gather codes and residuals — it slices into the flat buffer.
+/// 2. Peak RAM drops: 6.8M tokens at nbits=2 was ~500 MiB of heap
+///    for the old nested-Vec headers; the flat layout is ~240 MiB.
+/// 3. GPU decode can `Tensor::from_slice` the whole slice for a batch
+///    of candidates in one kernel launch instead of one-per-token.
+///
+/// Callers that want the per-token view use [`Index::doc_centroid_ids`]
+/// / [`Index::doc_residual_bytes`] — slices into the flat buffers with
+/// no allocation.
 #[derive(Debug, Clone)]
 pub struct Index {
     pub params: IndexParams,
     pub codec: ResidualCodec,
     pub doc_ids: Vec<u64>,
-    /// `doc_tokens[i]` is the encoded token sequence of the i-th document.
-    pub doc_tokens: Vec<Vec<EncodedVector>>,
+    /// Flat `[total_tokens]` vector of per-token centroid indices.
+    pub doc_centroid_ids: Vec<u32>,
+    /// Flat `[total_tokens * packed_bytes_per_token]` residual bytes,
+    /// row-major — each `packed_bytes_per_token`-long slice is one
+    /// token's packed residual.
+    pub doc_residual_bytes: Vec<u8>,
+    /// Cumulative per-document token counts; length `num_docs + 1`,
+    /// `doc_offsets[i + 1] - doc_offsets[i]` = `n_tokens` for doc `i`.
+    pub doc_offsets: Vec<usize>,
     /// Centroid → tokens inverted file used for candidate generation.
     pub ivf: InvertedFile,
 }
 
 impl Index {
+    /// Construct an `Index` from per-document `EncodedVector`s.
+    ///
+    /// Convenience for tests, [`crate::update::apply_update`], and
+    /// [`crate::persistence`]'s legacy-format loader: they still think
+    /// in terms of `Vec<Vec<EncodedVector>>`, and this flattens that
+    /// into the canonical [`Index`] layout in one pass.
+    ///
+    /// `ivf` should already reflect the `doc_tokens` contents — this
+    /// helper does not recompute the inverted file, only the flat
+    /// per-token buffers.
+    pub fn from_encoded_docs(
+        params: IndexParams,
+        codec: ResidualCodec,
+        doc_ids: Vec<u64>,
+        doc_tokens: Vec<Vec<EncodedVector>>,
+        ivf: InvertedFile,
+    ) -> Self {
+        let packed_bytes = codec.packed_bytes();
+        let total_tokens: usize = doc_tokens.iter().map(Vec::len).sum();
+        let mut doc_centroid_ids: Vec<u32> = Vec::with_capacity(total_tokens);
+        let mut doc_residual_bytes: Vec<u8> =
+            Vec::with_capacity(total_tokens * packed_bytes);
+        let mut doc_offsets: Vec<usize> =
+            Vec::with_capacity(doc_tokens.len() + 1);
+        doc_offsets.push(0);
+        for tokens in &doc_tokens {
+            for ev in tokens {
+                doc_centroid_ids.push(ev.centroid_id);
+                debug_assert_eq!(ev.codes.len(), packed_bytes);
+                doc_residual_bytes.extend_from_slice(&ev.codes);
+            }
+            doc_offsets.push(doc_centroid_ids.len());
+        }
+
+        Self {
+            params,
+            codec,
+            doc_ids,
+            doc_centroid_ids,
+            doc_residual_bytes,
+            doc_offsets,
+            ivf,
+        }
+    }
+
     /// Number of documents currently stored in the index.
     pub fn num_documents(&self) -> usize {
         self.doc_ids.len()
@@ -137,12 +204,50 @@ impl Index {
 
     /// Total number of encoded tokens across all documents.
     pub fn num_tokens(&self) -> usize {
-        self.doc_tokens.iter().map(Vec::len).sum()
+        self.doc_centroid_ids.len()
     }
 
     /// Find the position of a document inside [`Index::doc_ids`].
     pub fn position_of(&self, doc_id: u64) -> Option<usize> {
         self.doc_ids.iter().position(|id| *id == doc_id)
+    }
+
+    /// Number of encoded tokens for the `idx`-th document.
+    pub fn doc_token_count(&self, idx: usize) -> usize {
+        self.doc_offsets[idx + 1] - self.doc_offsets[idx]
+    }
+
+    /// Slice of per-token centroid indices for the `idx`-th document.
+    pub fn doc_centroid_ids(&self, idx: usize) -> &[u32] {
+        &self.doc_centroid_ids[self.doc_offsets[idx]..self.doc_offsets[idx + 1]]
+    }
+
+    /// Slice of packed residual bytes for the `idx`-th document,
+    /// row-major `[n_tokens, packed_bytes_per_token]`.
+    pub fn doc_residual_bytes(&self, idx: usize) -> &[u8] {
+        let pb = self.codec.packed_bytes();
+        let start = self.doc_offsets[idx] * pb;
+        let end = self.doc_offsets[idx + 1] * pb;
+        &self.doc_residual_bytes[start..end]
+    }
+
+    /// Reconstruct the `idx`-th document's tokens as an owned
+    /// `Vec<EncodedVector>`.
+    ///
+    /// Allocation-heavy — prefer [`Index::doc_centroid_ids`] /
+    /// [`Index::doc_residual_bytes`] on the hot path. Provided as a
+    /// compatibility shim for [`crate::update::apply_update`] and
+    /// legacy callers that still work in `EncodedVector` terms.
+    pub fn doc_tokens_vec(&self, idx: usize) -> Vec<EncodedVector> {
+        let pb = self.codec.packed_bytes();
+        let cids = self.doc_centroid_ids(idx);
+        let res = self.doc_residual_bytes(idx);
+        (0..cids.len())
+            .map(|i| EncodedVector {
+                centroid_id: cids[i],
+                codes: res[i * pb..(i + 1) * pb].to_vec(),
+            })
+            .collect()
     }
 }
 
@@ -369,57 +474,64 @@ pub fn build_index_from_pool(
     codec.validate()?;
 
     // 4. Encode every token across the whole corpus in one batched pass
-    //    (single matmul-driven nearest-centroid lookup), then split the
-    //    flat result back into per-document EncodedVectors and populate
-    //    the centroid → tokens inverted file along the way.
-    let (all_centroid_ids, all_codes) =
+    //    (single matmul-driven nearest-centroid lookup) and store the
+    //    flat result directly as the index's StridedTensor-style
+    //    storage — no per-token Vec<EncodedVector> intermediate.
+    let (doc_centroid_ids, doc_residual_bytes) =
         codec.batch_encode_tokens_on_tensor(&p_tensor, &pool)?;
     drop(p_tensor);
     drop(pool);
-    let packed_per_token = codec.packed_bytes();
+    debug_assert_eq!(doc_centroid_ids.len(), total_tokens);
+    debug_assert_eq!(
+        doc_residual_bytes.len(),
+        total_tokens * codec.packed_bytes()
+    );
 
     let mut doc_ids = Vec::with_capacity(doc_meta.len());
-    let mut doc_tokens = Vec::with_capacity(doc_meta.len());
-    let mut token_offset = 0usize;
+    let mut doc_offsets = Vec::with_capacity(doc_meta.len() + 1);
+    doc_offsets.push(0usize);
+    let mut running = 0usize;
     for (doc_id, n_tok) in doc_meta {
         doc_ids.push(doc_id);
-        let cids = &all_centroid_ids[token_offset..token_offset + n_tok];
-        let codes_slice = &all_codes[token_offset * packed_per_token
-            ..(token_offset + n_tok) * packed_per_token];
-        let encoded: Vec<EncodedVector> = (0..n_tok)
-            .map(|i| EncodedVector {
-                centroid_id: cids[i],
-                codes: codes_slice
-                    [i * packed_per_token..(i + 1) * packed_per_token]
-                    .to_vec(),
-            })
-            .collect();
-        doc_tokens.push(encoded);
-        token_offset += n_tok;
+        running += n_tok;
+        doc_offsets.push(running);
     }
 
-    let ivf = build_inverted_file(&doc_tokens, params.k_centroids);
+    let ivf = build_inverted_file_from_flat(
+        &doc_centroid_ids,
+        &doc_offsets,
+        params.k_centroids,
+    );
 
     Ok(Index {
         params,
         codec,
         doc_ids,
-        doc_tokens,
+        doc_centroid_ids,
+        doc_residual_bytes,
+        doc_offsets,
         ivf,
     })
 }
 
-/// Build the centroid → unique-doc-ids inverted file from the encoded
-/// corpus. Each doc contributes at most one entry per centroid it
-/// touches; entries within a list are sorted ascending.
-pub(crate) fn build_inverted_file(
-    doc_tokens: &[Vec<EncodedVector>],
+/// Build the centroid → unique-doc-ids inverted file from a flat-layout
+/// index's centroid assignments.
+///
+/// Each doc contributes at most one entry per centroid it touches;
+/// entries within a list are sorted ascending. `doc_offsets` carries
+/// the cumulative token counts (length `num_docs + 1`) that delimit
+/// each document's slice of `doc_centroid_ids`.
+pub(crate) fn build_inverted_file_from_flat(
+    doc_centroid_ids: &[u32],
+    doc_offsets: &[usize],
     k_centroids: usize,
 ) -> InvertedFile {
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); k_centroids];
-    for (doc_idx, encoded) in doc_tokens.iter().enumerate() {
-        let mut touched: Vec<u32> =
-            encoded.iter().map(|ev| ev.centroid_id).collect();
+    let n_docs = doc_offsets.len().saturating_sub(1);
+    for doc_idx in 0..n_docs {
+        let doc_codes =
+            &doc_centroid_ids[doc_offsets[doc_idx]..doc_offsets[doc_idx + 1]];
+        let mut touched: Vec<u32> = doc_codes.to_vec();
         touched.sort_unstable();
         touched.dedup();
         for cid in touched {
@@ -474,8 +586,8 @@ mod tests {
 
         assert_eq!(index.num_documents(), docs.len());
         assert_eq!(index.num_tokens(), expected_total);
-        for (encoded, doc) in index.doc_tokens.iter().zip(docs.iter()) {
-            assert_eq!(encoded.len(), doc.n_tokens);
+        for (i, doc) in docs.iter().enumerate() {
+            assert_eq!(index.doc_token_count(i), doc.n_tokens);
         }
     }
 
@@ -507,7 +619,8 @@ mod tests {
         let params = default_params();
         let index = build_index(&docs, params).unwrap();
 
-        for (doc, encoded_doc) in docs.iter().zip(index.doc_tokens.iter()) {
+        for (i, doc) in docs.iter().enumerate() {
+            let encoded_doc = index.doc_tokens_vec(i);
             for (token, encoded) in
                 doc.tokens.chunks_exact(params.dim).zip(encoded_doc.iter())
             {
@@ -545,7 +658,7 @@ mod tests {
         });
         let index = build_index(&docs, default_params()).unwrap();
         assert_eq!(index.num_documents(), 4);
-        assert_eq!(index.doc_tokens[3].len(), 0);
+        assert_eq!(index.doc_token_count(3), 0);
     }
 
     #[test]
@@ -579,14 +692,12 @@ mod tests {
         let docs = small_corpus();
         let index = build_index(&docs, default_params()).unwrap();
 
-        for (doc_idx, encoded_doc) in index.doc_tokens.iter().enumerate() {
-            for ev in encoded_doc {
-                let postings =
-                    index.ivf.docs_for_centroid(ev.centroid_id as usize);
+        for doc_idx in 0..index.num_documents() {
+            for &cid in index.doc_centroid_ids(doc_idx) {
+                let postings = index.ivf.docs_for_centroid(cid as usize);
                 assert!(
                     postings.contains(&(doc_idx as u32)),
-                    "doc_idx={doc_idx} missing from centroid {} postings",
-                    ev.centroid_id,
+                    "doc_idx={doc_idx} missing from centroid {cid} postings",
                 );
             }
         }

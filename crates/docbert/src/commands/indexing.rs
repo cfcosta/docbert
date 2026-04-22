@@ -983,7 +983,7 @@ mod tests {
         let before =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
         let before_tokens_for_1 =
-            before.doc_tokens[before.position_of(1).unwrap()].clone();
+            before.doc_tokens_vec(before.position_of(1).unwrap());
         let before_codec = before.codec.clone();
 
         // Re-embed doc 1 with tokens from the other cluster, then
@@ -994,7 +994,7 @@ mod tests {
         let after =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
         let after_tokens_for_1 =
-            after.doc_tokens[after.position_of(1).unwrap()].clone();
+            after.doc_tokens_vec(after.position_of(1).unwrap());
 
         // Codec unchanged, but doc 1's encoding flipped to the other
         // cluster — proof the incremental path re-read tokens and

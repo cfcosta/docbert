@@ -136,10 +136,11 @@ fn plaid_search_recall_at_10_against_decoded_brute_force_is_high() {
     let decoded_docs: Vec<(u64, Vec<f32>)> = index
         .doc_ids
         .iter()
-        .zip(index.doc_tokens.iter())
-        .map(|(doc_id, encoded)| {
+        .enumerate()
+        .map(|(i, doc_id)| {
+            let encoded = index.doc_tokens_vec(i);
             let mut tokens = Vec::with_capacity(encoded.len() * DIM);
-            for ev in encoded {
+            for ev in &encoded {
                 tokens.extend(index.codec.decode_vector(ev).unwrap());
             }
             (*doc_id, tokens)
@@ -281,7 +282,7 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
     for r in &results {
         let doc_idx = index.position_of(r.doc_id).expect("doc present");
         let mut decoded_tokens = Vec::new();
-        for ev in &index.doc_tokens[doc_idx] {
+        for ev in &index.doc_tokens_vec(doc_idx) {
             decoded_tokens.extend(index.codec.decode_vector(ev).unwrap());
         }
         let recomputed = {

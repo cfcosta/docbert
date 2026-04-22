@@ -37,8 +37,8 @@ use std::{
 use crate::{
     PlaidError,
     Result,
-    codec::{EncodedVector, ResidualCodec, packed_bytes_per_vector},
-    index::{Index, IndexParams, build_inverted_file},
+    codec::{ResidualCodec, packed_bytes_per_vector},
+    index::{Index, IndexParams, build_inverted_file_from_flat},
 };
 
 const MAGIC: &[u8; 8] = b"PLAIDIDX";
@@ -102,25 +102,24 @@ fn write_index<W: Write>(index: &Index, w: &mut W) -> Result<()> {
 
     write_u64_slice(w, &index.doc_ids)?;
 
-    let token_counts: Vec<u32> = index
-        .doc_tokens
-        .iter()
-        .map(|tokens| tokens.len() as u32)
+    let token_counts: Vec<u32> = (0..index.num_documents())
+        .map(|i| index.doc_token_count(i) as u32)
         .collect();
     write_u32_slice(w, &token_counts)?;
 
     let packed_bytes = packed_bytes_per_vector(params.dim, params.nbits);
-    for encoded_doc in &index.doc_tokens {
-        for ev in encoded_doc {
-            write_u32(w, ev.centroid_id)?;
-            if ev.codes.len() != packed_bytes {
-                return Err(PlaidError::InvalidIndex(format!(
-                    "encoded token has {} packed bytes but codec expects {packed_bytes}",
-                    ev.codes.len(),
-                )));
-            }
-            w.write_all(&ev.codes)?;
-        }
+    if index.doc_residual_bytes.len() != index.num_tokens() * packed_bytes {
+        return Err(PlaidError::InvalidIndex(format!(
+            "doc_residual_bytes length {} is not tokens ({}) × packed_bytes ({packed_bytes})",
+            index.doc_residual_bytes.len(),
+            index.num_tokens(),
+        )));
+    }
+    for i in 0..index.num_tokens() {
+        write_u32(w, index.doc_centroid_ids[i])?;
+        w.write_all(
+            &index.doc_residual_bytes[i * packed_bytes..(i + 1) * packed_bytes],
+        )?;
     }
 
     Ok(())
@@ -170,10 +169,14 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
     let token_counts = read_u32_vec(r, n_documents)?;
     let packed_bytes = packed_bytes_per_vector(dim, nbits);
 
-    let mut doc_tokens: Vec<Vec<EncodedVector>> =
-        Vec::with_capacity(n_documents);
+    let total_tokens: usize = token_counts.iter().map(|&c| c as usize).sum();
+    let mut doc_centroid_ids: Vec<u32> = Vec::with_capacity(total_tokens);
+    let mut doc_residual_bytes: Vec<u8> =
+        Vec::with_capacity(total_tokens * packed_bytes);
+    let mut doc_offsets: Vec<usize> = Vec::with_capacity(n_documents + 1);
+    doc_offsets.push(0);
+
     for count in token_counts.iter() {
-        let mut encoded_doc = Vec::with_capacity(*count as usize);
         for _ in 0..*count {
             let centroid_id = read_u32(r)?;
             if (centroid_id as usize) >= k_centroids {
@@ -181,13 +184,18 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
                     "centroid_id {centroid_id} out of range 0..{k_centroids}",
                 )));
             }
-            let mut codes = vec![0u8; packed_bytes];
-            r.read_exact(&mut codes)?;
-            encoded_doc.push(EncodedVector { centroid_id, codes });
+            doc_centroid_ids.push(centroid_id);
+            let start = doc_residual_bytes.len();
+            doc_residual_bytes.resize(start + packed_bytes, 0);
+            r.read_exact(&mut doc_residual_bytes[start..start + packed_bytes])?;
         }
-        doc_tokens.push(encoded_doc);
+        doc_offsets.push(doc_centroid_ids.len());
     }
-    let ivf = build_inverted_file(&doc_tokens, k_centroids);
+    let ivf = build_inverted_file_from_flat(
+        &doc_centroid_ids,
+        &doc_offsets,
+        k_centroids,
+    );
 
     let codec = ResidualCodec {
         nbits,
@@ -202,7 +210,9 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
         params,
         codec,
         doc_ids,
-        doc_tokens,
+        doc_centroid_ids,
+        doc_residual_bytes,
+        doc_offsets,
         ivf,
     })
 }
@@ -338,9 +348,9 @@ mod tests {
         save(&index, &path).unwrap();
         let loaded = load(&path).unwrap();
 
-        assert_eq!(loaded.doc_tokens.len(), index.doc_tokens.len());
-        for (a, b) in loaded.doc_tokens.iter().zip(index.doc_tokens.iter()) {
-            assert_eq!(a, b);
+        assert_eq!(loaded.num_documents(), index.num_documents());
+        for i in 0..index.num_documents() {
+            assert_eq!(loaded.doc_tokens_vec(i), index.doc_tokens_vec(i));
         }
     }
 
@@ -402,7 +412,7 @@ mod tests {
         let loaded = load(&path).unwrap();
 
         assert_eq!(loaded.doc_ids, index.doc_ids);
-        assert_eq!(loaded.doc_tokens.last().unwrap().len(), 0);
+        assert_eq!(loaded.doc_token_count(loaded.num_documents() - 1), 0);
     }
 
     #[test]

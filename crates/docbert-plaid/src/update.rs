@@ -25,7 +25,12 @@ use std::collections::HashSet;
 use crate::{
     Result,
     codec::EncodedVector,
-    index::{DocumentTokens, Index, build_inverted_file},
+    index::{
+        DocumentTokens,
+        Index,
+        InvertedFile,
+        build_inverted_file_from_flat,
+    },
 };
 
 /// Mutation plan consumed by [`apply_update`].
@@ -94,24 +99,30 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Result<Index> {
         to_remove.insert(doc.doc_id);
     }
 
-    let Index {
-        codec,
-        doc_ids,
-        doc_tokens,
-        ..
-    } = index;
+    // Pull the existing state out. Re-materialise per-doc
+    // EncodedVector lists once so the merge/upsert loop below can
+    // think in per-document terms; we'll reflatten at the end.
+    let codec = index.codec.clone();
+    let packed_bytes = codec.packed_bytes();
+    let existing_doc_ids = index.doc_ids.clone();
+    let existing_doc_tokens: Vec<Vec<EncodedVector>> = (0..existing_doc_ids
+        .len())
+        .map(|i| index.doc_tokens_vec(i))
+        .collect();
+    drop(index);
 
     // Retain existing docs that survive the mutation.
-    let mut new_doc_ids: Vec<u64> = Vec::with_capacity(doc_ids.len());
+    let mut new_doc_ids: Vec<u64> = Vec::with_capacity(existing_doc_ids.len());
     let mut new_doc_tokens: Vec<Vec<EncodedVector>> =
-        Vec::with_capacity(doc_tokens.len());
-    for (id, tokens) in doc_ids.into_iter().zip(doc_tokens) {
+        Vec::with_capacity(existing_doc_tokens.len());
+    for (id, tokens) in existing_doc_ids.into_iter().zip(existing_doc_tokens) {
         if to_remove.contains(&id) {
             continue;
         }
         new_doc_ids.push(id);
         new_doc_tokens.push(tokens);
     }
+    let _ = packed_bytes; // consumed implicitly via codec.packed_bytes() below
 
     // Encode every upsert's tokens against the existing codec. Doing
     // this in one batched call lets the matmul-driven
@@ -154,18 +165,29 @@ pub fn apply_update(index: Index, update: IndexUpdate<'_>) -> Result<Index> {
         }
     }
 
-    // Rebuild the IVF from the final token list. A full rebuild is
+    // Flatten into the StridedTensor-style layout and rebuild the
+    // IVF from the final token list. A full IVF rebuild is
     // O(n_docs · avg_tokens_per_doc) and avoids tracking per-token
     // positions inside each centroid's list.
-    let ivf = build_inverted_file(&new_doc_tokens, params.k_centroids);
-
-    Ok(Index {
+    //
+    // We hand the temporary Vec<Vec<EncodedVector>> to
+    // `Index::from_encoded_docs`, which flattens into the canonical
+    // layout in one pass. A temporary empty `InvertedFile` placeholder
+    // keeps the helper generic; we replace it immediately with the
+    // real IVF derived from the flat storage.
+    let mut new_index = Index::from_encoded_docs(
         params,
         codec,
-        doc_ids: new_doc_ids,
-        doc_tokens: new_doc_tokens,
-        ivf,
-    })
+        new_doc_ids,
+        new_doc_tokens,
+        InvertedFile::default(),
+    );
+    new_index.ivf = build_inverted_file_from_flat(
+        &new_index.doc_centroid_ids,
+        &new_index.doc_offsets,
+        params.k_centroids,
+    );
+    Ok(new_index)
 }
 
 #[cfg(test)]
@@ -209,14 +231,24 @@ mod tests {
         build_index(&seed_corpus(), seed_params()).unwrap()
     }
 
+    /// Re-materialise every document's tokens as a
+    /// `Vec<Vec<EncodedVector>>` so the legacy assertion style
+    /// (equality checks against saved "before" snapshots) keeps
+    /// working against the flat-layout `Index`. Allocation-heavy,
+    /// only used by tests.
+    fn all_doc_tokens(index: &Index) -> Vec<Vec<EncodedVector>> {
+        (0..index.num_documents())
+            .map(|i| index.doc_tokens_vec(i))
+            .collect()
+    }
+
     fn assert_ivf_covers_every_doc_centroid_pair(index: &Index) {
-        for (doc_idx, encoded) in index.doc_tokens.iter().enumerate() {
-            for ev in encoded {
-                let list = index.ivf.docs_for_centroid(ev.centroid_id as usize);
+        for doc_idx in 0..index.num_documents() {
+            for &cid in index.doc_centroid_ids(doc_idx) {
+                let list = index.ivf.docs_for_centroid(cid as usize);
                 assert!(
                     list.contains(&(doc_idx as u32)),
-                    "missing posting for doc_idx={doc_idx} centroid={}",
-                    ev.centroid_id,
+                    "missing posting for doc_idx={doc_idx} centroid={cid}",
                 );
             }
         }
@@ -238,7 +270,7 @@ mod tests {
     fn apply_update_with_empty_mutations_preserves_every_document() {
         let index = seed_index();
         let before_ids = index.doc_ids.clone();
-        let before_tokens = index.doc_tokens.clone();
+        let before_tokens = all_doc_tokens(&index);
 
         let updated = apply_update(
             index,
@@ -250,7 +282,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(updated.doc_ids, before_ids);
-        assert_eq!(updated.doc_tokens, before_tokens);
+        assert_eq!(all_doc_tokens(&updated), before_tokens);
         assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
@@ -258,13 +290,8 @@ mod tests {
     fn apply_update_removes_the_listed_deletions() {
         let index = seed_index();
         let original_tokens = index.num_tokens();
-        let removed_tokens = index
-            .doc_tokens
-            .iter()
-            .zip(&index.doc_ids)
-            .find(|(_, id)| **id == 2)
-            .map(|(t, _)| t.len())
-            .unwrap();
+        let removed_idx = index.position_of(2).unwrap();
+        let removed_tokens = index.doc_token_count(removed_idx);
 
         let updated = apply_update(
             index,
@@ -276,7 +303,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(updated.doc_ids, vec![1, 3]);
-        assert_eq!(updated.doc_tokens.len(), 2);
+        assert_eq!(updated.num_documents(), 2);
         assert_eq!(updated.num_tokens(), original_tokens - removed_tokens);
         assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
@@ -300,8 +327,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(updated.doc_ids, vec![1, 2, 3, 99]);
-        let encoded = updated.doc_tokens.last().unwrap();
-        assert_eq!(encoded.len(), 2);
+        let last_idx = updated.num_documents() - 1;
+        assert_eq!(updated.doc_token_count(last_idx), 2);
         assert_ivf_covers_every_doc_centroid_pair(&updated);
     }
 
@@ -315,13 +342,10 @@ mod tests {
             tokens: vec![10.0, 10.1, 9.9, 10.0, 10.1, 9.8, 10.2, 10.0],
             n_tokens: 4,
         };
-        let old_encoded = index
-            .doc_tokens
-            .iter()
-            .zip(&index.doc_ids)
-            .find(|(_, id)| **id == 1)
-            .map(|(t, _)| t.clone())
-            .unwrap();
+        let old_encoded = {
+            let idx = index.position_of(1).unwrap();
+            index.doc_tokens_vec(idx)
+        };
 
         let updated = apply_update(
             index,
@@ -337,10 +361,10 @@ mod tests {
         assert_eq!(updated.doc_ids.len(), 3);
         assert_eq!(updated.position_of(1), Some(2));
 
-        let new_encoded = &updated.doc_tokens[2];
+        let new_encoded = updated.doc_tokens_vec(2);
         assert_eq!(new_encoded.len(), 4);
         assert_ne!(
-            *new_encoded, old_encoded,
+            new_encoded, old_encoded,
             "upsert must replace the old encoded tokens",
         );
         assert_ivf_covers_every_doc_centroid_pair(&updated);
@@ -387,9 +411,9 @@ mod tests {
         let keep_tokens: Vec<Vec<EncodedVector>> = index
             .doc_ids
             .iter()
-            .zip(&index.doc_tokens)
-            .filter(|(id, _)| **id != 2)
-            .map(|(_, t)| t.clone())
+            .enumerate()
+            .filter(|(_, id)| **id != 2)
+            .map(|(i, _)| index.doc_tokens_vec(i))
             .collect();
 
         let updated = apply_update(
@@ -402,7 +426,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(updated.doc_ids, keep_ids);
-        assert_eq!(updated.doc_tokens, keep_tokens);
+        assert_eq!(all_doc_tokens(&updated), keep_tokens);
     }
 
     #[test]
@@ -425,7 +449,7 @@ mod tests {
 
         assert!(updated.doc_ids.contains(&77));
         assert_eq!(
-            updated.doc_tokens[updated.position_of(77).unwrap()].len(),
+            updated.doc_token_count(updated.position_of(77).unwrap()),
             0
         );
         assert_ivf_covers_every_doc_centroid_pair(&updated);

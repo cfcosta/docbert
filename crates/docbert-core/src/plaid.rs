@@ -555,8 +555,7 @@ mod tests {
         seed_small_db(&db);
         let index =
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
-        let old_encoded =
-            index.doc_tokens[index.position_of(1).unwrap()].clone();
+        let old_encoded = index.doc_tokens_vec(index.position_of(1).unwrap());
 
         // Overwrite doc 1's embedding with tokens from the far cluster.
         // After update, the encoded centroid_id should flip — proving
@@ -568,7 +567,7 @@ mod tests {
             update_index_from_embedding_db(&db, index, &[1], &[]).unwrap();
 
         let pos = updated.position_of(1).expect("doc 1 must survive update");
-        let new_encoded = &updated.doc_tokens[pos];
+        let new_encoded = &updated.doc_tokens_vec(pos);
         assert_eq!(new_encoded.len(), 2);
         assert_ne!(
             *new_encoded, old_encoded,
@@ -630,8 +629,7 @@ mod tests {
         seed_small_db(&db);
         let index =
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
-        let old_encoded =
-            index.doc_tokens[index.position_of(1).unwrap()].clone();
+        let old_encoded = index.doc_tokens_vec(index.position_of(1).unwrap());
 
         // Simulate a re-embedding: the file for base doc_id 1 got
         // different tokens (single-chunk family).
@@ -641,7 +639,8 @@ mod tests {
 
         let pos = updated.position_of(1).expect("doc 1 survives upsert");
         assert_ne!(
-            updated.doc_tokens[pos], old_encoded,
+            updated.doc_tokens_vec(pos),
+            old_encoded,
             "the touched base must be re-encoded with the new tokens",
         );
     }
@@ -737,10 +736,8 @@ mod tests {
         let index =
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
         // Snapshot the encoded tokens for docs we DON'T touch.
-        let untouched_2 =
-            index.doc_tokens[index.position_of(2).unwrap()].clone();
-        let untouched_3 =
-            index.doc_tokens[index.position_of(3).unwrap()].clone();
+        let untouched_2 = index.doc_tokens_vec(index.position_of(2).unwrap());
+        let untouched_3 = index.doc_tokens_vec(index.position_of(3).unwrap());
 
         // Touch only doc 1 — 2 and 3 must carry through unchanged.
         db.store(1, 1, 2, &[0.15, -0.15]).unwrap();
@@ -748,11 +745,11 @@ mod tests {
         let updated = update_index_for_touched_bases(&db, index, &[1]).unwrap();
 
         assert_eq!(
-            updated.doc_tokens[updated.position_of(2).unwrap()],
+            updated.doc_tokens_vec(updated.position_of(2).unwrap()),
             untouched_2,
         );
         assert_eq!(
-            updated.doc_tokens[updated.position_of(3).unwrap()],
+            updated.doc_tokens_vec(updated.position_of(3).unwrap()),
             untouched_3,
         );
     }

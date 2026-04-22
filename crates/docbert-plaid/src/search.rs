@@ -199,7 +199,7 @@ pub fn search(
         .iter()
         .enumerate()
         .filter_map(|(idx, &is_cand)| {
-            (is_cand && !index.doc_tokens[idx].is_empty()).then_some(idx)
+            (is_cand && index.doc_token_count(idx) > 0).then_some(idx)
         })
         .collect();
 
@@ -371,7 +371,7 @@ fn shortlist_by_approx_score(
         .into_iter()
         .map(|doc_idx| {
             let score = approx_centroid_interaction_score(
-                &index.doc_tokens[doc_idx],
+                index.doc_centroid_ids(doc_idx),
                 qc_scores,
                 n_q,
                 n_centroids,
@@ -428,20 +428,20 @@ fn per_centroid_max_scores(
 /// `f32::NEG_INFINITY`, which sorts below every non-pruned doc in the
 /// centroid-interaction shortlist.
 fn approx_centroid_interaction_score(
-    doc: &[crate::codec::EncodedVector],
+    doc_centroid_ids: &[u32],
     qc_scores: &[f32],
     n_q: usize,
     n_centroids: usize,
     pruned_mask: Option<&[bool]>,
 ) -> f32 {
-    if doc.is_empty() {
+    if doc_centroid_ids.is_empty() {
         return 0.0;
     }
     // If every token's centroid is pruned, the doc has no D̃ rows left;
     // report −∞ so the caller's ranking drops it instead of a
     // deceptive 0.0.
     if let Some(mask) = pruned_mask
-        && doc.iter().all(|ev| mask[ev.centroid_id as usize])
+        && doc_centroid_ids.iter().all(|cid| mask[*cid as usize])
     {
         return f32::NEG_INFINITY;
     }
@@ -449,13 +449,13 @@ fn approx_centroid_interaction_score(
     for q in 0..n_q {
         let row = &qc_scores[q * n_centroids..(q + 1) * n_centroids];
         let mut best = f32::NEG_INFINITY;
-        for ev in doc {
+        for &cid in doc_centroid_ids {
             if let Some(mask) = pruned_mask
-                && mask[ev.centroid_id as usize]
+                && mask[cid as usize]
             {
                 continue;
             }
-            let s = row[ev.centroid_id as usize];
+            let s = row[cid as usize];
             if s > best {
                 best = s;
             }
@@ -497,7 +497,7 @@ fn batch_maxsim(
     let decode_table = DecodeTable::new(&index.codec);
     let total_tokens: usize = candidate_idxs
         .iter()
-        .map(|&i| index.doc_tokens[i].len())
+        .map(|&i| index.doc_token_count(i))
         .sum();
     let mut offsets: Vec<usize> = Vec::with_capacity(candidate_idxs.len() + 1);
     offsets.push(0);
@@ -583,14 +583,23 @@ fn decode_on_cpu(
     ctx: &DecodeCtx<'_>,
     offsets: &mut Vec<usize>,
 ) -> Result<Tensor> {
+    let codec = &ctx.index.codec;
+    let packed_bytes = codec.packed_bytes();
     let mut packed: Vec<f32> = Vec::with_capacity(ctx.total_tokens * ctx.dim);
+    let mut ev = crate::codec::EncodedVector {
+        centroid_id: 0,
+        codes: vec![0u8; packed_bytes],
+    };
     for &doc_idx in ctx.candidate_idxs {
-        for ev in &ctx.index.doc_tokens[doc_idx] {
-            packed.extend(
-                ctx.index
-                    .codec
-                    .decode_vector_with_table(ev, ctx.decode_table)?,
+        let cids = ctx.index.doc_centroid_ids(doc_idx);
+        let bytes = ctx.index.doc_residual_bytes(doc_idx);
+        for (i, &cid) in cids.iter().enumerate() {
+            ev.centroid_id = cid;
+            ev.codes.copy_from_slice(
+                &bytes[i * packed_bytes..(i + 1) * packed_bytes],
             );
+            packed
+                .extend(codec.decode_vector_with_table(&ev, ctx.decode_table)?);
         }
         offsets.push(packed.len() / ctx.dim);
     }
@@ -620,18 +629,19 @@ fn decode_on_device(
     let decoded_row_width = packed_bytes_per_vec * codes_per_byte;
     debug_assert!(decoded_row_width >= ctx.dim);
 
-    // Flat gather buffers — the doc-level offsets piggy-back on the
-    // same iteration so we keep the per-doc row ranges aligned with
-    // the downstream MaxSim reduction.
+    // Flat gather buffers — slice directly out of the index's
+    // StridedTensor-style storage. For each candidate we contribute
+    // its `doc_centroid_ids` slice (`[n_tokens]` u32) and its
+    // `doc_residual_bytes` slice (`[n_tokens, packed_bytes_per_vec]`
+    // u8), extended into the flat upload buffers.
     let mut centroid_ids: Vec<u32> = Vec::with_capacity(ctx.total_tokens);
     let mut packed_bytes: Vec<u32> =
         Vec::with_capacity(ctx.total_tokens * packed_bytes_per_vec);
     for &doc_idx in ctx.candidate_idxs {
-        for ev in &ctx.index.doc_tokens[doc_idx] {
-            debug_assert_eq!(ev.codes.len(), packed_bytes_per_vec);
-            centroid_ids.push(ev.centroid_id);
-            packed_bytes.extend(ev.codes.iter().map(|&b| b as u32));
-        }
+        let doc_cids = ctx.index.doc_centroid_ids(doc_idx);
+        let doc_bytes = ctx.index.doc_residual_bytes(doc_idx);
+        centroid_ids.extend_from_slice(doc_cids);
+        packed_bytes.extend(doc_bytes.iter().map(|&b| b as u32));
         offsets.push(centroid_ids.len());
     }
 
@@ -924,7 +934,8 @@ mod tests {
 
         let top = out[0];
         let doc_idx = index.position_of(top.doc_id).expect("doc present");
-        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+        let decoded: Vec<Vec<f32>> = index
+            .doc_tokens_vec(doc_idx)
             .iter()
             .map(|ev| index.codec.decode_vector(ev).unwrap())
             .collect();
@@ -1227,33 +1238,23 @@ mod tests {
         // for q1 and centroid 2 at least has 0.4). Pruning centroid 2
         // drops that contribution and only centroid 0's qc values
         // remain.
-        use crate::codec::EncodedVector;
         let n_q = 2;
         let n_c = 3;
         // qc_scores layout is row-major [n_q, n_c].
         // q0 row: centroid 0 = 0.9, centroid 1 = 0.0, centroid 2 = 0.4.
         // q1 row: centroid 0 = 0.0, centroid 1 = 0.9, centroid 2 = 0.4.
         let qc = [0.9, 0.0, 0.4, 0.0, 0.9, 0.4];
-        let doc = [
-            EncodedVector {
-                centroid_id: 0,
-                codes: vec![0, 0],
-            },
-            EncodedVector {
-                centroid_id: 2,
-                codes: vec![0, 0],
-            },
-        ];
+        let doc_cids: [u32; 2] = [0, 2];
 
         let unpruned =
-            approx_centroid_interaction_score(&doc, &qc, n_q, n_c, None);
+            approx_centroid_interaction_score(&doc_cids, &qc, n_q, n_c, None);
         // q0: max(0.9, 0.4) = 0.9; q1: max(0.0, 0.4) = 0.4. Total 1.3.
         assert!((unpruned - 1.3).abs() < 1e-5, "unpruned was {unpruned}");
 
         // Prune centroid 2 (per-centroid max 0.4 < t_cs=0.5).
         let pruned_mask = [false, false, true];
         let pruned = approx_centroid_interaction_score(
-            &doc,
+            &doc_cids,
             &qc,
             n_q,
             n_c,
@@ -1269,15 +1270,16 @@ mod tests {
         // Every centroid in the doc is masked. The scorer must return a
         // score low enough that the doc loses to any non-empty doc in
         // the centroid-interaction sort.
-        use crate::codec::EncodedVector;
         let qc = [0.5, 0.5];
-        let doc = [EncodedVector {
-            centroid_id: 0,
-            codes: vec![0, 0],
-        }];
+        let doc_cids: [u32; 1] = [0];
         let mask = [true];
-        let score =
-            approx_centroid_interaction_score(&doc, &qc, 1, 1, Some(&mask));
+        let score = approx_centroid_interaction_score(
+            &doc_cids,
+            &qc,
+            1,
+            1,
+            Some(&mask),
+        );
         assert!(
             score == f32::NEG_INFINITY,
             "all-pruned doc should score -inf, got {score}",
@@ -1357,7 +1359,8 @@ mod tests {
         .unwrap();
         let top = out[0];
         let doc_idx = index.position_of(top.doc_id).unwrap();
-        let decoded: Vec<Vec<f32>> = index.doc_tokens[doc_idx]
+        let decoded: Vec<Vec<f32>> = index
+            .doc_tokens_vec(doc_idx)
             .iter()
             .map(|ev| index.codec.decode_vector(ev).unwrap())
             .collect();
@@ -1386,7 +1389,7 @@ mod tests {
         let candidate_idxs: Vec<usize> = (0..index.num_documents()).collect();
         let total_tokens: usize = candidate_idxs
             .iter()
-            .map(|&i| index.doc_tokens[i].len())
+            .map(|&i| index.doc_token_count(i))
             .sum();
         let decode_table = DecodeTable::new(&index.codec);
         let device = Device::Cpu;
