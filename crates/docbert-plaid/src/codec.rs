@@ -26,9 +26,12 @@
 //! embedding at 2 bits, this is 32 bytes per token (vs. 128 bytes
 //! unpacked), matching the paper's §4.5 packed-index layout.
 
+use candle_core::Tensor;
+
 use crate::{
     PlaidError,
     Result,
+    device::default_device,
     distance::squared_l2,
     kmeans::nearest_centroid,
 };
@@ -341,8 +344,57 @@ impl ResidualCodec {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let assignments =
-            crate::kmeans::assign_points(tokens, &self.centroids, self.dim)?;
+        let device = default_device();
+        let tokens_tensor = Tensor::from_slice(tokens, (n, self.dim), device)?;
+        self.batch_encode_tokens_on_tensor(&tokens_tensor, tokens)
+    }
+
+    /// Same as [`batch_encode_tokens`] but reuses a pre-uploaded tokens
+    /// tensor for the nearest-centroid matmul.
+    ///
+    /// The PLAID builder runs k-means on this same corpus immediately
+    /// before calling batch encode; threading the device tensor
+    /// through saves the second 3.47 GB host→device copy that would
+    /// otherwise collide with the first one in cudarc's caching
+    /// allocator and OOM a 12 GB card.
+    ///
+    /// `tokens` must be the host-side backing buffer for
+    /// `tokens_tensor` — the residual + bit-pack loop is scalar and
+    /// still reads token bytes from the host slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlaidError::InvalidCodec`] on codec-shape violations,
+    /// or [`PlaidError::Tensor`] if the nearest-centroid matmul fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tokens.len() % dim != 0`.
+    ///
+    /// [`PlaidError::InvalidCodec`]: crate::PlaidError::InvalidCodec
+    /// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+    pub fn batch_encode_tokens_on_tensor(
+        &self,
+        tokens_tensor: &Tensor,
+        tokens: &[f32],
+    ) -> Result<(Vec<u32>, Vec<u8>)> {
+        self.validate()?;
+        assert!(
+            tokens.len().is_multiple_of(self.dim),
+            "batch_encode_tokens_on_tensor: tokens length {} is not a multiple of dim {}",
+            tokens.len(),
+            self.dim,
+        );
+        let n = tokens.len() / self.dim;
+        if n == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        let assignments = crate::kmeans::assign_on_tensor(
+            tokens_tensor,
+            &self.centroids,
+            self.dim,
+        )?;
 
         let packed_per_token = self.packed_bytes();
         let mut centroid_ids: Vec<u32> = Vec::with_capacity(n);

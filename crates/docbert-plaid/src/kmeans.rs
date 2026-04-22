@@ -193,22 +193,37 @@ pub fn fit_with_init(
         dim,
     );
 
-    let mut centroids = initial.to_vec();
     if points.is_empty() || max_iters == 0 {
-        return Ok(centroids);
+        return Ok(initial.to_vec());
     }
 
     let n_points = points.len() / dim;
-    let k = initial.len() / dim;
     let device = default_device();
-    // Allocate the points tensor once and keep it on-device for the
-    // entire Lloyd loop.
     let p_tensor = Tensor::from_slice(points, (n_points, dim), device)?;
+    fit_with_init_on_tensor(&p_tensor, points, initial, dim, max_iters)
+}
+
+/// Run Lloyd's algorithm against an already-uploaded `p_tensor`.
+///
+/// Factored out so [`fit`] can upload the points tensor once and share
+/// it with [`farthest_first_init_on_tensor`]. Duplicating the upload
+/// cost 3.47 GB of VRAM on the docbert production corpus, which
+/// pushed the build into CUDA OOM on 12 GB cards.
+fn fit_with_init_on_tensor(
+    p_tensor: &Tensor,
+    points: &[f32],
+    initial: &[f32],
+    dim: usize,
+    max_iters: usize,
+) -> Result<Vec<f32>> {
+    let mut centroids = initial.to_vec();
+    let k = initial.len() / dim;
+    let device = p_tensor.device();
 
     let mut previous_assignments: Option<Vec<usize>> = None;
     for _ in 0..max_iters {
         let c_tensor = Tensor::from_slice(&centroids, (k, dim), device)?;
-        let assignments = assign_tensor(&p_tensor, &c_tensor)?;
+        let assignments = assign_tensor(p_tensor, &c_tensor)?;
         if previous_assignments.as_deref() == Some(assignments.as_slice()) {
             break;
         }
@@ -264,8 +279,31 @@ pub fn fit(
         "fit: need at least k={k} points, got {n_points}",
     );
 
-    let initial = farthest_first_init(points, k, dim)?;
-    fit_with_init(points, &initial, dim, max_iters)
+    let device = default_device();
+    let p_tensor = Tensor::from_slice(points, (n_points, dim), device)?;
+    fit_on_tensor(&p_tensor, points, k, dim, max_iters)
+}
+
+/// Same as [`fit`] but accepts an already-uploaded `p_tensor`.
+///
+/// This is the hot path for the PLAID index builder: it lets
+/// `build_index_from_pool` upload the 3.47 GB points tensor once and
+/// hand it straight to both the k-means phase and the codec's
+/// batch-encode phase. Without it, each phase would do its own
+/// host→device copy and cudarc's caching allocator would keep the
+/// stale block alive long enough to OOM on a 12 GB card with only
+/// ~8 GB free (after the encoder model).
+///
+/// `points` must be the host-side backing buffer for `p_tensor`.
+pub fn fit_on_tensor(
+    p_tensor: &Tensor,
+    points: &[f32],
+    k: usize,
+    dim: usize,
+    max_iters: usize,
+) -> Result<Vec<f32>> {
+    let initial = farthest_first_init_on_tensor(p_tensor, points, k, dim)?;
+    fit_with_init_on_tensor(p_tensor, points, &initial, dim, max_iters)
 }
 
 /// Pick `k` initial centroids via deterministic farthest-first
@@ -312,23 +350,44 @@ pub fn farthest_first_init(
         "farthest_first_init: need at least k={k} points, got {n}",
     );
 
+    if k == 1 {
+        return Ok(points[..dim].to_vec());
+    }
+
+    let device = default_device();
+    let p_tensor = Tensor::from_slice(points, (n, dim), device)?;
+    farthest_first_init_on_tensor(&p_tensor, points, k, dim)
+}
+
+/// Farthest-first seeding against an already-uploaded `p_tensor`.
+///
+/// Extracted so [`fit`] can upload the points tensor once and share it
+/// with [`fit_with_init_on_tensor`]. The full algorithm lives here;
+/// the public [`farthest_first_init`] is a thin wrapper that uploads
+/// on the caller's behalf for test code that doesn't need the
+/// sharing.
+///
+/// `points` must be the host-side backing buffer for `p_tensor`
+/// (same rows, same order): we read the winning centroid's bytes
+/// from the host slice to keep seeds byte-identical to input rows.
+fn farthest_first_init_on_tensor(
+    p_tensor: &Tensor,
+    points: &[f32],
+    k: usize,
+    dim: usize,
+) -> Result<Vec<f32>> {
     let mut centroids = Vec::with_capacity(k * dim);
     centroids.extend_from_slice(&points[..dim]);
     if k == 1 {
         return Ok(centroids);
     }
 
-    // Upload points once. Every distance update is expressed as a
-    // matmul via the identity
-    //     ‖p_i − c‖² = ‖p_i‖² − 2·p_i·c + ‖c‖²
-    // which keeps the heavy [n, dim] buffer resident on device and
-    // lets cuBLAS / candle GEMM do the work.
-    let device = default_device();
-    let p_tensor = Tensor::from_slice(points, (n, dim), device)?;
+    // Cache ‖p_i‖² once; every iteration below reuses it via the
+    // matmul identity ‖p − c‖² = ‖p‖² − 2·p·c + ‖c‖².
     let p_sq = p_tensor.sqr()?.sum_keepdim(1)?; // [n, 1]
 
     let first_c = p_tensor.narrow(0, 0, 1)?; // [1, dim]
-    let mut min_dists = squared_l2_to_centroid(&p_tensor, &p_sq, &first_c)?;
+    let mut min_dists = squared_l2_to_centroid(p_tensor, &p_sq, &first_c)?;
 
     for _ in 1..k {
         let best_idx = min_dists.argmax(0)?.to_scalar::<u32>()? as usize;
@@ -336,7 +395,7 @@ pub fn farthest_first_init(
         centroids.extend_from_slice(new_c);
 
         let c_row = p_tensor.narrow(0, best_idx, 1)?; // [1, dim]
-        let new_dists = squared_l2_to_centroid(&p_tensor, &p_sq, &c_row)?;
+        let new_dists = squared_l2_to_centroid(p_tensor, &p_sq, &c_row)?;
         min_dists = min_dists.minimum(&new_dists)?;
     }
 
@@ -407,18 +466,47 @@ pub fn assign_points(
     if n_points == 0 {
         return Ok(Vec::new());
     }
+
+    let device = default_device();
+    let p = Tensor::from_slice(points, (n_points, dim), device)?;
+    assign_on_tensor(&p, centroids, dim)
+}
+
+/// Same as [`assign_points`] but reuses a pre-uploaded points tensor.
+///
+/// Callers that run many assign passes against the same corpus (the
+/// PLAID builder does k-means plus a final full encoding) can upload
+/// the `[n, dim]` tensor once and hand it to each pass, saving both
+/// the host→device copy and the risk of cudarc's caching allocator
+/// holding two 3.47 GB blocks side by side.
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if any tensor allocation or matmul
+/// fails.
+///
+/// # Panics
+///
+/// Panics if `centroids.len() % dim != 0`, if `centroids.len() == 0`,
+/// or if `dim == 0`.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn assign_on_tensor(
+    p_tensor: &Tensor,
+    centroids: &[f32],
+    dim: usize,
+) -> Result<Vec<usize>> {
+    assert!(dim > 0, "assign_on_tensor: dim must be positive");
     assert!(
         !centroids.is_empty() && centroids.len().is_multiple_of(dim),
-        "assign_points: centroids length {} is not a positive multiple of dim {}",
+        "assign_on_tensor: centroids length {} is not a positive multiple of dim {}",
         centroids.len(),
         dim,
     );
     let k = centroids.len() / dim;
-
-    let device = default_device();
-    let p = Tensor::from_slice(points, (n_points, dim), device)?;
+    let device = p_tensor.device();
     let c = Tensor::from_slice(centroids, (k, dim), device)?;
-    assign_tensor(&p, &c)
+    assign_tensor(p_tensor, &c)
 }
 
 /// Cap on the transient bytes materialised by a single assignment

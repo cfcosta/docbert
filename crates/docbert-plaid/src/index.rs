@@ -14,10 +14,13 @@
 //! and the query-time search path will be added on top in later
 //! TDD cycles.
 
+use candle_core::Tensor;
+
 use crate::{
     Result,
     codec::{EncodedVector, ResidualCodec, train_quantizer},
-    kmeans::{assign_points, fit},
+    device::default_device,
+    kmeans::{assign_points, fit_on_tensor},
 };
 
 /// Cap on tokens used to train the residual quantizer.
@@ -268,8 +271,19 @@ pub fn build_index_from_pool(
         total_tokens,
     );
 
+    // Upload the [n, dim] pool tensor once and share it across the
+    // k-means phase and the final batch-encode pass. Without this, each
+    // phase uploaded its own ~3.47 GB copy for a real docbert corpus,
+    // cudarc's caching allocator held the stale block, and the PLAID
+    // build tipped a 12 GB card into CUDA OOM as soon as the encoder
+    // model was also resident.
+    let device = default_device();
+    let p_tensor =
+        Tensor::from_slice(&pool, (total_tokens, params.dim), device)?;
+
     // 1. Train coarse centroids with k-means.
-    let centroids = fit(
+    let centroids = fit_on_tensor(
+        &p_tensor,
         &pool,
         params.k_centroids,
         params.dim,
@@ -325,7 +339,9 @@ pub fn build_index_from_pool(
     //    (single matmul-driven nearest-centroid lookup), then split the
     //    flat result back into per-document EncodedVectors and populate
     //    the centroid → tokens inverted file along the way.
-    let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool)?;
+    let (all_centroid_ids, all_codes) =
+        codec.batch_encode_tokens_on_tensor(&p_tensor, &pool)?;
+    drop(p_tensor);
     drop(pool);
     let packed_per_token = codec.packed_bytes();
 
