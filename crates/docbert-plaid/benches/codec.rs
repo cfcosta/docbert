@@ -88,6 +88,26 @@ fn bench_decode_vector(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_batch_encode_tokens(c: &mut Criterion) {
+    let mut group = c.benchmark_group("codec/batch_encode_tokens");
+    for &n in &[1_000usize, 10_000, 100_000] {
+        let tokens = shared::random_unit_vectors(0xE4, n, DIM);
+        for &nbits in &[2u32, 4] {
+            let codec = build_codec(nbits);
+            group.throughput(Throughput::Elements(n as u64));
+            group.sample_size(10);
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("n={n},nbits={nbits}")),
+                &(n, nbits),
+                |b, _| {
+                    b.iter(|| codec.batch_encode_tokens(black_box(&tokens)));
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 fn bench_train_quantizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("codec/train_quantizer");
     for &n in &[1_024usize, 16_384, 131_072] {
@@ -107,6 +127,7 @@ criterion_group!(
     benches,
     bench_encode_vector,
     bench_decode_vector,
+    bench_batch_encode_tokens,
     bench_train_quantizer,
 );
 criterion_main!(benches);

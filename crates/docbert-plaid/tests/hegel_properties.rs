@@ -16,7 +16,7 @@
 #![allow(dead_code)]
 
 use docbert_plaid::index::{DocumentTokens, IndexParams};
-use hegel::{TestCase, generators as gs};
+use hegel::{HealthCheck, TestCase, generators as gs};
 
 // ---------------------------------------------------------------------------
 // Reusable composite generators
@@ -979,6 +979,83 @@ fn prop_decode_table_matches_scalar(tc: TestCase) {
     let table = DecodeTable::new(&codec);
     let via_table = codec.decode_vector_with_table(&encoded, &table).unwrap();
     assert_eq!(scalar, via_table);
+}
+
+/// Differential: `batch_encode_tokens` on a large batch must produce
+/// the same bytes as the scalar per-token encode. The default chunk
+/// budget (128 MiB) means realistic corpora traverse multiple chunks
+/// inside `batch_encode_tokens_on_tensor`; this test exercises that
+/// path specifically, where the smaller property below stays inside
+/// one chunk.
+///
+/// The base example (1024 tokens × 128 dim) is large by design —
+/// we need enough rows to trip chunk-boundary bugs in production
+/// shapes. Suppress the `LargeBaseExample` health check since we
+/// own the input shape.
+#[hegel::test(
+    test_cases = 10,
+    suppress_health_check = [
+        HealthCheck::LargeInitialTestCase,
+        HealthCheck::TestCasesTooLarge,
+    ],
+)]
+fn prop_batch_encode_large_matches_per_token(tc: TestCase) {
+    use docbert_plaid::codec::{ResidualCodec, train_quantizer};
+    // Fix codec geometry: the purpose here is to stress throughput
+    // and chunk-boundary semantics, not the codec itself (the
+    // smaller property already covers nbits variants exhaustively).
+    let dim = 128;
+    let nbits = 2u32;
+    let k = 16;
+    let n_tokens =
+        tc.draw(gs::integers::<usize>().min_value(1024).max_value(4096));
+
+    let centroids = tc.draw(unit_rows(dim, k));
+    let residual_pool = tc.draw(finite_floats(256));
+    let (cutoffs, weights) = train_quantizer(residual_pool, nbits);
+    let codec = ResidualCodec {
+        nbits,
+        dim,
+        centroids,
+        bucket_cutoffs: cutoffs,
+        bucket_weights: weights,
+    };
+    let tokens = tc.draw(unit_rows(dim, n_tokens));
+
+    let (cids, packed) = codec.batch_encode_tokens(&tokens).unwrap();
+    let packed_per = codec.packed_bytes();
+    assert_eq!(cids.len(), n_tokens);
+    assert_eq!(packed.len(), n_tokens * packed_per);
+
+    for (i, token) in tokens.chunks_exact(dim).enumerate() {
+        let expected = codec.encode_vector(token).unwrap();
+        let batch_slice = &packed[i * packed_per..(i + 1) * packed_per];
+        if cids[i] == expected.centroid_id {
+            assert_eq!(batch_slice, expected.codes.as_slice());
+            continue;
+        }
+        // Tie-break under batched argmin can pick a later equidistant
+        // centroid than scalar `nearest_centroid`; when that happens
+        // the bytes differ by construction but the distances must
+        // match within one f32 ULP — same relaxation as the smaller
+        // property uses.
+        let expected_idx = expected.centroid_id as usize;
+        let batched_idx = cids[i] as usize;
+        let centroids = &codec.centroids;
+        let d_exp = docbert_plaid::distance::squared_l2(
+            token,
+            &centroids[expected_idx * dim..(expected_idx + 1) * dim],
+        );
+        let d_bat = docbert_plaid::distance::squared_l2(
+            token,
+            &centroids[batched_idx * dim..(batched_idx + 1) * dim],
+        );
+        assert!(
+            (d_exp - d_bat).abs() <= 1e-4,
+            "token {i}: batched picked {batched_idx} (d²={d_bat}) \
+             but scalar picked {expected_idx} (d²={d_exp})",
+        );
+    }
 }
 
 /// Differential: `batch_encode_tokens` must produce the same

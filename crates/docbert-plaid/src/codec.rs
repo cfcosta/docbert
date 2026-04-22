@@ -33,8 +33,30 @@ use crate::{
     Result,
     device::default_device,
     distance::squared_l2,
-    kmeans::nearest_centroid,
+    kmeans::{assign_as_tensor, nearest_centroid},
 };
+
+/// Memory budget for the per-chunk residual + bucket tensors during
+/// GPU-batched encoding.
+///
+/// Mirrors [`crate::kmeans::ASSIGN_CHUNK_BYTES`]. A chunk produces a
+/// `[chunk, dim] f32` retrieved-centroids tensor plus a `[chunk, dim]
+/// f32` residuals tensor plus a `[chunk, dim] u32` buckets tensor;
+/// at 128 MiB per block that keeps the working set comfortably under
+/// 512 MiB on top of the resident tokens tensor, leaving headroom for
+/// cuBLAS workspace and the caller's encoder model.
+const ENCODE_CHUNK_BYTES: usize = 128 * 1024 * 1024;
+
+/// Pick a chunk size for batch encoding so the heaviest per-chunk
+/// tensor stays under [`ENCODE_CHUNK_BYTES`].
+///
+/// `dim` determines the f32 residual chunk (`chunk * dim * 4`);
+/// `packed_bytes` is only included to prevent the pack output from
+/// blowing past the budget when nbits is large.
+fn encode_chunk_rows(dim: usize, _packed_bytes: usize) -> usize {
+    let bytes_per_row = dim * std::mem::size_of::<f32>();
+    (ENCODE_CHUNK_BYTES / bytes_per_row).max(1)
+}
 
 /// A trained residual-quantization codec.
 ///
@@ -390,29 +412,106 @@ impl ResidualCodec {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let assignments = crate::kmeans::assign_on_tensor(
-            tokens_tensor,
-            &self.centroids,
-            self.dim,
+        let device = tokens_tensor.device();
+        let k = self.num_centroids();
+
+        // Upload codec state to the device once. Both are small (256 × 128
+        // centroids is 128 KiB; cutoffs + shifts are byte-sized).
+        let centroids_dev =
+            Tensor::from_slice(&self.centroids, (k, self.dim), device)?;
+        let cutoffs_dev = Tensor::from_slice(
+            &self.bucket_cutoffs,
+            (self.bucket_cutoffs.len(),),
+            device,
         )?;
+
+        // Pack vector: for LSB-first packing, slot `s` contributes
+        // `bucket << (s * nbits)`, so the shift weights are powers of
+        // 2^nbits. Kept as u32 and cast back to u8 after the sum.
+        let codes_per_byte = 8 / self.nbits as usize;
+        let shift_weights: Vec<u32> = (0..codes_per_byte)
+            .map(|slot| 1u32 << (slot as u32 * self.nbits))
+            .collect();
+        let shifts_dev =
+            Tensor::from_slice(&shift_weights, (1, 1, codes_per_byte), device)?;
+
+        // Every token assignment is one big matmul — done in one pass
+        // against the whole tokens tensor so we don't re-upload
+        // per-chunk.
+        let assignments_dev = assign_as_tensor(tokens_tensor, &centroids_dev)?;
 
         let packed_per_token = self.packed_bytes();
         let mut centroid_ids: Vec<u32> = Vec::with_capacity(n);
         let mut packed_codes: Vec<u8> =
             Vec::with_capacity(n * packed_per_token);
-        let mut scratch: Vec<u8> = Vec::with_capacity(self.dim);
-        for (token, &cluster) in
-            tokens.chunks_exact(self.dim).zip(assignments.iter())
-        {
-            let centroid_slice =
-                &self.centroids[cluster * self.dim..(cluster + 1) * self.dim];
-            scratch.clear();
-            for (t, c) in token.iter().zip(centroid_slice.iter()) {
-                scratch.push(bucket_for_value(*t - *c, &self.bucket_cutoffs));
+
+        // Chunk the per-token work so the transient `[chunk, dim] f32`
+        // residuals + retrieved centroids stay within a fixed byte
+        // budget regardless of corpus size.
+        let chunk_rows =
+            encode_chunk_rows(self.dim, packed_per_token).min(n).max(1);
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk_rows.min(n - start);
+            let tokens_chunk = tokens_tensor.narrow(0, start, len)?;
+            let assign_chunk = assignments_dev.narrow(0, start, len)?;
+
+            // Gather per-token centroids, compute residuals: [len, dim]
+            let retrieved = centroids_dev.index_select(&assign_chunk, 0)?;
+            let residuals = tokens_chunk.sub(&retrieved)?;
+
+            // Bucketize by accumulating `residuals >= cutoff` across
+            // cutoffs. Equivalent to PyTorch/fast-plaid's
+            // `bucketize(right=True)`. Each iter materialises only
+            // `[len, dim]` u8, so we stay well under the chunk budget.
+            let mut buckets = Tensor::zeros(
+                (len, self.dim),
+                candle_core::DType::U32,
+                device,
+            )?;
+            for i in 0..self.bucket_cutoffs.len() {
+                let cutoff = cutoffs_dev.narrow(0, i, 1)?; // [1]
+                let hit = residuals
+                    .broadcast_ge(&cutoff)?
+                    .to_dtype(candle_core::DType::U32)?; // [len, dim]
+                buckets = buckets.add(&hit)?;
             }
-            packed_codes.extend(pack_codes(&scratch, self.nbits));
-            centroid_ids.push(cluster as u32);
+            // `buckets[i, j]` is in `0..num_buckets` — safe in u8, but
+            // keep u32 for the pack matmul below.
+
+            // Pack `codes_per_byte` consecutive bucket indices into each
+            // byte: reshape to [len, packed_per_token, codes_per_byte],
+            // multiply by shift weights, sum along the last axis.
+            //
+            // When `dim` isn't an exact multiple of `codes_per_byte`
+            // (e.g. the dim=2, nbits=2 test fixtures), pad trailing
+            // bucket slots with zeros so the reshape fits. Zeros
+            // contribute nothing to the final byte, matching the
+            // scalar path's "upper slots left unset" behaviour.
+            let padded_dim = packed_per_token * codes_per_byte;
+            let buckets_padded = if padded_dim == self.dim {
+                buckets
+            } else {
+                let pad_len = padded_dim - self.dim;
+                let pad = Tensor::zeros(
+                    (len, pad_len),
+                    candle_core::DType::U32,
+                    device,
+                )?;
+                Tensor::cat(&[&buckets, &pad], 1)?
+            };
+            let packed_u32 = buckets_padded
+                .reshape((len, packed_per_token, codes_per_byte))?
+                .broadcast_mul(&shifts_dev)?
+                .sum(2)?; // [len, packed_per_token]
+            let packed_u8 = packed_u32.to_dtype(candle_core::DType::U8)?;
+
+            packed_codes.extend(packed_u8.flatten_all()?.to_vec1::<u8>()?);
+            centroid_ids.extend(assign_chunk.to_vec1::<u32>()?);
+
+            start += len;
         }
+
         Ok((centroid_ids, packed_codes))
     }
 

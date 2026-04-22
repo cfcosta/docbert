@@ -490,6 +490,60 @@ pub fn assign_on_tensor(
     assign_tensor(p_tensor, &c)
 }
 
+/// Compute nearest-centroid assignments for every row of `p_tensor`,
+/// returning them as a device tensor of u32 indices.
+///
+/// Same E-step matmul as [`assign_on_tensor`] / [`assign_points`], but
+/// keeps the argmin output on the device instead of pulling it back to
+/// host. Callers that feed the result into another GPU op (e.g. the
+/// `index_select` + residual + pack chain in
+/// [`crate::codec::ResidualCodec::batch_encode_tokens_on_tensor`]) save
+/// the host round-trip and any downstream upload.
+///
+/// The returned tensor has dtype `u32` and shape `[p_tensor.dim(0)]`.
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] on underlying tensor failure.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn assign_as_tensor(
+    p_tensor: &Tensor,
+    centroids_tensor: &Tensor,
+) -> Result<Tensor> {
+    let n = p_tensor.dim(0)?;
+    if n == 0 {
+        // Empty points → empty u32 tensor. Use zeros (safe dtype default).
+        return Ok(Tensor::zeros(
+            0,
+            candle_core::DType::U32,
+            p_tensor.device(),
+        )?);
+    }
+    let k = centroids_tensor.dim(0)?.max(1);
+    let bytes_per_row = k * std::mem::size_of::<f32>();
+    let chunk_rows = (ASSIGN_CHUNK_BYTES / bytes_per_row).max(1).min(n);
+
+    let c_t = centroids_tensor.t()?;
+    let c_sq = centroids_tensor.sqr()?.sum_keepdim(1)?.t()?; // [1, k]
+
+    let mut chunks: Vec<Tensor> = Vec::new();
+    let mut start = 0usize;
+    while start < n {
+        let len = chunk_rows.min(n - start);
+        let p_chunk = p_tensor.narrow(0, start, len)?;
+        let dot = p_chunk.matmul(&c_t)?;
+        let scores = dot.affine(-2.0, 0.0)?.broadcast_add(&c_sq)?;
+        chunks.push(scores.argmin(1)?); // [len] u32
+        start += len;
+    }
+    if chunks.len() == 1 {
+        Ok(chunks.into_iter().next().unwrap())
+    } else {
+        Ok(Tensor::cat(&chunks, 0)?)
+    }
+}
+
 /// Cap on the transient bytes materialised by a single assignment
 /// matmul.
 ///
