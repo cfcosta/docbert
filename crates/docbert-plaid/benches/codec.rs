@@ -29,7 +29,7 @@ fn build_codec(nbits: u32) -> ResidualCodec {
         .iter()
         .map(|v| v * 0.1)
         .collect();
-    let (bucket_cutoffs, bucket_weights) = train_quantizer(&sample, nbits);
+    let (bucket_cutoffs, bucket_weights) = train_quantizer(sample, nbits);
     ResidualCodec {
         nbits,
         dim: DIM,
@@ -97,7 +97,7 @@ fn bench_train_quantizer(c: &mut Criterion) {
             .collect();
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| train_quantizer(black_box(&residuals), 4));
+            b.iter(|| train_quantizer(black_box(residuals.clone()), 4));
         });
     }
     group.finish();

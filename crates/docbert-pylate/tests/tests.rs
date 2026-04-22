@@ -1,6 +1,6 @@
 use anyhow::Result;
 use candle_core::Device;
-use docbert_pylate::{hierarchical_pooling, ColBERT};
+use docbert_pylate::{ColBERT, hierarchical_pooling};
 
 fn load_model(repo_id: &str, device: Device) -> Result<ColBERT> {
     Ok(ColBERT::from(repo_id).with_device(device).try_into()?)

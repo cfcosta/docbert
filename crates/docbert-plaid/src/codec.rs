@@ -467,15 +467,19 @@ impl ResidualCodec {
 /// bucket. This matches fast-plaid's "fit" step and keeps the codec
 /// unbiased on the training distribution.
 ///
-/// `residuals` does not need to be sorted; this function sorts a
-/// locally-owned copy. NaN values are rejected up front since they
-/// would poison the sort order.
+/// `residuals` is consumed and sorted in place, so the caller avoids
+/// the ~n·4-byte allocation a borrowed-slice version would need for an
+/// internal copy. NaN values are rejected up front since they would
+/// poison the sort order.
 ///
 /// # Panics
 ///
 /// Panics if `residuals` is empty, if `nbits` is zero or exceeds 8, or
 /// if `residuals` contains NaN.
-pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
+pub fn train_quantizer(
+    mut residuals: Vec<f32>,
+    nbits: u32,
+) -> (Vec<f32>, Vec<f32>) {
     assert!(!residuals.is_empty(), "train_quantizer: empty sample");
     assert!(
         nbits > 0 && nbits <= 8,
@@ -489,10 +493,10 @@ pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
     let num_buckets = 1usize << nbits;
     let n = residuals.len();
 
-    let mut sorted = residuals.to_vec();
-    // We already rejected NaN above, so `total_cmp` is a strict
-    // ordering and doesn't need the `partial_cmp().unwrap()` dance.
-    sorted.sort_by(|a, b| a.total_cmp(b));
+    // NaN was rejected above, so `total_cmp` is a strict ordering.
+    // Sort in place to avoid a duplicate copy of the residuals buffer —
+    // on a large corpus this single copy was worth several GB of RSS.
+    residuals.sort_unstable_by(|a, b| a.total_cmp(b));
 
     let bucket_bounds = |i: usize| -> (usize, usize) {
         let start = i * n / num_buckets;
@@ -505,7 +509,7 @@ pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
     };
 
     let cutoffs: Vec<f32> = (1..num_buckets)
-        .map(|i| sorted[i * n / num_buckets])
+        .map(|i| residuals[i * n / num_buckets])
         .collect();
 
     let weights: Vec<f32> = (0..num_buckets)
@@ -516,9 +520,9 @@ pub fn train_quantizer(residuals: &[f32], nbits: u32) -> (Vec<f32>, Vec<f32>) {
             // sample so the decoder still has a sensible value.
             if start == end {
                 let idx = start.min(n - 1);
-                sorted[idx]
+                residuals[idx]
             } else {
-                let slice = &sorted[start..end];
+                let slice = &residuals[start..end];
                 slice.iter().sum::<f32>() / slice.len() as f32
             }
         })
@@ -796,7 +800,7 @@ mod tests {
     fn train_quantizer_produces_right_number_of_cutoffs_and_weights() {
         let residuals: Vec<f32> =
             (0..1000).map(|i| i as f32 / 1000.0).collect();
-        let (cutoffs, weights) = train_quantizer(&residuals, 2);
+        let (cutoffs, weights) = train_quantizer(residuals, 2);
         assert_eq!(cutoffs.len(), 3);
         assert_eq!(weights.len(), 4);
     }
@@ -805,7 +809,7 @@ mod tests {
     fn train_quantizer_cutoffs_are_monotonic() {
         let residuals: Vec<f32> =
             (0..2048).map(|i| (i as f32 / 2048.0) - 0.5).collect();
-        let (cutoffs, _) = train_quantizer(&residuals, 4);
+        let (cutoffs, _) = train_quantizer(residuals, 4);
         for pair in cutoffs.windows(2) {
             assert!(
                 pair[0] <= pair[1],
@@ -819,7 +823,7 @@ mod tests {
         // Uniform samples in [0, 1000) with 2 bits → quartile cutoffs at
         // roughly 250, 500, 750.
         let residuals: Vec<f32> = (0..1000).map(|i| i as f32).collect();
-        let (cutoffs, _) = train_quantizer(&residuals, 2);
+        let (cutoffs, _) = train_quantizer(residuals, 2);
         assert!((cutoffs[0] - 250.0).abs() < 1.0);
         assert!((cutoffs[1] - 500.0).abs() < 1.0);
         assert!((cutoffs[2] - 750.0).abs() < 1.0);
@@ -830,7 +834,7 @@ mod tests {
         // Each weight should fall within its bucket's [low, high] range.
         // For uniform data, this is straightforward to verify.
         let residuals: Vec<f32> = (0..1024).map(|i| i as f32).collect();
-        let (cutoffs, weights) = train_quantizer(&residuals, 2);
+        let (cutoffs, weights) = train_quantizer(residuals, 2);
 
         // Bucket 0: below cutoffs[0]
         assert!(weights[0] < cutoffs[0]);
@@ -844,13 +848,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "empty sample")]
     fn train_quantizer_panics_on_empty_sample() {
-        let _ = train_quantizer(&[], 2);
+        let _ = train_quantizer(Vec::new(), 2);
     }
 
     #[test]
     #[should_panic(expected = "NaN")]
     fn train_quantizer_panics_on_nan() {
-        let _ = train_quantizer(&[0.1, f32::NAN, 0.3], 2);
+        let _ = train_quantizer(vec![0.1, f32::NAN, 0.3], 2);
     }
 
     #[test]
@@ -860,7 +864,7 @@ mod tests {
         // the residual magnitude.
         let training: Vec<f32> =
             (0..2048).map(|i| (i as f32 / 2048.0) - 0.5).collect();
-        let (cutoffs, weights) = train_quantizer(&training, 4);
+        let (cutoffs, weights) = train_quantizer(training, 4);
 
         let codec = ResidualCodec {
             nbits: 4,

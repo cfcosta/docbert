@@ -20,6 +20,17 @@ use crate::{
     kmeans::{assign_points, fit},
 };
 
+/// Cap on tokens used to train the residual quantizer.
+///
+/// Quantile estimation for `2^nbits` bucket cutoffs converges well
+/// below 100k samples; training on the full corpus (potentially
+/// millions of tokens × the embedding dim, so gigabytes of residuals)
+/// adds no statistical benefit while pushing peak RSS past what a
+/// host can absorb on large collections. 65,536 tokens × 128 dims is
+/// ~8M residual values, which still over-samples every cutoff by
+/// several orders of magnitude and sorts in under a second.
+const MAX_QUANTIZER_TRAINING_TOKENS: usize = 65_536;
+
 /// Inverted file: for each centroid, the sorted list of unique document
 /// indices that have at least one token clustered in that centroid.
 ///
@@ -178,19 +189,84 @@ pub fn build_index(
         );
     }
 
-    // Flatten all token embeddings into one training cloud.
+    // Flatten all token embeddings into one training cloud and forward
+    // to the pool-based core path. This mirrors the memory-lean path
+    // used by `build_index_from_pool` callers that already own a
+    // contiguous buffer.
     let total_tokens: usize = documents.iter().map(|d| d.n_tokens).sum();
+    let mut pool: Vec<f32> = Vec::with_capacity(total_tokens * params.dim);
+    let mut doc_meta: Vec<(u64, usize)> = Vec::with_capacity(documents.len());
+    for doc in documents {
+        pool.extend_from_slice(&doc.tokens);
+        doc_meta.push((doc.doc_id, doc.n_tokens));
+    }
+
+    build_index_from_pool(pool, doc_meta, params)
+}
+
+/// Build an [`Index`] from a pre-assembled token pool and per-document
+/// `(doc_id, n_tokens)` metadata.
+///
+/// This is the memory-lean entry point: callers that can stream tokens
+/// straight into a single contiguous `Vec<f32>` (e.g. the `EmbeddingDb`
+/// bridge) avoid holding both a `Vec<DocumentTokens>` *and* a flat pool
+/// at the same time — on a real corpus that doubling is worth several
+/// GB of peak RSS.
+///
+/// `pool` is laid out row-major with `n_tokens × dim` entries, where
+/// `n_tokens = doc_meta.iter().map(|(_, n)| n).sum()`. Documents keep
+/// the order of `doc_meta` in the resulting index.
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if the matmul-driven k-means
+/// training or nearest-centroid assignment fails.
+///
+/// # Panics
+///
+/// Panics if `pool.len()` is not a multiple of `dim`, if the sum of
+/// `doc_meta`'s token counts disagrees with `pool.len() / dim`, if the
+/// total number of tokens is smaller than `params.k_centroids`, or if
+/// `params.k_centroids == 0`.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn build_index_from_pool(
+    pool: Vec<f32>,
+    doc_meta: Vec<(u64, usize)>,
+    params: IndexParams,
+) -> Result<Index> {
+    assert!(
+        params.dim > 0,
+        "build_index_from_pool: dim must be positive"
+    );
+    assert!(
+        params.k_centroids > 0,
+        "build_index_from_pool: k_centroids must be positive"
+    );
+    assert!(
+        params.nbits > 0 && params.nbits <= 8,
+        "build_index_from_pool: nbits must be in 1..=8, got {}",
+        params.nbits,
+    );
+    assert!(
+        pool.len().is_multiple_of(params.dim),
+        "build_index_from_pool: pool length {} is not a multiple of dim {}",
+        pool.len(),
+        params.dim,
+    );
+    let total_tokens = pool.len() / params.dim;
+    let meta_tokens: usize = doc_meta.iter().map(|(_, n)| n).sum();
+    assert_eq!(
+        total_tokens, meta_tokens,
+        "build_index_from_pool: pool carries {total_tokens} tokens but doc_meta sums to {meta_tokens}",
+    );
     assert!(
         total_tokens >= params.k_centroids,
-        "build_index: need at least {} tokens for {} centroids, got {}",
+        "build_index_from_pool: need at least {} tokens for {} centroids, got {}",
         params.k_centroids,
         params.k_centroids,
         total_tokens,
     );
-    let mut pool: Vec<f32> = Vec::with_capacity(total_tokens * params.dim);
-    for doc in documents {
-        pool.extend_from_slice(&doc.tokens);
-    }
 
     // 1. Train coarse centroids with k-means.
     let centroids = fit(
@@ -200,21 +276,41 @@ pub fn build_index(
         params.max_kmeans_iters.max(1),
     )?;
 
-    // 2. Compute residuals against trained centroids so we can train the
-    //    quantizer on a representative sample of errors.
-    let assignments = assign_points(&pool, &centroids, params.dim)?;
-    let mut residual_sample: Vec<f32> = Vec::with_capacity(pool.len());
-    for (token, &cluster) in pool.chunks_exact(params.dim).zip(&assignments) {
+    // 2. Residuals for quantizer training. We only need enough samples
+    //    to place `2^nbits` quantile cutoffs — materialising a
+    //    residual-per-token for a large corpus would allocate multiple
+    //    gigabytes for no statistical benefit. Stride-sample the pool,
+    //    compute residuals only for the sampled tokens, and move on.
+    let sample_stride =
+        total_tokens.div_ceil(MAX_QUANTIZER_TRAINING_TOKENS).max(1);
+    let sample_count = total_tokens.div_ceil(sample_stride);
+
+    let mut sampled_tokens: Vec<f32> =
+        Vec::with_capacity(sample_count * params.dim);
+    for (i, token) in pool.chunks_exact(params.dim).enumerate() {
+        if i.is_multiple_of(sample_stride) {
+            sampled_tokens.extend_from_slice(token);
+        }
+    }
+    let sample_assignments =
+        assign_points(&sampled_tokens, &centroids, params.dim)?;
+    let mut residual_sample: Vec<f32> =
+        Vec::with_capacity(sampled_tokens.len());
+    for (token, &cluster) in sampled_tokens
+        .chunks_exact(params.dim)
+        .zip(&sample_assignments)
+    {
         let centroid =
             &centroids[cluster * params.dim..(cluster + 1) * params.dim];
         for (t, c) in token.iter().zip(centroid) {
             residual_sample.push(*t - *c);
         }
     }
+    drop(sampled_tokens);
 
-    // 3. Learn cutoffs + weights on observed residuals.
+    // 3. Learn cutoffs + weights on the sampled residuals.
     let (bucket_cutoffs, bucket_weights) =
-        train_quantizer(&residual_sample, params.nbits);
+        train_quantizer(residual_sample, params.nbits);
 
     let codec = ResidualCodec {
         nbits: params.nbits,
@@ -230,14 +326,14 @@ pub fn build_index(
     //    flat result back into per-document EncodedVectors and populate
     //    the centroid → tokens inverted file along the way.
     let (all_centroid_ids, all_codes) = codec.batch_encode_tokens(&pool)?;
+    drop(pool);
     let packed_per_token = codec.packed_bytes();
 
-    let mut doc_ids = Vec::with_capacity(documents.len());
-    let mut doc_tokens = Vec::with_capacity(documents.len());
+    let mut doc_ids = Vec::with_capacity(doc_meta.len());
+    let mut doc_tokens = Vec::with_capacity(doc_meta.len());
     let mut token_offset = 0usize;
-    for doc in documents {
-        doc_ids.push(doc.doc_id);
-        let n_tok = doc.n_tokens;
+    for (doc_id, n_tok) in doc_meta {
+        doc_ids.push(doc_id);
         let cids = &all_centroid_ids[token_offset..token_offset + n_tok];
         let codes_slice = &all_codes[token_offset * packed_per_token
             ..(token_offset + n_tok) * packed_per_token];

@@ -422,6 +422,43 @@ impl EmbeddingDb {
         }
         Ok(result)
     }
+
+    /// List `(doc_id, num_tokens, dimension)` triples for every valid
+    /// embedding entry.
+    ///
+    /// Reads only the 8-byte header of each stored value — enough to
+    /// know an entry's shape without pulling its `T × D × 4` token
+    /// bytes into RAM. The embedding bridge uses this to size a
+    /// pooled token buffer up front and then stream each matrix
+    /// straight into that buffer, which keeps peak RSS near a single
+    /// copy of the corpus instead of two.
+    ///
+    /// Malformed entries (header says more data than the stored blob
+    /// carries) are skipped silently, matching [`Self::load`]'s
+    /// "return `None` on garbage" behaviour.
+    pub fn list_shapes(&self) -> Result<Vec<(u64, u32, u32)>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(EMBEDDINGS)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            let bytes = v.value();
+            if bytes.len() < HEADER_SIZE {
+                continue;
+            }
+            let num_tokens =
+                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let dimension =
+                u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+            let expected_len =
+                HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
+            if bytes.len() != expected_len {
+                continue;
+            }
+            result.push((k.value(), num_tokens, dimension));
+        }
+        Ok(result)
+    }
 }
 
 impl std::fmt::Debug for EmbeddingDb {

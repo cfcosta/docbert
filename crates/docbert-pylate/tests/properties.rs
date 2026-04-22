@@ -15,15 +15,15 @@
 
 use candle_core::{Device, Tensor};
 use docbert_pylate::{
-    hierarchical_pooling,
-    normalize_l2,
     EncodeInput,
     EncodeOutput,
     RawSimilarityOutput,
     Similarities,
     SimilarityInput,
+    hierarchical_pooling,
+    normalize_l2,
 };
-use hegel::{generators as gs, TestCase};
+use hegel::{TestCase, generators as gs};
 
 /// Selects the test device based on compile-time features, falling back to
 /// CPU if the preferred accelerator can't be initialised at runtime (e.g.,

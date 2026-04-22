@@ -720,7 +720,7 @@ fn prop_train_quantizer_cutoffs_monotonic(tc: TestCase) {
     let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
     let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(256));
     let residuals = tc.draw(finite_floats(n));
-    let (cutoffs, _) = train_quantizer(&residuals, nbits);
+    let (cutoffs, _) = train_quantizer(residuals, nbits);
     for pair in cutoffs.windows(2) {
         assert!(pair[0] <= pair[1], "cutoffs not monotone: {:?}", &cutoffs,);
     }
@@ -738,7 +738,7 @@ fn prop_train_quantizer_shapes(tc: TestCase) {
     let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(256));
     let residuals = tc.draw(finite_floats(n));
     let num_buckets = 1usize << nbits;
-    let (cutoffs, weights) = train_quantizer(&residuals, nbits);
+    let (cutoffs, weights) = train_quantizer(residuals, nbits);
     assert_eq!(cutoffs.len(), num_buckets - 1);
     assert_eq!(weights.len(), num_buckets);
 }
@@ -757,7 +757,7 @@ fn prop_reconstruction_error_decreases_with_nbits(tc: TestCase) {
 
     let mut prev = f64::INFINITY;
     for nbits in [1u32, 2, 4, 8] {
-        let (cutoffs, weights) = train_quantizer(&pool, nbits);
+        let (cutoffs, weights) = train_quantizer(pool.clone(), nbits);
         let codec = ResidualCodec {
             nbits,
             dim: 1,
@@ -788,7 +788,7 @@ fn prop_reconstruction_error_non_negative(tc: TestCase) {
     let nbits: u32 = tc.draw(gs::sampled_from(vec![1u32, 2, 4, 8]));
     let n = tc.draw(gs::integers::<usize>().min_value(16).max_value(128));
     let pool = tc.draw(finite_floats(n));
-    let (cutoffs, weights) = train_quantizer(&pool, nbits);
+    let (cutoffs, weights) = train_quantizer(pool, nbits);
     let codec = ResidualCodec {
         nbits,
         dim: 1,
@@ -821,7 +821,7 @@ fn prop_encode_picks_nearest_centroid(tc: TestCase) {
     let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let centroids = tc.draw(unit_rows(dim, k));
     let residual_pool = tc.draw(finite_floats(64));
-    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let (cutoffs, weights) = train_quantizer(residual_pool, nbits);
     let codec = ResidualCodec {
         nbits,
         dim,
@@ -947,7 +947,7 @@ fn prop_batch_encode_matches_per_token(tc: TestCase) {
 
     let centroids = tc.draw(unit_rows(dim, k));
     let residual_pool = tc.draw(finite_floats(64));
-    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let (cutoffs, weights) = train_quantizer(residual_pool, nbits);
     let codec = ResidualCodec {
         nbits,
         dim,
@@ -1023,7 +1023,7 @@ fn prop_encode_decode_encode_idempotent(tc: TestCase) {
     let residual_pool: Vec<f32> = (0..pool_n)
         .map(|i| (i as f32 / pool_n as f32) * 2.0 - 1.0)
         .collect();
-    let (cutoffs, weights) = train_quantizer(&residual_pool, nbits);
+    let (cutoffs, weights) = train_quantizer(residual_pool, nbits);
     let codec = ResidualCodec {
         nbits,
         dim,

@@ -88,46 +88,28 @@ pub fn build_index_from_embedding_db(
     embedding_db: &EmbeddingDb,
     params: PlaidBuildParams,
 ) -> Result<PlaidIndex> {
-    let ids = embedding_db.list_ids()?;
-    if ids.is_empty() {
+    // First pass: read every entry's 8-byte header to learn its shape.
+    // This lets us validate a uniform dim and preallocate the pool with
+    // the exact final size — preventing mid-build `Vec::extend` doublings
+    // from briefly tripling peak RSS on a multi-GB corpus.
+    let shapes = embedding_db.list_shapes()?;
+    if shapes.is_empty() {
         return Err(Error::Config(
             "cannot build PLAID index: embedding_db is empty".to_string(),
         ));
     }
 
-    let mut documents: Vec<DocumentTokens> = Vec::with_capacity(ids.len());
-    let mut dim: Option<usize> = None;
+    let dim = shapes[0].2 as usize;
     let mut total_tokens: usize = 0;
-
-    for id in ids {
-        let Some(matrix) = embedding_db.load(id)? else {
-            continue;
-        };
-        let this_dim = matrix.dimension as usize;
-        match dim {
-            None => dim = Some(this_dim),
-            Some(d) if d == this_dim => {}
-            Some(d) => {
-                return Err(Error::Config(format!(
-                    "cannot build PLAID index: embedding {id} has dim \
-                     {this_dim}, expected {d}",
-                )));
-            }
+    for &(id, n_tokens, this_dim) in &shapes {
+        if this_dim as usize != dim {
+            return Err(Error::Config(format!(
+                "cannot build PLAID index: embedding {id} has dim \
+                 {this_dim}, expected {dim}",
+            )));
         }
-        let n_tokens = matrix.num_tokens as usize;
-        total_tokens += n_tokens;
-        documents.push(DocumentTokens {
-            doc_id: id,
-            tokens: matrix.data,
-            n_tokens,
-        });
+        total_tokens += n_tokens as usize;
     }
-
-    let dim = dim.ok_or_else(|| {
-        Error::Config(
-            "cannot build PLAID index: no loadable embeddings".to_string(),
-        )
-    })?;
 
     if total_tokens < params.k_centroids {
         return Err(Error::Config(format!(
@@ -137,6 +119,19 @@ pub fn build_index_from_embedding_db(
         )));
     }
 
+    // Second pass: load matrices one at a time, copy their tokens into
+    // the pool, and drop each matrix before the next load. Peak memory
+    // is now `pool + one matrix`, not `pool + every matrix`.
+    let mut pool: Vec<f32> = Vec::with_capacity(total_tokens * dim);
+    let mut doc_meta: Vec<(u64, usize)> = Vec::with_capacity(shapes.len());
+    for (id, n_tokens, _) in shapes {
+        let Some(matrix) = embedding_db.load(id)? else {
+            continue;
+        };
+        pool.extend_from_slice(&matrix.data);
+        doc_meta.push((id, n_tokens as usize));
+    }
+
     let index_params = IndexParams {
         dim,
         nbits: params.nbits,
@@ -144,7 +139,11 @@ pub fn build_index_from_embedding_db(
         max_kmeans_iters: params.max_kmeans_iters,
     };
 
-    Ok(plaid_index::build_index(&documents, index_params)?)
+    Ok(plaid_index::build_index_from_pool(
+        pool,
+        doc_meta,
+        index_params,
+    )?)
 }
 
 /// Apply the given sync deltas to `existing`, reusing its codec.
