@@ -492,6 +492,71 @@ fn batch_maxsim(
     index: &Index,
     dim: usize,
 ) -> Result<Vec<(usize, f32)>> {
+    batch_maxsim_with_cap(
+        query_tokens,
+        candidate_idxs,
+        index,
+        dim,
+        decode_chunk_capacity(dim),
+    )
+}
+
+/// Target resident-tensor budget per chunk during on-device decode.
+///
+/// The GPU decode + MaxSim pipeline holds roughly five
+/// `[chunk_tokens, dim]` f32 tensors live at once (centroid
+/// embeddings, residuals-flat, residuals-padded alias, decoded rows
+/// post-add, and the L2-normalise scratch) plus the
+/// `[chunk_tokens, n_q]` scores matmul output. Budgeting around
+/// **64 MiB** of combined working set keeps the transient footprint
+/// small enough that a 12 GiB card still has room left over once
+/// the ColBERT model is resident and a query encode has happened.
+///
+/// 64 MiB is deliberately loose: candle's matmul reserves its own
+/// scratch pool, and we want the chunk loop to compose cleanly with
+/// that reservation without a second-order sizing calculation. For a
+/// 128-dim ColBERT this lands at ~26K tokens per chunk; for a
+/// 1536-dim LateOn it drops to ~2K.
+const DECODE_CHUNK_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+/// Rough upper bound on how many tokens we can safely decode in one
+/// on-device chunk at `dim` embedding width.
+///
+/// Returns at least 64 so a pathologically wide model still makes
+/// progress — a single doc's tokens fall into one chunk even if the
+/// strict byte budget would ask for fewer. The floor is also what
+/// keeps tests with `dim=2` corpora from picking an absurdly large
+/// cap that defeats the chunking coverage.
+fn decode_chunk_capacity(dim: usize) -> usize {
+    let per_token = dim.saturating_mul(4 * 5).max(1);
+    (DECODE_CHUNK_BUDGET_BYTES / per_token).max(64)
+}
+
+/// Chunked implementation of [`batch_maxsim`] that caps how many
+/// candidate tokens may be resident on the device at once.
+///
+/// Splits `candidate_idxs` into contiguous runs whose cumulative
+/// token count stays under `max_tokens_per_chunk`, decodes each run
+/// in isolation (one upload, one matmul, one `to_vec2`), and does
+/// the per-doc MaxSim reduction on the host before releasing the
+/// chunk's tensors. Peak VRAM during search is therefore bounded by
+/// the chunk budget rather than by the total candidate set — which
+/// previously blew past available memory for 1536-dim models on
+/// modest cards when 200+ documents survived PLAID's Stage 3
+/// shortlist.
+///
+/// When `max_tokens_per_chunk` is larger than the full candidate
+/// token count, the loop runs exactly once and the behaviour matches
+/// the pre-chunked implementation byte-for-byte.
+///
+/// [`batch_maxsim`]: crate::search::batch_maxsim
+fn batch_maxsim_with_cap(
+    query_tokens: &[f32],
+    candidate_idxs: &[usize],
+    index: &Index,
+    dim: usize,
+    max_tokens_per_chunk: usize,
+) -> Result<Vec<(usize, f32)>> {
     let n_q = query_tokens.len() / dim;
 
     let decode_table = DecodeTable::new(&index.codec);
@@ -499,63 +564,87 @@ fn batch_maxsim(
         .iter()
         .map(|&i| index.doc_token_count(i))
         .sum();
-    let mut offsets: Vec<usize> = Vec::with_capacity(candidate_idxs.len() + 1);
-    offsets.push(0);
 
     if total_tokens == 0 || n_q == 0 {
         return Ok(candidate_idxs.iter().map(|&i| (i, 0.0)).collect());
     }
 
     let device = default_device();
-    let ctx = DecodeCtx {
-        index,
-        candidate_idxs,
-        dim,
-        total_tokens,
-        decode_table: &decode_table,
-        device,
-    };
-    let decoded = if matches!(device, Device::Cpu) {
-        decode_on_cpu(&ctx, &mut offsets)?
-    } else {
-        decode_on_device(&ctx, &mut offsets)?
-    };
-
-    // Single `[total_tokens, dim] × [dim, n_q]` GEMM. No padding, no
-    // mask — the packed layout means every row is a real token.
     let q_t = Tensor::from_slice(query_tokens, (n_q, dim), device)?;
     let q_transposed = q_t.t()?.contiguous()?;
-    let scores_flat: Vec<f32> = decoded
-        .matmul(&q_transposed)?
-        .to_vec2::<f32>()?
-        .into_iter()
-        .flatten()
-        .collect();
 
-    // Per-doc MaxSim reduction over the doc's slice of score rows.
     let mut out = Vec::with_capacity(candidate_idxs.len());
-    for (i, &doc_idx) in candidate_idxs.iter().enumerate() {
-        let start = offsets[i];
-        let end = offsets[i + 1];
-        if start == end {
-            out.push((doc_idx, 0.0));
-            continue;
+    let mut start = 0usize;
+    while start < candidate_idxs.len() {
+        // Grow the chunk until adding the next doc would exceed the
+        // cap, but always include at least one doc — a single doc
+        // larger than the cap still has to decode on its own, and
+        // that's a better failure mode than looping forever.
+        let mut end = start + 1;
+        let mut chunk_tokens = index.doc_token_count(candidate_idxs[start]);
+        while end < candidate_idxs.len() {
+            let next = index.doc_token_count(candidate_idxs[end]);
+            if chunk_tokens + next > max_tokens_per_chunk {
+                break;
+            }
+            chunk_tokens += next;
+            end += 1;
         }
-        let mut total = 0.0f32;
-        for q in 0..n_q {
-            let mut best = f32::NEG_INFINITY;
-            for t in start..end {
-                let s = scores_flat[t * n_q + q];
-                if s > best {
-                    best = s;
+
+        let chunk_candidates = &candidate_idxs[start..end];
+        let mut chunk_offsets: Vec<usize> =
+            Vec::with_capacity(chunk_candidates.len() + 1);
+        chunk_offsets.push(0);
+
+        let chunk_ctx = DecodeCtx {
+            index,
+            candidate_idxs: chunk_candidates,
+            dim,
+            total_tokens: chunk_tokens,
+            decode_table: &decode_table,
+            device,
+        };
+        let decoded = if matches!(device, Device::Cpu) {
+            decode_on_cpu(&chunk_ctx, &mut chunk_offsets)?
+        } else {
+            decode_on_device(&chunk_ctx, &mut chunk_offsets)?
+        };
+
+        // `[chunk_tokens, dim] × [dim, n_q]` GEMM, same shape rule as
+        // the pre-chunk implementation but bounded by the chunk cap.
+        let scores_flat: Vec<f32> = decoded
+            .matmul(&q_transposed)?
+            .to_vec2::<f32>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        for (i, &doc_idx) in chunk_candidates.iter().enumerate() {
+            let range_start = chunk_offsets[i];
+            let range_end = chunk_offsets[i + 1];
+            if range_start == range_end {
+                out.push((doc_idx, 0.0));
+                continue;
+            }
+            let mut total = 0.0f32;
+            for q in 0..n_q {
+                let mut best = f32::NEG_INFINITY;
+                for t in range_start..range_end {
+                    let s = scores_flat[t * n_q + q];
+                    if s > best {
+                        best = s;
+                    }
+                }
+                if best.is_finite() {
+                    total += best;
                 }
             }
-            if best.is_finite() {
-                total += best;
-            }
+            out.push((doc_idx, total));
         }
-        out.push((doc_idx, total));
+
+        start = end;
     }
+
     Ok(out)
 }
 
@@ -1520,5 +1609,99 @@ mod tests {
                 "paper_defaults({k}) left pruning disabled"
             );
         }
+    }
+
+    /// Splitting `batch_maxsim` across multiple decode chunks must
+    /// produce byte-identical results to a single-chunk run. Keeps
+    /// the VRAM-bounding loop honest: any divergence between chunk
+    /// boundaries would mean the per-doc MaxSim reduction is leaking
+    /// state across calls, which would quietly corrupt search scores
+    /// on any real corpus big enough to trip the chunk cap.
+    #[test]
+    fn batch_maxsim_chunked_matches_single_shot() {
+        // A slightly bigger corpus than the shared `corpus()` fixture
+        // so multiple chunk caps actually force different splits.
+        let mut docs = Vec::new();
+        for i in 0..8u64 {
+            let jitter = i as f32 * 0.015;
+            let east = normalize([1.0 - jitter, 0.05 + jitter]);
+            let north = normalize([0.05 + jitter, 1.0 - jitter]);
+            let mut tokens = Vec::new();
+            tokens.extend_from_slice(&east);
+            tokens.extend_from_slice(&east);
+            tokens.extend_from_slice(&north);
+            docs.push(DocumentTokens {
+                doc_id: 200 + i,
+                tokens,
+                n_tokens: 3,
+            });
+        }
+        let index = build_index(&docs, params()).unwrap();
+
+        // Every doc becomes a candidate so the chunk loop has real
+        // work to do regardless of the query.
+        let candidate_idxs: Vec<usize> = (0..docs.len()).collect();
+        let query = [1.0f32, 0.0, 0.0, 1.0];
+
+        let single_shot = batch_maxsim_with_cap(
+            &query,
+            &candidate_idxs,
+            &index,
+            index.params.dim,
+            usize::MAX,
+        )
+        .unwrap();
+
+        // A 1-token cap forces one chunk per doc; 2 tokens forces a
+        // split mid-doc-group; 5 tokens crosses doc boundaries
+        // asymmetrically. All three must agree with the single-shot
+        // run byte-for-byte.
+        for cap in [1usize, 2, 5] {
+            let chunked = batch_maxsim_with_cap(
+                &query,
+                &candidate_idxs,
+                &index,
+                index.params.dim,
+                cap,
+            )
+            .unwrap();
+            assert_eq!(
+                chunked.len(),
+                single_shot.len(),
+                "chunked result count differs at cap={cap}"
+            );
+            for (i, (got, want)) in
+                chunked.iter().zip(single_shot.iter()).enumerate()
+            {
+                assert_eq!(
+                    got.0, want.0,
+                    "doc index order differs at cap={cap}, i={i}"
+                );
+                assert!(
+                    (got.1 - want.1).abs() < 1e-5,
+                    "score diverges at cap={cap}, i={i}: got {} expected {}",
+                    got.1,
+                    want.1,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_chunk_capacity_scales_inversely_with_dim() {
+        // Bigger models must produce smaller chunks so the resident
+        // working set stays inside the 64 MiB budget.
+        let small = decode_chunk_capacity(128);
+        let large = decode_chunk_capacity(1536);
+        assert!(
+            large < small,
+            "1536-dim cap {large} should be smaller than 128-dim cap {small}"
+        );
+        // Floor at 64 tokens keeps tiny-dim corpora from picking a
+        // uselessly huge cap that defeats the chunking.
+        assert!(
+            decode_chunk_capacity(1) >= 64,
+            "floor must hold for pathologically small dim"
+        );
     }
 }
