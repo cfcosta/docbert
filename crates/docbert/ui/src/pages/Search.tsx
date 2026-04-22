@@ -197,7 +197,14 @@ export default function Search() {
       <div className="search-body">
         <form className="search-controls" aria-label="Search controls" onSubmit={handleSubmit}>
           <div className="search-query-shell">
-            <div className="search-query-row">
+            <div
+              className="search-query-row"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                  event.currentTarget.querySelector("input")?.focus();
+                }
+              }}
+            >
               <label className="search-label sr-only" htmlFor="search-query">
                 Query
               </label>

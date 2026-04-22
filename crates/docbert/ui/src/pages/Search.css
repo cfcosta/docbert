@@ -85,6 +85,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
+  cursor: text;
 }
 
 .search-query-icon {
@@ -94,6 +95,8 @@
 }
 
 .search-input.search-input-query {
+  flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 2.25rem;
   padding: 0;
