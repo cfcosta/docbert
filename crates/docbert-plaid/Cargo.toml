@@ -8,6 +8,7 @@ description = "PLAID-style multi-vector index for docbert (ColBERT late-interact
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.10.2"
+rand = "0.10"
 thiserror = "2"
 
 [features]

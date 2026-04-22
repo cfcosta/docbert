@@ -9,19 +9,48 @@
 //!
 //! Points and centroids are both represented as flat row-major `&[f32]`
 //! slices at the public boundary; internally the hot paths
-//! ([`assign_points`], [`fit_with_init`], [`farthest_first_init`])
-//! materialise them into `candle_core::Tensor`s and compute distances
-//! as matmul + broadcast. With the `cuda` feature enabled those
-//! matmuls run on the GPU; without it, candle's CPU `gemm` is still
-//! orders of magnitude faster than the previous scalar nested loops.
+//! ([`assign_points`], [`fit_with_init`]) materialise them into
+//! `candle_core::Tensor`s and compute distances as matmul + broadcast.
+//! With the `cuda` feature enabled those matmuls run on the GPU;
+//! without it, candle's CPU `gemm` is still orders of magnitude faster
+//! than the previous scalar nested loops.
+//!
+//! Training phase follows the PLAID / ColBERTv2 recipe: Lloyd's
+//! algorithm on a random `k · MAX_POINTS_PER_CENTROID` subsample of the
+//! corpus, seeded from the first `k` rows of that shuffle. Training
+//! complexity is thus O(k² · MAX_POINTS_PER_CENTROID · dim · iters)
+//! and independent of corpus size — a million-token corpus and a
+//! billion-token corpus do the same amount of training work. The
+//! full-corpus assign happens later in [`crate::codec`] during
+//! encoding.
 //!
 //! [`nearest_centroid`] (single point) and [`update_centroids`] (the
 //! M-step) remain scalar — both are cheap relative to the assignment
-//! step and the per-call tensor-allocation overhead would dominate.
+//! step at training scale (≤ k · 256 points) and the per-call
+//! tensor-allocation overhead would dominate.
 
 use candle_core::Tensor;
+use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 
 use crate::{Result, device::default_device, distance::squared_l2};
+
+/// Upper bound on training samples per centroid.
+///
+/// ColBERTv2's paper uses `256 · k` as its training set and notes no
+/// measurable recall difference past that point — more samples only
+/// add compute, not cluster quality. fast-plaid's reference Python
+/// implementation uses the same constant. For a 6.78M-token docbert
+/// corpus at k=256 this caps training at 65,536 points, keeping the
+/// Lloyd loop's per-iter cost flat as the corpus grows.
+const MAX_POINTS_PER_CENTROID: usize = 256;
+
+/// Seed for the training-subsample shuffle.
+///
+/// Fixed so every run on the same corpus picks the same training set
+/// and produces the same centroids — the encoded index is a function
+/// of the input pool alone. Callers that want a different sample can
+/// shuffle `points` externally before calling [`fit`].
+const TRAINING_SHUFFLE_SEED: u64 = 0x7BE0_0CBE_7BE0_0CBE;
 
 /// Index of the centroid nearest to `point` under squared L2 distance.
 ///
@@ -233,21 +262,21 @@ fn fit_with_init_on_tensor(
     Ok(centroids)
 }
 
-/// Run k-means with deterministic farthest-first (Gonzalez) seeding.
+/// Run k-means over a subsample of `points`.
 ///
-/// The seeder picks the first point as the initial centroid, then for
-/// each subsequent centroid picks the point whose squared distance to
-/// the *nearest* already-chosen centroid is largest. This spreads the
-/// initial centroids across the data cloud and avoids the failure mode
-/// of the old "first k points" strategy, where a pre-sorted corpus
-/// could drop every initial centroid into the same cluster and leave
-/// Lloyd's M-step stuck in a degenerate local minimum.
+/// Follows fast-plaid's recipe (matching ColBERTv2's original paper):
 ///
-/// Gonzalez's farthest-first is a deterministic approximation to
-/// k-means++ (which samples proportional to `D²`). For the synthetic
-/// and docbert-scale corpora this crate targets it's cheap — O(k · n · dim)
-/// — and gives the bulk of the clustering-quality win without
-/// depending on an RNG, which keeps fixtures reproducible.
+/// 1. Sample up to `k · MAX_POINTS_PER_CENTROID` points with a seeded
+///    shuffle. Training complexity becomes constant in corpus size.
+/// 2. Use the first `k` rows of the shuffle as initial centroids.
+///    The shuffle is random so the seeds are effectively a random
+///    pick from the subsample, which is itself a random pick from
+///    the full corpus.
+/// 3. Run Lloyd's algorithm on the subsample with [`fit_with_init`].
+///
+/// `256 · k` is the sample size the PLAID paper validates as having
+/// no measurable recall loss versus full-corpus training; this crate
+/// targets that point on the quality / build-time curve.
 ///
 /// # Errors
 ///
@@ -279,20 +308,29 @@ pub fn fit(
         "fit: need at least k={k} points, got {n_points}",
     );
 
+    let (training_points, _) = sample_training_points(points, n_points, k, dim);
+
     let device = default_device();
-    let p_tensor = Tensor::from_slice(points, (n_points, dim), device)?;
-    fit_on_tensor(&p_tensor, points, k, dim, max_iters)
+    let n_train = training_points.len() / dim;
+    let training_tensor =
+        Tensor::from_slice(&training_points, (n_train, dim), device)?;
+    let initial = training_points[..k * dim].to_vec();
+    fit_with_init_on_tensor(
+        &training_tensor,
+        &training_points,
+        &initial,
+        dim,
+        max_iters,
+    )
 }
 
-/// Same as [`fit`] but accepts an already-uploaded `p_tensor`.
+/// Same as [`fit`] but accepts an already-uploaded `p_tensor` covering
+/// the full corpus, so the caller can reuse that tensor after training.
 ///
-/// This is the hot path for the PLAID index builder: it lets
-/// `build_index_from_pool` upload the 3.47 GB points tensor once and
-/// hand it straight to both the k-means phase and the codec's
-/// batch-encode phase. Without it, each phase would do its own
-/// host→device copy and cudarc's caching allocator would keep the
-/// stale block alive long enough to OOM on a 12 GB card with only
-/// ~8 GB free (after the encoder model).
+/// The training phase itself still runs on a `k · MAX_POINTS_PER_CENTROID`
+/// subsample — we don't train on the full corpus. `p_tensor` is kept
+/// around for the post-training encode pass that runs downstream in
+/// [`crate::codec::ResidualCodec::batch_encode_tokens_on_tensor`].
 ///
 /// `points` must be the host-side backing buffer for `p_tensor`.
 pub fn fit_on_tensor(
@@ -302,125 +340,68 @@ pub fn fit_on_tensor(
     dim: usize,
     max_iters: usize,
 ) -> Result<Vec<f32>> {
-    let initial = farthest_first_init_on_tensor(p_tensor, points, k, dim)?;
-    fit_with_init_on_tensor(p_tensor, points, &initial, dim, max_iters)
-}
+    let n = p_tensor.dim(0)?;
+    let (training_points, same_as_pool) =
+        sample_training_points(points, n, k, dim);
+    let initial = training_points[..k * dim].to_vec();
 
-/// Pick `k` initial centroids via deterministic farthest-first
-/// seeding (Gonzalez's algorithm, a deterministic approximation to
-/// k-means++).
-///
-/// The first centroid is row 0 of `points`. Each subsequent centroid
-/// is the row whose squared L2 distance to the nearest already-picked
-/// centroid is largest; ties break toward the earlier row index (what
-/// candle's `argmax` returns for f32 input).
-///
-/// Internally every distance update is a `[n, dim] × [dim, 1]` GEMV
-/// against candle, so the O(k · n · dim) cost lands on the matmul
-/// backend (GPU when built with `cuda`, otherwise candle's CPU
-/// `gemm`). Points are uploaded once and `‖p‖²` is cached across all
-/// `k - 1` iterations.
-///
-/// # Errors
-///
-/// Returns [`PlaidError::Tensor`] if any tensor allocation or matmul
-/// fails (e.g. CUDA OOM).
-///
-/// # Panics
-///
-/// Panics if `points` has fewer than `k` rows or if `dim == 0`.
-///
-/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
-pub fn farthest_first_init(
-    points: &[f32],
-    k: usize,
-    dim: usize,
-) -> Result<Vec<f32>> {
-    assert!(k > 0, "farthest_first_init: k must be positive");
-    assert!(dim > 0, "farthest_first_init: dim must be positive");
-    assert!(
-        points.len().is_multiple_of(dim) && !points.is_empty(),
-        "farthest_first_init: points length {} is not a positive multiple of dim {}",
-        points.len(),
+    if same_as_pool {
+        // Tiny corpus — reuse the caller's tensor directly.
+        return fit_with_init_on_tensor(
+            p_tensor, points, &initial, dim, max_iters,
+        );
+    }
+
+    // Otherwise build the training tensor from the subsample. The
+    // subsample holds `k · MAX_POINTS_PER_CENTROID` rows at most so
+    // the extra on-device allocation is bounded (≤ ~33 MiB at the
+    // typical ColBERT-scale k/dim) and completely dwarfed by the
+    // full pool tensor the caller already owns.
+    let device = p_tensor.device();
+    let n_train = training_points.len() / dim;
+    let training_tensor =
+        Tensor::from_slice(&training_points, (n_train, dim), device)?;
+    fit_with_init_on_tensor(
+        &training_tensor,
+        &training_points,
+        &initial,
         dim,
-    );
-    let n = points.len() / dim;
-    assert!(
-        n >= k,
-        "farthest_first_init: need at least k={k} points, got {n}",
-    );
-
-    if k == 1 {
-        return Ok(points[..dim].to_vec());
-    }
-
-    let device = default_device();
-    let p_tensor = Tensor::from_slice(points, (n, dim), device)?;
-    farthest_first_init_on_tensor(&p_tensor, points, k, dim)
+        max_iters,
+    )
 }
 
-/// Farthest-first seeding against an already-uploaded `p_tensor`.
+/// Sample up to `k · MAX_POINTS_PER_CENTROID` rows from `points` with
+/// a seeded Fisher–Yates shuffle.
 ///
-/// Extracted so [`fit`] can upload the points tensor once and share it
-/// with [`fit_with_init_on_tensor`]. The full algorithm lives here;
-/// the public [`farthest_first_init`] is a thin wrapper that uploads
-/// on the caller's behalf for test code that doesn't need the
-/// sharing.
-///
-/// `points` must be the host-side backing buffer for `p_tensor`
-/// (same rows, same order): we read the winning centroid's bytes
-/// from the host slice to keep seeds byte-identical to input rows.
-fn farthest_first_init_on_tensor(
-    p_tensor: &Tensor,
+/// Returns `(sample, same_as_pool)` — when the corpus already has
+/// `≤ k · MAX_POINTS_PER_CENTROID` rows, the caller's slice is cloned
+/// as-is and `same_as_pool = true`, letting [`fit_on_tensor`] reuse
+/// the pre-uploaded tensor without a second copy.
+fn sample_training_points(
     points: &[f32],
+    n: usize,
     k: usize,
     dim: usize,
-) -> Result<Vec<f32>> {
-    let mut centroids = Vec::with_capacity(k * dim);
-    centroids.extend_from_slice(&points[..dim]);
-    if k == 1 {
-        return Ok(centroids);
+) -> (Vec<f32>, bool) {
+    let target = (k * MAX_POINTS_PER_CENTROID).min(n);
+    if target == n {
+        return (points.to_vec(), true);
     }
 
-    // Cache ‖p_i‖² once; every iteration below reuses it via the
-    // matmul identity ‖p − c‖² = ‖p‖² − 2·p·c + ‖c‖².
-    let p_sq = p_tensor.sqr()?.sum_keepdim(1)?; // [n, 1]
+    let mut rng = StdRng::seed_from_u64(TRAINING_SHUFFLE_SEED);
+    let mut indices: Vec<u32> = (0..n as u32).collect();
+    // Partial Fisher–Yates: shuffle just the first `target` positions.
+    // Equivalent to a full shuffle followed by `truncate(target)`,
+    // minus the unused tail work.
+    let (head, _) = indices.partial_shuffle(&mut rng, target);
+    let head: Vec<u32> = head.to_vec();
 
-    let first_c = p_tensor.narrow(0, 0, 1)?; // [1, dim]
-    let mut min_dists = squared_l2_to_centroid(p_tensor, &p_sq, &first_c)?;
-
-    for _ in 1..k {
-        let best_idx = min_dists.argmax(0)?.to_scalar::<u32>()? as usize;
-        let new_c = &points[best_idx * dim..(best_idx + 1) * dim];
-        centroids.extend_from_slice(new_c);
-
-        let c_row = p_tensor.narrow(0, best_idx, 1)?; // [1, dim]
-        let new_dists = squared_l2_to_centroid(p_tensor, &p_sq, &c_row)?;
-        min_dists = min_dists.minimum(&new_dists)?;
+    let mut sample = Vec::with_capacity(target * dim);
+    for &i in &head {
+        let start = i as usize * dim;
+        sample.extend_from_slice(&points[start..start + dim]);
     }
-
-    Ok(centroids)
-}
-
-/// Squared L2 distance from every row of `points` to the single row
-/// `centroid`, using the matmul-friendly identity
-/// `‖p − c‖² = ‖p‖² − 2·p·c + ‖c‖²`.
-///
-/// `points_sq` is the precomputed `[n, 1]` column of `‖p_i‖²`; caching
-/// it across outer calls is the reason this helper takes it instead
-/// of recomputing internally. Returns a `[n]` 1-D tensor.
-fn squared_l2_to_centroid(
-    points: &Tensor,
-    points_sq: &Tensor,
-    centroid: &Tensor,
-) -> Result<Tensor> {
-    let c_t = centroid.t()?; // [dim, 1]
-    let dot = points.matmul(&c_t)?; // [n, 1]
-    let c_sq = centroid.sqr()?.sum_keepdim(1)?; // [1, 1]
-    let d = points_sq
-        .broadcast_sub(&dot.affine(2.0, 0.0)?)?
-        .broadcast_add(&c_sq)?; // [n, 1]
-    Ok(d.squeeze(1)?)
+    (sample, false)
 }
 
 /// Assign every point in `points` to the index of its nearest centroid.
@@ -770,24 +751,23 @@ mod tests {
     }
 
     #[test]
-    fn fit_uses_farthest_first_seeding_to_spread_initial_centroids() {
+    fn fit_converges_to_well_separated_centroids_on_bimodal_corpus() {
         // Two tight clusters, one near origin and one near (10, 10).
-        // With `max_iters = 0` no Lloyd step runs, so the returned
-        // centroids ARE the initial seeds. Farthest-first must pick
-        // one point from each cluster — the two returned centroids
-        // should therefore sit far apart, not both near origin like
-        // the old "first k points" seeding would give.
+        // Random-subsample seeding can (and does) sometimes pick two
+        // points from the same cluster, but Lloyd's algorithm pulls
+        // them apart within a few iterations. 20 iters is the same
+        // cap `PlaidBuildParams::default()` uses in production.
         let points = vec![
             0.0, 0.0, 0.1, 0.1, -0.1, 0.1, // cluster near origin
             10.0, 10.0, 10.1, 9.9, 9.9, 10.1, // cluster near (10, 10)
         ];
-        let seeds = fit(&points, 2, 2, 0).unwrap();
-        let c0 = &seeds[0..2];
-        let c1 = &seeds[2..4];
+        let fitted = fit(&points, 2, 2, 20).unwrap();
+        let c0 = &fitted[0..2];
+        let c1 = &fitted[2..4];
         let dist = squared_l2(c0, c1);
         assert!(
             dist > 100.0,
-            "expected well-separated seeds, got {c0:?} and {c1:?} (dist²={dist})",
+            "expected well-separated centroids after Lloyd, got {c0:?} and {c1:?} (dist²={dist})",
         );
     }
 

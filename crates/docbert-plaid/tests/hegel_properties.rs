@@ -456,22 +456,74 @@ fn prop_update_centroids_shape_and_empty_cluster_preservation(tc: TestCase) {
     }
 }
 
-/// Shape: every row of `farthest_first_init`'s output is byte-equal to
-/// one of the input rows, and the first output row equals `points[..dim]`
-/// (Gonzalez's algorithm picks row 0 as the first seed). Rules out the
-/// kind of bug where seeding accidentally averages or perturbs inputs.
+/// Shape: `fit(points, k, dim, _)` always returns exactly `k · dim`
+/// floats, regardless of the input size or iteration count. Guards the
+/// contract every caller (codec training, IVF construction, search
+/// probing) relies on.
 #[hegel::test(test_cases = 100)]
-fn prop_farthest_first_init_rows_are_input_rows(tc: TestCase) {
-    use docbert_plaid::kmeans::farthest_first_init;
+fn prop_fit_returns_correct_shape(tc: TestCase) {
+    use docbert_plaid::kmeans::fit;
     let dim = tc.draw(codec_dim());
     let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
-    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(24));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(128));
+    let iters = tc.draw(gs::integers::<usize>().min_value(0).max_value(5));
     let points = tc.draw(unit_rows(dim, n));
 
-    let seeds = farthest_first_init(&points, k, dim).unwrap();
-    assert_eq!(seeds.len(), k * dim);
-    assert_eq!(&seeds[..dim], &points[..dim]);
+    let centroids = fit(&points, k, dim, iters).unwrap();
+    assert_eq!(centroids.len(), k * dim);
+}
 
+/// Determinism: the subsample shuffle uses a fixed seed, so `fit`
+/// called twice on the same inputs must return bit-identical
+/// centroids. Shrinkers rely on this to produce minimal counterexamples
+/// when something downstream breaks on a specific centroid geometry.
+#[hegel::test(test_cases = 50)]
+fn prop_fit_is_deterministic_across_calls(tc: TestCase) {
+    use docbert_plaid::kmeans::fit;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(64));
+    let iters = tc.draw(gs::integers::<usize>().min_value(0).max_value(3));
+    let points = tc.draw(unit_rows(dim, n));
+
+    let a = fit(&points, k, dim, iters).unwrap();
+    let b = fit(&points, k, dim, iters).unwrap();
+    assert_eq!(a, b, "fit is not deterministic across identical calls");
+}
+
+/// Safety: centroids must stay finite. An invariant the codec and
+/// every downstream consumer implicitly assume — a single NaN would
+/// propagate through the residual training and poison the quantile
+/// cutoffs.
+#[hegel::test(test_cases = 100)]
+fn prop_fit_returns_finite_centroids(tc: TestCase) {
+    use docbert_plaid::kmeans::fit;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(64));
+    let iters = tc.draw(gs::integers::<usize>().min_value(0).max_value(5));
+    let points = tc.draw(unit_rows(dim, n));
+
+    let centroids = fit(&points, k, dim, iters).unwrap();
+    for v in &centroids {
+        assert!(v.is_finite(), "non-finite centroid value {v}");
+    }
+}
+
+/// Seeding: with `max_iters == 0` the Lloyd loop never runs, so the
+/// returned centroids must be byte-equal to some input rows — the
+/// first `k` rows of the shuffled subsample. This rules out bugs
+/// where the subsample accidentally averages or perturbs inputs
+/// before the loop starts.
+#[hegel::test(test_cases = 100)]
+fn prop_fit_zero_iters_returns_input_rows(tc: TestCase) {
+    use docbert_plaid::kmeans::fit;
+    let dim = tc.draw(codec_dim());
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(64));
+    let points = tc.draw(unit_rows(dim, n));
+
+    let seeds = fit(&points, k, dim, 0).unwrap();
     let input_rows: Vec<&[f32]> = points.chunks_exact(dim).collect();
     for seed in seeds.chunks_exact(dim) {
         assert!(
