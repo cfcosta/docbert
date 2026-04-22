@@ -1,37 +1,55 @@
+/*
+ * Classic-desktop Settings page. Sticky context band at the top, a
+ * flat form body with square 4px-radius controls, a single solid-blue
+ * primary button, and text-coloured status chips instead of pill
+ * badges.
+ */
+
 .settings-page {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--workspace-backdrop);
+  background: var(--bg);
 }
 
 .settings-header {
-  border-bottom: 1px solid var(--border-strong);
-  background: var(--surface-panel-strong);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 28%, transparent);
+  display: flex;
+  align-items: center;
+  height: 2.5rem;
+  padding: 0 var(--page-gutter);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
 }
 
 .settings-header-inner {
-  max-width: 44rem;
-  margin: 0 auto;
-  padding: var(--page-block-start) var(--page-gutter) var(--space-md);
-  display: grid;
-  gap: var(--space-2xs);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
 }
 
 .settings-header-description {
   color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-body);
-  max-width: 42ch;
+  font-size: 0.75rem;
+  line-height: var(--leading-ui);
+  margin: 0;
 }
 
 .settings-body {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-xl) var(--page-gutter) var(--page-block-end);
-  background: transparent;
+  background: var(--bg);
 }
 
 .settings-loading,
@@ -50,110 +68,115 @@
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
+  gap: var(--space-md);
+}
+
+.settings-section > h3 {
+  margin: 0;
+  font-size: var(--text-subhead);
+  font-weight: var(--weight-semibold);
+  color: var(--text-h);
+  line-height: var(--leading-heading);
 }
 
 .settings-description {
   color: var(--text-muted);
-  font-size: var(--text-meta);
+  font-size: 0.875rem;
   line-height: var(--leading-body);
-  max-width: 54ch;
+  max-width: 60ch;
+  margin: 0;
 }
 
 .settings-field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
+  margin-top: var(--space-xs);
 }
 
 .settings-label {
-  font-size: var(--text-caption);
+  font-size: 0.6875rem;
   font-weight: var(--weight-semibold);
-  color: var(--text-h);
-  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .settings-radio-group {
   display: flex;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
 }
 
 .settings-radio {
-  padding: 0.5rem 1.25rem;
-  min-height: 2.5rem;
+  padding: 6px 14px;
+  min-height: 2rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-control);
+  border-radius: 4px;
+  background: var(--bg-secondary);
   color: var(--text);
-  font-size: var(--text-meta);
-  font-weight: var(--weight-medium);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 30%, transparent);
+  font-size: 0.8125rem;
+  font-weight: var(--weight-regular);
   cursor: pointer;
   transition:
-    background 0.15s,
-    color 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s;
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
 }
 
 .settings-radio:hover {
-  background: var(--surface-emphasis-hover);
+  background: var(--surface-selection);
   border-color: var(--border-strong);
   color: var(--text-h);
 }
 
 .settings-radio.active {
-  background: var(--surface-accent-strong);
+  background: var(--accent);
   color: var(--accent-text);
-  border-color: var(--accent-border);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
+  border-color: var(--accent);
 }
 
 .settings-select,
 .settings-input {
   width: 100%;
-  padding: 0.75rem 0.875rem;
-  min-height: 2.875rem;
+  padding: 6px 10px;
+  min-height: 2rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-control);
+  border-radius: 4px;
+  background: var(--bg-secondary);
   color: var(--text-h);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 38%, transparent);
   outline: none;
   transition:
-    border-color 0.15s,
-    background 0.15s,
-    box-shadow 0.15s;
+    border-color 0.1s,
+    background 0.1s;
 }
 
 .settings-select {
   font-family: var(--font-body);
-  font-size: var(--text-meta);
-  font-weight: var(--weight-medium);
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 
 .settings-input {
   font-family: var(--font-mono);
-  font-size: var(--text-meta);
+  font-size: 0.8125rem;
 }
 
 .settings-select:hover,
 .settings-input:hover {
-  background: var(--surface-control-hover);
+  background: color-mix(in oklab, var(--surface-selection) 50%, var(--bg-secondary));
 }
 
 .settings-select:focus,
 .settings-input:focus {
   border-color: var(--border-focus);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 46%, transparent);
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 .settings-hint {
   font-size: var(--text-caption);
   color: var(--text-muted);
   line-height: var(--leading-ui);
+  margin: 0;
 }
 
 .settings-actions {
@@ -168,16 +191,16 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  padding: var(--space-md) 0 0;
+  padding: var(--space-sm) 0 0;
   border-top: 1px solid var(--border);
 }
 
 .settings-oauth-copy {
   margin: 0;
   color: var(--text);
-  font-size: var(--text-meta);
+  font-size: 0.875rem;
   line-height: var(--leading-body);
-  max-width: 58ch;
+  max-width: 60ch;
 }
 
 .settings-oauth-status-row {
@@ -196,41 +219,38 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.75rem;
-  border-radius: var(--radius);
-  font-size: var(--text-meta);
+  min-height: 2rem;
+  border-radius: 4px;
+  font-size: 0.8125rem;
   font-weight: var(--weight-medium);
-  letter-spacing: var(--tracking-ui);
   cursor: pointer;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    opacity 0.15s;
+    background 0.1s,
+    border-color 0.1s,
+    opacity 0.1s;
 }
 
 .settings-save {
-  padding: 0.625rem 1.5rem;
-  border: 1px solid var(--accent-border);
-  background: var(--surface-accent-strong);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
+  padding: 6px 16px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: var(--accent-text);
 }
 
 .settings-save:hover:not(:disabled) {
-  background: var(--surface-accent-hover);
-  border-color: var(--accent-hover-border);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .settings-secondary {
-  padding: 0.625rem 1rem;
+  padding: 6px 12px;
   border: 1px solid var(--border);
-  background: var(--surface-control);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 26%, transparent);
+  background: var(--bg-secondary);
   color: var(--text);
 }
 
 .settings-secondary:hover:not(:disabled) {
-  background: var(--surface-emphasis-hover);
+  background: var(--surface-selection);
   border-color: var(--border-strong);
 }
 
@@ -240,43 +260,33 @@
   cursor: default;
 }
 
+/* Status markers — plain coloured text, not pill badges. Keeps the
+ * control strip visually quiet. */
+
 .settings-saved,
 .settings-error,
 .settings-oauth-pending {
   display: inline-flex;
   align-items: center;
-  min-height: 2rem;
-  padding: 0 0.75rem;
-  border-radius: 999px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.8125rem;
+  font-weight: var(--weight-medium);
 }
 
 .settings-saved {
-  background: var(--surface-selection);
   color: var(--success);
-  border: 1px solid var(--success-border);
 }
 
 .settings-error {
-  background: var(--surface-selection);
   color: var(--error);
-  border: 1px solid var(--error-border);
 }
 
 .settings-oauth-pending {
-  background: var(--surface-selection);
   color: var(--text-muted);
-  border: 1px solid var(--border);
 }
 
 @media (max-width: 640px) {
   .settings-body {
     padding: var(--space-lg) var(--space-md) var(--space-3xl);
-  }
-
-  .settings-header-inner {
-    padding: var(--space-lg) var(--space-md) var(--space-md);
   }
 
   .settings-actions {

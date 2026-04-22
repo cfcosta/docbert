@@ -1,201 +1,104 @@
+/*
+ * Classic-desktop Chat page. Two columns — compact conversation rail
+ * on the left, single-reading-column transcript on the right. Every
+ * surface flat: solid fills, thin 1px borders, 4px radii, blue left
+ * stripe for selected conversation, solid-accent user bubbles, and a
+ * flat input bar at the bottom with a square send button.
+ */
+
 .chat-page {
   display: grid;
-  grid-template-columns: minmax(17rem, 19rem) minmax(0, 1fr);
+  grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
 }
 
-/* ── Sidebar ── */
+/* ── Conversation rail ── */
 
 .chat-sidebar {
-  border-right: 1px solid var(--border-strong);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--surface-panel-sidebar);
-}
-
-.chat-new-btn {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  min-width: min(11rem, 100%);
-  min-height: 3rem;
-  padding: 0.75rem 1.5rem;
-  border: 1px solid color-mix(in oklab, var(--accent-cyan) 14%, var(--border-strong));
-  border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 76%, white 24%),
-    color-mix(in oklab, var(--bg-secondary) 88%, var(--surface-selection) 12%) 58%,
-    color-mix(in oklab, var(--bg-secondary) 88%, var(--accent) 12%)
-  );
-  color: var(--text-h);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-xs);
-  font-size: var(--text-meta);
-  font-weight: var(--weight-medium);
-  letter-spacing: var(--tracking-ui);
-  cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 58%, transparent),
-    inset 0 -1px 0 color-mix(in oklab, var(--accent) 14%, transparent),
-    0 6px 16px color-mix(in oklab, var(--bg) 88%, transparent);
-  transition:
-    border-color 0.18s,
-    color 0.18s,
-    box-shadow 0.18s,
-    transform 0.18s,
-    filter 0.18s;
-}
-
-.chat-new-btn svg {
-  flex-shrink: 0;
-}
-
-.chat-new-btn::before,
-.chat-new-btn::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-}
-
-.chat-new-btn::before {
-  background: linear-gradient(
-    120deg,
-    transparent 24%,
-    color-mix(in oklab, white 54%, transparent) 40%,
-    transparent 56%
-  );
-  opacity: 0.34;
-  transform: translateX(-34%);
-  transition:
-    transform 0.3s ease,
-    opacity 0.2s ease;
-}
-
-.chat-new-btn::after {
-  inset: 1px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent-cyan) 8%, transparent),
-    transparent 42%,
-    color-mix(in oklab, var(--accent) 8%, transparent)
-  );
-  opacity: 0.68;
-  z-index: -1;
-}
-
-.chat-new-btn:hover {
-  border-color: color-mix(in oklab, var(--accent-cyan) 24%, var(--border-focus) 76%);
-  color: color-mix(in oklab, var(--text-h) 90%, var(--accent) 10%);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 64%, transparent),
-    inset 0 -1px 0 color-mix(in oklab, var(--accent) 18%, transparent),
-    0 10px 20px color-mix(in oklab, var(--bg) 82%, transparent);
-  transform: translateY(-1px);
-  filter: saturate(1.02);
-}
-
-.chat-new-btn:hover::before {
-  transform: translateX(16%);
-  opacity: 0.42;
-}
-
-.chat-new-btn:active {
-  transform: translateY(0);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 52%, transparent),
-    inset 0 -1px 0 color-mix(in oklab, var(--accent) 12%, transparent),
-    0 4px 12px color-mix(in oklab, var(--bg) 90%, transparent);
+  background: var(--bg-secondary);
 }
 
 .chat-conv-list-header {
-  padding: var(--space-lg) var(--space-md) var(--space-sm);
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 94%, white 6%),
-    color-mix(in oklab, var(--surface-floating) 78%, transparent)
-  );
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 2.25rem;
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
 }
 
 .chat-sidebar-kicker {
-  font-size: var(--text-caption);
+  font-size: 0.6875rem;
   font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-label);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: color-mix(in oklab, var(--text-muted) 88%, var(--accent) 12%);
+  color: var(--text-muted);
+  margin: 0;
 }
 
 .chat-sidebar-summary {
-  margin-top: 0.35rem;
+  margin: 0;
   color: var(--text-muted);
-  font-size: var(--text-meta);
-  line-height: var(--leading-ui);
+  font-size: 0.6875rem;
+  line-height: 1;
 }
 
 .chat-conv-list {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-sm) var(--space-xs) var(--space-md);
+  padding: 4px 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2xs);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--bg-tertiary) 24%, transparent),
-    transparent 10rem
-  );
-}
-
-.chat-sidebar-footer {
-  padding: var(--space-sm) var(--space-md) var(--space-lg);
-  display: flex;
-  justify-content: center;
-  background: linear-gradient(
-    to top,
-    color-mix(in oklab, var(--surface-floating) 92%, var(--accent) 8%),
-    color-mix(in oklab, var(--surface-floating) 70%, transparent)
-  );
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
+  gap: 0;
+  background: var(--bg-secondary);
 }
 
 .chat-conv-empty {
-  padding: var(--space-2xl) var(--space-md);
+  padding: var(--space-lg) var(--space-sm);
   color: var(--text-muted);
-  font-size: var(--text-meta);
+  font-size: 0.8125rem;
   line-height: var(--leading-body);
-  text-align: center;
+  text-align: left;
 }
 
 .chat-conv-item {
   display: flex;
   align-items: stretch;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
+  position: relative;
+  border: none;
+  border-radius: 0;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s;
+    background 0.08s,
+    color 0.08s;
 }
 
 .chat-conv-item:hover {
-  background: var(--surface-selection);
+  background: color-mix(in oklab, var(--surface-selection) 40%, transparent);
 }
 
 .chat-conv-item.active {
-  background: color-mix(in oklab, var(--surface-current-line) 82%, var(--accent) 18%);
-  border-color: var(--accent-border);
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+}
+
+.chat-conv-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 .chat-conv-item.active .chat-conv-btn {
-  color: var(--accent);
+  color: var(--text-h);
 }
 
 .chat-conv-btn {
@@ -204,13 +107,13 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 0.15rem;
-  padding: 0.75rem 0.875rem;
-  min-height: 3.25rem;
+  gap: 1px;
+  padding: 6px 10px;
+  min-height: 2.25rem;
   border: none;
   background: none;
   color: var(--text);
-  font-size: var(--text-meta);
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
 }
@@ -220,21 +123,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: var(--weight-medium);
+  color: var(--text-h);
 }
 
 .chat-conv-time {
-  font-size: var(--text-caption);
+  font-size: 0.6875rem;
   color: var(--text-muted);
-  letter-spacing: var(--tracking-ui);
   font-variant-numeric: tabular-nums;
 }
 
 .chat-conv-delete {
-  width: 2.75rem;
-  height: 2.75rem;
-  margin: auto 0.125rem auto 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: auto 4px;
   border: none;
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 3px;
   background: none;
   color: var(--text-muted);
   display: flex;
@@ -242,11 +145,11 @@
   justify-content: center;
   padding: 0;
   flex-shrink: 0;
-  opacity: 0.35;
+  opacity: 0;
   transition:
-    opacity 0.15s,
-    color 0.15s,
-    background 0.15s;
+    opacity 0.08s,
+    color 0.08s,
+    background 0.08s;
 }
 
 .chat-conv-item:hover .chat-conv-delete,
@@ -262,35 +165,34 @@
 
 .chat-conv-delete:hover {
   color: var(--error);
-  background: color-mix(in oklab, var(--error-bg) 86%, white 14%);
+  background: color-mix(in oklab, var(--error) 20%, transparent);
 }
 
 .chat-conv-confirm {
   display: flex;
-  gap: var(--space-2xs);
+  gap: 2px;
   align-items: center;
   flex-shrink: 0;
-  padding-right: 0.125rem;
+  padding: 4px;
 }
 
 .chat-conv-confirm-yes,
 .chat-conv-confirm-no {
-  min-width: 2.75rem;
-  min-height: 2.75rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: calc(var(--radius) - 2px);
-  font-size: var(--text-caption);
+  min-height: 1.75rem;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 0.6875rem;
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }
 
 .chat-conv-confirm-yes {
-  border: none;
+  border: 1px solid var(--error);
   background: var(--error);
   color: var(--accent-text);
   transition:
-    opacity 0.15s,
-    background 0.15s;
+    opacity 0.1s,
+    background 0.1s;
 }
 
 .chat-conv-confirm-yes:hover {
@@ -302,35 +204,72 @@
   background: var(--bg);
   color: var(--text);
   transition:
-    background 0.15s,
-    border-color 0.15s;
+    background 0.1s,
+    border-color 0.1s;
 }
 
 .chat-conv-confirm-no:hover {
   background: var(--bg-tertiary);
 }
 
-/* ── Main chat area ── */
+.chat-sidebar-footer {
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+
+.chat-new-btn {
+  flex: 1;
+  min-height: 2rem;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  font-size: 0.8125rem;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+.chat-new-btn svg {
+  flex-shrink: 0;
+}
+
+.chat-new-btn:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.chat-new-btn:active {
+  background: var(--accent);
+}
+
+/* ── Main transcript column ── */
 
 .chat-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--bg) 72%, transparent),
-    color-mix(in oklab, var(--bg) 92%, var(--bg-secondary) 8%)
-  );
+  background: var(--bg);
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: clamp(1.5rem, 2.5vw, 2.5rem) var(--page-gutter-wide) var(--space-2xl);
+  padding: var(--space-lg) var(--page-gutter) var(--space-xl);
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--space-md);
 }
 
 .chat-empty {
@@ -360,53 +299,41 @@
 
 .chat-empty p {
   max-width: 40rem;
-  font-size: var(--text-body);
+  font-size: 0.9375rem;
   line-height: var(--leading-body);
 }
 
 .chat-empty-starters {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   margin-top: var(--space-xs);
 }
 
 .chat-starter-chip {
-  min-height: 2.75rem;
-  padding: 0.625rem 0.9rem;
-  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
-  border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 82%, white 18%),
-    color-mix(in oklab, var(--surface-floating) 92%, var(--accent) 8%)
-  );
+  min-height: 2rem;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
   color: var(--text);
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  font-size: var(--text-meta);
+  gap: 4px;
+  font-size: 0.8125rem;
   line-height: var(--leading-ui);
   text-align: left;
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
-    var(--shadow-sm);
+  cursor: pointer;
   transition:
-    border-color 0.15s,
-    background 0.15s,
-    transform 0.15s,
-    box-shadow 0.15s;
+    border-color 0.1s,
+    background 0.1s,
+    color 0.1s;
 }
 
 .chat-starter-chip:hover {
-  border-color: color-mix(in oklab, var(--accent-border) 70%, var(--border) 30%);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 74%, white 26%),
-    color-mix(in oklab, var(--surface-floating) 86%, var(--accent-cyan) 14%)
-  );
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-secondary));
+  color: var(--text-h);
 }
 
 .chat-starter-chip span {
@@ -431,65 +358,18 @@
 .chat-msg-bubble {
   width: fit-content;
   max-width: min(100%, 46rem);
-  padding: 0.875rem 1rem;
-  border-radius: var(--radius-lg);
-  line-height: 1.7;
-  font-size: 1rem;
-  box-shadow: var(--shadow-sm);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  line-height: 1.55;
+  font-size: 0.9375rem;
 }
 
 .chat-msg-user .chat-msg-bubble {
-  position: relative;
-  overflow: hidden;
   max-width: min(34rem, calc(100% - 4rem));
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 72%, white 28%),
-    color-mix(in oklab, var(--accent) 90%, var(--accent-cyan) 10%) 58%,
-    var(--accent)
-  );
-  border: 1px solid color-mix(in oklab, var(--accent-border) 82%, white 18%);
+  background: var(--accent);
+  border: 1px solid var(--accent);
   color: var(--accent-text);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
-    inset 0 -1px 0 color-mix(in oklab, var(--accent) 18%, transparent),
-    0 10px 18px color-mix(in oklab, var(--bg) 86%, transparent);
-  border-radius: 1.15rem 1.2rem 0.5rem 1.2rem;
-}
-
-.chat-msg-user .chat-msg-bubble::before,
-.chat-msg-user .chat-msg-bubble::after {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-}
-
-.chat-msg-user .chat-msg-bubble::before {
-  inset: 1px 1px auto;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in oklab, white 48%, transparent) 20%,
-    color-mix(in oklab, white 58%, transparent) 50%,
-    transparent 82%
-  );
-  opacity: 0.9;
-}
-
-.chat-msg-user .chat-msg-bubble::after {
-  top: -4.25rem;
-  right: -3.5rem;
-  width: 10rem;
-  height: 10rem;
-  border-radius: 999px;
-  background: radial-gradient(
-    circle,
-    color-mix(in oklab, white 20%, transparent) 0%,
-    color-mix(in oklab, white 12%, transparent) 28%,
-    transparent 72%
-  );
-  opacity: 0.85;
+  border-radius: 8px 8px 2px 8px;
 }
 
 .chat-msg-assistant .chat-msg-bubble {
@@ -500,18 +380,16 @@
   border: none;
   border-radius: 0;
   color: var(--text-h);
-  box-shadow: none;
 }
 
 .chat-msg-subagent .chat-msg-bubble {
   padding: 0;
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-subagent-inline {
-  margin: var(--space-xs) 0;
-  border-radius: var(--radius);
+  margin: var(--space-2xs) 0;
+  border-radius: 4px;
   overflow: hidden;
   min-width: 0;
 }
@@ -519,35 +397,27 @@
 .chat-subagent-header {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
   width: 100%;
   min-width: 0;
-  padding: 0.5rem 0.75rem;
-  min-height: 2.5rem;
+  padding: 4px 8px;
+  min-height: 2rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-panel-soft);
+  border-radius: 4px;
+  background: var(--bg-secondary);
   color: var(--text-muted);
   font-size: var(--text-caption);
   line-height: var(--leading-ui);
-  letter-spacing: var(--tracking-ui);
   text-align: left;
   cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 24%, transparent),
-    var(--shadow-sm);
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s;
+    background 0.1s,
+    border-color 0.1s;
 }
 
 .chat-subagent-toggle:hover {
-  background: var(--surface-emphasis-hover);
-  border-color: var(--accent-border);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
-    var(--shadow);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-secondary));
+  border-color: var(--accent);
 }
 
 .chat-subagent-icon {
@@ -557,7 +427,7 @@
 
 .chat-subagent-label {
   flex-shrink: 0;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   color: var(--text-h);
 }
 
@@ -599,16 +469,13 @@
 }
 
 .chat-subagent-body {
-  margin-top: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
+  margin-top: var(--space-2xs);
+  padding: var(--space-sm);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-panel-soft);
-  font-size: 0.9rem;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  font-size: 0.875rem;
   color: var(--text);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
-    var(--shadow-sm);
   min-width: 0;
 }
 
@@ -619,6 +486,8 @@
 .chat-subagent-body > :last-child {
   margin-bottom: 0;
 }
+
+/* ── Message body (markdown) ── */
 
 .chat-msg-content > :first-child {
   margin-top: 0;
@@ -643,19 +512,18 @@
   font-family: var(--font-display);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-heading);
-  letter-spacing: var(--tracking-heading);
 }
 
 .chat-msg-content h1 {
-  font-size: 1.375em;
+  font-size: 1.25em;
 }
 
 .chat-msg-content h2 {
-  font-size: 1.2em;
+  font-size: 1.1em;
 }
 
 .chat-msg-content h3 {
-  font-size: 1.08em;
+  font-size: 1em;
 }
 
 .chat-msg-content ul,
@@ -670,44 +538,43 @@
 
 .chat-msg-content pre {
   margin: 0.65em 0;
-  padding: 0.75rem 0.875rem;
-  background: var(--surface-panel-soft);
+  padding: 0.625rem 0.75rem;
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
+  border-radius: 4px;
   overflow-x: auto;
   font-family: var(--mono);
   font-size: 0.8em;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
-.chat-msg-content code {
+.chat-msg-content :not(pre) > code {
+  font-family: var(--mono);
   font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--accent-cyan);
 }
 
 .chat-msg-content pre code {
   background: none;
   padding: 0;
   border-radius: 0;
+  color: inherit;
 }
 
 .chat-msg-content blockquote {
   margin: 0.6em 0;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-selection) 76%, white 24%),
-    color-mix(in oklab, var(--surface-selection) 88%, var(--bg) 12%) 62%,
-    color-mix(in oklab, var(--surface-selection) 84%, var(--accent-cyan) 16%)
-  );
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 18%, transparent);
-  color: var(--text-muted);
+  padding: 0.5em 0.75em;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+  border-radius: 0 3px 3px 0;
+  color: var(--text);
 }
 
 .chat-msg-content a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
@@ -721,14 +588,19 @@
 
 .chat-msg-content th,
 .chat-msg-content td {
-  border: 1px solid var(--border);
-  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding: 5px 8px;
   text-align: left;
 }
 
+.chat-msg-content tbody tr:nth-child(even) td {
+  background: color-mix(in oklab, var(--bg-secondary) 50%, transparent);
+}
+
 .chat-msg-content th {
-  font-weight: 600;
-  background: var(--surface-panel-soft);
+  font-weight: var(--weight-semibold);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
 }
 
 .chat-msg-content hr {
@@ -737,12 +609,14 @@
   margin: 0.8em 0;
 }
 
+/* ── Streaming/thinking traces ── */
+
 .chat-thinking {
   margin: var(--space-xs) 0;
-  color: var(--text);
-  opacity: 0.45;
-  font-size: 0.95rem;
-  line-height: 1.7;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  font-style: italic;
 }
 
 .chat-thinking > :first-child {
@@ -763,52 +637,48 @@
 }
 
 .chat-thinking strong {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
+/* ── Tool call cards ── */
+
 .chat-tool-call {
-  margin: var(--space-xs) 0;
-  border-radius: var(--radius);
+  margin: var(--space-2xs) 0;
+  border-radius: 4px;
   overflow: hidden;
 }
 
 .chat-tool-call-header {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
   width: 100%;
-  padding: 0.5rem 0.75rem;
-  min-height: 2.5rem;
+  padding: 4px 8px;
+  min-height: 2rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 4px;
   background: var(--bg-secondary);
   color: var(--text-muted);
   font-size: var(--text-caption);
   line-height: var(--leading-ui);
-  letter-spacing: var(--tracking-ui);
   text-align: left;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    box-shadow 0.15s;
+    background 0.1s,
+    border-color 0.1s;
 }
 
 .chat-tool-call-header:hover {
-  background: var(--surface-selection);
-  border-color: var(--border);
-  box-shadow: var(--shadow);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-secondary));
+  border-color: var(--accent);
 }
 
 .chat-tool-call-subagent .chat-tool-call-header {
-  background: var(--surface-current-line);
-  border-color: var(--border);
+  background: var(--bg-tertiary);
 }
 
 .chat-tool-call-subagent .chat-tool-call-header:hover {
-  background: var(--surface-selection);
-  border-color: var(--border);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-tertiary));
 }
 
 .chat-tool-call-icon {
@@ -847,14 +717,15 @@
 
 .chat-tool-call-result {
   margin: 0;
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-sm);
   font-family: var(--mono);
-  font-size: 0.95rem;
-  font-variant-numeric: slashed-zero;
-  line-height: 1.65;
+  font-size: 0.8125rem;
+  line-height: 1.55;
   color: var(--text);
   background: var(--bg-secondary);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
   white-space: pre-wrap;
   word-wrap: break-word;
   max-height: 12.5rem;
@@ -862,23 +733,22 @@
 }
 
 .chat-tool-call-subagent .chat-tool-call-result {
-  background: var(--surface-current-line);
+  background: var(--bg-tertiary);
 }
 
 .chat-tool-search-preview-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-sm);
-  margin-top: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
+  margin-top: var(--space-2xs);
+  padding: var(--space-sm);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--bg-secondary) 84%, var(--bg) 16%);
-  box-shadow: var(--shadow-sm);
+  border-radius: 4px;
+  background: var(--bg-secondary);
 }
 
 .chat-tool-search-preview-layout.has-preview {
-  grid-template-columns: minmax(17rem, 22rem) minmax(0, 1fr);
+  grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
 }
 
 .chat-tool-search-preview-layout > * {
@@ -887,35 +757,29 @@
 
 .chat-tool-call-search.expanded {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-panel-soft);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
-    var(--shadow-sm);
+  border-radius: 4px;
+  background: var(--bg-secondary);
 }
 
 .chat-tool-call-search.expanded .chat-subagent-header {
   border-color: transparent;
   border-bottom: 1px solid var(--border);
-  border-radius: var(--radius) var(--radius) 0 0;
+  border-radius: 4px 4px 0 0;
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-tool-call-search.expanded .chat-subagent-toggle:hover {
-  background: var(--surface-emphasis-hover);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-secondary));
   border-color: transparent;
-  border-bottom-color: var(--accent-border);
-  box-shadow: none;
+  border-bottom-color: var(--accent);
 }
 
 .chat-tool-call-search .chat-tool-search-preview-layout {
   margin-top: 0;
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-sm);
   border: none;
-  border-radius: 0 0 var(--radius) var(--radius);
+  border-radius: 0 0 4px 4px;
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results {
@@ -925,7 +789,7 @@
 }
 
 .chat-tool-call-search .chat-tool-search-result {
-  padding: 0 0 var(--space-xl);
+  padding: 0 0 var(--space-lg);
 }
 
 .chat-tool-call-search .chat-tool-search-result:last-child {
@@ -937,12 +801,10 @@
   border: none;
   border-radius: 0;
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-node.active {
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-top {
@@ -951,11 +813,9 @@
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-title {
   display: inline-block;
-  font-family: var(--font-display);
-  font-size: var(--text-subhead);
+  font-size: 0.9375rem;
   font-weight: var(--weight-semibold);
   line-height: var(--leading-heading);
-  letter-spacing: var(--tracking-heading);
   color: var(--accent);
 }
 
@@ -969,77 +829,70 @@
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-path {
-  margin-top: var(--space-xs);
+  margin-top: 2px;
   font-size: var(--text-caption);
   color: var(--accent-green);
-  letter-spacing: var(--tracking-ui);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-meta {
   gap: var(--space-sm);
-  margin-top: var(--space-sm);
+  margin-top: var(--space-2xs);
   font-size: var(--text-caption);
   color: var(--text-muted);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-children {
-  gap: var(--space-sm);
-  margin-top: var(--space-sm);
+  gap: var(--space-2xs);
+  margin-top: var(--space-xs);
   margin-left: 0;
   padding: 0;
   border: none;
   border-radius: 0;
   background: transparent;
-  box-shadow: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt {
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in oklab, var(--surface-floating) 76%, var(--bg) 24%);
-  box-shadow: none;
+  border-radius: 3px;
+  background: var(--bg-secondary);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt.active {
-  background: color-mix(in oklab, var(--surface-current-line) 80%, var(--accent) 20%);
-  box-shadow: none;
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary));
+  border-color: var(--accent);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-link:hover,
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-button:hover,
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-selection);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 6%, var(--bg-secondary));
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-range {
   align-self: start;
   margin-top: 2px;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 3px;
   background: var(--bg-tertiary);
   color: var(--text-muted);
-  font-size: var(--text-caption);
-  line-height: var(--leading-ui);
+  font-size: 0.6875rem;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-text {
-  font-size: 1rem;
-  line-height: 1.65;
+  font-size: 0.875rem;
+  line-height: 1.55;
   color: var(--text);
 }
 
 .chat-tool-search-preview-shell {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 4px;
   overflow: hidden;
-  background: var(--surface-panel-soft);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 34%, transparent),
-    var(--shadow-sm);
+  background: var(--bg-secondary);
   min-height: 16rem;
   max-height: 30rem;
   display: flex;
@@ -1053,26 +906,29 @@
 .chat-sources {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-xs);
+  gap: var(--space-2xs);
   align-items: center;
-  margin-top: var(--space-md);
+  margin-top: var(--space-sm);
   padding-top: var(--space-sm);
   border-top: 1px solid var(--border);
 }
 
 .chat-sources-label {
-  font-size: 0.95rem;
-  font-weight: 620;
+  font-size: 0.75rem;
+  font-weight: var(--weight-semibold);
   color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .chat-source-tag {
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   font-family: var(--mono);
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-tertiary);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
   color: var(--text-muted);
+  border: 1px solid var(--border);
 }
 
 .chat-typing {
@@ -1082,8 +938,8 @@
 }
 
 .chat-typing-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--text-muted);
   animation: typing 1.2s infinite;
@@ -1110,232 +966,97 @@
   }
 }
 
+/* ── Composer bar ── */
+
 .chat-input-wrap {
-  border-top: 1px solid var(--border-strong);
-  background: color-mix(in oklab, var(--bg-secondary) 88%, var(--bg) 12%);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
 }
 
 .chat-input-bar {
-  padding: var(--space-md) var(--page-gutter-wide) var(--space-lg);
+  padding: var(--space-sm) var(--page-gutter);
   display: flex;
   align-items: flex-end;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   max-width: 56rem;
   width: 100%;
   margin: 0 auto;
 }
 
 .chat-input-shell {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
   flex: 1;
   min-width: 0;
-  padding: 0.25rem;
-  border: 1px solid color-mix(in oklab, var(--accent-pink-border) 72%, var(--border) 28%);
-  border-radius: calc(var(--radius-lg) + 2px);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--bg-secondary) 84%, white 16%),
-    color-mix(in oklab, var(--bg-secondary) 92%, var(--accent) 8%) 56%,
-    color-mix(in oklab, var(--bg-secondary) 96%, var(--accent-cyan) 4%)
-  );
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 18%, transparent),
-    0 12px 22px color-mix(in oklab, var(--bg) 90%, transparent);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
   transition:
-    border-color 0.18s,
-    box-shadow 0.18s,
-    background 0.18s,
-    filter 0.18s;
-}
-
-.chat-input-shell::before,
-.chat-input-shell::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.chat-input-shell::before {
-  inset: 1px 1px auto;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in oklab, white 38%, transparent) 18%,
-    color-mix(in oklab, white 62%, transparent) 50%,
-    transparent 84%
-  );
-  opacity: 0.88;
-}
-
-.chat-input-shell::after {
-  inset: auto -3.5rem -5rem auto;
-  width: 12rem;
-  height: 12rem;
-  border-radius: 999px;
-  background: radial-gradient(
-    circle,
-    color-mix(in oklab, var(--accent-cyan) 16%, transparent) 0%,
-    color-mix(in oklab, var(--accent) 12%, transparent) 28%,
-    transparent 72%
-  );
-  opacity: 0.32;
-  transform: scale(0.92);
-  transition:
-    opacity 0.18s,
-    transform 0.18s;
-}
-
-.chat-input-shell.has-draft {
-  border-color: color-mix(in oklab, var(--accent-border) 74%, var(--border) 26%);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
-    0 14px 28px color-mix(in oklab, var(--bg) 86%, transparent);
-}
-
-.chat-input-shell.has-draft::after,
-.chat-input-shell.is-loading::after,
-.chat-input-shell:focus-within::after {
-  opacity: 0.52;
-  transform: scale(1);
+    border-color 0.1s,
+    box-shadow 0.1s;
 }
 
 .chat-input-shell:focus-within {
   border-color: var(--border-focus);
-  box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--focus-ring) 14%, transparent),
-    0 16px 32px color-mix(in oklab, var(--bg) 84%, transparent);
-  filter: saturate(1.02);
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 .chat-input {
   display: block;
   width: 100%;
-  min-height: 3.5rem;
+  min-height: 2.5rem;
   max-height: 13.75rem;
-  padding: 0.9rem 1rem;
+  padding: 8px 12px;
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: 4px;
   background: transparent;
   color: var(--text-h);
   resize: none;
   overflow-y: auto;
-  font-size: 1rem;
-  line-height: 1.65;
+  font-size: 0.9375rem;
+  line-height: 1.5;
   outline: none;
   caret-color: var(--accent);
+  font-family: var(--font-body);
 }
 
 .chat-input::placeholder {
-  color: color-mix(in oklab, var(--text-muted) 86%, var(--accent-cyan) 14%);
-  transition: color 0.18s ease;
+  color: var(--text-muted);
 }
 
-.chat-input-shell:focus-within .chat-input::placeholder {
-  color: color-mix(in oklab, var(--text-muted) 74%, var(--accent) 26%);
-}
-
-.chat-input:hover {
-  background: transparent;
-}
-
+.chat-input:hover,
 .chat-input:focus,
 .chat-input:focus-visible {
+  background: transparent;
   box-shadow: none;
 }
 
 .chat-send,
 .chat-stop {
-  min-width: 3rem;
-  min-height: 3rem;
-  padding: 0.75rem 0.95rem;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0 10px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition:
-    background 0.18s,
-    border-color 0.18s,
-    box-shadow 0.18s,
-    opacity 0.18s,
-    color 0.18s,
-    transform 0.18s,
-    filter 0.18s;
+    background 0.1s,
+    border-color 0.1s,
+    opacity 0.1s,
+    color 0.1s;
   flex-shrink: 0;
+  cursor: pointer;
 }
 
 .chat-send {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--accent-border);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 80%, white 20%),
-    var(--accent-hover)
-  );
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: var(--accent-text);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 24%, transparent),
-    0 8px 18px color-mix(in oklab, var(--accent) 24%, transparent);
-}
-
-.chat-send::before {
-  content: "";
-  position: absolute;
-  inset: 1px;
-  border-radius: calc(var(--radius-lg) - 1px);
-  background: linear-gradient(
-    135deg,
-    color-mix(in oklab, white 18%, transparent),
-    transparent 42%,
-    color-mix(in oklab, var(--accent-cyan) 10%, transparent)
-  );
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-.chat-send svg {
-  position: relative;
-  z-index: 1;
-  transition:
-    transform 0.18s,
-    filter 0.18s;
-}
-
-.chat-send.ready {
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
-    0 10px 22px color-mix(in oklab, var(--accent) 28%, transparent);
 }
 
 .chat-send:hover:not(:disabled) {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent-hover) 82%, white 18%),
-    var(--accent-hover)
-  );
-  border-color: var(--accent-hover-border);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 26%, transparent),
-    0 12px 24px color-mix(in oklab, var(--accent) 30%, transparent);
-  transform: translateY(-1px);
-  filter: saturate(1.03);
-}
-
-.chat-send:hover:not(:disabled) svg {
-  transform: translate3d(1px, -1px, 0) scale(1.04);
-  filter: drop-shadow(0 0 0.4rem color-mix(in oklab, white 24%, transparent));
-}
-
-.chat-send:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 18%, transparent),
-    0 6px 14px color-mix(in oklab, var(--accent) 24%, transparent);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .chat-send:disabled {
@@ -1344,16 +1065,16 @@
 }
 
 .chat-stop {
-  border: 1px solid color-mix(in oklab, var(--error-border) 72%, var(--border) 28%);
-  background: color-mix(in oklab, var(--error-bg) 90%, white 10%);
+  border: 1px solid var(--error);
+  background: transparent;
   color: var(--error);
   font-size: var(--text-meta);
   font-weight: var(--weight-semibold);
+  padding: 0 14px;
 }
 
 .chat-stop:hover {
-  background: color-mix(in oklab, var(--error-bg) 74%, white 26%);
-  box-shadow: var(--shadow);
+  background: color-mix(in oklab, var(--error) 12%, transparent);
 }
 
 .chat-tool-search-preview-layout .chat-tool-search-results-tool-inline {
@@ -1363,7 +1084,6 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-input-shell,
   .chat-send,
-  .chat-send svg,
   .chat-input::placeholder {
     transition: none;
   }
@@ -1371,12 +1091,12 @@
 
 @media (max-width: 980px) {
   .chat-page {
-    grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr);
+    grid-template-columns: minmax(12rem, 14rem) minmax(0, 1fr);
   }
 
   .chat-messages,
   .chat-input-bar {
-    padding-inline: var(--page-gutter);
+    padding-inline: var(--space-md);
   }
 
   .chat-input-meta {
@@ -1401,12 +1121,7 @@
 
   .chat-sidebar {
     border-right: none;
-    border-bottom: 1px solid var(--border-strong);
-    box-shadow: none;
-  }
-
-  .chat-conv-list-header {
-    padding: var(--space-md) var(--space-md) var(--space-sm);
+    border-bottom: 1px solid var(--border);
   }
 
   .chat-conv-list {
@@ -1414,8 +1129,8 @@
   }
 
   .chat-messages {
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
+    padding: var(--space-md) var(--space-sm) var(--space-lg);
+    gap: var(--space-sm);
   }
 
   .chat-empty-starters {
@@ -1429,7 +1144,7 @@
   }
 
   .chat-input-bar {
-    padding: var(--space-md);
+    padding: var(--space-sm);
     flex-direction: column;
     align-items: stretch;
   }
@@ -1440,6 +1155,6 @@
   }
 
   .chat-msg-user .chat-msg-bubble {
-    max-width: min(100%, calc(100% - 2rem));
+    max-width: min(100%, calc(100% - 1rem));
   }
 }

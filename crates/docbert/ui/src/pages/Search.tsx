@@ -193,6 +193,7 @@ export default function Search() {
 
   return (
     <div className={`search-page${trimmedQuery ? " search-page-has-query" : ""}`}>
+      <header className="search-header">Search</header>
       <div className="search-body">
         <form className="search-controls" aria-label="Search controls" onSubmit={handleSubmit}>
           <div className="search-query-shell">
