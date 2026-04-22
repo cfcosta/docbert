@@ -31,5 +31,11 @@ metal = ["docbert-pylate/metal"]
 cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 hegeltest = "0.6"
+rand = "0.10"
 tempfile = "3"
+
+[[bench]]
+name = "embedding_trim"
+harness = false

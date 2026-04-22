@@ -438,6 +438,21 @@ impl ModelManager {
         Ok(model.encode(texts, false)?)
     }
 
+    /// Encode documents and return per-doc valid-token counts alongside.
+    ///
+    /// The returned tensor is identical to what [`encode_documents`] would
+    /// produce; the extra `Vec<u32>` contains the real token count for each
+    /// input in input order, matching the first N rows of axis 1 of the
+    /// tensor for each doc. Callers slicing per-doc embeddings use these
+    /// counts to avoid an all-zero row scan on the padded tail.
+    pub fn encode_documents_with_lengths(
+        &mut self,
+        texts: &[String],
+    ) -> Result<(Tensor, Vec<u32>)> {
+        let model = self.ensure_loaded()?;
+        Ok(model.encode_documents_with_lengths(texts)?)
+    }
+
     /// Encodes a query string into ColBERT token-level embeddings.
     ///
     /// docbert overrides the model's query prompt with an empty string, so

@@ -14,12 +14,23 @@ use crate::{
 pub const EMBEDDING_SUBMISSION_BATCH_SIZE: usize = 128;
 
 trait DocumentEncoder {
-    fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor>;
+    /// Encode documents and return `(embeddings_tensor, per_doc_valid_token_counts)`.
+    ///
+    /// The tensor has shape `[batch, padded_tokens, dim]`. Each row `i` has
+    /// its first `lengths[i]` token rows populated; everything after is
+    /// zero-padding from the tokenizer's batch-longest strategy.
+    fn encode_documents(
+        &mut self,
+        texts: &[String],
+    ) -> Result<(Tensor, Vec<u32>)>;
 }
 
 impl DocumentEncoder for ModelManager {
-    fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
-        ModelManager::encode_documents(self, texts)
+    fn encode_documents(
+        &mut self,
+        texts: &[String],
+    ) -> Result<(Tensor, Vec<u32>)> {
+        ModelManager::encode_documents_with_lengths(self, texts)
     }
 }
 
@@ -95,7 +106,7 @@ fn embed_documents_with<E: DocumentEncoder>(
     // Unzip to avoid cloning - we take ownership of the strings
     let (doc_ids, texts): (Vec<u64>, Vec<String>) =
         documents.into_iter().unzip();
-    let embeddings = model.encode_documents(&texts)?;
+    let (embeddings, lengths) = model.encode_documents(&texts)?;
 
     // embeddings shape: [batch_size, num_tokens, dimension]
     let dims = embeddings.dims3().map_err(|e| {
@@ -103,21 +114,35 @@ fn embed_documents_with<E: DocumentEncoder>(
     })?;
     let (batch_size, padded_tokens, dimension) = dims;
 
+    if lengths.len() != batch_size {
+        return Err(Error::Config(format!(
+            "encoder returned {} lengths for a batch of {}",
+            lengths.len(),
+            batch_size
+        )));
+    }
+
     let flat_embeddings = tensor_to_flat_f32(&embeddings)?;
     let doc_stride = padded_tokens * dimension;
 
     let mut entries = Vec::with_capacity(batch_size);
     for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
+        let num_tokens = usize::min(lengths[i] as usize, padded_tokens);
         let start = i * doc_stride;
-        let end = start + doc_stride;
-        let doc_embedding =
-            flat_embeddings.get(start..end).ok_or_else(|| {
+        // Take only the first `num_tokens` rows; the tail of the doc's
+        // slice in the padded tensor is guaranteed-zero padding that
+        // `finalize_embeddings` already masked out in pylate. We used
+        // to scan for trailing all-zero rows here; with explicit
+        // lengths threaded through from the tokenizer, we slice
+        // directly in O(num_tokens · dim) instead of the worst-case
+        // O(padded_tokens · dim) per doc.
+        let trimmed_end = start + num_tokens * dimension;
+        let trimmed =
+            flat_embeddings.get(start..trimmed_end).ok_or_else(|| {
                 Error::Config(format!(
-                    "failed to slice embedding batch for doc index {i}"
+                    "failed to slice embedding batch for doc index {i} (len={num_tokens}, padded={padded_tokens})"
                 ))
             })?;
-        let trimmed = trim_trailing_padding_rows(doc_embedding, dimension);
-        let num_tokens = trimmed.len() / dimension;
 
         entries.push((
             doc_id,
@@ -186,25 +211,6 @@ fn tensor_to_flat_f32(tensor: &Tensor) -> Result<Vec<f32>> {
             Error::Config(format!("failed to convert tensor to f32: {e}"))
         })?;
     Ok(flat)
-}
-
-/// Trim trailing all-zero token rows introduced by docbert-pylate batch padding.
-fn trim_trailing_padding_rows(data: &[f32], dimension: usize) -> &[f32] {
-    if dimension == 0 || data.len() <= dimension {
-        return data;
-    }
-
-    let mut end = data.len();
-    while end > dimension {
-        let row = &data[end - dimension..end];
-        if row.iter().all(|&value| value == 0.0) {
-            end -= dimension;
-        } else {
-            break;
-        }
-    }
-
-    &data[..end]
 }
 
 /// Load several document embeddings and convert them to tensors.
@@ -327,21 +333,28 @@ mod tests {
     }
 
     impl DocumentEncoder for RecordingEncoder {
-        fn encode_documents(&mut self, texts: &[String]) -> Result<Tensor> {
+        fn encode_documents(
+            &mut self,
+            texts: &[String],
+        ) -> Result<(Tensor, Vec<u32>)> {
             self.call_sizes.push(texts.len());
             let data = vec![0.0f32; texts.len() * 2];
-            Ok(Tensor::from_vec(
+            let tensor = Tensor::from_vec(
                 data,
                 (texts.len(), 1, 2),
                 &crate::test_util::test_device(),
-            )?)
+            )?;
+            Ok((tensor, vec![1; texts.len()]))
         }
     }
 
     struct PaddedEncoder;
 
     impl DocumentEncoder for PaddedEncoder {
-        fn encode_documents(&mut self, _texts: &[String]) -> Result<Tensor> {
+        fn encode_documents(
+            &mut self,
+            _texts: &[String],
+        ) -> Result<(Tensor, Vec<u32>)> {
             // Two documents, padded to 3 token rows. The first document only
             // has 2 real token embeddings; the last row is padding.
             let data = vec![
@@ -349,16 +362,17 @@ mod tests {
                 0.0, // doc 1: 2 real rows + padding
                 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, // doc 2: 3 real rows
             ];
-            Ok(Tensor::from_vec(
+            let tensor = Tensor::from_vec(
                 data,
                 (2, 3, 2),
                 &crate::test_util::test_device(),
-            )?)
+            )?;
+            Ok((tensor, vec![2, 3]))
         }
     }
 
     #[test]
-    fn embed_documents_trims_trailing_zero_padding() {
+    fn embed_documents_slices_by_reported_lengths() {
         let mut encoder = PaddedEncoder;
 
         let entries = embed_documents_with(
@@ -368,12 +382,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(entries.len(), 2);
+        // Doc 0 reports length 2, so only the first two token rows
+        // (two dims each) survive — the tail zero row of the doc's
+        // padded slice is dropped by the length slice, not by a zero
+        // scan on the row values.
         assert_eq!(entries[0], (1, 2, 2, vec![1.0, 2.0, 3.0, 4.0]));
         assert_eq!(entries[1], (2, 3, 2, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]));
     }
 
     #[test]
-    fn trims_trailing_zero_padding_before_storing() {
+    fn embed_documents_slices_match_lengths_before_storing() {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         let mut encoder = PaddedEncoder;
@@ -394,6 +412,116 @@ mod tests {
         assert_eq!(second.num_tokens, 3);
         assert_eq!(second.dimension, 2);
         assert_eq!(second.data, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    }
+
+    /// If the encoder over-reports a length (e.g. a length larger than
+    /// the tensor's actual padded dimension), we clamp to the padded
+    /// dimension rather than panic. This covers the pathological case
+    /// where a tokenizer config and a model forward pass disagree.
+    #[test]
+    fn embed_documents_clamps_length_at_padded_dim() {
+        struct OverReportingEncoder;
+        impl DocumentEncoder for OverReportingEncoder {
+            fn encode_documents(
+                &mut self,
+                _texts: &[String],
+            ) -> Result<(Tensor, Vec<u32>)> {
+                let data = vec![1.0f32, 2.0];
+                let tensor = Tensor::from_vec(
+                    data,
+                    (1, 1, 2),
+                    &crate::test_util::test_device(),
+                )?;
+                // Claims 9 valid tokens against a tensor that only has 1.
+                Ok((tensor, vec![9]))
+            }
+        }
+
+        let mut encoder = OverReportingEncoder;
+        let entries =
+            embed_documents_with(&mut encoder, vec![(1, "x".into())]).unwrap();
+        assert_eq!(entries, vec![(1, 1, 2, vec![1.0, 2.0])]);
+    }
+
+    /// Property test: for any batch of docs where each doc reports a
+    /// length `L` in [0, padded], slicing by length matches the naive
+    /// trailing-all-zero scan on a tensor whose tail is actual zeros.
+    /// This is the oracle version of the optimisation we just shipped.
+    #[hegel::test(test_cases = 200)]
+    fn prop_length_slice_matches_zero_scan(tc: hegel::TestCase) {
+        use hegel::generators as gs;
+
+        let dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(16));
+        let padded: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(32));
+        let batch_size: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+
+        // Build a synthetic [batch, padded, dim] tensor and a
+        // `lengths` vec where the first L rows per doc are non-zero
+        // and the rest are zero.
+        let mut data = vec![0.0f32; batch_size * padded * dim];
+        let mut lengths = Vec::with_capacity(batch_size);
+        for b in 0..batch_size {
+            let l: usize =
+                tc.draw(gs::integers::<usize>().min_value(0).max_value(padded));
+            for t in 0..l {
+                for d in 0..dim {
+                    // Use a non-zero value for valid rows; shape
+                    // doesn't matter, only non-zero-ness.
+                    data[b * padded * dim + t * dim + d] =
+                        (b + t + d + 1) as f32;
+                }
+            }
+            lengths.push(l as u32);
+        }
+
+        // Reference: scan trailing all-zero rows per doc, same logic
+        // the previous implementation used.
+        fn reference_trim(
+            data: &[f32],
+            batch_size: usize,
+            padded: usize,
+            dim: usize,
+        ) -> Vec<Vec<f32>> {
+            (0..batch_size)
+                .map(|b| {
+                    let start = b * padded * dim;
+                    let end = start + padded * dim;
+                    let doc = &data[start..end];
+                    let mut cut = doc.len();
+                    while cut >= dim
+                        && doc[cut - dim..cut].iter().all(|&v| v == 0.0)
+                    {
+                        cut -= dim;
+                    }
+                    doc[..cut].to_vec()
+                })
+                .collect()
+        }
+
+        // SUT: slice by reported lengths directly.
+        fn sut_slice(
+            data: &[f32],
+            batch_size: usize,
+            padded: usize,
+            dim: usize,
+            lengths: &[u32],
+        ) -> Vec<Vec<f32>> {
+            (0..batch_size)
+                .map(|b| {
+                    let start = b * padded * dim;
+                    let take = usize::min(lengths[b] as usize, padded) * dim;
+                    data[start..start + take].to_vec()
+                })
+                .collect()
+        }
+
+        let reference = reference_trim(&data, batch_size, padded, dim);
+        let got = sut_slice(&data, batch_size, padded, dim, &lengths);
+
+        assert_eq!(got, reference);
     }
 
     #[test]

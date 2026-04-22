@@ -5,11 +5,11 @@ use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use rayon::prelude::*;
 use tokenizers::{
-    pad_encodings,
     Encoding,
     PaddingParams,
     PaddingStrategy,
     Tokenizer,
+    pad_encodings,
 };
 
 use crate::{
@@ -390,6 +390,69 @@ impl ColBERT {
                 max_valid_len,
             )
         }
+    }
+
+    /// Compute the post-truncation token count for each document sentence.
+    ///
+    /// Mirrors the prefix + prompt + tokenization pipeline used inside
+    /// [`encode`] for documents so the returned lengths match the
+    /// per-row valid-token count of the encoded tensor exactly. Used by
+    /// callers that need to slice the padded output tensor without
+    /// scanning for all-zero rows on the host.
+    pub fn document_token_lengths(
+        &mut self,
+        sentences: &[String],
+    ) -> Result<Vec<u32>, ColbertError> {
+        if sentences.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _ = self.tokenizer.with_truncation(Some(
+            tokenizers::TruncationParams {
+                max_length: self.document_length,
+                ..Default::default()
+            },
+        ));
+        // `encode_batch_fast` is the tokenizer's per-call fast path; we
+        // skip padding here because padding doesn't contribute to the
+        // valid-token count we care about.
+        self.tokenizer.with_padding(None);
+
+        let prompt = self.document_prompt.as_str();
+        let prefix = self.document_prefix.as_str();
+        let prefixed_texts: Vec<String> =
+            if prompt.is_empty() && prefix.is_empty() {
+                sentences.to_vec()
+            } else {
+                sentences
+                    .iter()
+                    .map(|text| format!("{prefix}{prompt}{text}"))
+                    .collect()
+            };
+
+        let encodings =
+            self.tokenizer.encode_batch_fast(prefixed_texts, true)?;
+        Ok(encodings.iter().map(|e| e.get_ids().len() as u32).collect())
+    }
+
+    /// Encode documents and return `(Tensor, per_doc_valid_token_counts)`.
+    ///
+    /// The lengths are returned in the caller-supplied order and index
+    /// directly into the returned 3D tensor's `axis=1`: row `i` has the
+    /// first `lengths[i]` rows populated with L2-normalized embeddings,
+    /// and the remaining rows (up to the batch's padded length) zeroed
+    /// by [`finalize_embeddings`].
+    ///
+    /// Intended for the docbert indexing path, which slices the tensor
+    /// per-doc before serializing embeddings. Returning real counts
+    /// lets callers skip the previous O(padded_tokens · dim) per-doc
+    /// all-zero scan.
+    pub fn encode_documents_with_lengths(
+        &mut self,
+        sentences: &[String],
+    ) -> Result<(Tensor, Vec<u32>), ColbertError> {
+        let lengths = self.document_token_lengths(sentences)?;
+        let embeddings = self.encode(sentences, false)?;
+        Ok((embeddings, lengths))
     }
 
     /// Encodes a batch of sentences (queries or documents) into embeddings.
@@ -942,7 +1005,7 @@ mod hegel_tests {
     //!   `concatenate_embedding_batches` must preserve the batch/dim invariants
     //!   while zero-padding short batches up to the longest token length.
     use candle_core::{Device, Tensor};
-    use hegel::{generators as gs, TestCase};
+    use hegel::{TestCase, generators as gs};
 
     use super::{
         compute_raw_similarity,
