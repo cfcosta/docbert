@@ -57,8 +57,15 @@ pub fn hierarchical_pooling(
         ));
     }
 
-    let device = documents_embeddings.device();
-    let documents_embeddings = if !device.is_cpu() {
+    // Remember the caller's device — the kodama-based clustering
+    // below needs host-side f32 access and has to run on CPU, but
+    // the returned tensor has to land back where the input came from
+    // so the caller can keep chaining matmuls. Previously we dropped
+    // the result on CPU regardless, which made every CUDA caller
+    // downstream trip `device mismatch in matmul` against the model's
+    // CUDA-resident state.
+    let original_device = documents_embeddings.device().clone();
+    let documents_embeddings = if !original_device.is_cpu() {
         documents_embeddings.to_device(&Device::Cpu)?
     } else {
         documents_embeddings.clone()
@@ -159,5 +166,10 @@ pub fn hierarchical_pooling(
         all_pooled_embeddings.push(final_doc_tensor);
     }
 
-    Ok(Tensor::stack(&all_pooled_embeddings, 0)?)
+    let stacked = Tensor::stack(&all_pooled_embeddings, 0)?;
+    if original_device.is_cpu() {
+        Ok(stacked)
+    } else {
+        Ok(stacked.to_device(&original_device)?)
+    }
 }
