@@ -1,8 +1,28 @@
+use std::sync::Mutex;
+
 use anyhow::Result;
 use candle_core::Device;
-use docbert_pylate::{hierarchical_pooling, ColBERT};
+use docbert_pylate::{ColBERT, hierarchical_pooling};
+
+/// Serialises hf-hub downloads across the integration tests.
+///
+/// Cargo runs integration tests concurrently by default, and several
+/// of the tests below load `lightonai/GTE-ModernColBERT-v1`. On a
+/// warm local cache this is free — hf-hub's `.lock` files resolve
+/// instantly because the blobs are already on disk. In CI the cache
+/// is cold, two tests grab the same `<blob>.lock` simultaneously,
+/// and one of them trips hf-hub's "Lock acquisition failed" guard
+/// before the other finishes downloading.
+///
+/// Holding the mutex only across the short model-construction path
+/// (download + weight map + tokeniser init) lets the expensive
+/// encode / similarity work parallelise normally.
+static MODEL_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 fn load_model(repo_id: &str, device: Device) -> Result<ColBERT> {
+    let _guard = MODEL_LOAD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     Ok(ColBERT::from(repo_id).with_device(device).try_into()?)
 }
 
