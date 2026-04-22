@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap");
 
 *,
 *::before,
@@ -61,66 +61,67 @@
   --catppuccin-mocha-mantle: #181825;
   --catppuccin-mocha-crust: #11111b;
 
-  --functional-red: var(--catppuccin-latte-red);
-  --functional-orange: var(--catppuccin-latte-peach);
-  --functional-green: var(--catppuccin-latte-green);
-  --functional-cyan: var(--catppuccin-latte-sapphire);
-  --functional-purple: var(--catppuccin-latte-mauve);
+  /* ------------------------------------------------------------------
+   * Default theme: Catppuccin Mocha, blue accent.
+   *
+   * Matches the "classic desktop" look the docbert web UI targets —
+   * the base colour of the main pane (mocha-base) sits slightly
+   * lighter than the sidebar (mocha-mantle), the code background
+   * dips a step darker (mocha-mantle), and every accent element
+   * resolves to the Mocha blue instead of the previous mauve. Latte
+   * is preserved as an explicit `prefers-color-scheme: light`
+   * override below so anyone who forces light mode still gets a
+   * coherent palette.
+   * ---------------------------------------------------------------- */
+  --functional-red: var(--catppuccin-mocha-red);
+  --functional-orange: var(--catppuccin-mocha-peach);
+  --functional-green: var(--catppuccin-mocha-green);
+  --functional-cyan: var(--catppuccin-mocha-sapphire);
+  --functional-purple: var(--catppuccin-mocha-mauve);
 
-  --text: var(--catppuccin-latte-text);
-  --text-h: var(--catppuccin-latte-text);
-  --text-muted: var(--catppuccin-latte-subtext0);
-  --bg: var(--catppuccin-latte-base);
-  --bg-secondary: var(--catppuccin-latte-mantle);
-  --bg-tertiary: var(--catppuccin-latte-crust);
-  --surface-floating: var(--catppuccin-latte-mantle);
-  --surface-selection: var(--catppuccin-latte-crust);
-  --surface-current-line: var(--catppuccin-latte-mantle);
-  --border: var(--catppuccin-latte-surface0);
-  --border-strong: var(--catppuccin-latte-surface1);
-  --border-focus: var(--catppuccin-latte-lavender);
-  --accent: var(--catppuccin-latte-mauve);
-  --accent-border: #6f25d9;
-  --accent-hover: var(--catppuccin-latte-lavender);
-  --accent-hover-border: #5a6fe8;
-  --accent-bg: var(--catppuccin-latte-crust);
-  --accent-text: var(--catppuccin-latte-base);
-  --accent-cyan: var(--catppuccin-latte-sapphire);
-  --accent-cyan-border: #1a7f91;
-  --accent-green: var(--catppuccin-latte-green);
-  --accent-green-border: #2f7a1f;
-  --accent-orange: var(--catppuccin-latte-peach);
-  --accent-orange-border: #d75402;
-  --accent-yellow: var(--catppuccin-latte-yellow);
-  --accent-yellow-border: #b77412;
-  --accent-pink: var(--catppuccin-latte-pink);
-  --accent-pink-border: #d14cb0;
-  --accent-red: var(--catppuccin-latte-red);
-  --accent-red-border: #ab0c2f;
-  --success: var(--catppuccin-latte-green);
-  --success-border: #2f7a1f;
-  --success-bg: var(--catppuccin-latte-crust);
-  --error: var(--catppuccin-latte-red);
-  --error-border: #ab0c2f;
-  --error-bg: var(--catppuccin-latte-crust);
-  --code-bg: var(--catppuccin-latte-mantle);
-  --focus-ring: var(--catppuccin-latte-lavender);
+  --text: var(--catppuccin-mocha-text);
+  --text-h: var(--catppuccin-mocha-text);
+  --text-muted: var(--catppuccin-mocha-subtext0);
+  --bg: var(--catppuccin-mocha-base);
+  --bg-secondary: var(--catppuccin-mocha-mantle);
+  --bg-tertiary: var(--catppuccin-mocha-crust);
+  --surface-floating: var(--catppuccin-mocha-mantle);
+  --surface-selection: var(--catppuccin-mocha-surface1);
+  --surface-current-line: var(--catppuccin-mocha-surface1);
+  --border: var(--catppuccin-mocha-surface0);
+  --border-strong: var(--catppuccin-mocha-surface1);
+  --border-focus: var(--catppuccin-mocha-blue);
+  --accent: var(--catppuccin-mocha-blue);
+  --accent-border: #5b8de8;
+  --accent-hover: var(--catppuccin-mocha-lavender);
+  --accent-hover-border: #94a0fb;
+  --accent-bg: var(--catppuccin-mocha-surface1);
+  --accent-text: var(--catppuccin-mocha-crust);
+  --accent-cyan: var(--catppuccin-mocha-sapphire);
+  --accent-cyan-border: #55abd3;
+  --accent-green: var(--catppuccin-mocha-green);
+  --accent-green-border: #82ce7c;
+  --accent-orange: var(--catppuccin-mocha-peach);
+  --accent-orange-border: #f39a65;
+  --accent-yellow: var(--catppuccin-mocha-yellow);
+  --accent-yellow-border: #f0cb87;
+  --accent-pink: var(--catppuccin-mocha-pink);
+  --accent-pink-border: #ea9ed5;
+  --accent-red: var(--catppuccin-mocha-red);
+  --accent-red-border: #ea6c90;
+  --success: var(--catppuccin-mocha-green);
+  --success-border: #82ce7c;
+  --success-bg: var(--catppuccin-mocha-surface1);
+  --error: var(--catppuccin-mocha-red);
+  --error-border: #ea6c90;
+  --error-bg: var(--catppuccin-mocha-surface1);
+  --code-bg: var(--catppuccin-mocha-mantle);
+  --focus-ring: var(--catppuccin-mocha-blue);
 
-  --shadow-sm: 0 1px 2px rgba(76, 79, 105, 0.09), 0 1px 1px rgba(76, 79, 105, 0.06);
-  --shadow: 0 14px 34px rgba(76, 79, 105, 0.12), 0 5px 14px rgba(76, 79, 105, 0.08);
+  --shadow-sm: 0 1px 2px rgba(17, 17, 27, 0.34), 0 1px 1px rgba(17, 17, 27, 0.22);
+  --shadow: 0 14px 34px rgba(17, 17, 27, 0.42), 0 5px 14px rgba(17, 17, 27, 0.28);
 
-  --workspace-backdrop:
-    radial-gradient(
-      circle at top left,
-      color-mix(in oklab, var(--accent-cyan) 8%, transparent),
-      transparent 32%
-    ),
-    radial-gradient(
-      circle at 82% -10%,
-      color-mix(in oklab, var(--accent) 7%, transparent),
-      transparent 28%
-    ),
-    linear-gradient(180deg, color-mix(in oklab, var(--bg) 86%, var(--bg-secondary) 14%), var(--bg));
+  --workspace-backdrop: var(--bg);
   --surface-panel: linear-gradient(
     180deg,
     color-mix(in oklab, var(--surface-floating) 82%, white 18%),
@@ -207,7 +208,11 @@
   --reading-width: 68ch;
 
   --font-body: "Public Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --font-display: "Source Serif 4", Iowan Old Style, Georgia, serif;
+  /* Display font tracks body — the classic-desktop look wants
+   * headings in the same sans as running text, not a serif pairing.
+   * Keeping the alias so any callsite that cares about "the heading
+   * font" still has a single handle to change later. */
+  --font-display: var(--font-body);
   --font-mono:
     "Berkeley Mono", "SFMono-Regular", ui-monospace, "Cascadia Code", Consolas, monospace;
   --sans: var(--font-body);
@@ -229,9 +234,9 @@
 
   --leading-tight: 1.12;
   --leading-heading: 1.2;
-  --leading-ui: 1.45;
-  --leading-body: 1.65;
-  --leading-relaxed: 1.72;
+  --leading-ui: 1.35;
+  --leading-body: 1.5;
+  --leading-relaxed: 1.65;
 
   --tracking-label: 0.08em;
   --tracking-ui: 0.01em;
@@ -251,54 +256,59 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --functional-red: var(--catppuccin-mocha-red);
-    --functional-orange: var(--catppuccin-mocha-peach);
-    --functional-green: var(--catppuccin-mocha-green);
-    --functional-cyan: var(--catppuccin-mocha-sapphire);
-    --functional-purple: var(--catppuccin-mocha-mauve);
+    /* Opt-in Catppuccin Latte palette with the same blue accent as
+     * Mocha. Mirrors the defaults above field-for-field so any page
+     * that styles against a semantic token (e.g. `--accent`) behaves
+     * identically between themes apart from the underlying hues.
+     */
+    --functional-red: var(--catppuccin-latte-red);
+    --functional-orange: var(--catppuccin-latte-peach);
+    --functional-green: var(--catppuccin-latte-green);
+    --functional-cyan: var(--catppuccin-latte-sapphire);
+    --functional-purple: var(--catppuccin-latte-mauve);
 
-    --text: var(--catppuccin-mocha-text);
-    --text-h: var(--catppuccin-mocha-text);
-    --text-muted: var(--catppuccin-mocha-subtext0);
-    --bg: var(--catppuccin-mocha-mantle);
-    --bg-secondary: var(--catppuccin-mocha-base);
-    --bg-tertiary: var(--catppuccin-mocha-surface0);
-    --surface-floating: var(--catppuccin-mocha-base);
-    --surface-selection: var(--catppuccin-mocha-surface1);
-    --surface-current-line: var(--catppuccin-mocha-surface1);
-    --border: var(--catppuccin-mocha-mantle);
-    --border-strong: var(--catppuccin-mocha-crust);
-    --border-focus: var(--catppuccin-mocha-lavender);
-    --accent: var(--catppuccin-mocha-mauve);
-    --accent-border: #b18af1;
-    --accent-hover: var(--catppuccin-mocha-lavender);
-    --accent-hover-border: #94a0fb;
-    --accent-bg: var(--catppuccin-mocha-surface1);
-    --accent-text: var(--catppuccin-mocha-crust);
-    --accent-cyan: var(--catppuccin-mocha-sapphire);
-    --accent-cyan-border: #55abd3;
-    --accent-green: var(--catppuccin-mocha-green);
-    --accent-green-border: #82ce7c;
-    --accent-orange: var(--catppuccin-mocha-peach);
-    --accent-orange-border: #f39a65;
-    --accent-yellow: var(--catppuccin-mocha-yellow);
-    --accent-yellow-border: #f0cb87;
-    --accent-pink: var(--catppuccin-mocha-pink);
-    --accent-pink-border: #ea9ed5;
-    --accent-red: var(--catppuccin-mocha-red);
-    --accent-red-border: #ea6c90;
-    --success: var(--catppuccin-mocha-green);
-    --success-border: #82ce7c;
-    --success-bg: var(--catppuccin-mocha-surface1);
-    --error: var(--catppuccin-mocha-red);
-    --error-border: #ea6c90;
-    --error-bg: var(--catppuccin-mocha-surface1);
-    --code-bg: var(--catppuccin-mocha-mantle);
-    --focus-ring: var(--catppuccin-mocha-lavender);
-    --shadow-sm: 0 1px 2px rgba(17, 17, 27, 0.34), 0 1px 1px rgba(17, 17, 27, 0.22);
-    --shadow: 0 14px 34px rgba(17, 17, 27, 0.42), 0 5px 14px rgba(17, 17, 27, 0.28);
+    --text: var(--catppuccin-latte-text);
+    --text-h: var(--catppuccin-latte-text);
+    --text-muted: var(--catppuccin-latte-subtext0);
+    --bg: var(--catppuccin-latte-base);
+    --bg-secondary: var(--catppuccin-latte-mantle);
+    --bg-tertiary: var(--catppuccin-latte-crust);
+    --surface-floating: var(--catppuccin-latte-mantle);
+    --surface-selection: var(--catppuccin-latte-crust);
+    --surface-current-line: var(--catppuccin-latte-mantle);
+    --border: var(--catppuccin-latte-surface0);
+    --border-strong: var(--catppuccin-latte-surface1);
+    --border-focus: var(--catppuccin-latte-blue);
+    --accent: var(--catppuccin-latte-blue);
+    --accent-border: #1a56d6;
+    --accent-hover: var(--catppuccin-latte-lavender);
+    --accent-hover-border: #5a6fe8;
+    --accent-bg: var(--catppuccin-latte-crust);
+    --accent-text: var(--catppuccin-latte-base);
+    --accent-cyan: var(--catppuccin-latte-sapphire);
+    --accent-cyan-border: #1a7f91;
+    --accent-green: var(--catppuccin-latte-green);
+    --accent-green-border: #2f7a1f;
+    --accent-orange: var(--catppuccin-latte-peach);
+    --accent-orange-border: #d75402;
+    --accent-yellow: var(--catppuccin-latte-yellow);
+    --accent-yellow-border: #b77412;
+    --accent-pink: var(--catppuccin-latte-pink);
+    --accent-pink-border: #d14cb0;
+    --accent-red: var(--catppuccin-latte-red);
+    --accent-red-border: #ab0c2f;
+    --success: var(--catppuccin-latte-green);
+    --success-border: #2f7a1f;
+    --success-bg: var(--catppuccin-latte-crust);
+    --error: var(--catppuccin-latte-red);
+    --error-border: #ab0c2f;
+    --error-bg: var(--catppuccin-latte-crust);
+    --code-bg: var(--catppuccin-latte-mantle);
+    --focus-ring: var(--catppuccin-latte-blue);
+    --shadow-sm: 0 1px 2px rgba(76, 79, 105, 0.09), 0 1px 1px rgba(76, 79, 105, 0.06);
+    --shadow: 0 14px 34px rgba(76, 79, 105, 0.12), 0 5px 14px rgba(76, 79, 105, 0.08);
   }
 }
 
@@ -323,8 +333,11 @@ h3,
 h4 {
   color: var(--text-h);
   font-family: var(--font-display);
-  font-weight: var(--weight-bold);
-  line-height: var(--leading-tight);
+  /* Classic desktop look: h2–h4 sit at semibold with relaxed
+   * heading line-height; h1 overrides below to push weight to
+   * bold and tighten further for page titles. */
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-heading);
   letter-spacing: var(--tracking-heading);
   margin: 0;
   text-wrap: balance;
@@ -332,6 +345,8 @@ h4 {
 
 h1 {
   font-size: var(--text-display);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
 }
 
 h2 {
