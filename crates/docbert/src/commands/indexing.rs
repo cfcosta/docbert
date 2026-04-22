@@ -261,18 +261,16 @@ fn rebuild_plaid_index(
     data_dir: &DataDir,
     embedding_db: &EmbeddingDb,
 ) -> error::Result<()> {
-    let ids = embedding_db.list_ids()?;
-    if ids.is_empty() {
+    // `list_shapes` reads only the 8-byte header per entry and is
+    // enough to pick `k_centroids`; the heavy loading is deferred to
+    // `build_index_from_embedding_db`, which streams matrices into a
+    // pre-sized pool.
+    let shapes = embedding_db.list_shapes()?;
+    if shapes.is_empty() {
         eprintln!("No embeddings yet; skipping PLAID index rebuild.");
         return Ok(());
     }
-
-    let mut total_tokens = 0usize;
-    for id in &ids {
-        if let Some(matrix) = embedding_db.load(*id)? {
-            total_tokens += matrix.num_tokens as usize;
-        }
-    }
+    let total_tokens: usize = shapes.iter().map(|&(_, n, _)| n as usize).sum();
     if total_tokens == 0 {
         eprintln!(
             "No tokens in the embedding database; skipping PLAID index rebuild."
@@ -437,6 +435,26 @@ fn release_encoder_before_plaid(
     drop(model);
     docbert_core::plaid::release_cached_device_memory()?;
     Ok(embedding_db)
+}
+
+/// Rebuild the PLAID semantic index from whatever is already stored
+/// in the embedding database, without re-running the encoder.
+///
+/// Useful after changes to the PLAID builder itself (centroid count,
+/// codec bit-width, kmeans iters, …): `rebuild` would have to re-embed
+/// every document — a four-minute walk over the model for the current
+/// docbert corpus — before it even starts training centroids. This
+/// command skips straight to the train + encode step.
+pub(crate) fn reindex(data_dir: &DataDir) -> error::Result<()> {
+    let total_start = Instant::now();
+    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
+    rebuild_plaid_index(data_dir, &embedding_db)?;
+    eprintln!(
+        "{} in {}.",
+        style::header(&"Reindex complete"),
+        style::accent(&style::format_duration(total_start.elapsed())),
+    );
+    Ok(())
 }
 
 pub(crate) fn sync(

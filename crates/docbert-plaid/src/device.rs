@@ -36,6 +36,25 @@ fn select_device() -> Device {
     Device::Cpu
 }
 
+/// Return `(free, total)` device-memory bytes for the selected
+/// device, or `None` when we're not on CUDA.
+///
+/// Thin wrapper around `cuMemGetInfo` via cudarc; exposed so the
+/// PLAID builder can annotate its progress output with the headroom
+/// the CUDA mempool has left before a big allocation.
+pub fn device_memory_info() -> Option<(usize, usize)> {
+    #[cfg(feature = "cuda")]
+    {
+        if let Device::Cuda(_) = default_device() {
+            use candle_core::cuda_backend::cudarc::driver::result;
+            if let Ok((free, total)) = result::mem_get_info() {
+                return Some((free, total));
+            }
+        }
+    }
+    None
+}
+
 /// Release cached but currently-unused device memory back to the
 /// driver.
 ///

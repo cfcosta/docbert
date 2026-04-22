@@ -48,6 +48,8 @@ pub enum Command {
     MultiGet(MultiGetArgs),
     /// Rebuild indexes from source files (full rebuild)
     Rebuild(RebuildArgs),
+    /// Rebuild the PLAID semantic index from existing embeddings
+    Reindex,
     /// Sync collections with source files (incremental)
     Sync(SyncArgs),
     /// Show system status and statistics
@@ -622,6 +624,12 @@ mod tests {
             }
             _ => panic!("expected rebuild command"),
         }
+    }
+
+    #[test]
+    fn parse_reindex_command() {
+        let cli = Cli::parse_from(["docbert", "reindex"]);
+        assert!(matches!(cli.command, Command::Reindex));
     }
 
     #[test]

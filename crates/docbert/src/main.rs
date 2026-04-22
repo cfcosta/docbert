@@ -154,6 +154,9 @@ fn main() -> error::Result<()> {
                 &model_resolution.model_id,
             )?;
         }
+        Command::Reindex => {
+            commands::indexing::reindex(&data_dir)?;
+        }
         Command::Sync(args) => {
             commands::indexing::sync(
                 &config_db,

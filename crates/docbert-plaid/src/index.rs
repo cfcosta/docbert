@@ -278,6 +278,39 @@ pub fn build_index_from_pool(
     // build tipped a 12 GB card into CUDA OOM as soon as the encoder
     // model was also resident.
     let device = default_device();
+    let pool_bytes = pool.len() * std::mem::size_of::<f32>();
+    let device_info = crate::device::device_memory_info();
+    eprintln!(
+        "  Pool: {total_tokens} tokens × {} dim = {} MiB{}",
+        params.dim,
+        pool_bytes / (1 << 20),
+        match device_info {
+            Some((free, total)) => format!(
+                " (device: {} MiB free / {} MiB total)",
+                free / (1 << 20),
+                total / (1 << 20),
+            ),
+            None => String::new(),
+        },
+    );
+    if let Some((free, _)) = device_info
+        && pool_bytes > free
+    {
+        // Fail fast with a diagnostic a user can act on, rather than
+        // the bare `CUDA_ERROR_OUT_OF_MEMORY` cudarc returns when the
+        // async mempool can't extend.
+        return Err(candle_core::Error::Msg(format!(
+            "pool tensor would need {} MiB on device but only {} MiB are free \
+             ({} tokens × {} dim × 4 bytes). Re-embed the corpus with a \
+             smaller-dimension model, or build the PLAID index on a host with \
+             enough VRAM.",
+            pool_bytes / (1 << 20),
+            free / (1 << 20),
+            total_tokens,
+            params.dim,
+        ))
+        .into());
+    }
     let p_tensor =
         Tensor::from_slice(&pool, (total_tokens, params.dim), device)?;
 
