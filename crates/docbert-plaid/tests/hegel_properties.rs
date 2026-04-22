@@ -468,7 +468,7 @@ fn prop_farthest_first_init_rows_are_input_rows(tc: TestCase) {
     let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(24));
     let points = tc.draw(unit_rows(dim, n));
 
-    let seeds = farthest_first_init(&points, k, dim);
+    let seeds = farthest_first_init(&points, k, dim).unwrap();
     assert_eq!(seeds.len(), k * dim);
     assert_eq!(&seeds[..dim], &points[..dim]);
 

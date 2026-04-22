@@ -8,14 +8,12 @@
 //! stack.
 //!
 //! Points and centroids are both represented as flat row-major `&[f32]`
-//! slices at the public boundary; internally the hot path
-//! ([`assign_points`], [`fit_with_init`]) materialises them into
-//! `candle_core::Tensor`s and computes the centroid distance matrix as
-//! a matmul, split into row-chunks so the transient score tensors
-//! stay within a fixed byte budget. With the `cuda` feature enabled
-//! this matmul runs on the GPU; without it, candle's CPU `gemm`
-//! implementation is still orders of magnitude faster than the
-//! previous scalar nested loop.
+//! slices at the public boundary; internally the hot paths
+//! ([`assign_points`], [`fit_with_init`], [`farthest_first_init`])
+//! materialise them into `candle_core::Tensor`s and compute distances
+//! as matmul + broadcast. With the `cuda` feature enabled those
+//! matmuls run on the GPU; without it, candle's CPU `gemm` is still
+//! orders of magnitude faster than the previous scalar nested loops.
 //!
 //! [`nearest_centroid`] (single point) and [`update_centroids`] (the
 //! M-step) remain scalar — both are cheap relative to the assignment
@@ -266,7 +264,7 @@ pub fn fit(
         "fit: need at least k={k} points, got {n_points}",
     );
 
-    let initial = farthest_first_init(points, k, dim);
+    let initial = farthest_first_init(points, k, dim)?;
     fit_with_init(points, &initial, dim, max_iters)
 }
 
@@ -276,12 +274,30 @@ pub fn fit(
 ///
 /// The first centroid is row 0 of `points`. Each subsequent centroid
 /// is the row whose squared L2 distance to the nearest already-picked
-/// centroid is largest; ties break toward the earlier row index.
+/// centroid is largest; ties break toward the earlier row index (what
+/// candle's `argmax` returns for f32 input).
+///
+/// Internally every distance update is a `[n, dim] × [dim, 1]` GEMV
+/// against candle, so the O(k · n · dim) cost lands on the matmul
+/// backend (GPU when built with `cuda`, otherwise candle's CPU
+/// `gemm`). Points are uploaded once and `‖p‖²` is cached across all
+/// `k - 1` iterations.
+///
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if any tensor allocation or matmul
+/// fails (e.g. CUDA OOM).
 ///
 /// # Panics
 ///
 /// Panics if `points` has fewer than `k` rows or if `dim == 0`.
-pub fn farthest_first_init(points: &[f32], k: usize, dim: usize) -> Vec<f32> {
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
+pub fn farthest_first_init(
+    points: &[f32],
+    k: usize,
+    dim: usize,
+) -> Result<Vec<f32>> {
     assert!(k > 0, "farthest_first_init: k must be positive");
     assert!(dim > 0, "farthest_first_init: dim must be positive");
     assert!(
@@ -298,33 +314,54 @@ pub fn farthest_first_init(points: &[f32], k: usize, dim: usize) -> Vec<f32> {
 
     let mut centroids = Vec::with_capacity(k * dim);
     centroids.extend_from_slice(&points[..dim]);
-
-    // Squared L2 to the nearest picked centroid for each point.
-    let mut min_dists = vec![0.0f32; n];
-    for (i, p) in points.chunks_exact(dim).enumerate() {
-        min_dists[i] = squared_l2(p, &points[..dim]);
+    if k == 1 {
+        return Ok(centroids);
     }
+
+    // Upload points once. Every distance update is expressed as a
+    // matmul via the identity
+    //     ‖p_i − c‖² = ‖p_i‖² − 2·p_i·c + ‖c‖²
+    // which keeps the heavy [n, dim] buffer resident on device and
+    // lets cuBLAS / candle GEMM do the work.
+    let device = default_device();
+    let p_tensor = Tensor::from_slice(points, (n, dim), device)?;
+    let p_sq = p_tensor.sqr()?.sum_keepdim(1)?; // [n, 1]
+
+    let first_c = p_tensor.narrow(0, 0, 1)?; // [1, dim]
+    let mut min_dists = squared_l2_to_centroid(&p_tensor, &p_sq, &first_c)?;
 
     for _ in 1..k {
-        let mut best_idx = 0usize;
-        let mut best_dist = f32::NEG_INFINITY;
-        for (i, &d) in min_dists.iter().enumerate() {
-            if d > best_dist {
-                best_dist = d;
-                best_idx = i;
-            }
-        }
+        let best_idx = min_dists.argmax(0)?.to_scalar::<u32>()? as usize;
         let new_c = &points[best_idx * dim..(best_idx + 1) * dim];
         centroids.extend_from_slice(new_c);
-        for (i, p) in points.chunks_exact(dim).enumerate() {
-            let d = squared_l2(p, new_c);
-            if d < min_dists[i] {
-                min_dists[i] = d;
-            }
-        }
+
+        let c_row = p_tensor.narrow(0, best_idx, 1)?; // [1, dim]
+        let new_dists = squared_l2_to_centroid(&p_tensor, &p_sq, &c_row)?;
+        min_dists = min_dists.minimum(&new_dists)?;
     }
 
-    centroids
+    Ok(centroids)
+}
+
+/// Squared L2 distance from every row of `points` to the single row
+/// `centroid`, using the matmul-friendly identity
+/// `‖p − c‖² = ‖p‖² − 2·p·c + ‖c‖²`.
+///
+/// `points_sq` is the precomputed `[n, 1]` column of `‖p_i‖²`; caching
+/// it across outer calls is the reason this helper takes it instead
+/// of recomputing internally. Returns a `[n]` 1-D tensor.
+fn squared_l2_to_centroid(
+    points: &Tensor,
+    points_sq: &Tensor,
+    centroid: &Tensor,
+) -> Result<Tensor> {
+    let c_t = centroid.t()?; // [dim, 1]
+    let dot = points.matmul(&c_t)?; // [n, 1]
+    let c_sq = centroid.sqr()?.sum_keepdim(1)?; // [1, 1]
+    let d = points_sq
+        .broadcast_sub(&dot.affine(2.0, 0.0)?)?
+        .broadcast_add(&c_sq)?; // [n, 1]
+    Ok(d.squeeze(1)?)
 }
 
 /// Assign every point in `points` to the index of its nearest centroid.
