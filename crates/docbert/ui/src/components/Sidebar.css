@@ -1,75 +1,66 @@
+/*
+ * Classic-desktop sidebar — narrow nav rail with brand at top, icon+label
+ * nav in the middle, and a pinned user card at the bottom. The background
+ * sits a step darker than the main pane (Mocha mantle vs. base) so the
+ * sidebar reads as a distinct chrome column.
+ */
+
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: var(--surface-panel-sidebar);
-  border-right: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow-y: auto;
-  box-shadow: inset -1px 0 0 color-mix(in oklab, white 24%, transparent);
+  overflow: hidden;
 }
 
-.sidebar-header {
-  padding: var(--space-lg) var(--space-md) var(--space-md);
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  height: 2.75rem;
+  padding: 0 var(--space-sm);
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--bg-secondary) 90%, white 10%) 0%,
-    color-mix(in oklab, var(--bg-secondary) 94%, var(--bg) 6%) 78%,
-    color-mix(in oklab, var(--bg-secondary) 78%, var(--bg-tertiary) 22%) 100%
-  );
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 22%, transparent),
-    inset 0 -1px 0 color-mix(in oklab, var(--bg-tertiary) 46%, transparent);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
 }
 
-.sidebar-section-label {
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
-}
-
-.sidebar-title-link {
+.sidebar-brand-link {
   display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   color: inherit;
   text-decoration: none;
 }
 
-.sidebar-title-link:hover {
+.sidebar-brand-link:hover,
+.sidebar-brand-link:focus-visible {
   text-decoration: none;
-}
-
-.sidebar-title-link:focus-visible .sidebar-title,
-.sidebar-title-link:hover .sidebar-title {
   color: var(--accent);
+  outline: none;
 }
 
-.sidebar-title {
-  font-family: var(--font-display);
-  font-size: var(--text-lead);
-  font-weight: var(--weight-bold);
-  line-height: var(--leading-tight);
+.sidebar-brand-mark {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.sidebar-brand-name {
+  font-size: 0.95rem;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
   color: var(--text-h);
-  letter-spacing: var(--tracking-tight);
+  letter-spacing: 0.01em;
+  margin: 0;
   transition: color 0.15s ease-out;
 }
 
-.sidebar-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-md) var(--space-sm) var(--space-sm);
-}
-
-.sidebar-section-label {
-  margin: 0 0 var(--space-xs) var(--space-xs);
-  color: color-mix(in oklab, var(--text-muted) 92%, var(--accent-cyan) 8%);
-}
-
-.sidebar-section-label-footer {
-  margin-bottom: var(--space-sm);
+.sidebar-nav-zone {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--space-xs) var(--space-2xs);
+  min-height: 0;
 }
 
 .sidebar-nav {
@@ -78,13 +69,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.sidebar-nav li,
-.sidebar-footer {
-  min-width: 0;
+  gap: 1px;
 }
 
 .sidebar-link {
@@ -92,92 +77,123 @@
   grid-template-columns: 1rem minmax(0, 1fr);
   align-items: center;
   column-gap: var(--space-sm);
-  min-height: 2.875rem;
   width: 100%;
-  padding: 0.6875rem 0.75rem;
-  border-radius: calc(var(--radius) - 1px);
-  border: 1px solid transparent;
-  color: color-mix(in oklab, var(--text) 92%, var(--text-muted) 8%);
+  min-height: 1.875rem;
+  padding: 0.3125rem 0.625rem;
+  border-radius: 4px;
+  color: var(--text);
   text-decoration: none;
-  font-size: var(--text-meta);
-  font-weight: var(--weight-medium);
+  font-size: 0.8125rem;
+  font-weight: var(--weight-regular);
   line-height: 1.2;
-  letter-spacing: var(--tracking-ui);
   transition:
-    background 0.15s ease-out,
-    border-color 0.15s ease-out,
-    color 0.15s ease-out,
-    box-shadow 0.15s ease-out;
+    background 0.1s ease-out,
+    color 0.1s ease-out;
+  position: relative;
 }
 
 .sidebar-link:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 48%, transparent),
-    color-mix(in oklab, var(--surface-floating) 74%, transparent)
-  );
-  border-color: color-mix(in oklab, var(--border) 80%, transparent);
+  background: color-mix(in oklab, var(--surface-selection) 50%, transparent);
   color: var(--text-h);
   text-decoration: none;
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 24%, transparent);
 }
 
 .sidebar-link:focus-visible {
   outline: none;
-  border-color: color-mix(in oklab, var(--border-focus) 70%, var(--border) 30%);
-  color: var(--text-h);
-  box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--focus-ring) 14%, transparent),
-    inset 0 1px 0 color-mix(in oklab, white 24%, transparent);
-}
-
-.sidebar-link:active {
-  background: color-mix(in oklab, var(--surface-current-line) 20%, var(--surface-floating) 80%);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
 }
 
 .sidebar-link.active {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-floating) 62%, white 38%),
-    color-mix(in oklab, var(--surface-current-line) 90%, var(--accent) 10%)
-  );
-  border-color: color-mix(in oklab, var(--accent-border) 72%, var(--border) 28%);
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
   color: var(--text-h);
-  font-weight: var(--weight-semibold);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 24%, transparent),
-    0 1px 0 color-mix(in oklab, white 14%, transparent);
+  font-weight: var(--weight-medium);
+}
+
+.sidebar-link.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
 }
 
 .sidebar-link.active svg {
-  color: color-mix(in oklab, var(--accent) 82%, var(--accent-cyan) 18%);
-}
-
-.sidebar-link span {
-  min-width: 0;
+  color: var(--accent);
 }
 
 .sidebar-link svg {
   width: 1rem;
   height: 1rem;
-  flex-shrink: 0;
-  color: color-mix(in oklab, var(--text) 84%, var(--accent-cyan) 16%);
-  transition: color 0.15s ease-out;
-}
-
-.sidebar-footer {
-  margin-top: auto;
-  padding-top: var(--space-md);
-  border-top: 1px solid color-mix(in oklab, var(--border) 74%, transparent);
-}
-
-.sidebar-footer .sidebar-link {
   color: var(--text-muted);
+  transition: color 0.1s ease-out;
 }
 
-.sidebar-footer .sidebar-link:hover,
-.sidebar-footer .sidebar-link:focus-visible {
-  color: var(--text);
+.sidebar-link:hover svg {
+  color: var(--text-h);
+}
+
+.sidebar-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-sm);
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+  min-height: 3.25rem;
+}
+
+.sidebar-user-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklab, var(--accent) 22%, var(--surface-selection) 78%);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: var(--weight-semibold);
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent);
+}
+
+.sidebar-user-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-user-name {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: var(--weight-semibold);
+  color: var(--text-h);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-user-subtitle {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 860px) {
@@ -190,12 +206,8 @@
     flex-shrink: 0;
   }
 
-  .sidebar-header {
-    padding: var(--space-md) var(--space-md) var(--space-sm);
-  }
-
-  .sidebar-body {
-    padding: var(--space-sm) var(--space-sm) var(--space-sm);
+  .sidebar-nav-zone {
+    padding: var(--space-2xs);
   }
 
   .sidebar-nav {
@@ -207,22 +219,7 @@
     flex: 1 1 10rem;
   }
 
-  .sidebar-footer {
-    margin-top: 0;
-  }
-}
-
-@media (max-width: 560px) {
-  .sidebar-body {
-    padding-inline: var(--space-xs);
-  }
-
-  .sidebar-subtitle {
-    max-width: none;
-  }
-
-  .sidebar-nav li,
-  .sidebar-footer {
-    flex: 1 1 100%;
+  .sidebar-user {
+    display: none;
   }
 }

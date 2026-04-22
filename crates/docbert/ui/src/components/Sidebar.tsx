@@ -5,19 +5,20 @@ const NAV_ITEMS = [
   { to: "/chat", label: "Chat", icon: ChatIcon },
   { to: "/search", label: "Search", icon: SearchIcon },
   { to: "/documents", label: "Documents", icon: DocIcon },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
 export default function Sidebar() {
   return (
     <nav className="sidebar" aria-label="Primary navigation">
-      <div className="sidebar-header">
-        <NavLink to="/documents" className="sidebar-title-link">
-          <h1 className="sidebar-title">docbert</h1>
+      <header className="sidebar-brand">
+        <NavLink to="/documents" className="sidebar-brand-link">
+          <BrandMark />
+          <h1 className="sidebar-brand-name">docbert</h1>
         </NavLink>
-      </div>
+      </header>
 
-      <div className="sidebar-body">
-        <p className="sidebar-section-label">Workspace</p>
+      <div className="sidebar-nav-zone">
         <ul className="sidebar-nav">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
@@ -27,24 +28,43 @@ export default function Sidebar() {
                 end={item.to === "/documents"}
               >
                 <item.icon />
-                <span>{item.label}</span>
+                <span className="sidebar-link-label">{item.label}</span>
               </NavLink>
             </li>
           ))}
         </ul>
-
-        <div className="sidebar-footer">
-          <p className="sidebar-section-label sidebar-section-label-footer">Preferences</p>
-          <NavLink
-            to="/settings"
-            className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
-          >
-            <SettingsIcon />
-            <span>Settings</span>
-          </NavLink>
-        </div>
       </div>
+
+      <footer className="sidebar-user" aria-label="Workspace identity">
+        <div className="sidebar-user-avatar" aria-hidden="true">
+          <span>D</span>
+        </div>
+        <div className="sidebar-user-meta">
+          <p className="sidebar-user-name">docbert</p>
+          <p className="sidebar-user-subtitle">Local workspace</p>
+        </div>
+      </footer>
     </nav>
+  );
+}
+
+function BrandMark() {
+  return (
+    <svg
+      className="sidebar-brand-mark"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 4h10l6 6v10a2 2 0 0 1-2 2H4z" />
+      <polyline points="14 4 14 10 20 10" />
+    </svg>
   );
 }
 
