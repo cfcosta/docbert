@@ -465,6 +465,7 @@ impl ResidualCodec {
     /// [`batch_encode_tokens_on_tensor`]. Takes pre-uploaded codec
     /// state (centroids, cutoffs, shift weights) so repeated calls in
     /// the outer tile loop don't re-upload them.
+    #[allow(clippy::too_many_arguments)]
     fn encode_chunk_on_tensor_with_state(
         &self,
         tile: &Tensor,
