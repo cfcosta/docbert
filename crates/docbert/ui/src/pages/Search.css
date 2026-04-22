@@ -215,74 +215,95 @@
 }
 
 .search-results-panel {
-  margin-top: var(--space-xl);
+  margin-top: var(--space-md);
   border: none;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
+/* Compact context band summarising the active search — mirrors the
+ * preview-context-band strip on the Documents page so the results feel
+ * like another document pane, not a stream of loose cards. */
+
 .search-results-summary {
-  display: grid;
-  gap: var(--space-2xs);
-  padding: 0 0 var(--space-sm);
-  margin-bottom: var(--space-md);
-  border-bottom: 1px solid var(--border);
-  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0 var(--space-md);
+  min-height: 2rem;
+  margin-bottom: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
 }
 
 .search-results-title {
-  color: var(--text-h);
-  font-size: 0.875rem;
-  font-weight: var(--weight-semibold);
   margin: 0;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .search-results-meta {
   margin: 0;
-  color: var(--text-muted);
+  min-width: 0;
   font-size: var(--text-caption);
-  line-height: var(--leading-body);
+  line-height: var(--leading-ui);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Inside the Search page, lean on the shared SearchResults styles.
- * The few overrides below turn each hit into a wider "article" block
- * that matches the classic-desktop result list look: accent title,
- * mono path underneath, and flat excerpt rows. */
+/* Each hit is one discrete bordered card — title/path header on top,
+ * flat excerpt rows below separated by hairlines. Matches the dense
+ * file-manager rhythm from the rest of the classic-desktop UI. */
 
 .search-results-panel .chat-tool-search-results {
-  gap: 0;
+  gap: var(--space-sm);
   padding: 0;
   border-top: none;
   background: transparent;
 }
 
 .search-results-panel .chat-tool-search-result {
-  padding: 0 0 var(--space-lg);
-}
-
-.search-results-panel .chat-tool-search-result:last-child {
-  padding-bottom: 0;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  overflow: hidden;
 }
 
 .search-results-panel .chat-tool-search-result-node {
-  padding: 0;
+  position: relative;
+  padding: var(--space-sm) var(--space-md);
   border: none;
   border-radius: 0;
   background: transparent;
 }
 
 .search-results-panel .chat-tool-search-result-node.active {
-  background: transparent;
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary));
 }
 
 .search-results-panel .chat-tool-search-result-node.active::before {
-  display: none;
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 .search-results-panel .chat-tool-search-result-title {
   display: inline-block;
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: var(--weight-semibold);
   line-height: var(--leading-heading);
   color: var(--accent);
@@ -291,6 +312,7 @@
 .search-results-panel .chat-tool-search-result-title-link:hover,
 .search-results-panel .chat-tool-search-result-title-button:hover {
   color: var(--accent-hover);
+  text-decoration: none;
 }
 
 .search-results-panel .chat-tool-search-result-path {
@@ -307,10 +329,11 @@
 }
 
 .search-results-panel .chat-tool-search-result-children {
-  gap: var(--space-2xs);
-  margin-top: var(--space-sm);
-  margin-left: 0;
-  padding-left: 0;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
 }
 
 .search-results-panel .chat-tool-search-result-children::before,
@@ -320,22 +343,35 @@
 
 .search-results-panel .chat-tool-search-excerpt {
   gap: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--bg-secondary);
+  padding: var(--space-xs) var(--space-md);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.search-results-panel .chat-tool-search-excerpt + .chat-tool-search-excerpt {
+  border-top: 1px solid var(--border);
 }
 
 .search-results-panel .chat-tool-search-excerpt.active {
-  background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary));
-  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, var(--bg-tertiary));
+}
+
+.search-results-panel .chat-tool-search-excerpt.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  display: block;
 }
 
 .search-results-panel .chat-tool-search-excerpt-link:hover,
 .search-results-panel .chat-tool-search-excerpt-button:hover,
 .search-results-panel .chat-tool-search-excerpt:hover {
-  border-color: var(--accent);
-  background: color-mix(in oklab, var(--accent) 6%, var(--bg-secondary));
+  background: color-mix(in oklab, var(--accent) 6%, var(--bg-tertiary));
 }
 
 .search-results-panel .chat-tool-search-excerpt-range {
@@ -343,7 +379,7 @@
   margin-top: 2px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
