@@ -9,7 +9,7 @@ use axum::{
 use docbert_core::Conversation;
 use serde::{Deserialize, Serialize};
 
-use crate::web::state::AppState;
+use crate::web::{routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ConversationSummary {
@@ -29,12 +29,12 @@ pub(crate) struct CreateRequest {
 pub(crate) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConversationSummary>>, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "conversations::list open config db")
+    })?;
     let mut summaries: Vec<ConversationSummary> = config_db
         .list_conversations_typed()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| log_internal_error(err, "conversations::list read"))?
         .into_iter()
         .map(|c| ConversationSummary {
             id: c.id,
@@ -52,15 +52,17 @@ pub(crate) async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "conversations::create open config db")
+    })?;
 
     // Reject duplicate IDs so POST never silently overwrites an
     // existing conversation.  Use PUT for intentional updates.
     if config_db
         .get_conversation_typed(&body.id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| {
+            log_internal_error(err, "conversations::create dedup lookup")
+        })?
         .is_some()
     {
         return Err(StatusCode::CONFLICT);
@@ -74,9 +76,9 @@ pub(crate) async fn create(
         updated_at: now,
         messages: vec![],
     };
-    config_db
-        .set_conversation_typed(&conv)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    config_db.set_conversation_typed(&conv).map_err(|err| {
+        log_internal_error(err, "conversations::create persist")
+    })?;
     Ok((StatusCode::CREATED, Json(conv)))
 }
 
@@ -84,12 +86,12 @@ pub(crate) async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Conversation>, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "conversations::get open config db")
+    })?;
     let conv = config_db
         .get_conversation_typed(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| log_internal_error(err, "conversations::get read"))?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(conv))
 }
@@ -99,20 +101,22 @@ pub(crate) async fn update(
     Path(id): Path<String>,
     Json(mut body): Json<Conversation>,
 ) -> Result<Json<Conversation>, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "conversations::update open config db")
+    })?;
     config_db
         .get_conversation_typed(&id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| {
+            log_internal_error(err, "conversations::update preload")
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     body.id = id;
     body.updated_at = now_millis();
 
-    config_db
-        .set_conversation_typed(&body)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    config_db.set_conversation_typed(&body).map_err(|err| {
+        log_internal_error(err, "conversations::update persist")
+    })?;
     Ok(Json(body))
 }
 
@@ -123,7 +127,7 @@ pub(crate) async fn delete(
     let existed = state
         .open_config_db()
         .and_then(|config_db| config_db.remove_conversation(&id))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| log_internal_error(err, "conversations::delete"))?;
     if !existed {
         return Err(StatusCode::NOT_FOUND);
     }

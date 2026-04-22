@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
-use crate::web::state::AppState;
+use crate::web::{routes::log_internal_error, state::AppState};
 
 const KEY_OPENAI_CODEX_OAUTH: &str = "llm_oauth:openai-codex";
 const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -124,7 +124,7 @@ fn build_openai_codex_authorization_url(
     challenge: &str,
 ) -> Result<String, StatusCode> {
     let mut url = reqwest::Url::parse(OPENAI_CODEX_AUTHORIZE_URL)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| log_internal_error(err, "oauth parse authorize url"))?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", OPENAI_CODEX_CLIENT_ID)
@@ -210,10 +210,10 @@ fn load_openai_codex_oauth(
 ) -> Result<Option<OpenAICodexOAuthCredentials>, StatusCode> {
     config_db
         .get_json_setting(KEY_OPENAI_CODEX_OAUTH)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| log_internal_error(err, "oauth load read"))?
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| log_internal_error(err, "oauth load parse"))
 }
 
 fn store_openai_codex_oauth(
@@ -221,17 +221,17 @@ fn store_openai_codex_oauth(
     credentials: &OpenAICodexOAuthCredentials,
 ) -> Result<(), StatusCode> {
     let value = serde_json::to_value(credentials)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| log_internal_error(err, "oauth store serialize"))?;
     config_db
         .set_json_setting(KEY_OPENAI_CODEX_OAUTH, &value)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| log_internal_error(err, "oauth store write"))
 }
 
 fn clear_openai_codex_oauth(config_db: &ConfigDb) -> Result<(), StatusCode> {
     config_db
         .remove_json_setting(KEY_OPENAI_CODEX_OAUTH)
         .map(|_| ())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| log_internal_error(err, "oauth clear"))
 }
 
 async fn exchange_openai_codex_authorization_code(
@@ -335,9 +335,9 @@ async fn refresh_openai_codex_access_token(
 async fn resolve_openai_codex_access_token(
     state: &AppState,
 ) -> Result<Option<OpenAICodexOAuthCredentials>, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "settings resolve oauth open db")
+    })?;
     let Some(credentials) = load_openai_codex_oauth(&config_db)? else {
         return Ok(None);
     };
@@ -401,10 +401,10 @@ pub(crate) async fn get(
     let stored = {
         let config_db = state
             .open_config_db()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|err| log_internal_error(err, "settings::get open db"))?;
         config_db
             .get_persisted_llm_settings()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|err| log_internal_error(err, "settings::get read"))?
     };
     let resolved = build_llm_settings_response(&state, stored).await?;
     Ok(Json(resolved))
@@ -426,7 +426,7 @@ pub(crate) async fn update(
     state
         .open_config_db()
         .and_then(|config_db| config_db.set_persisted_llm_settings(&stored))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| log_internal_error(err, "settings::update persist"))?;
     let resolved = build_llm_settings_response(&state, stored).await?;
     Ok(Json(resolved))
 }
@@ -471,7 +471,9 @@ async fn handle_openai_codex_callback(
             Ok(credentials) => {
                 let persisted = state
                     .open_config_db()
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                    .map_err(|err| {
+                        log_internal_error(err, "oauth callback open db")
+                    })
                     .and_then(|config_db| {
                         store_openai_codex_oauth(&config_db, &credentials)
                     });

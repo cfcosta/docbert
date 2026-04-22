@@ -8,6 +8,28 @@ pub(crate) mod documents;
 pub(crate) mod search;
 pub(crate) mod settings;
 
+/// Logs a handler error at `ERROR` level and returns `500 Internal
+/// Server Error`.
+///
+/// Every route used to convert errors with `map_err(|_| INTERNAL_...)`,
+/// which swallowed the original error entirely — a 500 in the client
+/// left no trace server-side. Route handlers now funnel their 500 paths
+/// through this helper so every internal error lands in the tracing
+/// output with its `Display` and `Debug` representation plus a short
+/// call-site-provided `context` string.
+pub(crate) fn log_internal_error<E>(err: E, context: &'static str) -> StatusCode
+where
+    E: std::fmt::Display + std::fmt::Debug,
+{
+    tracing::error!(
+        error = %err,
+        ?err,
+        context,
+        "handler returning 500",
+    );
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route(

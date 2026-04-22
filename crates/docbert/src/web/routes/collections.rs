@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::web::state::AppState;
+use crate::web::{routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct CollectionItem {
@@ -11,12 +11,12 @@ pub(crate) struct CollectionItem {
 pub(crate) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CollectionItem>>, StatusCode> {
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "collections::list open config db")
+    })?;
     let collections = config_db
         .list_collections()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| log_internal_error(err, "collections::list read"))?;
     let items = collections
         .into_iter()
         .map(|(name, _path)| CollectionItem { name })

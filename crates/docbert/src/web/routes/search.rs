@@ -7,7 +7,7 @@ use docbert_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::web::{paths, state::AppState};
+use crate::web::{paths, routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct SearchRequest {
@@ -70,13 +70,20 @@ pub(crate) async fn search(
         min_score: body.min_score,
     };
 
-    let config_db = state
-        .open_config_db()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut model = state
-        .model
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config_db = state.open_config_db().map_err(|err| {
+        log_internal_error(err, "search::search open config db")
+    })?;
+    // Recover from a poisoned model mutex instead of surfacing 500s
+    // forever. A poisoned lock means a prior request panicked while
+    // holding the mutex; the ModelManager's state is still intact
+    // enough for subsequent calls, and leaving it wedged would be
+    // worse than the bug that caused the original panic.
+    let mut model = state.model.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(
+            "search recovered from poisoned model mutex (a prior search panicked)"
+        );
+        poisoned.into_inner()
+    });
     let mut results = search::by_mode(
         mode,
         &request,
@@ -90,9 +97,24 @@ pub(crate) async fn search(
         // a server fault: surface it as 503 so clients can distinguish
         // from a real internal error.
         docbert_core::Error::PlaidIndexMissing => {
+            tracing::info!(
+                query = %body.query,
+                mode = %body.mode,
+                "search rejected: PLAID index missing (run `docbert sync`)"
+            );
             StatusCode::SERVICE_UNAVAILABLE
         }
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        other => {
+            tracing::error!(
+                error = %other,
+                ?other,
+                query = %body.query,
+                mode = %body.mode,
+                collection = ?body.collection,
+                "search::search failed",
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     })?;
     drop(model);
 

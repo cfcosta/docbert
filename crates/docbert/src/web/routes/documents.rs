@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::web::{
     ingest::{self, EmbeddingEntry},
     paths,
+    routes::log_internal_error,
     state::AppState,
 };
 
@@ -83,7 +84,7 @@ fn map_error(err: docbert_core::Error) -> StatusCode {
         {
             StatusCode::NOT_FOUND
         }
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        other => log_internal_error(other, "documents handler"),
     }
 }
 
@@ -127,12 +128,14 @@ fn compute_embedding_entries(
             .collect());
     }
 
-    let mut model = state
-        .model
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Recover from a poisoned mutex — a prior panic left the lock in
+    // a bad state, but the model data is still intact enough to use.
+    let mut model = state.model.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("documents::ingest recovered from poisoned model mutex");
+        poisoned.into_inner()
+    });
     embedding::embed_documents(&mut model, docs_to_embed)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| log_internal_error(err, "documents::ingest embed"))
 }
 
 pub(crate) async fn ingest(
@@ -178,28 +181,36 @@ pub(crate) async fn ingest(
             .map_err(map_error)?;
 
             if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                std::fs::create_dir_all(parent).map_err(|err| {
+                    log_internal_error(err, "documents::ingest create dir")
+                })?;
             }
 
             match uploaded.content_type.as_str() {
                 "text/markdown" => {
                     std::fs::write(&full_path, uploaded.content.as_bytes())
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                        .map_err(|err| {
+                            log_internal_error(
+                                err,
+                                "documents::ingest write markdown",
+                            )
+                        })?;
                 }
                 "application/pdf" => {
                     let pdf_bytes = BASE64_STANDARD
                         .decode(&uploaded.content)
                         .map_err(|_| StatusCode::BAD_REQUEST)?;
-                    std::fs::write(&full_path, pdf_bytes)
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    std::fs::write(&full_path, pdf_bytes).map_err(|err| {
+                        log_internal_error(err, "documents::ingest write pdf")
+                    })?;
                 }
                 _ => return Err(StatusCode::BAD_REQUEST),
             }
 
             let ingest_result = (|| -> Result<IngestedDoc, StatusCode> {
-                let mtime = document_mtime(&full_path)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let mtime = document_mtime(&full_path).map_err(|err| {
+                    log_internal_error(err, "documents::ingest stat mtime")
+                })?;
                 let document = ingest::load_document(
                     &body.collection,
                     &uploaded.path,
