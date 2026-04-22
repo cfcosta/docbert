@@ -282,8 +282,13 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
     for r in &results {
         let doc_idx = index.position_of(r.doc_id).expect("doc present");
         let mut decoded_tokens = Vec::new();
+        // search() L2-normalises each decoded row before MaxSim;
+        // the reference here must do the same or the scores won't
+        // agree (what this assertion is checking).
         for ev in &index.doc_tokens_vec(doc_idx) {
-            decoded_tokens.extend(index.codec.decode_vector(ev).unwrap());
+            let raw = index.codec.decode_vector(ev).unwrap();
+            let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+            decoded_tokens.extend(raw.iter().map(|v| v / norm));
         }
         let recomputed = {
             let mut score = 0.0f32;

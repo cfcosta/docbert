@@ -2233,11 +2233,19 @@ fn prop_gpu_decode_scores_match_cpu_decode(tc: TestCase) {
         let doc_idx = index
             .position_of(r.doc_id)
             .expect("returned doc must exist");
-        // Reference: CPU decode every token, then compute MaxSim by hand.
+        // Reference: CPU decode every token, then compute MaxSim by
+        // hand. search() L2-normalises each decoded row before MaxSim
+        // (matching fast-plaid's `decompress_residuals` tail), so the
+        // reference has to do the same or the scores won't agree.
         let decoded: Vec<Vec<f32>> = index
             .doc_tokens_vec(doc_idx)
             .iter()
-            .map(|ev| index.codec.decode_vector(ev).unwrap())
+            .map(|ev| {
+                let raw = index.codec.decode_vector(ev).unwrap();
+                let norm =
+                    raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                raw.iter().map(|v| v / norm).collect()
+            })
             .collect();
         let mut expected = 0.0f32;
         for q in query.chunks_exact(dim) {
@@ -2254,6 +2262,49 @@ fn prop_gpu_decode_scores_match_cpu_decode(tc: TestCase) {
             "GPU decode score {} diverged from CPU-decode MaxSim {} for doc {}",
             r.score,
             expected,
+            r.doc_id,
+        );
+    }
+}
+
+/// Bounded-by-query-norm: with unit-norm queries and L2-normalised
+/// decoded tokens (what `search` uses internally), ColBERT's MaxSim
+/// `Σ_i max_j q_i · d_j` is capped at `‖query‖ = n_query_tokens`
+/// because every dot product of unit vectors is ≤ 1. A `search`
+/// score exceeding that cap would mean the L2 normalisation in the
+/// decode path is silently broken.
+#[hegel::test(test_cases = 30)]
+fn prop_search_score_bounded_by_query_token_count(tc: TestCase) {
+    use docbert_plaid::{
+        index::build_index,
+        search::{SearchParams, search},
+    };
+    let dim = tc.draw(codec_dim());
+    let docs = tc.draw(corpus(dim, 1, 4, 3, 6));
+    let total_tokens: usize = docs.iter().map(|d| d.n_tokens).sum();
+    let params = tc.draw(index_params(dim, 4, total_tokens));
+    let index = build_index(&docs, params).unwrap();
+
+    let n_q: usize = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let query = tc.draw(unit_rows(dim, n_q));
+    let results = search(
+        &index,
+        &query,
+        SearchParams {
+            top_k: docs.len(),
+            n_probe: params.k_centroids,
+            n_candidate_docs: None,
+            centroid_score_threshold: None,
+        },
+    )
+    .unwrap();
+
+    let cap = n_q as f32 + 1e-3;
+    for r in &results {
+        assert!(
+            r.score <= cap,
+            "score {} for doc {} exceeds unit-norm MaxSim cap {cap}",
+            r.score,
             r.doc_id,
         );
     }

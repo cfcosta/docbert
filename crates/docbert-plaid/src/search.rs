@@ -598,8 +598,18 @@ fn decode_on_cpu(
             ev.codes.copy_from_slice(
                 &bytes[i * packed_bytes..(i + 1) * packed_bytes],
             );
-            packed
-                .extend(codec.decode_vector_with_table(&ev, ctx.decode_table)?);
+            let decoded =
+                codec.decode_vector_with_table(&ev, ctx.decode_table)?;
+            // Row-wise L2 normalise, mirroring decode_on_device's tail
+            // so CPU and GPU paths return comparable scores. See
+            // `l2_normalize_rows` for why this matters.
+            let norm = decoded
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .sqrt()
+                .max(1e-12_f32);
+            packed.extend(decoded.iter().map(|v| v / norm));
         }
         offsets.push(packed.len() / ctx.dim);
     }
@@ -673,7 +683,24 @@ fn decode_on_device(
     } else {
         residuals_padded.narrow(1, 0, ctx.dim)?
     };
-    Ok((centroid_emb + residuals)?)
+    let decoded = (centroid_emb + residuals)?;
+    l2_normalize_rows(&decoded)
+}
+
+/// Row-wise L2-normalise an `[n, dim]` tensor. Matches fast-plaid's
+/// `decompress_residuals` tail: ColBERT was trained with unit-norm
+/// token embeddings, so MaxSim (a dot product) assumes unit rows
+/// downstream. Quantise → centroid+residual reconstruction drifts
+/// norms a little away from 1; this pulls them back so the matmul
+/// that follows stays a proper cosine similarity.
+fn l2_normalize_rows(decoded: &Tensor) -> Result<Tensor> {
+    let squared = decoded.sqr()?;
+    let norm_sq = squared.sum_keepdim(1)?; // [n, 1]
+    // Clamp away from zero before sqrt — a stray all-zero row (possible
+    // with pathological residuals in tests) would otherwise produce a
+    // division by zero below.
+    let norm = norm_sq.sqrt()?.clamp(1e-12f32, f32::INFINITY)?;
+    Ok(decoded.broadcast_div(&norm)?)
 }
 
 #[cfg(test)]
@@ -934,10 +961,18 @@ mod tests {
 
         let top = out[0];
         let doc_idx = index.position_of(top.doc_id).expect("doc present");
+        // search() normalises each decoded token to unit norm before
+        // MaxSim, matching fast-plaid. The reference we compute here
+        // must mirror that to be byte-comparable.
         let decoded: Vec<Vec<f32>> = index
             .doc_tokens_vec(doc_idx)
             .iter()
-            .map(|ev| index.codec.decode_vector(ev).unwrap())
+            .map(|ev| {
+                let raw = index.codec.decode_vector(ev).unwrap();
+                let norm =
+                    raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                raw.iter().map(|v| v / norm).collect()
+            })
             .collect();
 
         // Standard MaxSim: Σ max_j q_i · d_j.
@@ -1359,10 +1394,17 @@ mod tests {
         .unwrap();
         let top = out[0];
         let doc_idx = index.position_of(top.doc_id).unwrap();
+        // search() L2-normalises each decoded token before MaxSim;
+        // the reference has to mirror that.
         let decoded: Vec<Vec<f32>> = index
             .doc_tokens_vec(doc_idx)
             .iter()
-            .map(|ev| index.codec.decode_vector(ev).unwrap())
+            .map(|ev| {
+                let raw = index.codec.decode_vector(ev).unwrap();
+                let norm =
+                    raw.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+                raw.iter().map(|v| v / norm).collect()
+            })
             .collect();
         let expected: f32 = query
             .chunks_exact(2)
