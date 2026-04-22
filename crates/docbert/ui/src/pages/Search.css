@@ -107,12 +107,34 @@
   font-size: 0.9375rem;
   color: var(--text-h);
   outline: none;
+  /* Drop the browser's type=search UA chrome (rounded inset look on
+   * WebKit, the x-to-clear button on Edge) so the row we paint around
+   * it is the only visible container. */
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .search-input.search-input-query:hover,
 .search-input.search-input-query:focus {
   background: transparent;
   box-shadow: none;
+}
+
+/* Chrome/Edge paint a pale-blue background on any <input> they decide
+ * is autofill-eligible — including plain type=search boxes once you've
+ * typed into them before. The transparent background is ignored; the
+ * only way to override is to paint over it with a thick inset shadow
+ * and force the text colour via -webkit-text-fill-color. The
+ * 5000s transition is the standard hack to delay the browser's
+ * background-colour animation past any realistic session length. */
+.search-input.search-input-query:-webkit-autofill,
+.search-input.search-input-query:-webkit-autofill:hover,
+.search-input.search-input-query:-webkit-autofill:focus,
+.search-input.search-input-query:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--text-h);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg) inset;
+  caret-color: var(--accent);
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .search-query-filters {
