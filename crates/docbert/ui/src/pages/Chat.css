@@ -782,29 +782,48 @@
   background: transparent;
 }
 
+/* Same classic-desktop treatment as the Search page's results panel:
+ * each hit is one bordered card with a bg-secondary header (title,
+ * mono-green path, rank/score meta) stacked over a bg-tertiary excerpt
+ * list joined by hairlines — no rounded excerpt pills. */
+
 .chat-tool-call-search .chat-tool-search-results {
-  gap: 0;
+  gap: var(--space-sm);
   padding: 0;
   background: transparent;
 }
 
 .chat-tool-call-search .chat-tool-search-result {
-  padding: 0 0 var(--space-lg);
-}
-
-.chat-tool-call-search .chat-tool-search-result:last-child {
-  padding-bottom: 0;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  overflow: hidden;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-node {
-  padding: 0;
+  position: relative;
+  padding: var(--space-xs) var(--space-sm);
   border: none;
   border-radius: 0;
   background: transparent;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-node.active {
-  background: transparent;
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary));
+}
+
+.chat-tool-call-search
+  .chat-tool-search-results-tool-inline
+  .chat-tool-search-result-node.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-top {
@@ -826,6 +845,7 @@
   .chat-tool-search-results-tool-inline
   .chat-tool-search-result-title-button:hover {
   color: var(--accent-hover);
+  text-decoration: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-path {
@@ -842,33 +862,58 @@
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-result-children {
-  gap: var(--space-2xs);
-  margin-top: var(--space-xs);
-  margin-left: 0;
+  gap: 0;
+  margin: 0;
   padding: 0;
   border: none;
+  border-top: 1px solid var(--border);
   border-radius: 0;
-  background: transparent;
+  background: var(--bg-tertiary);
+}
+
+.chat-tool-call-search
+  .chat-tool-search-results-tool-inline
+  .chat-tool-search-result-children::before,
+.chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt::before {
+  display: none;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt {
   gap: var(--space-sm);
   padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--bg-secondary);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.chat-tool-call-search
+  .chat-tool-search-results-tool-inline
+  .chat-tool-search-excerpt
+  + .chat-tool-search-excerpt {
+  border-top: 1px solid var(--border);
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt.active {
-  background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary));
-  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, var(--bg-tertiary));
+}
+
+.chat-tool-call-search
+  .chat-tool-search-results-tool-inline
+  .chat-tool-search-excerpt.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  display: block;
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-link:hover,
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-button:hover,
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt:hover {
-  border-color: var(--accent);
-  background: color-mix(in oklab, var(--accent) 6%, var(--bg-secondary));
+  background: color-mix(in oklab, var(--accent) 6%, var(--bg-tertiary));
 }
 
 .chat-tool-call-search .chat-tool-search-results-tool-inline .chat-tool-search-excerpt-range {
@@ -877,7 +922,7 @@
   padding: 1px 6px;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
   color: var(--text-muted);
   font-size: 0.6875rem;
 }
