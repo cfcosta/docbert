@@ -4,7 +4,7 @@ use docbert_pylate::{ColBERT, Similarities};
 use crate::error::{Error, Result};
 
 /// The default ColBERT model loaded when no override is provided.
-pub const DEFAULT_MODEL_ID: &str = "lightonai/LateOn";
+pub const DEFAULT_MODEL_ID: &str = "lightonai/ColBERT-Zero";
 
 /// Environment variable checked for a model ID override (`DOCBERT_MODEL`).
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
@@ -280,7 +280,7 @@ fn resolve_embedding_batch_size(
 /// ```
 /// use docbert_core::ModelManager;
 ///
-/// // Create with default model (lightonai/LateOn)
+/// // Create with default model (lightonai/ColBERT-Zero)
 /// let manager = ModelManager::new();
 /// assert!(!manager.is_loaded());
 ///
@@ -319,7 +319,7 @@ impl ModelManager {
     /// Create a new `ModelManager`.
     ///
     /// The model ID comes from `DOCBERT_MODEL` if that variable is set.
-    /// Otherwise docbert uses `lightonai/LateOn`.
+    /// Otherwise docbert uses `lightonai/ColBERT-Zero`.
     ///
     /// The model itself is not loaded until you call `encode_documents`,
     /// `encode_query`, or `similarity`.
@@ -373,10 +373,9 @@ impl ModelManager {
 
     /// Ensures the model is loaded, downloading from HuggingFace Hub if needed.
     ///
-    /// The query prompt from `config_sentence_transformers.json` is overridden
-    /// with an empty string, so callers of `encode_query` don't need to prepend
-    /// anything and nothing is prepended by pylate either. Document prompts
-    /// still come from the model config.
+    /// Prompts from `config_sentence_transformers.json` (e.g. `"search_query: "`
+    /// for ColBERT-Zero) are resolved and applied inside pylate itself, so
+    /// callers of `encode_*` don't need to prepend anything.
     fn ensure_loaded(&mut self) -> Result<&mut ColBERT> {
         Ok(self.ensure_loaded_and_config()?.0)
     }
@@ -402,7 +401,6 @@ impl ModelManager {
                 .with_device(selected_device.device)
                 .with_document_length(self.document_length)
                 .with_batch_size(embedding_batch_size)
-                .with_query_prompt(String::new())
                 .try_into()?;
             self.embedding_batch_size = Some(embedding_batch_size);
             self.runtime_config = Some(ModelRuntimeConfig {
@@ -440,8 +438,8 @@ impl ModelManager {
 
     /// Encodes a query string into ColBERT token-level embeddings.
     ///
-    /// docbert overrides the model's query prompt with an empty string, so
-    /// nothing is prepended to the query before tokenization.
+    /// Pylate prepends the model's query prompt (e.g. `"search_query: "`)
+    /// internally when one is configured in `config_sentence_transformers.json`.
     ///
     /// Returns a 2D tensor of shape `[Q, D]` where Q is the number of query
     /// tokens and D is the embedding dimension.
@@ -515,7 +513,7 @@ pub enum ModelSource {
     Env,
     /// Stored in `config.db` as the `model_name` setting.
     Config,
-    /// Hardcoded default (`lightonai/LateOn`).
+    /// Hardcoded default (`lightonai/ColBERT-Zero`).
     Default,
 }
 
