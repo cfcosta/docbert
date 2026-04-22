@@ -202,21 +202,23 @@ function LoadedDocumentPreview({
     h6: renderHeading("h6"),
   } satisfies ComponentProps<typeof Markdown>["components"];
 
+  const breadcrumb = formatBreadcrumb(selectedDoc.collection, selectedDoc.path);
+
   return (
     <>
-      <div className="preview-header">
-        <div className="preview-title-row">
-          <div>
-            <p className="preview-kicker">{selectedDoc.collection}</p>
-            <div className="preview-title-group">
-              <h2 className="preview-title">{selectedDoc.title}</h2>
-              {isPdfPreview && <span className="preview-kind-badge">Imported from PDF</span>}
-            </div>
-          </div>
+      <div className="preview-context-band">
+        <span className="preview-context-label" title={breadcrumb}>
+          {breadcrumb}
+        </span>
+        <div className="preview-context-actions">
+          {isPdfPreview && <span className="preview-kind-badge">Imported from PDF</span>}
           <Link className="preview-permalink" to={permalink}>
             Permalink
           </Link>
         </div>
+      </div>
+      <div className="preview-header">
+        <h1 className="preview-title">{selectedDoc.title}</h1>
         <div className="preview-meta">
           <code>{selectedDoc.doc_id}</code>
           <span className="preview-path" title={selectedDoc.path}>
@@ -254,6 +256,16 @@ function LoadedDocumentPreview({
       </div>
     </>
   );
+}
+
+function formatBreadcrumb(collection: string, path: string): string {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  const parent = segments.slice(0, -1).at(-1);
+  const parts = [collection.toUpperCase()];
+  if (parent) {
+    parts.push(parent.replace(/[-_]/g, " ").toUpperCase());
+  }
+  return parts.join(" \u00b7 ");
 }
 
 function stripLeadingDocumentTitle(source: string, title: string): string {

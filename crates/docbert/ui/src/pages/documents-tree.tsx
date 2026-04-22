@@ -55,7 +55,7 @@ function renderTree({
             <button
               type="button"
               className="tree-item tree-dir"
-              style={{ paddingLeft: `${12 + depth * 16}px` }}
+              style={{ paddingLeft: `${10 + depth * 14}px` }}
               onClick={() => onToggleDir(key)}
               aria-expanded={isExpanded}
               title={node.path}
@@ -92,6 +92,7 @@ function renderTree({
         const isSelected = selectedDoc?.collection === collection && selectedDoc.path === node.path;
         const deleteKey = `${collection}/${node.path}`;
         const isConfirmingDelete = confirmDeleteDoc === deleteKey;
+        const extensionClass = fileExtensionClass(node.name);
 
         return (
           <div
@@ -100,8 +101,8 @@ function renderTree({
           >
             <button
               type="button"
-              className={`tree-item tree-file${isSelected ? " selected" : ""}`}
-              style={{ paddingLeft: `${12 + depth * 16}px` }}
+              className={`tree-item tree-file ${extensionClass}${isSelected ? " selected" : ""}`}
+              style={{ paddingLeft: `${10 + depth * 14}px` }}
               onClick={() => node.doc && onSelectFile(collection, node.doc)}
               title={node.path}
             >
@@ -352,6 +353,31 @@ function UploadIcon() {
       <line x1="12" y1="3" x2="12" y2="15" />
     </svg>
   );
+}
+
+function fileExtensionClass(name: string) {
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
+  switch (extension) {
+    case "pdf":
+      return "tree-file-pdf";
+    case "md":
+    case "markdown":
+    case "mdown":
+    case "mkd":
+      return "tree-file-md";
+    case "json":
+    case "yaml":
+    case "yml":
+    case "toml":
+      return "tree-file-data";
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+      return "tree-file-code";
+    default:
+      return "tree-file-default";
+  }
 }
 
 function TrashIcon() {

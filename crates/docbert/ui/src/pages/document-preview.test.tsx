@@ -38,10 +38,11 @@ function renderPreview(
 describe("DocumentPreview", () => {
   test("renders deterministic heading ids including duplicates", () => {
     const view = renderPreview("# Overview\n\n## Overview\n\n### Deep Dive\n\n## Overview");
-    const headings = within(view.container).getAllByRole("heading");
-    const markdownHeadings = headings.filter(
-      (heading) => heading.tagName !== "H2" || heading.textContent !== "Current",
-    );
+    const content = view.container.querySelector(".preview-content");
+    if (!content) {
+      throw new Error("preview content root not found");
+    }
+    const markdownHeadings = within(content as HTMLElement).getAllByRole("heading");
 
     expect(markdownHeadings.map((heading) => heading.getAttribute("id"))).toEqual([
       "preview-heading-overview",
