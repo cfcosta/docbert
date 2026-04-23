@@ -1,21 +1,33 @@
-//! Side-by-side bench: baseline vs token pooling.
+//! Side-by-side bench: baseline vs token pooling, with and without a
+//! precomputed dot-product matrix.
 //!
-//! Answers the concrete question "what does the embedding path cost
-//! with and without the compression primitive?" by running the
-//! Clavié & Chaffin Ward-pooling scheme (arXiv 2409.14683, §2.1)
-//! against a plain `tokens.to_vec()` baseline over the same
-//! synthetic 519×128 ColBERT-shaped document.
+//! Answers two related questions about the embedding path:
 //!
-//! The `baseline_memcpy` arm is the per-document cost
-//! `embed_documents_with` would pay if pooling were disabled — a
-//! plain `tokens.to_vec()`. Every `pool_only` arm adds the pooling
-//! work on top of that cost, so the delta is exactly what the
-//! indexing path pays per document.
+//! 1. What does Ward-pooling (Clavié & Chaffin, arXiv 2409.14683, §2.1)
+//!    cost per document vs a `tokens.to_vec()` no-op?
+//! 2. How much of that cost is the O(N²·D) cosine-distance scan — the
+//!    part the `embed_documents_with` pipeline now computes once on
+//!    the GPU via a batched `tokens @ tokens.T` matmul and then passes
+//!    to [`pool_document_tokens_with_dots`]?
+//!
+//! Running all three arms on the same synthetic 519×128 document lets
+//! us read the decomposition directly:
+//!
+//! - `baseline_memcpy` = trivial `tokens.to_vec()`.
+//! - `pool_only/k` = raw CPU path (distance matrix + Ward + mean).
+//! - `pool_with_dots/k` = post-GPU-matmul CPU work (Ward + mean only).
+//!
+//! `pool_only - pool_with_dots` is the distance-matrix cost the GPU
+//! eliminates in production. `pool_with_dots - baseline_memcpy` is
+//! what the embedding path actually pays per document.
 
 use std::{hint::black_box, num::NonZeroUsize};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use docbert_core::token_pool::pool_document_tokens;
+use docbert_core::token_pool::{
+    pool_document_tokens,
+    pool_document_tokens_with_dots,
+};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const NUM_TOKENS: usize = 519;
@@ -40,8 +52,29 @@ fn random_unit_document(seed: u64) -> Vec<f32> {
     data
 }
 
+/// Build the full `NUM_TOKENS × NUM_TOKENS` dot-product matrix on the
+/// CPU — what a batched GPU matmul would hand the pool helper in
+/// production. Computed once outside the timed region so the
+/// `pool_with_dots` arms measure only the post-matmul CPU work.
+fn build_dots(tokens: &[f32]) -> Vec<f32> {
+    let mut out = vec![0.0f32; NUM_TOKENS * NUM_TOKENS];
+    for i in 0..NUM_TOKENS {
+        for j in i..NUM_TOKENS {
+            let dot: f32 = tokens[i * DIM..(i + 1) * DIM]
+                .iter()
+                .zip(tokens[j * DIM..(j + 1) * DIM].iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            out[i * NUM_TOKENS + j] = dot;
+            out[j * NUM_TOKENS + i] = dot;
+        }
+    }
+    out
+}
+
 fn bench_compression(c: &mut Criterion) {
     let doc = random_unit_document(0xCAFEBABE);
+    let dots = build_dots(&doc);
 
     let mut group = c.benchmark_group("embedding_compression/519x128");
     group.sample_size(20);
@@ -77,6 +110,35 @@ fn bench_compression(c: &mut Criterion) {
                         black_box(NUM_TOKENS),
                         black_box(DIM),
                         black_box(nz),
+                    );
+                    black_box((pooled, n));
+                });
+            },
+        );
+    }
+
+    // --------------------------------------------------------------
+    // Pool with a precomputed dot-product matrix. This is what the
+    // embedding pipeline pays in production: the GPU hands us the
+    // dots via a batched `tokens @ tokens.T` matmul before pooling
+    // runs on CPU, so the only CPU work left is building the
+    // condensed distance matrix (N² reads), Ward linkage, dendrogram
+    // cut, and mean-pool.
+    // --------------------------------------------------------------
+    for &factor in &[2usize, 3, 4] {
+        group.bench_with_input(
+            BenchmarkId::new("pool_with_dots", factor),
+            &factor,
+            |bencher, &factor| {
+                let nz = NonZeroUsize::new(factor).unwrap();
+                bencher.iter(|| {
+                    let (pooled, n) = pool_document_tokens_with_dots(
+                        black_box(&doc),
+                        black_box(NUM_TOKENS),
+                        black_box(DIM),
+                        black_box(nz),
+                        black_box(&dots),
+                        black_box(NUM_TOKENS),
                     );
                     black_box((pooled, n));
                 });

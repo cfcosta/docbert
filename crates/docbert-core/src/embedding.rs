@@ -147,13 +147,27 @@ fn embed_documents_with<E: DocumentEncoder>(
         )));
     }
 
+    // Precompute the full `[batch, padded, padded]` pairwise dot-product
+    // matrix on whatever device the encoder ran on. Pooling's dominant
+    // cost on CPU was the O(num_tokens² · dim) cosine-distance scan;
+    // one batched matmul replaces N² · D scalar multiplies per document
+    // with a single GPU call for the whole batch, turning the per-doc
+    // CPU work into an O(num_tokens²) table read. The padding rows are
+    // guaranteed-zero (pylate's `finalize_embeddings` masks them out),
+    // so the sub-matrix we actually read per doc is the same values the
+    // scalar CPU path would produce.
+    let embeddings_t = embeddings.transpose(1, 2)?.contiguous()?;
+    let dots_tensor = embeddings.matmul(&embeddings_t)?;
+
     let flat_embeddings = tensor_to_flat_f32(&embeddings)?;
-    let doc_stride = padded_tokens * dimension;
+    let flat_dots = tensor_to_flat_f32(&dots_tensor)?;
+    let doc_token_stride = padded_tokens * dimension;
+    let doc_dots_stride = padded_tokens * padded_tokens;
 
     let mut entries = Vec::with_capacity(batch_size);
     for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
         let num_tokens = usize::min(lengths[i] as usize, padded_tokens);
-        let start = i * doc_stride;
+        let token_start = i * doc_token_stride;
         // Take only the first `num_tokens` rows; the tail of the doc's
         // slice in the padded tensor is guaranteed-zero padding that
         // `finalize_embeddings` already masked out in pylate. We used
@@ -161,24 +175,35 @@ fn embed_documents_with<E: DocumentEncoder>(
         // lengths threaded through from the tokenizer, we slice
         // directly in O(num_tokens · dim) instead of the worst-case
         // O(padded_tokens · dim) per doc.
-        let trimmed_end = start + num_tokens * dimension;
+        let trimmed_end = token_start + num_tokens * dimension;
         let trimmed =
-            flat_embeddings.get(start..trimmed_end).ok_or_else(|| {
+            flat_embeddings.get(token_start..trimmed_end).ok_or_else(|| {
                 Error::Config(format!(
                     "failed to slice embedding batch for doc index {i} (len={num_tokens}, padded={padded_tokens})"
                 ))
             })?;
 
+        let dots_start = i * doc_dots_stride;
+        let dots_end = dots_start + doc_dots_stride;
+        let doc_dots = flat_dots.get(dots_start..dots_end).ok_or_else(|| {
+            Error::Config(format!(
+                "failed to slice dot-product batch for doc index {i} (padded={padded_tokens})"
+            ))
+        })?;
+
         // Collapse per-token rows into cluster means via hierarchical
         // Ward linkage (Clavié & Chaffin 2024, §2.1). The pool helper
         // short-circuits when `num_tokens <= TOKEN_POOL_FACTOR`, so
         // tiny documents pass through byte-identical.
-        let (stored, stored_tokens) = token_pool::pool_document_tokens(
-            trimmed,
-            num_tokens,
-            dimension,
-            TOKEN_POOL_FACTOR,
-        );
+        let (stored, stored_tokens) =
+            token_pool::pool_document_tokens_with_dots(
+                trimmed,
+                num_tokens,
+                dimension,
+                TOKEN_POOL_FACTOR,
+                doc_dots,
+                padded_tokens,
+            );
 
         entries.push((doc_id, stored_tokens, dimension as u32, stored));
     }
