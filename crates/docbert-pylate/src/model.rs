@@ -5,11 +5,11 @@ use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use rayon::prelude::*;
 use tokenizers::{
-    pad_encodings,
     Encoding,
     PaddingParams,
     PaddingStrategy,
     Tokenizer,
+    pad_encodings,
 };
 
 use crate::{
@@ -72,7 +72,11 @@ pub(crate) fn normalize_and_mask_padded(
 }
 
 /// Filters rows with a mask, normalizes the kept rows, and pads back to the batch max length.
-#[allow(dead_code)]
+///
+/// Reference implementation retained to back the fast-path parity
+/// tests in `mod tests` below — production code paths use
+/// [`normalize_mask_and_truncate_right_padded`] instead.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn filter_normalize_and_pad_compact(
     embeddings: &Tensor,
     attention_mask: &Tensor,
@@ -1005,7 +1009,7 @@ mod hegel_tests {
     //!   `concatenate_embedding_batches` must preserve the batch/dim invariants
     //!   while zero-padding short batches up to the longest token length.
     use candle_core::{Device, Tensor};
-    use hegel::{generators as gs, TestCase};
+    use hegel::{TestCase, generators as gs};
 
     use super::{
         compute_raw_similarity,

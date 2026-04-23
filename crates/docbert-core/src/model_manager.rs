@@ -38,11 +38,17 @@ pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
 /// ceiling through `DOCBERT_EMBEDDING_BATCH_SIZE`.
 pub const DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE: usize = 64;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComputeDeviceKind {
     Cpu,
+    // `Cuda` is only constructed inside `#[cfg(feature = "cuda")]`
+    // branches in `default_device` / `probe_cuda_backend`, so without
+    // the feature the variant is read-only (matched in `as_str`) and
+    // the dead-code lint flags it.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     Cuda,
+    // Same story for `Metal` under the `metal` feature.
+    #[cfg_attr(not(feature = "metal"), allow(dead_code))]
     Metal,
 }
 

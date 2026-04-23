@@ -460,7 +460,7 @@ pub fn rrf_fuse(lists: &[&[u64]], k: usize) -> Vec<(u64, f32)> {
 
 // Kept only to back the legacy unit tests that exercised the
 // pre-PLAID semantic leg; the production code no longer calls it.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn semantic_candidates_from_metadata(
     config_db: &ConfigDb,
     collection: Option<&str>,
@@ -486,7 +486,9 @@ fn semantic_candidates_from_metadata(
     (metadata, doc_ids)
 }
 
-#[allow(dead_code)]
+// Same "test-only" reason as `semantic_candidates_from_metadata`
+// above — kept for the legacy pre-PLAID reranker tests.
+#[cfg_attr(not(test), allow(dead_code))]
 fn semantic_ranked_from_query_embedding(
     query_embedding: &candle_core::Tensor,
     doc_ids: &[u64],
@@ -799,7 +801,9 @@ pub fn short_doc_id(numeric: u64, full_hex: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
+// Only called by `semantic_candidates_from_metadata` (itself
+// test-only now) and directly from unit tests below.
+#[cfg_attr(not(test), allow(dead_code))]
 fn document_has_semantic_body(
     config_db: &ConfigDb,
     collection_paths: &mut std::collections::HashMap<String, Option<String>>,
