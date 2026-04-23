@@ -29,9 +29,10 @@
 //! This module exposes a single function,
 //! [`pool_document_tokens`], that operates on one document's flat
 //! `[num_tokens, dim]` `f32` buffer and returns a new, shorter buffer.
-//! The indexing pipeline calls it once per embedded document between
+//! The indexing pipeline always calls it (at the factor picked by
+//! `docbert_core::embedding::TOKEN_POOL_FACTOR`) between
 //! `encode_documents_with_lengths` and the `EmbeddingDb::batch_store`
-//! write — see `docbert_core::embedding::embed_documents_with`.
+//! write.
 //!
 //! No model changes, no query-time cost: the pooled vectors are
 //! stored in `embeddings.db` exactly like the original per-token

@@ -158,13 +158,6 @@ fn process_document_batch(
                 &runtime.embedding_db,
                 docs_to_embed,
                 embedding::EMBEDDING_SUBMISSION_BATCH_SIZE,
-                // `pool_factor = None` preserves the existing raw
-                // per-token storage. Token pooling (Clavié & Chaffin,
-                // arXiv 2409.14683) is wired in at the library level
-                // but stays opt-in because flipping the default
-                // changes the on-disk embedding format; a user-
-                // facing knob is tracked as a follow-up.
-                None,
                 |embedded_count| {
                     let _ = pb.update_to(embedded_count);
                 },

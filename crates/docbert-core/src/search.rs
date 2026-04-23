@@ -1716,8 +1716,7 @@ mod tests {
 
         // Compute and store ColBERT embeddings
         let count =
-            embed_and_store(&mut model, &embedding_db, embed_docs, None)
-                .unwrap();
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
         // Build and persist a PLAID index so the search path can find it.
@@ -1791,8 +1790,7 @@ mod tests {
         }
 
         let count =
-            embed_and_store(&mut model, &embedding_db, embed_docs, None)
-                .unwrap();
+            embed_and_store(&mut model, &embedding_db, embed_docs).unwrap();
         assert_eq!(count, docs.len(), "all docs should be embedded");
 
         // Build and persist the PLAID index so the semantic leg can find it.
