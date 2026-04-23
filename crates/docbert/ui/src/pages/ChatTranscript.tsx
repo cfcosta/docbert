@@ -85,14 +85,31 @@ function SearchToolResultsInline({ results }: { results: SearchResult[] }) {
     {},
   );
   const [resolverFailures, setResolverFailures] = useState<Record<string, true>>({});
+  // Track the last `results` identity we reset against so we can
+  // re-reset during render whenever the parent passes a new list.
+  // React's documented "reset state on prop change" pattern (see
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders):
+  // compare-and-setState during render instead of inside useEffect,
+  // which avoids the cascading re-render `react-hooks/set-state-in-effect`
+  // warns about.
+  const [lastResultsKey, setLastResultsKey] = useState(results);
   const requestSeqRef = useRef(0);
   const pendingResolverLoadsRef = useRef<Record<string, Promise<DocumentListItem[]> | null>>({});
 
-  useEffect(() => {
-    requestSeqRef.current += 1;
+  if (lastResultsKey !== results) {
+    setLastResultsKey(results);
     setSelectedDoc(null);
     setPreview(null);
     setActiveFragment(null);
+  }
+
+  // Bump the async-fetch sequence number so any doc-preview load that
+  // was in flight for the _previous_ results list resolves to a stale
+  // id and gets ignored on return. Lives in an effect (not in the
+  // in-render reset above) because refs must not be mutated during
+  // render.
+  useEffect(() => {
+    requestSeqRef.current += 1;
   }, [results]);
 
   const ensureResolverDocuments = useCallback(

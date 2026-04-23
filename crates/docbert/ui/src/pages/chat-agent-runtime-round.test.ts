@@ -2,7 +2,7 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 import type { AssistantMessage, AssistantMessageEventStream, Context } from "@mariozechner/pi-ai";
 
 import type { SearchResult } from "../lib/api";
-import type { Message, ToolCallInfo } from "./chat-message-codec";
+import type { Message } from "./chat-message-codec";
 import type { ChatToolRuntimeState, QueuedAnalysisFile } from "./chat-subagents";
 import { runParentAgentRound, createAssistantPlaceholder } from "./chat-agent-runtime";
 import type { ReadyLlmSettings } from "./chat-agent-runtime";
@@ -61,6 +61,13 @@ const testSettings: ReadyLlmSettings = {
   model: "test-model",
   api_key: "test-key",
 };
+
+// Runtime-mocked `getModel` only exposes `{ reasoning: false }`, which
+// is a narrower shape than pi-ai's real `ModelMetadata`. We cast
+// through the `runParentAgentRound` parameter type so test call sites
+// don't have to repeat `as any` per invocation.
+type TestModel = Parameters<typeof runParentAgentRound>[0]["model"];
+const testModel = { reasoning: false } as unknown as TestModel;
 
 function searchResult(collection: string, path: string, title: string): SearchResult {
   return {
@@ -129,7 +136,7 @@ describe("runParentAgentRound", () => {
     queuedFiles.push(file);
   }
 
-  function updateSubagent(_id: string, fn: (m: Message) => Message) {
+  function updateSubagent(_id: string, _fn: (m: Message) => Message) {
     // no-op for parent round tests
   }
 
@@ -150,7 +157,7 @@ describe("runParentAgentRound", () => {
     nextStream = makeStream([{ type: "text_delta", delta: "Here is the answer." }], result);
 
     const shouldContinue = await runParentAgentRound({
-      model: { reasoning: false } as any,
+      model: testModel,
       settings: testSettings,
       controller: new AbortController(),
       userQuestion: "What is X?",
@@ -174,7 +181,7 @@ describe("runParentAgentRound", () => {
     nextStream = makeStream([], result);
 
     const shouldContinue = await runParentAgentRound({
-      model: { reasoning: false } as any,
+      model: testModel,
       settings: testSettings,
       controller: new AbortController(),
       userQuestion: "What is X?",
@@ -202,7 +209,7 @@ describe("runParentAgentRound", () => {
     nextStream = makeStream([], result);
 
     const shouldContinue = await runParentAgentRound({
-      model: { reasoning: false } as any,
+      model: testModel,
       settings: testSettings,
       controller: new AbortController(),
       userQuestion: "How to deploy?",
@@ -256,7 +263,7 @@ describe("runParentAgentRound", () => {
     nextStream = makeStream([], result);
 
     const shouldContinue = await runParentAgentRound({
-      model: { reasoning: false } as any,
+      model: testModel,
       settings: testSettings,
       controller: new AbortController(),
       userQuestion: "Tell me about the architecture",
@@ -294,7 +301,7 @@ describe("runParentAgentRound", () => {
     nextStream = makeStream([{ type: "text_delta", delta: "Let me search for that." }], result);
 
     await runParentAgentRound({
-      model: { reasoning: false } as any,
+      model: testModel,
       settings: testSettings,
       controller: new AbortController(),
       userQuestion: "Find foo",

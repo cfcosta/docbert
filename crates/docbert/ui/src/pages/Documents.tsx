@@ -199,7 +199,16 @@ export default function Documents() {
     }
   }, []);
 
+  // Mount-time data fetch. `loadCollections` resolves to `setCollections`
+  // after an async network call; the `set-state-in-effect` rule can't
+  // see that the setState hop is behind a promise and flags the call
+  // as a synchronous-in-effect update. Effects _are_ the documented tool
+  // for "fetch data on mount" (see
+  // https://react.dev/learn/synchronizing-with-effects#fetching-data),
+  // so silence the rule with a targeted disable rather than contorting
+  // the code around it.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch
     void loadCollections();
   }, [loadCollections]);
 
@@ -326,11 +335,20 @@ export default function Documents() {
   const routePath = params["*"]?.trim();
   const routeFragment = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
 
+  // Route-driven sync: when the URL points at a specific document we
+  // expand its collection (if the user hasn't already) and kick off
+  // the document list + document body fetch. Both the `setExpanded`
+  // call and the downstream `void loadDocs` eventually hit setState,
+  // which the rule flags — but this is the canonical "URL route is
+  // the source of truth, reflect it into component state" pattern and
+  // can't be done during render because expanded-ness is mutable local
+  // UI state the user can override with a later collapse click.
   useEffect(() => {
     if (!routeCollection || !routePath) {
       return;
     }
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- route -> UI sync
     setExpanded((previous) => new Set(previous).add(routeCollection));
     if (!docs[routeCollection]) {
       void loadDocs(routeCollection);
