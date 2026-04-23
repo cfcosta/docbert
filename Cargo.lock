@@ -1284,6 +1284,7 @@ dependencies = [
  "docbert-pylate",
  "hegeltest",
  "ignore",
+ "kodama",
  "pdf_oxide",
  "rand 0.10.1",
  "rayon",

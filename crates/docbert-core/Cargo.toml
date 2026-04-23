@@ -12,6 +12,7 @@ candle-core = "0.10.2"
 docbert-plaid = { path = "../docbert-plaid" }
 ignore = "0.4"
 docbert-pylate = { path = "../docbert-pylate" }
+kodama = "0.3"
 rayon = "1.12.0"
 redb = "4.1.0"
 rkyv = "0.8.15"
@@ -38,4 +39,8 @@ tempfile = "3"
 
 [[bench]]
 name = "embedding_trim"
+harness = false
+
+[[bench]]
+name = "token_pool"
 harness = false

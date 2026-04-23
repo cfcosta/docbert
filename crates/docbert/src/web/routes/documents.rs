@@ -134,7 +134,10 @@ fn compute_embedding_entries(
         tracing::warn!("documents::ingest recovered from poisoned model mutex");
         poisoned.into_inner()
     });
-    embedding::embed_documents(&mut model, docs_to_embed)
+    // `pool_factor = None` matches the indexing CLI default; the web
+    // upload path should store identical embeddings to what `docbert
+    // sync` produces for the same file.
+    embedding::embed_documents(&mut model, docs_to_embed, None)
         .map_err(|err| log_internal_error(err, "documents::ingest embed"))
 }
 

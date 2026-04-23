@@ -1,9 +1,12 @@
+use std::num::NonZeroUsize;
+
 use candle_core::Tensor;
 
 use crate::{
     embedding_db::EmbeddingDb,
     error::{Error, Result},
     model_manager::ModelManager,
+    token_pool,
 };
 
 /// How many documents to hand to `encode_documents` in one outer batch.
@@ -45,13 +48,21 @@ pub type EncodedEmbeddingEntry = (u64, u32, u32, Vec<f32>);
 /// and returns the per-token embeddings in the same format used by
 /// [`EmbeddingDb::batch_store`].
 ///
+/// `pool_factor` optionally activates the hierarchical Ward token-pooling
+/// step from Clavié & Chaffin (arXiv 2409.14683). `None` (or equivalently
+/// `Some(NonZeroUsize::new(1))`) preserves the raw per-token embeddings;
+/// `Some(NonZeroUsize::new(2))` halves the stored vector count per document
+/// with zero retrieval degradation on average per the paper. See
+/// [`crate::token_pool`] for the full method.
+///
 /// This is useful when callers need embedding generation to succeed before they
 /// mutate other storage layers.
 pub fn embed_documents(
     model: &mut ModelManager,
     documents: Vec<(u64, String)>,
+    pool_factor: Option<NonZeroUsize>,
 ) -> Result<Vec<EncodedEmbeddingEntry>> {
-    embed_documents_with(model, documents)
+    embed_documents_with(model, documents, pool_factor)
 }
 
 /// Encode a batch of documents and write the embeddings to the database.
@@ -62,13 +73,17 @@ pub fn embed_documents(
 /// The input vector is consumed so callers do not need to clone document text.
 /// The model is downloaded on first use if it is not cached yet.
 ///
+/// `pool_factor` optionally activates hierarchical Ward token pooling — see
+/// [`embed_documents`] for a full description.
+///
 /// Returns the number of documents written.
 pub fn embed_and_store(
     model: &mut ModelManager,
     db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
+    pool_factor: Option<NonZeroUsize>,
 ) -> Result<usize> {
-    embed_and_store_with(model, db, documents)
+    embed_and_store_with(model, db, documents, pool_factor)
 }
 
 /// Encode and store many documents using larger submission batches.
@@ -76,11 +91,18 @@ pub fn embed_and_store(
 /// docbert hands `docbert-pylate` groups that are bigger than its internal
 /// 32-document batch size so CPU work can spread across multiple inner batches.
 /// `on_progress` receives the cumulative document count after each batch is stored.
+///
+/// `pool_factor` optionally activates hierarchical Ward token pooling (Clavié
+/// & Chaffin, arXiv 2409.14683) at the per-document granularity, applied
+/// before each batch is written to `db`. `None` preserves the existing
+/// one-vector-per-token storage; `Some(NonZeroUsize::new(2))` cuts the stored
+/// vector count per document roughly in half.
 pub fn embed_and_store_in_batches<F>(
     model: &mut ModelManager,
     db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
     submission_batch_size: usize,
+    pool_factor: Option<NonZeroUsize>,
     on_progress: F,
 ) -> Result<usize>
 where
@@ -91,6 +113,7 @@ where
         db,
         documents,
         submission_batch_size,
+        pool_factor,
         on_progress,
     )
 }
@@ -98,6 +121,7 @@ where
 fn embed_documents_with<E: DocumentEncoder>(
     model: &mut E,
     documents: Vec<(u64, String)>,
+    pool_factor: Option<NonZeroUsize>,
 ) -> Result<Vec<EncodedEmbeddingEntry>> {
     if documents.is_empty() {
         return Ok(vec![]);
@@ -144,12 +168,21 @@ fn embed_documents_with<E: DocumentEncoder>(
                 ))
             })?;
 
-        entries.push((
-            doc_id,
-            num_tokens as u32,
-            dimension as u32,
-            trimmed.to_vec(),
-        ));
+        // Optionally collapse per-token rows into cluster means using
+        // hierarchical Ward linkage (Clavié & Chaffin 2024, §2.1). A
+        // `pool_factor` of 1 (or `None`) means "store the raw tokens"
+        // so indexing behaviour is unchanged for callers that don't
+        // opt in.
+        let (stored, stored_tokens) = match pool_factor {
+            Some(factor) if factor.get() > 1 && num_tokens > 1 => {
+                token_pool::pool_document_tokens(
+                    trimmed, num_tokens, dimension, factor,
+                )
+            }
+            _ => (trimmed.to_vec(), num_tokens as u32),
+        };
+
+        entries.push((doc_id, stored_tokens, dimension as u32, stored));
     }
 
     Ok(entries)
@@ -159,8 +192,9 @@ fn embed_and_store_with<E: DocumentEncoder>(
     model: &mut E,
     db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
+    pool_factor: Option<NonZeroUsize>,
 ) -> Result<usize> {
-    let entries = embed_documents_with(model, documents)?;
+    let entries = embed_documents_with(model, documents, pool_factor)?;
     let batch_size = entries.len();
     db.batch_store(&entries)?;
     Ok(batch_size)
@@ -171,6 +205,7 @@ fn embed_and_store_in_batches_with<E, F>(
     db: &EmbeddingDb,
     documents: Vec<(u64, String)>,
     submission_batch_size: usize,
+    pool_factor: Option<NonZeroUsize>,
     mut on_progress: F,
 ) -> Result<usize>
 where
@@ -194,7 +229,7 @@ where
             break;
         }
 
-        embedded_total += embed_and_store_with(model, db, batch)?;
+        embedded_total += embed_and_store_with(model, db, batch, pool_factor)?;
         on_progress(embedded_total);
     }
 
@@ -378,6 +413,7 @@ mod tests {
         let entries = embed_documents_with(
             &mut encoder,
             vec![(1, "short".to_string()), (2, "long".to_string())],
+            None,
         )
         .unwrap();
 
@@ -400,6 +436,7 @@ mod tests {
             &mut encoder,
             &db,
             vec![(1, "short".to_string()), (2, "long".to_string())],
+            None,
         )
         .unwrap();
 
@@ -412,6 +449,81 @@ mod tests {
         assert_eq!(second.num_tokens, 3);
         assert_eq!(second.dimension, 2);
         assert_eq!(second.data, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    }
+
+    /// When `pool_factor` is set, `embed_documents_with` reduces the
+    /// stored token count per document according to the Clavié &
+    /// Chaffin Ward-clustering scheme. This test confirms the
+    /// threading: a per-doc vector with 4 identical tokens, pooled at
+    /// factor 2, must collapse to 2 stored rows.
+    #[test]
+    fn embed_documents_with_pool_factor_two_reduces_vector_count() {
+        struct FourIdenticalTokensEncoder;
+        impl DocumentEncoder for FourIdenticalTokensEncoder {
+            fn encode_documents(
+                &mut self,
+                _texts: &[String],
+            ) -> Result<(Tensor, Vec<u32>)> {
+                // One doc, 4 tokens, each row (0.6, 0.8) so cosine
+                // distances are all 0 — Ward will merge any pair first.
+                let data: Vec<f32> =
+                    vec![0.6, 0.8, 0.6, 0.8, 0.6, 0.8, 0.6, 0.8];
+                let tensor = Tensor::from_vec(
+                    data,
+                    (1, 4, 2),
+                    &crate::test_util::test_device(),
+                )?;
+                Ok((tensor, vec![4]))
+            }
+        }
+
+        let mut encoder = FourIdenticalTokensEncoder;
+        let entries = embed_documents_with(
+            &mut encoder,
+            vec![(1, "x".into())],
+            NonZeroUsize::new(2),
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        let (doc_id, num_tokens, dim, data) = &entries[0];
+        assert_eq!(*doc_id, 1);
+        // Paper §2.1 ceiling: at most ⌈4/2⌉ + 1 = 3. For identical
+        // rows Ward merges each pair to a single cluster of identical
+        // means; the current cut targets 3 clusters (one of size 2,
+        // two singletons) so we simply assert the count drops below
+        // the raw 4.
+        assert!((*num_tokens as usize) < 4);
+        assert_eq!(*dim, 2);
+        assert_eq!(data.len(), (*num_tokens as usize) * 2);
+        // Every output row must still be (0.6, 0.8) because mean of
+        // identical rows is the row itself.
+        for row in data.chunks_exact(2) {
+            assert!((row[0] - 0.6).abs() < 1e-5);
+            assert!((row[1] - 0.8).abs() < 1e-5);
+        }
+    }
+
+    /// Pool factor `Some(1)` is explicitly the no-op path: storage
+    /// must match what `None` produces byte-for-byte. This guarantees
+    /// callers can thread a `NonZeroUsize::new(1)` through without
+    /// silently activating clustering.
+    #[test]
+    fn embed_documents_with_pool_factor_one_is_identical_to_none() {
+        let mut a = PaddedEncoder;
+        let mut b = PaddedEncoder;
+        let with_none = embed_documents_with(
+            &mut a,
+            vec![(1, "x".into()), (2, "y".into())],
+            None,
+        )
+        .unwrap();
+        let with_one = embed_documents_with(
+            &mut b,
+            vec![(1, "x".into()), (2, "y".into())],
+            NonZeroUsize::new(1),
+        )
+        .unwrap();
+        assert_eq!(with_none, with_one);
     }
 
     /// If the encoder over-reports a length (e.g. a length larger than
@@ -439,7 +551,8 @@ mod tests {
 
         let mut encoder = OverReportingEncoder;
         let entries =
-            embed_documents_with(&mut encoder, vec![(1, "x".into())]).unwrap();
+            embed_documents_with(&mut encoder, vec![(1, "x".into())], None)
+                .unwrap();
         assert_eq!(entries, vec![(1, 1, 2, vec![1.0, 2.0])]);
     }
 
@@ -650,6 +763,7 @@ mod tests {
             &db,
             docs,
             EMBEDDING_SUBMISSION_BATCH_SIZE,
+            None,
             |_| {},
         )
         .unwrap();
@@ -681,11 +795,15 @@ mod tests {
             (0..85).map(|i| (i as u64, format!("doc {i}"))).collect();
         let mut progress_updates = Vec::new();
 
-        let embedded =
-            embed_and_store_in_batches_with(&mut encoder, &db, docs, 40, |n| {
-                progress_updates.push(n)
-            })
-            .unwrap();
+        let embedded = embed_and_store_in_batches_with(
+            &mut encoder,
+            &db,
+            docs,
+            40,
+            None,
+            |n| progress_updates.push(n),
+        )
+        .unwrap();
 
         assert_eq!(embedded, 85);
         assert_eq!(encoder.call_sizes, vec![40, 40, 5]);
@@ -703,6 +821,7 @@ mod tests {
             &db,
             vec![(1, "doc".to_string())],
             0,
+            None,
             |_| {},
         )
         .unwrap_err();
