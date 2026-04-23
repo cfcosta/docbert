@@ -12,7 +12,6 @@ use tantivy::IndexWriter;
 
 use crate::runtime;
 
-#[allow(dead_code)]
 pub(crate) struct Inner {
     pub(crate) data_dir: DataDir,
     pub(crate) search_index: SearchIndex,

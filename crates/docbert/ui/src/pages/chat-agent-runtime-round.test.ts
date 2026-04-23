@@ -136,7 +136,7 @@ describe("runParentAgentRound", () => {
     queuedFiles.push(file);
   }
 
-  function updateSubagent(_id: string, _fn: (m: Message) => Message) {
+  function updateSubagent() {
     // no-op for parent round tests
   }
 

@@ -5,7 +5,6 @@ use tantivy::{IndexWriter, TantivyError};
 
 const OPEN_RETRY_DELAY: Duration = Duration::from_millis(50);
 
-#[allow(dead_code)]
 pub(crate) fn open_config_db_blocking(
     data_dir: &DataDir,
 ) -> error::Result<ConfigDb> {
@@ -20,7 +19,6 @@ pub(crate) fn open_config_db_blocking(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn open_embedding_db_blocking(
     data_dir: &DataDir,
 ) -> error::Result<EmbeddingDb> {
@@ -35,7 +33,6 @@ pub(crate) fn open_embedding_db_blocking(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn open_index_writer_blocking(
     search_index: &SearchIndex,
     memory_budget: usize,
