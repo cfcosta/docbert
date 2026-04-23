@@ -22,6 +22,20 @@ pub const EMBEDDING_BATCH_SIZE_ENV_VAR: &str = "DOCBERT_EMBEDDING_BATCH_SIZE";
 pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
 
 /// Default docbert-pylate internal batch size for accelerated execution.
+///
+/// This number is **not** a document count; pylate's GPU document path
+/// treats it as a token budget ceiling via
+/// `batch_size * document_length` — at `document_length = 519` and
+/// `batch_size = 64` the ceiling is ~33 k tokens per forward pass.
+///
+/// Tuning target is a 3060-class GPU with ~8 GB of _usable_ VRAM (12 GB
+/// card minus the desktop compositor, CUDA runtime, and model weights).
+/// The `encode_batch_size` criterion bench in `docbert-pylate` sweeps
+/// 32 / 64 / 96 / 128 on `lightonai/LateOn` and finds end-to-end
+/// throughput flat at ~187 docs/s across that range — the GPU is
+/// compute-bound before we hit 64, so larger batches don't buy us
+/// anything but eat more VRAM. Users on fatter cards can raise the
+/// ceiling through `DOCBERT_EMBEDDING_BATCH_SIZE`.
 pub const DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE: usize = 64;
 
 #[allow(dead_code)]
