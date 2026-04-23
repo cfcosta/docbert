@@ -14,7 +14,10 @@
 //! # Algorithm (paper, §2.1 "Hierarchical clustering based pooling")
 //!
 //! 1. Compute the pairwise cosine distance between the document's token
-//!    embeddings.
+//!    embeddings. This module takes a precomputed dot-product matrix
+//!    from the caller; the indexing pipeline fills it in with a single
+//!    batched GPU matmul across the whole batch, which is dramatically
+//!    faster than recomputing it per-document on CPU.
 //! 2. Run hierarchical agglomerative clustering with **Ward's linkage**
 //!    (the paper evaluates sequential, k-means, and hierarchical Ward;
 //!    Ward wins on their ablations, Tables 1 and 2).
@@ -28,8 +31,9 @@
 //!
 //! This module exposes a single function,
 //! [`pool_document_tokens`], that operates on one document's flat
-//! `[num_tokens, dim]` `f32` buffer and returns a new, shorter buffer.
-//! The indexing pipeline always calls it (at the factor picked by
+//! `[num_tokens, dim]` `f32` buffer plus a matching dot-product
+//! matrix, and returns a new, shorter buffer. The indexing pipeline
+//! always calls it (at the factor picked by
 //! `docbert_core::embedding::TOKEN_POOL_FACTOR`) between
 //! `encode_documents_with_lengths` and the `EmbeddingDb::batch_store`
 //! write.
@@ -46,21 +50,30 @@ use std::num::NonZeroUsize;
 use kodama::{Method, linkage};
 
 /// Pool one document's per-token embeddings into a smaller set of
-/// cluster-mean vectors.
+/// cluster-mean vectors, using a pre-computed pairwise dot-product
+/// matrix.
 ///
 /// # Inputs
 ///
-/// - `tokens`: flat row-major `[num_tokens, dim]` buffer of `f32`
+/// - `tokens` — flat row-major `[num_tokens, dim]` buffer of `f32`
 ///   values. The paper assumes ColBERT-style L2-normalised token
 ///   embeddings (so cosine distance is well-defined), which is what
 ///   `docbert-pylate::ColBERT::encode` produces.
-/// - `num_tokens`: number of rows in `tokens`. Must equal
+/// - `num_tokens` — number of rows in `tokens`. Must equal
 ///   `tokens.len() / dim`.
-/// - `dim`: embedding dimensionality. Must be non-zero.
-/// - `pooling_factor`: the paper's compression factor. A factor of 2
+/// - `dim` — embedding dimensionality. Must be non-zero.
+/// - `pooling_factor` — the paper's compression factor. A factor of 2
 ///   halves the vector count; a factor of 3 keeps ~⅓. The paper
 ///   evaluates 2, 3, 4, 5, 6, and 8. Factor `1` is a no-op and
 ///   short-circuits.
+/// - `dots` — row-major `[num_tokens, dot_row_stride]` buffer holding
+///   `⟨token_i, token_j⟩` at index `i * dot_row_stride + j`. Only the
+///   upper triangle (`j > i`) is read. Entries outside the
+///   `num_tokens × num_tokens` sub-matrix are ignored.
+/// - `dot_row_stride` — row stride for `dots`. When the caller passes
+///   a doc-sized `num_tokens × num_tokens` matrix this equals
+///   `num_tokens`; when slicing out of a padded `[batch, padded, padded]`
+///   tensor produced by the batched GPU matmul this equals `padded`.
 ///
 /// # Output
 ///
@@ -78,64 +91,22 @@ use kodama::{Method, linkage};
 ///
 /// # Determinism
 ///
-/// Given the same `(tokens, num_tokens, dim, pooling_factor)` the output
-/// is bit-identical. Ward's agglomerative scheme is deterministic, and
-/// cluster labels are re-assigned in a canonical pass (first
-/// appearance of an original observation), so cluster *ordering* is
-/// also stable.
+/// Given the same `(tokens, num_tokens, dim, pooling_factor, dots,
+/// dot_row_stride)` the output is bit-identical. Ward's agglomerative
+/// scheme is deterministic, and cluster labels are re-assigned in a
+/// canonical pass (first appearance of an original observation), so
+/// cluster *ordering* is also stable.
 ///
 /// # Cost
 ///
-/// `O(num_tokens² · dim)` for the distance matrix, `O(num_tokens²)`
-/// memory for the condensed form, and `O(num_tokens²)` time for
-/// Ward's linkage via `kodama`. At the LateOn default
-/// `document_length = 519` this is a few milliseconds per document on
-/// a modern CPU — negligible next to encoding.
+/// `O(num_tokens²)` reads to build the condensed distance matrix
+/// (skips the O(num_tokens² · dim) scalar inner-product scan that
+/// would otherwise dominate), `O(num_tokens²)` memory for the
+/// condensed form, and `O(num_tokens²)` time for Ward's linkage via
+/// `kodama`. At the `LateOn` default `document_length = 519` this is
+/// under a millisecond per document — see the `embedding_compression`
+/// bench for the exact number.
 pub fn pool_document_tokens(
-    tokens: &[f32],
-    num_tokens: usize,
-    dim: usize,
-    pooling_factor: NonZeroUsize,
-) -> (Vec<f32>, u32) {
-    validate_pool_inputs(tokens, num_tokens, dim);
-
-    if let Some(early) =
-        pool_short_circuit(tokens, num_tokens, dim, pooling_factor)
-    {
-        return early;
-    }
-
-    let condensed = condensed_cosine_distance_matrix(tokens, num_tokens, dim);
-    cluster_and_pool(tokens, num_tokens, dim, pooling_factor, condensed)
-}
-
-/// Pool one document using a pre-computed token-dot-product matrix.
-///
-/// Functionally identical to [`pool_document_tokens`], but skips the
-/// O(num_tokens² · dim) dot-product scan because the caller already
-/// computed it (typically via a batched GPU matmul across an entire
-/// indexing batch).
-///
-/// # Inputs
-///
-/// - `tokens`, `num_tokens`, `dim`, `pooling_factor` — same meaning as
-///   in [`pool_document_tokens`]. Tokens are still needed for the mean
-///   step after clustering.
-/// - `dots` — row-major `[num_tokens, dot_row_stride]` buffer holding
-///   `⟨token_i, token_j⟩` at index `i * dot_row_stride + j`. Only the
-///   upper triangle (`j > i`) is read. Entries outside the
-///   `num_tokens × num_tokens` sub-matrix are ignored.
-/// - `dot_row_stride` — row stride for `dots`. When the caller passes
-///   a doc-sized `num_tokens × num_tokens` matrix this equals
-///   `num_tokens`; when slicing out of a padded `[batch, padded, padded]`
-///   tensor it equals `padded`.
-///
-/// Output is bit-identical to the raw-token variant for inputs where
-/// `dots[i, j] ≈ ⟨token_i, token_j⟩`. Floating-point rounding in the
-/// (typically GPU) matmul can introduce tiny numerical differences vs
-/// the scalar CPU path, but never large enough to change the cluster
-/// structure on any realistic ColBERT embedding.
-pub fn pool_document_tokens_with_dots(
     tokens: &[f32],
     num_tokens: usize,
     dim: usize,
@@ -143,81 +114,38 @@ pub fn pool_document_tokens_with_dots(
     dots: &[f32],
     dot_row_stride: usize,
 ) -> (Vec<f32>, u32) {
-    validate_pool_inputs(tokens, num_tokens, dim);
-    assert!(
-        dot_row_stride >= num_tokens,
-        "pool_document_tokens_with_dots: dot_row_stride must be >= num_tokens"
-    );
-    if num_tokens > 0 {
-        let last = (num_tokens - 1) * dot_row_stride + (num_tokens - 1);
-        assert!(
-            dots.len() > last,
-            "pool_document_tokens_with_dots: dots buffer is too short for the requested sub-matrix"
-        );
-    }
-
-    if let Some(early) =
-        pool_short_circuit(tokens, num_tokens, dim, pooling_factor)
-    {
-        return early;
-    }
-
-    let condensed = condensed_cosine_distance_matrix_from_dots(
-        dots,
-        num_tokens,
-        dot_row_stride,
-    );
-    cluster_and_pool(tokens, num_tokens, dim, pooling_factor, condensed)
-}
-
-fn validate_pool_inputs(tokens: &[f32], num_tokens: usize, dim: usize) {
     assert_eq!(
         tokens.len(),
         num_tokens * dim,
         "pool_document_tokens: tokens.len() must equal num_tokens * dim"
     );
     assert!(dim > 0, "pool_document_tokens: dim must be non-zero");
-}
+    assert!(
+        dot_row_stride >= num_tokens,
+        "pool_document_tokens: dot_row_stride must be >= num_tokens"
+    );
+    if num_tokens > 0 {
+        let last = (num_tokens - 1) * dot_row_stride + (num_tokens - 1);
+        assert!(
+            dots.len() > last,
+            "pool_document_tokens: dots buffer is too short for the requested sub-matrix"
+        );
+    }
 
-/// Handle the paper's short-circuit cases so both the raw-token and
-/// precomputed-dots entry points share the same degenerate-input
-/// behaviour. Returns `Some((pooled, count))` when no clustering is
-/// needed; `None` when the caller has to run the main path.
-fn pool_short_circuit(
-    tokens: &[f32],
-    num_tokens: usize,
-    dim: usize,
-    pooling_factor: NonZeroUsize,
-) -> Option<(Vec<f32>, u32)> {
     let factor = pooling_factor.get();
 
     // Short-circuits (paper §2.1: "at most" formulas below only bite
     // when they would reduce the count).
     if factor == 1 || num_tokens <= 1 {
-        return Some((tokens.to_vec(), num_tokens as u32));
+        return (tokens.to_vec(), num_tokens as u32);
     }
 
     // Collapse-to-one case: when the document is shorter than the
     // pooling factor, every token joins a single cluster and the
     // pooled output is the component-wise mean.
     if num_tokens <= factor {
-        return Some((mean_pool_all(tokens, num_tokens, dim), 1));
+        return (mean_pool_all(tokens, num_tokens, dim), 1);
     }
-
-    None
-}
-
-/// Run Ward linkage on a prepared condensed distance buffer, cut the
-/// dendrogram, and mean-pool the surviving clusters. Shared between
-/// the raw-token and precomputed-dots entry points.
-fn cluster_and_pool(
-    tokens: &[f32],
-    num_tokens: usize,
-    dim: usize,
-    pooling_factor: NonZeroUsize,
-    mut condensed: Vec<f64>,
-) -> (Vec<f32>, u32) {
-    let factor = pooling_factor.get();
 
     // Paper §2.1: "this method will result in at most
     // `initial token count / Pooling Factor + 1` clusters".
@@ -225,6 +153,9 @@ fn cluster_and_pool(
         .div_ceil(factor)
         .saturating_add(1)
         .min(num_tokens);
+
+    let mut condensed =
+        condensed_cosine_distance_matrix(dots, num_tokens, dot_row_stride);
 
     // Ward's linkage. `kodama::linkage` consumes (mutates) the
     // condensed distance buffer as working space; we own it.
@@ -256,37 +187,14 @@ fn mean_pool_all(tokens: &[f32], num_tokens: usize, dim: usize) -> Vec<f32> {
 }
 
 /// Build the upper-triangular, row-major condensed cosine-distance
-/// matrix that `kodama::linkage` expects.
+/// matrix that `kodama::linkage` expects, from a precomputed dot-product
+/// buffer with the given row stride.
 ///
 /// For L2-normalised inputs (which ColBERT outputs are), cosine
 /// distance reduces to `1 - ⟨x, y⟩`. We still clamp to `[0, 2]` to be
 /// robust to rounding that can push a pair slightly negative when
 /// vectors are near-identical.
 fn condensed_cosine_distance_matrix(
-    tokens: &[f32],
-    num_tokens: usize,
-    dim: usize,
-) -> Vec<f64> {
-    let n_pairs = num_tokens * (num_tokens - 1) / 2;
-    let mut out = Vec::with_capacity(n_pairs);
-    for i in 0..num_tokens {
-        let row_i = &tokens[i * dim..(i + 1) * dim];
-        for j in (i + 1)..num_tokens {
-            let row_j = &tokens[j * dim..(j + 1) * dim];
-            let dot: f32 =
-                row_i.iter().zip(row_j.iter()).map(|(a, b)| a * b).sum();
-            let dist = (1.0_f32 - dot).clamp(0.0, 2.0);
-            out.push(dist as f64);
-        }
-    }
-    out
-}
-
-/// Build the condensed cosine-distance matrix directly from a
-/// precomputed dot-product buffer. Same output as
-/// [`condensed_cosine_distance_matrix`] but skips the O(N²·D)
-/// inner-product scan — N² reads instead of N²·D multiplies.
-fn condensed_cosine_distance_matrix_from_dots(
     dots: &[f32],
     num_tokens: usize,
     dot_row_stride: usize,
@@ -401,10 +309,43 @@ mod tests {
         NonZeroUsize::new(n).expect("non-zero")
     }
 
+    /// Build the full `num_tokens × num_tokens` dot-product matrix on
+    /// the CPU — the slow scalar oracle the GPU matmul replaces in
+    /// production. Shared by every test that wants to call
+    /// `pool_document_tokens` without writing the dot loop inline.
+    fn naive_dots(tokens: &[f32], num_tokens: usize, dim: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; num_tokens * num_tokens];
+        for i in 0..num_tokens {
+            for j in 0..num_tokens {
+                let dot: f32 = tokens[i * dim..(i + 1) * dim]
+                    .iter()
+                    .zip(tokens[j * dim..(j + 1) * dim].iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
+                out[i * num_tokens + j] = dot;
+            }
+        }
+        out
+    }
+
+    /// Convenience wrapper: build packed dots with
+    /// `dot_row_stride == num_tokens` and call `pool_document_tokens`.
+    /// Keeps each test focused on the clustering invariant it's
+    /// actually asserting rather than the dot-product plumbing.
+    fn pool_packed(
+        tokens: &[f32],
+        num_tokens: usize,
+        dim: usize,
+        factor: NonZeroUsize,
+    ) -> (Vec<f32>, u32) {
+        let dots = naive_dots(tokens, num_tokens, dim);
+        pool_document_tokens(tokens, num_tokens, dim, factor, &dots, num_tokens)
+    }
+
     #[test]
     fn factor_one_is_identity() {
         let tokens: Vec<f32> = (0..12).map(|i| i as f32).collect();
-        let (out, new_n) = pool_document_tokens(&tokens, 4, 3, nz(1));
+        let (out, new_n) = pool_packed(&tokens, 4, 3, nz(1));
         assert_eq!(new_n, 4);
         assert_eq!(out, tokens);
     }
@@ -412,7 +353,7 @@ mod tests {
     #[test]
     fn single_token_is_unchanged() {
         let tokens = vec![1.0, 2.0, 3.0];
-        let (out, new_n) = pool_document_tokens(&tokens, 1, 3, nz(2));
+        let (out, new_n) = pool_packed(&tokens, 1, 3, nz(2));
         assert_eq!(new_n, 1);
         assert_eq!(out, tokens);
     }
@@ -421,7 +362,7 @@ mod tests {
     fn short_document_collapses_to_single_mean() {
         // Two tokens, pooling factor 3 — both tokens collapse.
         let tokens = vec![1.0_f32, 2.0, 3.0, 4.0];
-        let (out, new_n) = pool_document_tokens(&tokens, 2, 2, nz(3));
+        let (out, new_n) = pool_packed(&tokens, 2, 2, nz(3));
         assert_eq!(new_n, 1);
         // Component-wise mean of [(1,2), (3,4)] is (2, 3).
         assert_eq!(out, vec![2.0, 3.0]);
@@ -451,7 +392,7 @@ mod tests {
             duplicated.extend_from_slice(row);
         }
 
-        let (pooled, n) = pool_document_tokens(&duplicated, 6, 2, nz(2));
+        let (pooled, n) = pool_packed(&duplicated, 6, 2, nz(2));
         // Paper §2.1 ceiling: ⌈6/2⌉ + 1 = 4 clusters at most.
         assert!(n <= 4, "cluster count should respect the paper ceiling");
         assert!(n >= 1);
@@ -471,7 +412,7 @@ mod tests {
     fn output_size_matches_paper_formula() {
         // Paper §2.1: "at most initial token count / Pooling Factor + 1".
         let tokens: Vec<f32> = (0..10 * 4).map(|i| (i as f32).sin()).collect();
-        let (_, n) = pool_document_tokens(&tokens, 10, 4, nz(2));
+        let (_, n) = pool_packed(&tokens, 10, 4, nz(2));
         // 10 / 2 + 1 = 6 is the paper's ceiling.
         assert!(n <= 6);
         assert!(n >= 1);
@@ -482,59 +423,20 @@ mod tests {
         // Bitwise-stable given the same input — required for
         // reproducible indexing runs.
         let tokens: Vec<f32> = (0..20 * 4).map(|i| (i as f32).cos()).collect();
-        let (a, an) = pool_document_tokens(&tokens, 20, 4, nz(3));
-        let (b, bn) = pool_document_tokens(&tokens, 20, 4, nz(3));
+        let (a, an) = pool_packed(&tokens, 20, 4, nz(3));
+        let (b, bn) = pool_packed(&tokens, 20, 4, nz(3));
         assert_eq!(an, bn);
         assert_eq!(a, b);
     }
 
-    /// Build the full `num_tokens × num_tokens` dot-product matrix on
-    /// the CPU — the slow scalar oracle for the GPU path.
-    fn naive_dots(tokens: &[f32], num_tokens: usize, dim: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; num_tokens * num_tokens];
-        for i in 0..num_tokens {
-            for j in 0..num_tokens {
-                let dot: f32 = tokens[i * dim..(i + 1) * dim]
-                    .iter()
-                    .zip(tokens[j * dim..(j + 1) * dim].iter())
-                    .map(|(a, b)| a * b)
-                    .sum();
-                out[i * num_tokens + j] = dot;
-            }
-        }
-        out
-    }
-
-    /// Feeding `pool_document_tokens_with_dots` a bit-exact dot-product
-    /// matrix must yield bit-exact the same output as the CPU path.
-    /// This is the correctness oracle for the GPU-matmul optimisation
-    /// in the embedding pipeline: as long as the GPU hands us the same
-    /// pairwise dots, pooling is indistinguishable.
-    #[test]
-    fn pool_with_dots_matches_raw_token_path() {
-        let tokens: Vec<f32> =
-            (0..20 * 4).map(|i| ((i as f32) * 0.37).cos()).collect();
-        let dots = naive_dots(&tokens, 20, 4);
-
-        let (raw, raw_n) = pool_document_tokens(&tokens, 20, 4, nz(3));
-        let (with_dots, with_dots_n) = pool_document_tokens_with_dots(
-            &tokens,
-            20,
-            4,
-            nz(3),
-            &dots,
-            20, // stride == num_tokens
-        );
-        assert_eq!(raw_n, with_dots_n);
-        assert_eq!(raw, with_dots);
-    }
-
     /// When the dots buffer comes from a padded tensor (the GPU
-    /// emits `[batch, padded, padded]`), the pool helper must still
-    /// read only the top-left `num_tokens × num_tokens` sub-matrix
-    /// and match the non-padded output byte-for-byte.
+    /// emits `[batch, padded, padded]`), the pool helper must read
+    /// only the top-left `num_tokens × num_tokens` sub-matrix and
+    /// produce output byte-identical to the packed (stride ==
+    /// num_tokens) case. Garbage in the padding slots would surface
+    /// as cluster-structure drift immediately.
     #[test]
-    fn pool_with_dots_respects_padded_stride() {
+    fn padded_dot_stride_matches_packed_stride() {
         let num_tokens = 16usize;
         let dim = 4usize;
         let padded = 32usize;
@@ -542,21 +444,28 @@ mod tests {
             .map(|i| ((i as f32) * 0.21).sin())
             .collect();
 
-        // Build a padded `padded × padded` dots matrix: real values in
-        // the top-left quadrant, garbage (-99.0) everywhere else. If
-        // the pool helper ever read outside its advertised sub-matrix,
-        // the -99.0 values would blow up Ward clustering immediately.
+        // Build a padded `padded × padded` dots matrix with real
+        // values in the top-left quadrant and obvious garbage (-99.0)
+        // everywhere else. If the pool helper ever read outside its
+        // advertised sub-matrix, the garbage would blow up Ward
+        // clustering immediately.
+        let packed_dots = naive_dots(&tokens, num_tokens, dim);
         let mut padded_dots = vec![-99.0f32; padded * padded];
-        let raw_dots = naive_dots(&tokens, num_tokens, dim);
         for i in 0..num_tokens {
             for j in 0..num_tokens {
-                padded_dots[i * padded + j] = raw_dots[i * num_tokens + j];
+                padded_dots[i * padded + j] = packed_dots[i * num_tokens + j];
             }
         }
 
-        let (raw_out, raw_n) =
-            pool_document_tokens(&tokens, num_tokens, dim, nz(2));
-        let (with_dots_out, with_dots_n) = pool_document_tokens_with_dots(
+        let (packed_out, packed_n) = pool_document_tokens(
+            &tokens,
+            num_tokens,
+            dim,
+            nz(2),
+            &packed_dots,
+            num_tokens,
+        );
+        let (padded_out, padded_n) = pool_document_tokens(
             &tokens,
             num_tokens,
             dim,
@@ -564,8 +473,8 @@ mod tests {
             &padded_dots,
             padded,
         );
-        assert_eq!(raw_n, with_dots_n);
-        assert_eq!(raw_out, with_dots_out);
+        assert_eq!(packed_n, padded_n);
+        assert_eq!(packed_out, padded_out);
     }
 
     /// Property: `pool_document_tokens` never grows the vector count.
@@ -587,8 +496,7 @@ mod tests {
                 .max_size(num_tokens * dim),
         );
 
-        let (_, new_n) =
-            pool_document_tokens(&tokens, num_tokens, dim, nz(factor));
+        let (_, new_n) = pool_packed(&tokens, num_tokens, dim, nz(factor));
         assert!(new_n as usize <= num_tokens);
         // And the paper's explicit ceiling from §2.1.
         if factor > 1 && num_tokens > factor {
@@ -626,7 +534,7 @@ mod tests {
         );
 
         let (pooled, n_clusters) =
-            pool_document_tokens(&tokens, num_tokens, dim, nz(factor));
+            pool_packed(&tokens, num_tokens, dim, nz(factor));
 
         // Component-wise min/max across the input rows is the oracle
         // envelope. Output rows, being cluster-wise means, must

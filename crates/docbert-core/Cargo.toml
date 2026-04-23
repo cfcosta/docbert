@@ -42,9 +42,5 @@ name = "embedding_trim"
 harness = false
 
 [[bench]]
-name = "token_pool"
-harness = false
-
-[[bench]]
 name = "embedding_compression"
 harness = false

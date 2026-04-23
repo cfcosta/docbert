@@ -195,15 +195,14 @@ fn embed_documents_with<E: DocumentEncoder>(
         // Ward linkage (Clavié & Chaffin 2024, §2.1). The pool helper
         // short-circuits when `num_tokens <= TOKEN_POOL_FACTOR`, so
         // tiny documents pass through byte-identical.
-        let (stored, stored_tokens) =
-            token_pool::pool_document_tokens_with_dots(
-                trimmed,
-                num_tokens,
-                dimension,
-                TOKEN_POOL_FACTOR,
-                doc_dots,
-                padded_tokens,
-            );
+        let (stored, stored_tokens) = token_pool::pool_document_tokens(
+            trimmed,
+            num_tokens,
+            dimension,
+            TOKEN_POOL_FACTOR,
+            doc_dots,
+            padded_tokens,
+        );
 
         entries.push((doc_id, stored_tokens, dimension as u32, stored));
     }
