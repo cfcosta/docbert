@@ -206,6 +206,45 @@ fn colbert_v2_test() -> Result<()> {
     Ok(())
 }
 
+/// `lightonai/ColBERT-Zero` declares a single `1_Dense` (768 → 128) module
+/// in `modules.json`. Encoded document tensors must end at 128 — this is the
+/// classic ColBERT projection shape and the baseline we already shipped
+/// before the multi-Dense fix landed.
+#[test]
+fn colbert_zero_outputs_128_dim() -> Result<()> {
+    let mut model = load_model("lightonai/ColBERT-Zero", test_device())?;
+
+    let documents = vec!["paris is the capital of france".to_string()];
+    let document_embeddings = model.encode(&documents, false)?;
+    let (_, _, dim) = document_embeddings.dims3()?;
+    assert_eq!(
+        dim, 128,
+        "ColBERT-Zero must emit 128-dim per-token embeddings",
+    );
+    Ok(())
+}
+
+/// `lightonai/LateOn` declares a 3-layer Dense chain in `modules.json`:
+/// `1_Dense (768 → 1536, residual) → 2_Dense (1536 → 768, residual) →
+/// 3_Dense (768 → 128)`. Before the fix in this commit's series, the loader
+/// stopped after `1_Dense` and produced 1536-dim per-token embeddings; this
+/// test pins the corrected 128-dim output and acts as a regression guard
+/// against any future builder regression that drops layers off the chain.
+#[test]
+fn lateon_outputs_128_dim_through_full_dense_chain() -> Result<()> {
+    let mut model = load_model("lightonai/LateOn", test_device())?;
+
+    let documents = vec!["paris is the capital of france".to_string()];
+    let document_embeddings = model.encode(&documents, false)?;
+    let (_, _, dim) = document_embeddings.dims3()?;
+    assert_eq!(
+        dim, 128,
+        "LateOn must emit 128-dim embeddings after running its full \
+         3-layer Dense chain (768 -> 1536 -> 768 -> 128)",
+    );
+    Ok(())
+}
+
 /// Tests the `answerai-colbert-small-v1` model from the Hugging Face Hub.
 #[test]
 fn answerai_colbert_small_v1_test() -> Result<()> {
