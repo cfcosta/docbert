@@ -1103,9 +1103,11 @@ mod hegel_tests {
     //!   `concatenate_embedding_batches` must preserve the batch/dim invariants
     //!   while zero-padding short batches up to the longest token length.
     use candle_core::{Device, Tensor};
+    use candle_nn::{Linear, Module};
     use hegel::{TestCase, generators as gs};
 
     use super::{
+        DenseLayer,
         compute_raw_similarity,
         compute_similarities,
         concatenate_embedding_batches,
@@ -1566,6 +1568,247 @@ mod hegel_tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier F — Dense projection chain
+    //
+    // The PyLate Dense module pipeline is the slice of the loader most
+    // exposed to silent dimension drift: the model card promises a final
+    // `out_features`, but the real number is whatever the *last* loaded
+    // Dense layer emits. These properties pin the chain semantics with
+    // differential checks against linear-algebra equivalents (so the
+    // reference doesn't share the SUT's iteration logic):
+    //
+    // - **F1** — no-residual layer collapses to a plain `Linear`.
+    // - **F2** — residual sum is equivalent to a single `Linear` whose
+    //   weight is `linear + residual`.
+    // - **F3** — a two-layer chain composes like `Linear(W2 @ W1)`.
+    // - **F4** — chain output dim equals the last layer's `out_features`,
+    //   regardless of intermediate widths.
+    // -----------------------------------------------------------------------
+
+    /// Generator: an `(out, in)` weight matrix in a numerically friendly
+    /// range so f32 matmul drift stays below the assert tolerance.
+    #[hegel::composite]
+    fn weight_matrix(
+        tc: TestCase,
+        out_features: usize,
+        in_features: usize,
+        dev: Device,
+    ) -> Tensor {
+        let n = out_features * in_features;
+        let data: Vec<f32> = tc.draw(
+            gs::vecs(
+                gs::floats::<f32>()
+                    .min_value(-1.0)
+                    .max_value(1.0)
+                    .allow_nan(false)
+                    .allow_infinity(false),
+            )
+            .min_size(n)
+            .max_size(n),
+        );
+        Tensor::from_vec(data, (out_features, in_features), &dev).unwrap()
+    }
+
+    /// Generator: an `(batch, tokens, dim)` activation tensor, also bounded.
+    #[hegel::composite]
+    fn activations(
+        tc: TestCase,
+        batch: usize,
+        tokens: usize,
+        dim: usize,
+        dev: Device,
+    ) -> Tensor {
+        let n = batch * tokens * dim;
+        let data: Vec<f32> = tc.draw(
+            gs::vecs(
+                gs::floats::<f32>()
+                    .min_value(-1.0)
+                    .max_value(1.0)
+                    .allow_nan(false)
+                    .allow_infinity(false),
+            )
+            .min_size(n)
+            .max_size(n),
+        );
+        Tensor::from_vec(data, (batch, tokens, dim), &dev).unwrap()
+    }
+
+    /// Element-wise max-abs distance between two tensors as a scalar `f32`.
+    /// Crashes on shape mismatch — that's the property we want to fail loudly.
+    fn max_abs_diff(a: &Tensor, b: &Tensor) -> f32 {
+        let diff = (a - b).unwrap().abs().unwrap();
+        let flat: Vec<f32> = diff.flatten_all().unwrap().to_vec1().unwrap();
+        flat.into_iter().fold(0.0f32, f32::max)
+    }
+
+    /// F1: a residual-less Dense layer must produce exactly what
+    /// `candle_nn::Linear::new(weight, None)` produces — the residual
+    /// branch is the only behaviour change relative to a plain linear.
+    #[hegel::test(test_cases = 100)]
+    fn dense_layer_without_residual_matches_plain_linear(tc: TestCase) {
+        let dev = test_device();
+        let in_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let out_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+
+        let w = tc.draw(weight_matrix(out_dim, in_dim, dev.clone()));
+        let x = tc.draw(activations(batch, tokens, in_dim, dev));
+
+        let layer = DenseLayer {
+            linear: Linear::new(w.clone(), None),
+            residual: None,
+        };
+        let plain = Linear::new(w, None);
+
+        let got = layer.forward(&x).unwrap();
+        let want = plain.forward(&x).unwrap();
+        assert_eq!(got.dims(), want.dims());
+        assert!(
+            max_abs_diff(&got, &want) < 1e-5,
+            "no-residual DenseLayer diverged from plain Linear",
+        );
+    }
+
+    /// F2: with residual, `DenseLayer { linear: W1, residual: W2 }` must
+    /// equal `Linear(W1 + W2)` because both branches are bias-free linear
+    /// maps over the same input — addition distributes over matmul.
+    #[hegel::test(test_cases = 200)]
+    fn dense_layer_with_residual_matches_summed_weights(tc: TestCase) {
+        let dev = test_device();
+        let in_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let out_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+
+        let w_linear = tc.draw(weight_matrix(out_dim, in_dim, dev.clone()));
+        let w_residual = tc.draw(weight_matrix(out_dim, in_dim, dev.clone()));
+        let x = tc.draw(activations(batch, tokens, in_dim, dev));
+
+        let layer = DenseLayer {
+            linear: Linear::new(w_linear.clone(), None),
+            residual: Some(Linear::new(w_residual.clone(), None)),
+        };
+        let summed = Linear::new((&w_linear + &w_residual).unwrap(), None);
+
+        let got = layer.forward(&x).unwrap();
+        let want = summed.forward(&x).unwrap();
+        assert_eq!(got.dims(), want.dims());
+        assert!(
+            max_abs_diff(&got, &want) < 1e-4,
+            "residual DenseLayer diverged from Linear(linear + residual)",
+        );
+    }
+
+    /// F3: a two-layer no-residual chain must be equivalent to a single
+    /// `Linear` whose weight is the product of the layer weights, because
+    /// matmul is associative: `(x @ W1.T) @ W2.T = x @ (W2 @ W1).T`. This
+    /// catches any reversed-iteration bug in `ColBERT::project`.
+    #[hegel::test(test_cases = 200)]
+    fn two_layer_chain_equivalent_to_composed_weights(tc: TestCase) {
+        let dev = test_device();
+        let in_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let mid_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let out_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+
+        let w1 = tc.draw(weight_matrix(mid_dim, in_dim, dev.clone()));
+        let w2 = tc.draw(weight_matrix(out_dim, mid_dim, dev.clone()));
+        let x = tc.draw(activations(batch, tokens, in_dim, dev));
+
+        let layers = [
+            DenseLayer {
+                linear: Linear::new(w1.clone(), None),
+                residual: None,
+            },
+            DenseLayer {
+                linear: Linear::new(w2.clone(), None),
+                residual: None,
+            },
+        ];
+
+        // SUT mirrors `ColBERT::project`'s left-to-right fold without
+        // depending on the ColBERT struct (which would require loading a
+        // full transformer just to test its projection chain).
+        let mut iter = layers.iter();
+        let first = iter.next().unwrap();
+        let mut chain_out = first.forward(&x).unwrap();
+        for layer in iter {
+            chain_out = layer.forward(&chain_out).unwrap();
+        }
+
+        // Reference: composed-weight `Linear` (out_dim x in_dim).
+        let composed_weight = w2.matmul(&w1).unwrap();
+        let composed = Linear::new(composed_weight, None);
+        let reference = composed.forward(&x).unwrap();
+
+        assert_eq!(chain_out.dims(), reference.dims());
+        assert!(
+            max_abs_diff(&chain_out, &reference) < 1e-3,
+            "two-layer chain diverged from composed-weight Linear",
+        );
+    }
+
+    /// F4: the chain's output dim is whatever the last layer's `linear`
+    /// emits, regardless of intermediate widths or whether intermediate
+    /// layers carry a residual branch. This is the property the LateOn
+    /// fix turns on: 768 → 1536 → 768 → 128 must end at 128, not 1536.
+    #[hegel::test(test_cases = 100)]
+    fn chain_output_dim_matches_last_layer_out_features(tc: TestCase) {
+        let dev = test_device();
+        let in_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let mid_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let final_dim: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let batch: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let tokens: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+        let mid_has_residual: bool = tc.draw(gs::booleans());
+
+        let w1 = tc.draw(weight_matrix(mid_dim, in_dim, dev.clone()));
+        let w1_res = mid_has_residual
+            .then(|| tc.draw(weight_matrix(mid_dim, in_dim, dev.clone())));
+        let w2 = tc.draw(weight_matrix(final_dim, mid_dim, dev.clone()));
+        let x = tc.draw(activations(batch, tokens, in_dim, dev));
+
+        let layers = [
+            DenseLayer {
+                linear: Linear::new(w1, None),
+                residual: w1_res.map(|w| Linear::new(w, None)),
+            },
+            DenseLayer {
+                linear: Linear::new(w2, None),
+                residual: None,
+            },
+        ];
+
+        let mut iter = layers.iter();
+        let first = iter.next().unwrap();
+        let mut out = first.forward(&x).unwrap();
+        for layer in iter {
+            out = layer.forward(&out).unwrap();
+        }
+        assert_eq!(out.dims(), &[batch, tokens, final_dim]);
     }
 
     /// C5: scaling queries uniformly by `k > 0` scales the similarity matrix
