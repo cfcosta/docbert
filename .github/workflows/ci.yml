@@ -13,13 +13,13 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - run: cargo fmt --all --check
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/determinate-nix-action@main
+      - run: nix fmt -- --ci
 
   clippy:
     name: Clippy

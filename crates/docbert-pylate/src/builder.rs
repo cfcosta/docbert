@@ -5,7 +5,7 @@ use std::{
 };
 
 use candle_core::Device;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use serde::Deserialize;
 
 use crate::{error::ColbertError, model::ColBERT};

@@ -12,19 +12,14 @@
 //! and we don't want CI runs on CPU-only boxes spending minutes
 //! hitting the CPU path. Skipped when `cuda` feature is off.
 
-use std::{hint::black_box, time::Duration};
-
-use criterion::{
-    criterion_group,
-    criterion_main,
-    BenchmarkId,
-    Criterion,
-    Throughput,
-};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 #[cfg(feature = "cuda")]
 mod cuda_impl {
+    use std::{hint::black_box, time::Duration};
+
     use candle_core::Device;
+    use criterion::{BenchmarkId, Throughput};
     use docbert_pylate::ColBERT;
 
     use super::*;
