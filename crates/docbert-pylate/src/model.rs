@@ -13,7 +13,7 @@ use tokenizers::{
 };
 
 use crate::{
-    builder::ColbertBuilder,
+    builder::{ColbertBuilder, DenseModuleData},
     error::ColbertError,
     modernbert::{Config as ModernBertConfig, ModernBert},
     types::Similarities,
@@ -223,14 +223,109 @@ pub(crate) fn compute_raw_similarity(
         .map_err(ColbertError::from)
 }
 
+/// Builds the Dense layer chain from raw module bytes.
+///
+/// Each entry's `config.json` must be `{ in_features, out_features, bias,
+/// activation_function, use_residual? }`. We only support bias=false and
+/// `activation_function == "torch.nn.modules.linear.Identity"` because every
+/// PyLate ColBERT model we ship is built that way; anything else is a
+/// fail-fast in the loader rather than a silently-wrong projection.
+pub(crate) fn build_dense_layers(
+    dense_modules: Vec<DenseModuleData>,
+    device: &Device,
+) -> Result<Vec<DenseLayer>, ColbertError> {
+    const SUPPORTED_ACTIVATION: &str = "torch.nn.modules.linear.Identity";
+
+    let mut layers = Vec::with_capacity(dense_modules.len());
+    for (idx, module) in dense_modules.into_iter().enumerate() {
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&module.config_bytes)?;
+
+        let activation = cfg["activation_function"]
+            .as_str()
+            .unwrap_or(SUPPORTED_ACTIVATION);
+        if activation != SUPPORTED_ACTIVATION {
+            return Err(ColbertError::Operation(format!(
+                "Dense module {idx}: unsupported activation_function '{activation}' (only {SUPPORTED_ACTIVATION} is supported)"
+            )));
+        }
+        if cfg["bias"].as_bool().unwrap_or(false) {
+            return Err(ColbertError::Operation(format!(
+                "Dense module {idx}: bias=true is not supported"
+            )));
+        }
+        let in_features = cfg["in_features"].as_u64().ok_or_else(|| {
+            ColbertError::Operation(format!(
+                "Dense module {idx}: missing 'in_features'"
+            ))
+        })? as usize;
+        let out_features = cfg["out_features"].as_u64().ok_or_else(|| {
+            ColbertError::Operation(format!(
+                "Dense module {idx}: missing 'out_features'"
+            ))
+        })? as usize;
+        let use_residual = cfg["use_residual"].as_bool().unwrap_or(false);
+
+        let vb = VarBuilder::from_buffered_safetensors(
+            module.weights_bytes,
+            DType::F32,
+            device,
+        )?;
+        let linear = candle_nn::linear_no_bias(
+            in_features,
+            out_features,
+            vb.pp("linear"),
+        )?;
+        let residual = if use_residual {
+            Some(candle_nn::linear_no_bias(
+                in_features,
+                out_features,
+                vb.pp("residual"),
+            )?)
+        } else {
+            None
+        };
+        layers.push(DenseLayer { linear, residual });
+    }
+    Ok(layers)
+}
+
+/// One Dense projection layer in the SentenceTransformers pipeline.
+///
+/// Mirrors PyLate's `Dense` module: a linear projection optionally summed
+/// with a parallel learned `residual` projection of the same shape. Both
+/// branches are bias-free in every model we ship, and the activation in the
+/// model's `config.json` is always `torch.nn.modules.linear.Identity`, so
+/// this struct doesn't carry an activation.
+pub(crate) struct DenseLayer {
+    pub(crate) linear: Linear,
+    pub(crate) residual: Option<Linear>,
+}
+
+impl DenseLayer {
+    /// Applies the dense layer: `linear(x) + residual(x)` when residual is
+    /// present, else just `linear(x)`.
+    pub(crate) fn forward(
+        &self,
+        x: &Tensor,
+    ) -> Result<Tensor, candle_core::Error> {
+        let proj = self.linear.forward(x)?;
+        match &self.residual {
+            Some(residual) => proj + residual.forward(x)?,
+            None => Ok(proj),
+        }
+    }
+}
+
 /// The main ColBERT model structure.
 ///
-/// This struct encapsulates the language model, a linear projection layer,
-/// the tokenizer, and all necessary configuration for performing encoding
-/// and similarity calculations based on the ColBERT architecture.
+/// This struct encapsulates the language model, the chain of Dense
+/// projection layers declared in `modules.json`, the tokenizer, and all
+/// necessary configuration for performing encoding and similarity
+/// calculations based on the ColBERT architecture.
 pub struct ColBERT {
     pub(crate) model: BaseModel,
-    pub(crate) linear: Linear,
+    pub(crate) dense_layers: Vec<DenseLayer>,
     pub(crate) tokenizer: Tokenizer,
     pub(crate) mask_token_id: u32,
     pub(crate) mask_token: String,
@@ -249,13 +344,17 @@ pub struct ColBERT {
 
 impl ColBERT {
     /// Creates a new instance of the `ColBERT` model from byte buffers.
+    ///
+    /// `dense_modules` carries the ordered list of Dense projection layers
+    /// declared in `modules.json`. They are applied left-to-right after the
+    /// transformer, with the last layer's `out_features` as the final stored
+    /// embedding dimension.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         weights: Vec<u8>,
-        dense_weights: Vec<u8>,
+        dense_modules: Vec<DenseModuleData>,
         tokenizer_bytes: Vec<u8>,
         config_bytes: Vec<u8>,
-        dense_config_bytes: Vec<u8>,
         query_prefix: String,
         document_prefix: String,
         query_prompt: String,
@@ -268,6 +367,12 @@ impl ColBERT {
         batch_size: Option<usize>,
         device: &Device,
     ) -> Result<Self, ColbertError> {
+        if dense_modules.is_empty() {
+            return Err(ColbertError::Operation(
+                "ColBERT requires at least one Dense projection layer".into(),
+            ));
+        }
+
         let vb =
             VarBuilder::from_buffered_safetensors(weights, DType::F32, device)?;
 
@@ -303,8 +408,6 @@ impl ColBERT {
             }
         };
 
-        let dense_config: serde_json::Value =
-            serde_json::from_slice(&dense_config_bytes)?;
         let tokenizer = Tokenizer::from_bytes(&tokenizer_bytes)?;
 
         let mask_token_id =
@@ -315,33 +418,7 @@ impl ColBERT {
                 ))
             })?;
 
-        let dense_vb = VarBuilder::from_buffered_safetensors(
-            dense_weights,
-            DType::F32,
-            device,
-        )?;
-        let in_features = dense_config["in_features"]
-            .as_u64()
-            .map(|v| v as usize)
-            .ok_or_else(|| {
-                ColbertError::Operation(
-                    "Missing 'in_features' in dense config".into(),
-                )
-            })?;
-        let out_features = dense_config["out_features"]
-            .as_u64()
-            .map(|v| v as usize)
-            .ok_or_else(|| {
-                ColbertError::Operation(
-                    "Missing 'out_features' in dense config".into(),
-                )
-            })?;
-
-        let linear = candle_nn::linear_no_bias(
-            in_features,
-            out_features,
-            dense_vb.pp("linear"),
-        )?;
+        let dense_layers = build_dense_layers(dense_modules, device)?;
 
         // If do_query_expansion is false, attend_to_expansion_tokens should also be false
         let final_attend_to_expansion_tokens = if !do_query_expansion {
@@ -352,7 +429,7 @@ impl ColBERT {
 
         Ok(Self {
             model,
-            linear,
+            dense_layers,
             tokenizer,
             mask_token_id,
             mask_token,
@@ -394,6 +471,25 @@ impl ColBERT {
                 max_valid_len,
             )
         }
+    }
+
+    /// Applies the full Dense projection chain: `dense_layers[0]` first,
+    /// then `dense_layers[1]`, and so on. The constructor guarantees the
+    /// chain has at least one layer, so this never returns the input
+    /// unchanged.
+    pub(crate) fn project(
+        &self,
+        token_embeddings: &Tensor,
+    ) -> Result<Tensor, candle_core::Error> {
+        let mut iter = self.dense_layers.iter();
+        let first = iter
+            .next()
+            .expect("ColBERT::new guarantees at least one Dense layer");
+        let mut out = first.forward(token_embeddings)?;
+        for layer in iter {
+            out = layer.forward(&out)?;
+        }
+        Ok(out)
     }
 
     /// Compute the post-truncation token count for each document sentence.
@@ -517,7 +613,7 @@ impl ColBERT {
                                 token_embeddings.contiguous()?
                             };
                         let projected_embeddings =
-                            self.linear.forward(&token_embeddings)?;
+                            self.project(&token_embeddings)?;
 
                         self.finalize_embeddings(
                             &projected_embeddings,
@@ -652,8 +748,7 @@ impl ColBERT {
                 } else {
                     token_embeddings.contiguous()?
                 };
-                let projected_embeddings =
-                    self.linear.forward(&token_embeddings)?;
+                let projected_embeddings = self.project(&token_embeddings)?;
                 let final_embeddings = self.finalize_embeddings(
                     &projected_embeddings,
                     &attention_mask,
@@ -690,8 +785,7 @@ impl ColBERT {
                 token_embeddings.contiguous()?
             };
 
-            let projected_embeddings =
-                self.linear.forward(&token_embeddings)?;
+            let projected_embeddings = self.project(&token_embeddings)?;
 
             let final_embeddings = self.finalize_embeddings(
                 &projected_embeddings,

@@ -1,9 +1,36 @@
-use std::{convert::TryFrom, fs, path::PathBuf};
+use std::{
+    convert::TryFrom,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use candle_core::Device;
 use hf_hub::{Repo, RepoType, api::sync::Api};
+use serde::Deserialize;
 
 use crate::{error::ColbertError, model::ColBERT};
+
+/// SentenceTransformers `pylate.models.Dense.Dense` module type marker.
+const PYLATE_DENSE_TYPE: &str = "pylate.models.Dense.Dense";
+
+/// Raw bytes for one Dense projection layer in the SentenceTransformers
+/// pipeline, in the order they appear in `modules.json`.
+pub struct DenseModuleData {
+    /// Contents of `<path>/config.json` (in_features, out_features,
+    /// activation_function, bias, optional use_residual).
+    pub config_bytes: Vec<u8>,
+    /// Contents of `<path>/model.safetensors` (always contains
+    /// `linear.weight`; also contains `residual.weight` when the module's
+    /// `use_residual` is true).
+    pub weights_bytes: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct ModuleEntry {
+    path: String,
+    #[serde(rename = "type")]
+    module_type: String,
+}
 
 /// A builder for configuring and creating a `ColBERT` model from the Hugging Face Hub.
 ///
@@ -112,6 +139,38 @@ impl ColbertBuilder {
     }
 }
 
+/// Parses a `modules.json` payload and returns the relative paths of every
+/// `pylate.models.Dense.Dense` module, in declaration order.
+///
+/// Errors when the file isn't a JSON array of objects with `path` and `type`
+/// fields, or when no Dense modules are listed.
+pub(crate) fn discover_dense_module_paths(
+    modules_json: &[u8],
+) -> Result<Vec<String>, ColbertError> {
+    let entries: Vec<ModuleEntry> = serde_json::from_slice(modules_json)?;
+    let dense_paths: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.module_type == PYLATE_DENSE_TYPE)
+        .map(|e| e.path)
+        .collect();
+    if dense_paths.is_empty() {
+        return Err(ColbertError::Operation(
+            "modules.json declares no pylate.models.Dense.Dense modules".into(),
+        ));
+    }
+    Ok(dense_paths)
+}
+
+/// Bag of bytes the builder hands to [`ColBERT::new`].
+struct LoadedAssets {
+    tokenizer: Vec<u8>,
+    weights: Vec<u8>,
+    config: Vec<u8>,
+    st_config: Vec<u8>,
+    special_tokens_map: Vec<u8>,
+    dense_modules: Vec<DenseModuleData>,
+}
+
 impl TryFrom<ColbertBuilder> for ColBERT {
     type Error = ColbertError;
 
@@ -120,76 +179,16 @@ impl TryFrom<ColbertBuilder> for ColBERT {
         let device = builder.device.unwrap_or(Device::Cpu);
 
         let local_path = PathBuf::from(&builder.repo_id);
-        let (
-            tokenizer_path,
-            weights_path,
-            config_path,
-            st_config_path,
-            dense_config_path,
-            dense_weights_path,
-            special_tokens_map_path,
-        ) = if local_path.is_dir() {
-            (
-                local_path.join("tokenizer.json"),
-                local_path.join("model.safetensors"),
-                local_path.join("config.json"),
-                local_path.join("config_sentence_transformers.json"),
-                local_path.join("1_Dense/config.json"),
-                local_path.join("1_Dense/model.safetensors"),
-                local_path.join("special_tokens_map.json"),
-            )
+        let assets = if local_path.is_dir() {
+            load_local_assets(&local_path)?
         } else {
-            let api = Api::new()?;
-            let repo = api.repo(Repo::with_revision(
-                builder.repo_id.clone(),
-                RepoType::Model,
-                "main".to_string(),
-            ));
-            (
-                repo.get("tokenizer.json")?,
-                repo.get("model.safetensors")?,
-                repo.get("config.json")?,
-                repo.get("config_sentence_transformers.json")?,
-                repo.get("1_Dense/config.json")?,
-                repo.get("1_Dense/model.safetensors")?,
-                repo.get("special_tokens_map.json")?,
-            )
+            load_hub_assets(&builder.repo_id)?
         };
 
-        if local_path.is_dir() {
-            for path in [
-                &tokenizer_path,
-                &weights_path,
-                &config_path,
-                &st_config_path,
-                &dense_config_path,
-                &dense_weights_path,
-                &special_tokens_map_path,
-            ] {
-                if !path.exists() {
-                    return Err(ColbertError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!(
-                            "File not found in local directory: {}",
-                            path.display()
-                        ),
-                    )));
-                }
-            }
-        }
-
-        let tokenizer_bytes = fs::read(tokenizer_path)?;
-        let weights_bytes = fs::read(weights_path)?;
-        let config_bytes = fs::read(config_path)?;
-        let st_config_bytes = fs::read(st_config_path)?;
-        let dense_config_bytes = fs::read(dense_config_path)?;
-        let dense_weights_bytes = fs::read(dense_weights_path)?;
-        let special_tokens_map_bytes = fs::read(special_tokens_map_path)?;
-
         let st_config: serde_json::Value =
-            serde_json::from_slice(&st_config_bytes)?;
+            serde_json::from_slice(&assets.st_config)?;
         let special_tokens_map: serde_json::Value =
-            serde_json::from_slice(&special_tokens_map_bytes)?;
+            serde_json::from_slice(&assets.special_tokens_map)?;
 
         let final_query_prefix = builder.query_prefix.unwrap_or_else(|| {
             st_config["query_prefix"]
@@ -245,11 +244,10 @@ impl TryFrom<ColbertBuilder> for ColBERT {
         });
 
         ColBERT::new(
-            weights_bytes,
-            dense_weights_bytes,
-            tokenizer_bytes,
-            config_bytes,
-            dense_config_bytes,
+            assets.weights,
+            assets.dense_modules,
+            assets.tokenizer,
+            assets.config,
             final_query_prefix,
             final_document_prefix,
             final_query_prompt,
@@ -262,5 +260,155 @@ impl TryFrom<ColbertBuilder> for ColBERT {
             builder.batch_size,
             &device,
         )
+    }
+}
+
+/// Reads every required asset from a local model directory.
+fn load_local_assets(local_path: &Path) -> Result<LoadedAssets, ColbertError> {
+    let modules_path = local_path.join("modules.json");
+    if !modules_path.exists() {
+        return Err(ColbertError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "modules.json not found in local model directory: {}",
+                modules_path.display()
+            ),
+        )));
+    }
+    let modules_bytes = fs::read(&modules_path)?;
+    let dense_paths = discover_dense_module_paths(&modules_bytes)?;
+
+    let tokenizer_path = local_path.join("tokenizer.json");
+    let weights_path = local_path.join("model.safetensors");
+    let config_path = local_path.join("config.json");
+    let st_config_path = local_path.join("config_sentence_transformers.json");
+    let special_tokens_map_path = local_path.join("special_tokens_map.json");
+    for path in [
+        &tokenizer_path,
+        &weights_path,
+        &config_path,
+        &st_config_path,
+        &special_tokens_map_path,
+    ] {
+        if !path.exists() {
+            return Err(ColbertError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "File not found in local directory: {}",
+                    path.display()
+                ),
+            )));
+        }
+    }
+
+    let mut dense_modules = Vec::with_capacity(dense_paths.len());
+    for rel_path in dense_paths {
+        let dense_dir = local_path.join(&rel_path);
+        let cfg_path = dense_dir.join("config.json");
+        let dense_weights_path = dense_dir.join("model.safetensors");
+        for path in [&cfg_path, &dense_weights_path] {
+            if !path.exists() {
+                return Err(ColbertError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Dense module file not found: {}", path.display()),
+                )));
+            }
+        }
+        dense_modules.push(DenseModuleData {
+            config_bytes: fs::read(cfg_path)?,
+            weights_bytes: fs::read(dense_weights_path)?,
+        });
+    }
+
+    Ok(LoadedAssets {
+        tokenizer: fs::read(tokenizer_path)?,
+        weights: fs::read(weights_path)?,
+        config: fs::read(config_path)?,
+        st_config: fs::read(st_config_path)?,
+        special_tokens_map: fs::read(special_tokens_map_path)?,
+        dense_modules,
+    })
+}
+
+/// Downloads every required asset from the Hugging Face Hub.
+fn load_hub_assets(repo_id: &str) -> Result<LoadedAssets, ColbertError> {
+    let api = Api::new()?;
+    let repo = api.repo(Repo::with_revision(
+        repo_id.to_string(),
+        RepoType::Model,
+        "main".to_string(),
+    ));
+
+    let modules_path = repo.get("modules.json")?;
+    let modules_bytes = fs::read(&modules_path)?;
+    let dense_paths = discover_dense_module_paths(&modules_bytes)?;
+
+    let mut dense_modules = Vec::with_capacity(dense_paths.len());
+    for rel_path in dense_paths {
+        let cfg_remote = format!("{rel_path}/config.json");
+        let weights_remote = format!("{rel_path}/model.safetensors");
+        let cfg_path = repo.get(&cfg_remote)?;
+        let weights_path = repo.get(&weights_remote)?;
+        dense_modules.push(DenseModuleData {
+            config_bytes: fs::read(cfg_path)?,
+            weights_bytes: fs::read(weights_path)?,
+        });
+    }
+
+    Ok(LoadedAssets {
+        tokenizer: fs::read(repo.get("tokenizer.json")?)?,
+        weights: fs::read(repo.get("model.safetensors")?)?,
+        config: fs::read(repo.get("config.json")?)?,
+        st_config: fs::read(repo.get("config_sentence_transformers.json")?)?,
+        special_tokens_map: fs::read(repo.get("special_tokens_map.json")?)?,
+        dense_modules,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_dense_modules_in_declaration_order() {
+        let modules_json = br#"[
+            {"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+            {"idx":1,"name":"1","path":"1_Dense","type":"pylate.models.Dense.Dense"},
+            {"idx":2,"name":"2","path":"2_Dense","type":"pylate.models.Dense.Dense"},
+            {"idx":3,"name":"3","path":"3_Dense","type":"pylate.models.Dense.Dense"}
+        ]"#;
+        let paths = discover_dense_module_paths(modules_json).unwrap();
+        assert_eq!(paths, vec!["1_Dense", "2_Dense", "3_Dense"]);
+    }
+
+    #[test]
+    fn discovers_single_dense_module_when_only_one_listed() {
+        let modules_json = br#"[
+            {"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+            {"idx":1,"name":"1","path":"1_Dense","type":"pylate.models.Dense.Dense"}
+        ]"#;
+        let paths = discover_dense_module_paths(modules_json).unwrap();
+        assert_eq!(paths, vec!["1_Dense"]);
+    }
+
+    #[test]
+    fn errors_when_modules_json_has_no_dense_modules() {
+        let modules_json = br#"[
+            {"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"}
+        ]"#;
+        let err = discover_dense_module_paths(modules_json).unwrap_err();
+        assert!(matches!(err, ColbertError::Operation(_)));
+    }
+
+    #[test]
+    fn ignores_non_dense_module_entries() {
+        let modules_json = br#"[
+            {"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+            {"idx":1,"name":"1","path":"1_Dense","type":"pylate.models.Dense.Dense"},
+            {"idx":2,"name":"pool","path":"2_Pooling","type":"sentence_transformers.models.Pooling"},
+            {"idx":3,"name":"3","path":"3_Dense","type":"pylate.models.Dense.Dense"}
+        ]"#;
+        let paths = discover_dense_module_paths(modules_json).unwrap();
+        assert_eq!(paths, vec!["1_Dense", "3_Dense"]);
     }
 }
