@@ -64,6 +64,12 @@ export interface SearchResult {
   title: string;
   metadata?: Record<string, unknown>;
   excerpts?: SearchExcerpt[];
+  /// Total line count of the matching document, when readable. Lets the
+  /// chat agent pick a follow-up start_line/end_line range for a partial
+  /// read instead of always loading the whole file.
+  line_count?: number;
+  /// Total byte count of the matching document, when readable.
+  byte_count?: number;
 }
 
 export interface SearchResponse {
@@ -80,6 +86,21 @@ export interface DocumentResponse {
   title: string;
   content: string;
   metadata?: Record<string, unknown>;
+  /// Total line count of the un-sliced document. Always populated; sized
+  /// off the full on-disk file regardless of any range slice that was
+  /// applied to `content`.
+  line_count?: number;
+  /// Total byte count of the un-sliced document.
+  byte_count?: number;
+}
+
+/// Optional inclusive range for `getDocument`. Line and byte ranges are
+/// mutually exclusive — passing both makes the server respond `400`.
+export interface DocumentRange {
+  startLine?: number;
+  endLine?: number;
+  startByte?: number;
+  endByte?: number;
 }
 
 export interface DocumentListItem {
@@ -160,6 +181,19 @@ export interface LlmOauthStartResponse {
   authorization_url: string;
 }
 
+function buildDocumentRangeQuery(range?: DocumentRange): string {
+  if (!range) return "";
+
+  const params = new URLSearchParams();
+  if (range.startLine !== undefined) params.set("startLine", String(range.startLine));
+  if (range.endLine !== undefined) params.set("endLine", String(range.endLine));
+  if (range.startByte !== undefined) params.set("startByte", String(range.startByte));
+  if (range.endByte !== undefined) params.set("endByte", String(range.endByte));
+
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export function buildDocumentTabHref(collection: string, path: string): string {
   return `/documents/${encodeURIComponent(collection)}/${encodePathSegments(path)}`;
 }
@@ -214,9 +248,9 @@ export const api = {
       body: JSON.stringify({ collection, documents }),
     }),
 
-  getDocument: (collection: string, path: string) =>
+  getDocument: (collection: string, path: string, range?: DocumentRange) =>
     request<DocumentResponse>(
-      `/documents/${encodeURIComponent(collection)}/${encodeDocumentPath(path)}`,
+      `/documents/${encodeURIComponent(collection)}/${encodeDocumentPath(path)}${buildDocumentRangeQuery(range)}`,
     ),
 
   deleteDocument: (collection: string, path: string) =>

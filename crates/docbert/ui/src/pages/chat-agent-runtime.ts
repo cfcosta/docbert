@@ -8,7 +8,7 @@ import type {
 } from "@mariozechner/pi-ai";
 
 import { api } from "../lib/api";
-import type { DocumentResponse, LlmSettings } from "../lib/api";
+import type { DocumentRange, DocumentResponse, LlmSettings } from "../lib/api";
 import { applyInterruptedStopReason, createToolResultMessage } from "./chat-context";
 import {
   contentFromParts,
@@ -45,7 +45,7 @@ export type UpdateAssistantMessage = (fn: (message: Message) => Message) => void
 const analyzeDocumentTool: Tool = {
   name: "analyze_document",
   description:
-    "Run a focused file analysis subagent for one document and return an evidence-rich analysis the parent agent can synthesize into the final answer.",
+    "Run a focused file analysis subagent for one document and return an evidence-rich analysis the parent agent can synthesize into the final answer. Use line_count/byte_count from search results to pass start_line/end_line (or start_byte/end_byte) when only a slice of a large file is relevant — line and byte ranges are mutually exclusive.",
   parameters: Type.Object({
     collection: Type.String({ description: "The collection name" }),
     path: Type.String({
@@ -54,6 +54,28 @@ const analyzeDocumentTool: Tool = {
     focus: Type.Optional(
       Type.String({
         description: "Optional extra focus for this file analysis.",
+      }),
+    ),
+    start_line: Type.Optional(
+      Type.Number({
+        description:
+          "First line to read (1-indexed, inclusive). Pair with end_line to read a line range.",
+      }),
+    ),
+    end_line: Type.Optional(
+      Type.Number({
+        description: "Last line to read (1-indexed, inclusive). Pair with start_line.",
+      }),
+    ),
+    start_byte: Type.Optional(
+      Type.Number({
+        description:
+          "First byte to read (0-indexed, inclusive). Use for transcript-style files that fit on one giant line.",
+      }),
+    ),
+    end_byte: Type.Optional(
+      Type.Number({
+        description: "Last byte to read (0-indexed, inclusive). Pair with start_byte.",
       }),
     ),
   }),
@@ -69,9 +91,10 @@ When the user asks a question:
 1. Start with search_hybrid or search_semantic to find relevant documents. Both tools accept an optional "collection" parameter to restrict results to a single collection. Omit it to search across all collections at once unless the user clearly wants a specific collection.
 2. Do not stop after a single search or a single file when the question could require synthesis. If the answer may be spread across multiple documents, run additional searches with alternate phrasings and analyze multiple relevant documents.
 3. Use analyze_document on each promising file. Prefer reading several relevant files over guessing from one strong-looking result.
-4. Build the final answer from the combined findings of those file analyses. Reconcile overlaps, note disagreements or uncertainty, and make it clear when different files contribute different parts of the answer.
-5. Prefer focused per-document analysis over making unsupported claims from titles or snippets alone.
-6. If the first results are weak, incomplete, or too narrow, search again before answering.
+4. Each search result includes line_count and byte_count. When a file is large and the question is narrow (e.g. a specific section the excerpts already point at), pass start_line/end_line — or start_byte/end_byte for transcript-style files — to analyze_document so the subagent reads only the relevant slice. Line and byte ranges are mutually exclusive. Omit ranges entirely to read the whole file.
+5. Build the final answer from the combined findings of those file analyses. Reconcile overlaps, note disagreements or uncertainty, and make it clear when different files contribute different parts of the answer.
+6. Prefer focused per-document analysis over making unsupported claims from titles or snippets alone.
+7. If the first results are weak, incomplete, or too narrow, search again before answering.
 
 Answering policy:
 - For broad questions, compare and combine evidence from multiple sources.
@@ -177,12 +200,32 @@ function formatSubagentMetadata(metadata?: Record<string, unknown>): string | nu
   return JSON.stringify(metadata, null, 2);
 }
 
+function formatSubagentRange(range?: DocumentRange): string | null {
+  if (!range) return null;
+
+  const lineRange = range.startLine !== undefined || range.endLine !== undefined;
+  const byteRange = range.startByte !== undefined || range.endByte !== undefined;
+  if (!lineRange && !byteRange) return null;
+
+  if (lineRange) {
+    const start = range.startLine ?? 1;
+    const end = range.endLine !== undefined ? String(range.endLine) : "EOF";
+    return `Slice: lines ${start}-${end} (1-indexed, inclusive). Anything outside this range is not present in the excerpt below.`;
+  }
+
+  const start = range.startByte ?? 0;
+  const end = range.endByte !== undefined ? String(range.endByte) : "EOF";
+  return `Slice: bytes ${start}-${end} (0-indexed, inclusive). Anything outside this range is not present in the excerpt below.`;
+}
+
 export function createSubagentContext(
   userQuestion: string,
   document: Pick<DocumentResponse, "collection" | "path" | "title" | "content" | "metadata">,
   focus?: string,
+  range?: DocumentRange,
 ): Context {
   const metadata = formatSubagentMetadata(document.metadata);
+  const sliceNote = formatSubagentRange(range);
   const userPiMessage: UserMessage = {
     role: "user",
     content: [
@@ -191,6 +234,7 @@ export function createSubagentContext(
       `Document title: ${document.title}`,
       metadata ? `Document metadata:\n${metadata}` : null,
       focus ? `Extra focus: ${focus}` : null,
+      sliceNote,
       "Return markdown with these sections:",
       "## Relevance to the question",
       "State exactly what this file contributes and how strong the relevance is.",
@@ -379,6 +423,7 @@ async function runFileSubagent({
   file,
   userQuestion,
   focus,
+  range,
   updateMessage,
 }: {
   model: ReturnType<typeof getModel>;
@@ -387,11 +432,12 @@ async function runFileSubagent({
   file: QueuedAnalysisFile;
   userQuestion: string;
   focus?: string;
+  range?: DocumentRange;
   updateMessage: (updater: (message: Message) => Message) => void;
 }): Promise<SubagentAnalysisResult> {
   try {
-    const document = await api.getDocument(file.collection, file.path);
-    const context = createSubagentContext(userQuestion, document, focus);
+    const document = await api.getDocument(file.collection, file.path, range);
+    const context = createSubagentContext(userQuestion, document, focus, range);
     let streamError: string | undefined;
 
     updateMessage((message) => startSubagentMessage(message));
@@ -468,6 +514,28 @@ async function runFileSubagent({
   }
 }
 
+function parseRangeArg(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.trunc(value);
+}
+
+function rangeFromToolArgs(args: Record<string, unknown>): DocumentRange | undefined {
+  const range: DocumentRange = {
+    startLine: parseRangeArg(args.start_line),
+    endLine: parseRangeArg(args.end_line),
+    startByte: parseRangeArg(args.start_byte),
+    endByte: parseRangeArg(args.end_byte),
+  };
+  const hasAny =
+    range.startLine !== undefined ||
+    range.endLine !== undefined ||
+    range.startByte !== undefined ||
+    range.endByte !== undefined;
+  return hasAny ? range : undefined;
+}
+
 async function runAnalyzeDocumentTool({
   call,
   model,
@@ -497,6 +565,7 @@ async function runAnalyzeDocumentTool({
     typeof call.arguments.focus === "string" && call.arguments.focus.trim().length > 0
       ? call.arguments.focus.trim()
       : undefined;
+  const range = rangeFromToolArgs(call.arguments);
   const messageId = createId();
   const matchedResult = runtimeState.currentTurnSearchResults.find(
     (result) => result.collection === collection && result.path === path,
@@ -518,6 +587,7 @@ async function runAnalyzeDocumentTool({
     file,
     userQuestion,
     focus,
+    range,
     updateMessage: (updater) => {
       updateSubagentMessage(messageId, updater);
     },

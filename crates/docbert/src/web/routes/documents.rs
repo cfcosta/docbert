@@ -2,7 +2,7 @@ use std::{path::Path, time::SystemTime};
 
 use axum::{
     Json,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
 };
 use base64::{
@@ -15,6 +15,7 @@ use docbert_core::{
     embedding,
     ingestion,
     preparation::{self, SearchDocument},
+    text,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,77 @@ pub(crate) struct DocumentResponse {
     pub(crate) content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metadata: Option<serde_json::Value>,
+    /// Total line count of the un-sliced document.
+    ///
+    /// Returned alongside `content` so the agent can size a follow-up
+    /// range request without a second round-trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line_count: Option<usize>,
+    /// Total byte count of the un-sliced document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) byte_count: Option<u64>,
+}
+
+/// Optional range parameters accepted on `GET /v1/documents/{collection}/{*path}`.
+///
+/// Mirrors the MCP `docbert_get` tool: line and byte ranges are mutually
+/// exclusive, both endpoints are inclusive, and omitting all four returns the
+/// full document.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RangeQuery {
+    pub(crate) start_line: Option<usize>,
+    pub(crate) end_line: Option<usize>,
+    pub(crate) start_byte: Option<u64>,
+    pub(crate) end_byte: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RangeSelection {
+    Full,
+    Lines {
+        start: Option<usize>,
+        end: Option<usize>,
+    },
+    Bytes {
+        start: Option<u64>,
+        end: Option<u64>,
+    },
+}
+
+impl RangeSelection {
+    fn from_query(query: &RangeQuery) -> Result<Self, StatusCode> {
+        let has_line = query.start_line.is_some() || query.end_line.is_some();
+        let has_byte = query.start_byte.is_some() || query.end_byte.is_some();
+        if has_line && has_byte {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if has_line {
+            Ok(RangeSelection::Lines {
+                start: query.start_line,
+                end: query.end_line,
+            })
+        } else if has_byte {
+            Ok(RangeSelection::Bytes {
+                start: query.start_byte,
+                end: query.end_byte,
+            })
+        } else {
+            Ok(RangeSelection::Full)
+        }
+    }
+
+    fn apply(&self, content: &str) -> String {
+        match *self {
+            RangeSelection::Full => content.to_string(),
+            RangeSelection::Lines { start, end } => {
+                text::apply_line_range(content, start, end)
+            }
+            RangeSelection::Bytes { start, end } => {
+                text::apply_byte_range(content, start, end)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,7 +437,10 @@ pub(crate) async fn delete(
 pub(crate) async fn get(
     State(state): State<AppState>,
     AxumPath((collection, path)): AxumPath<(String, String)>,
+    Query(range_query): Query<RangeQuery>,
 ) -> Result<Json<DocumentResponse>, StatusCode> {
+    let range = RangeSelection::from_query(&range_query)?;
+
     let config_db = state.open_config_db().map_err(map_error)?;
     let did = DocumentId::new(&collection, &path);
     config_db
@@ -383,15 +458,22 @@ pub(crate) async fn get(
         .get_document_user_metadata(did.numeric)
         .map_err(map_error)?;
 
+    let line_count = Some(content.lines().count());
+    let byte_count = Some(content.len() as u64);
+    let title = title_from_disk(&path, &content);
+    let sliced = range.apply(&content);
+
     Ok(Json(DocumentResponse {
         doc_id: config_db
             .disambiguated_short_id(&did)
             .unwrap_or_else(|_| did.to_string()),
         collection,
         path: path.clone(),
-        title: title_from_disk(&path, &content),
-        content,
+        title,
+        content: sliced,
         metadata,
+        line_count,
+        byte_count,
     }))
 }
 
@@ -931,6 +1013,105 @@ mod tests {
         assert_eq!(item.title, "Disk Title");
         assert_eq!(item.content, "# Disk Title\n\nDisk body");
         assert_eq!(item.metadata, Some(serde_json::json!({ "topic": "rust" })));
+        assert_eq!(item.line_count, Some(3));
+        assert_eq!(item.byte_count, Some(23));
+    }
+
+    #[tokio::test]
+    async fn web_documents_get_slices_by_line_range() {
+        // Mirrors the MCP `docbert_get` partial-read contract: passing
+        // startLine/endLine slices the on-disk content before returning it,
+        // and the response keeps the un-sliced size hints so the agent can
+        // pick the next range without a second round-trip.
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        seed_filesystem_document(
+            &state,
+            &root,
+            "notes",
+            "long.md",
+            "alpha\nbeta\ngamma\ndelta\nepsilon",
+        );
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/long.md?startLine=2&endLine=3")
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let item: DocumentResponse = serde_json::from_slice(&body).unwrap();
+        assert!(item.content.starts_with("beta\ngamma"));
+        assert!(item.content.contains("more line"));
+        assert_eq!(item.line_count, Some(5));
+        assert_eq!(item.byte_count, Some(30));
+    }
+
+    #[tokio::test]
+    async fn web_documents_get_slices_by_byte_range() {
+        // Byte-range slicing is the escape hatch for transcript-style files
+        // that fit on one giant line — line slicing returns the whole file
+        // there. Mirrors `apply_byte_range` semantics from the MCP path.
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let body = "a ".repeat(5_000);
+        seed_filesystem_document(
+            &state,
+            &root,
+            "notes",
+            "transcript.md",
+            body.as_str(),
+        );
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/transcript.md?startByte=0&endByte=19")
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes =
+            to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let item: DocumentResponse =
+            serde_json::from_slice(&body_bytes).unwrap();
+        assert!(item.content.contains("a a a a a a a a a a"));
+        assert!(item.content.contains("more bytes"));
+    }
+
+    #[tokio::test]
+    async fn web_documents_get_rejects_mixed_line_and_byte_ranges() {
+        // Line and byte ranges are mutually exclusive — surfacing both
+        // together is a client bug, not something we should silently merge.
+        let (tmp, state) = test_state();
+        let root = tmp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        seed_filesystem_document(&state, &root, "notes", "hello.md", "body");
+
+        let response = documents_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/documents/notes/hello.md?startLine=1&endByte=5")
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

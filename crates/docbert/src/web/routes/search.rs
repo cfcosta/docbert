@@ -56,6 +56,16 @@ pub(crate) struct SearchResultItem {
     pub(crate) metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) excerpts: Vec<SearchExcerpt>,
+    /// Total line count of the document, when readable.
+    ///
+    /// Surfaced so the chat agent can pick a sensible follow-up range
+    /// (`startLine`/`endLine` or `startByte`/`endByte`) for a partial
+    /// read instead of always loading the whole file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) line_count: Option<usize>,
+    /// Total byte count of the document, when readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) byte_count: Option<u64>,
 }
 
 pub(crate) async fn search(
@@ -142,13 +152,27 @@ fn build_search_result_item(
     query: &str,
 ) -> SearchResultItem {
     let metadata = load_user_metadata(config_db, result.doc_num_id);
-    let (title, excerpts) = load_title_and_excerpts(
-        config_db,
-        &result.collection,
-        &result.path,
-        query,
-        &result.title,
-    );
+    let preview = load_preview(config_db, &result.collection, &result.path);
+    let (title, excerpts, line_count, byte_count) = match preview {
+        Some(content) => {
+            let title = docbert_core::ingestion::extract_title(
+                &content,
+                Path::new(&result.path),
+            );
+            let excerpts = text::extract_excerpts(&content, query, 3)
+                .into_iter()
+                .map(|excerpt| SearchExcerpt {
+                    text: excerpt.text,
+                    start_line: excerpt.start_line,
+                    end_line: excerpt.end_line,
+                })
+                .collect();
+            let line_count = Some(content.lines().count());
+            let byte_count = Some(content.len() as u64);
+            (title, excerpts, line_count, byte_count)
+        }
+        None => (result.title.clone(), Vec::new(), None, None),
+    };
 
     SearchResultItem {
         rank: result.rank,
@@ -159,40 +183,23 @@ fn build_search_result_item(
         title,
         metadata,
         excerpts,
+        line_count,
+        byte_count,
     }
 }
 
-fn load_title_and_excerpts(
+/// Load the document content used to derive the title, excerpts, and size
+/// hints. Returns `None` when the file isn't readable so the caller can fall
+/// back cleanly without doing a second read.
+fn load_preview(
     config_db: &docbert_core::ConfigDb,
     collection: &str,
     path: &str,
-    query: &str,
-    fallback_title: &str,
-) -> (String, Vec<SearchExcerpt>) {
-    let Ok(full_path) =
-        paths::resolve_document_path(config_db, collection, path)
-    else {
-        return (fallback_title.to_string(), Vec::new());
-    };
-    let Ok(content) = docbert_core::preparation::load_preview_content(
-        Path::new(path),
-        &full_path,
-    ) else {
-        return (fallback_title.to_string(), Vec::new());
-    };
-
-    let title =
-        docbert_core::ingestion::extract_title(&content, Path::new(path));
-    let excerpts = text::extract_excerpts(&content, query, 3)
-        .into_iter()
-        .map(|excerpt| SearchExcerpt {
-            text: excerpt.text,
-            start_line: excerpt.start_line,
-            end_line: excerpt.end_line,
-        })
-        .collect();
-
-    (title, excerpts)
+) -> Option<String> {
+    let full_path =
+        paths::resolve_document_path(config_db, collection, path).ok()?;
+    docbert_core::preparation::load_preview_content(Path::new(path), &full_path)
+        .ok()
 }
 
 fn load_user_metadata(
@@ -325,6 +332,47 @@ mod tests {
                 end_line: 4,
             }
         );
+        assert_eq!(item.line_count, Some(4));
+        assert_eq!(item.byte_count, Some(38));
+    }
+
+    #[test]
+    fn web_search_result_item_omits_size_when_file_unreadable() {
+        // When the document is in the metadata index but missing from disk,
+        // line_count and byte_count must be omitted instead of defaulting to
+        // 0 — `null` tells the agent it cannot trust a follow-up range
+        // request, while 0 would imply an empty (but valid) file.
+        let (_tmp, state) = test_state();
+        let did = DocumentId::new("notes", "ghost.md");
+
+        // Register the document in metadata but skip the on-disk write.
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
+            .set_collection("notes", "/nonexistent")
+            .unwrap();
+        ConfigDb::open(&state.data_dir.config_db())
+            .unwrap()
+            .set_document_metadata_typed(
+                did.numeric,
+                &incremental::DocumentMetadata {
+                    collection: "notes".to_string(),
+                    relative_path: "ghost.md".to_string(),
+                    mtime: 1,
+                },
+            )
+            .unwrap();
+
+        let config_db = state.open_config_db().unwrap();
+        let item = build_search_result_item(
+            &state,
+            &config_db,
+            final_result(&did, "Ghost", "ghost.md"),
+            "anything",
+        );
+
+        assert_eq!(item.line_count, None);
+        assert_eq!(item.byte_count, None);
+        assert!(item.excerpts.is_empty());
     }
 
     #[test]
