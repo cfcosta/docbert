@@ -17,6 +17,13 @@ pub struct RankedDocument {
     pub doc_num_id: u64,
     /// ColBERT MaxSim similarity score (higher = more relevant).
     pub score: f32,
+    /// Numeric ID of the best-scoring chunk for this document, when
+    /// known. Equal to `doc_num_id` when chunk 0 (the base chunk) was
+    /// the winner; differs by the chunk-index encoding in the high bits
+    /// for later chunks. `None` for ranking flows that don't expose
+    /// per-chunk scores (e.g. legacy reranking over already-collapsed
+    /// document embeddings).
+    pub best_chunk_doc_id: Option<u64>,
 }
 
 /// Score a batch of already loaded document embeddings with ColBERT MaxSim.
@@ -52,6 +59,7 @@ pub(crate) fn score_loaded_embeddings(
         ranked.push(RankedDocument {
             doc_num_id: doc_id,
             score,
+            best_chunk_doc_id: Some(doc_id),
         });
     }
 
@@ -67,17 +75,25 @@ pub(crate) fn collapse_best_chunk_scores(
     requested_doc_ids: &[u64],
     scored_chunks: Vec<RankedDocument>,
 ) -> Vec<RankedDocument> {
-    let mut best_scores_by_family = std::collections::HashMap::new();
-    for RankedDocument { doc_num_id, score } in scored_chunks {
-        let family_key = document_family_key(doc_num_id);
-        best_scores_by_family
+    // Track each family's best score *and* which chunk produced it so
+    // the search consumer can surface the chunk's byte range alongside
+    // the result. The chunk-doc-id either comes from the input
+    // RankedDocument (when score_loaded_embeddings populated it) or
+    // falls back to the doc_num_id of that chunk.
+    let mut best_by_family: std::collections::HashMap<u64, (f32, u64)> =
+        std::collections::HashMap::new();
+    for chunk in scored_chunks {
+        let family_key = document_family_key(chunk.doc_num_id);
+        let chunk_id = chunk.best_chunk_doc_id.unwrap_or(chunk.doc_num_id);
+        best_by_family
             .entry(family_key)
-            .and_modify(|best_score| {
-                if score > *best_score {
-                    *best_score = score;
+            .and_modify(|(best_score, best_chunk_id)| {
+                if chunk.score > *best_score {
+                    *best_score = chunk.score;
+                    *best_chunk_id = chunk_id;
                 }
             })
-            .or_insert(score);
+            .or_insert((chunk.score, chunk_id));
     }
 
     let mut emitted_families = std::collections::HashSet::new();
@@ -87,10 +103,15 @@ pub(crate) fn collapse_best_chunk_scores(
         if !emitted_families.insert(family_key) {
             continue;
         }
-        let Some(&score) = best_scores_by_family.get(&family_key) else {
+        let Some(&(score, best_chunk_id)) = best_by_family.get(&family_key)
+        else {
             continue;
         };
-        collapsed.push(RankedDocument { doc_num_id, score });
+        collapsed.push(RankedDocument {
+            doc_num_id,
+            score,
+            best_chunk_doc_id: Some(best_chunk_id),
+        });
     }
 
     collapsed
@@ -176,14 +197,17 @@ mod tests {
             RankedDocument {
                 doc_num_id: base_doc_id,
                 score: 0.7,
+                best_chunk_doc_id: None,
             },
             RankedDocument {
                 doc_num_id: chunk_doc_id(base_doc_id, 1),
                 score: 0.9,
+                best_chunk_doc_id: None,
             },
             RankedDocument {
                 doc_num_id: chunk_doc_id(base_doc_id, 2),
                 score: 0.8,
+                best_chunk_doc_id: None,
             },
         ];
 
@@ -198,6 +222,7 @@ mod tests {
     #[test]
     fn collapse_best_chunk_scores_uses_highest_chunk_score() {
         let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
+        let winning_chunk = chunk_doc_id(base_doc_id, 1);
 
         let collapsed = collapse_best_chunk_scores(
             &[base_doc_id],
@@ -205,23 +230,30 @@ mod tests {
                 RankedDocument {
                     doc_num_id: chunk_doc_id(base_doc_id, 2),
                     score: 0.4,
+                    best_chunk_doc_id: Some(chunk_doc_id(base_doc_id, 2)),
                 },
                 RankedDocument {
-                    doc_num_id: chunk_doc_id(base_doc_id, 1),
+                    doc_num_id: winning_chunk,
                     score: 1.1,
+                    best_chunk_doc_id: Some(winning_chunk),
                 },
                 RankedDocument {
                     doc_num_id: base_doc_id,
                     score: 0.6,
+                    best_chunk_doc_id: Some(base_doc_id),
                 },
             ],
         );
 
+        // The collapse keeps the family's base id but threads the
+        // winning chunk's id forward — the search consumer needs both
+        // (the doc to fetch, and the chunk whose byte range to surface).
         assert_eq!(
             collapsed,
             vec![RankedDocument {
                 doc_num_id: base_doc_id,
                 score: 1.1,
+                best_chunk_doc_id: Some(winning_chunk),
             }]
         );
     }
@@ -230,17 +262,21 @@ mod tests {
     fn collapse_best_chunk_scores_keeps_unrelated_families_separate() {
         let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
         let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+        let first_chunk = chunk_doc_id(first_doc_id, 1);
+        let second_chunk = chunk_doc_id(second_doc_id, 1);
 
         let collapsed = collapse_best_chunk_scores(
             &[first_doc_id, second_doc_id],
             vec![
                 RankedDocument {
-                    doc_num_id: chunk_doc_id(first_doc_id, 1),
+                    doc_num_id: first_chunk,
                     score: 0.8,
+                    best_chunk_doc_id: Some(first_chunk),
                 },
                 RankedDocument {
-                    doc_num_id: chunk_doc_id(second_doc_id, 1),
+                    doc_num_id: second_chunk,
                     score: 0.5,
+                    best_chunk_doc_id: Some(second_chunk),
                 },
             ],
         );
@@ -251,10 +287,12 @@ mod tests {
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.8,
+                    best_chunk_doc_id: Some(first_chunk),
                 },
                 RankedDocument {
                     doc_num_id: second_doc_id,
                     score: 0.5,
+                    best_chunk_doc_id: Some(second_chunk),
                 },
             ]
         );
@@ -270,10 +308,12 @@ mod tests {
                 RankedDocument {
                     doc_num_id: chunk_doc_id(base_doc_id, 1),
                     score: 0.8,
+                    best_chunk_doc_id: None,
                 },
                 RankedDocument {
                     doc_num_id: chunk_doc_id(base_doc_id, 2),
                     score: 0.9,
+                    best_chunk_doc_id: None,
                 },
             ],
         );
@@ -292,14 +332,18 @@ mod tests {
             vec![RankedDocument {
                 doc_num_id: base_doc_id,
                 score: 0.75,
+                best_chunk_doc_id: Some(base_doc_id),
             }],
         );
 
+        // For base-only families, the winning "chunk" *is* the base
+        // document — chunk 0 reuses the base id by construction.
         assert_eq!(
             collapsed,
             vec![RankedDocument {
                 doc_num_id: base_doc_id,
                 score: 0.75,
+                best_chunk_doc_id: Some(base_doc_id),
             }]
         );
     }
@@ -308,17 +352,21 @@ mod tests {
     fn collapse_best_chunk_scores_follows_requested_doc_order() {
         let first_doc_id = DocumentId::new("notes", "hello.md").numeric;
         let second_doc_id = DocumentId::new("notes", "guide.md").numeric;
+        let first_chunk = chunk_doc_id(first_doc_id, 1);
+        let second_chunk = chunk_doc_id(second_doc_id, 1);
 
         let collapsed = collapse_best_chunk_scores(
             &[second_doc_id, first_doc_id],
             vec![
                 RankedDocument {
-                    doc_num_id: chunk_doc_id(first_doc_id, 1),
+                    doc_num_id: first_chunk,
                     score: 0.8,
+                    best_chunk_doc_id: Some(first_chunk),
                 },
                 RankedDocument {
-                    doc_num_id: chunk_doc_id(second_doc_id, 1),
+                    doc_num_id: second_chunk,
                     score: 0.5,
+                    best_chunk_doc_id: Some(second_chunk),
                 },
             ],
         );
@@ -329,10 +377,12 @@ mod tests {
                 RankedDocument {
                     doc_num_id: second_doc_id,
                     score: 0.5,
+                    best_chunk_doc_id: Some(second_chunk),
                 },
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.8,
+                    best_chunk_doc_id: Some(first_chunk),
                 },
             ]
         );
@@ -427,6 +477,7 @@ mod tests {
                     id if id == second_chunk_id_2 => 0.9,
                     _ => 0.0,
                 },
+                best_chunk_doc_id: Some(doc_id),
             })
             .collect();
 
@@ -441,10 +492,12 @@ mod tests {
                 RankedDocument {
                     doc_num_id: second_doc_id,
                     score: 0.9,
+                    best_chunk_doc_id: Some(second_chunk_id_2),
                 },
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.4,
+                    best_chunk_doc_id: Some(first_chunk_id),
                 },
             ]
         );
@@ -489,6 +542,7 @@ mod tests {
                                 id if id == second_chunk_id_2 => 0.9,
                                 _ => 0.0,
                             },
+                            best_chunk_doc_id: Some(doc_id),
                         })
                     })
                     .collect())
@@ -502,10 +556,12 @@ mod tests {
                 RankedDocument {
                     doc_num_id: second_doc_id,
                     score: 0.9,
+                    best_chunk_doc_id: Some(second_chunk_id_2),
                 },
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.4,
+                    best_chunk_doc_id: Some(first_chunk_id),
                 },
             ]
         );

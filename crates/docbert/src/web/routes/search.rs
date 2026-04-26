@@ -44,6 +44,19 @@ pub(crate) struct SearchExcerpt {
     pub(crate) end_line: usize,
 }
 
+/// Inclusive byte range of the chunk that scored highest for one
+/// search hit, when the result came from the semantic leg.
+///
+/// Lets the agent jump straight to the matching slice via a
+/// `startByte`/`endByte` follow-up read instead of analyzing the whole
+/// document. `None` for BM25-only hits and for documents indexed before
+/// chunk offsets were tracked.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+pub(crate) struct ChunkMatch {
+    pub(crate) start_byte: u64,
+    pub(crate) end_byte: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SearchResultItem {
     pub(crate) rank: usize,
@@ -66,6 +79,11 @@ pub(crate) struct SearchResultItem {
     /// Total byte count of the document, when readable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) byte_count: Option<u64>,
+    /// Byte range of the matching chunk, when the semantic leg
+    /// surfaced it. The agent can pass `start_byte`/`end_byte` directly
+    /// to `analyze_document` to read only the matching region.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) match_chunk: Option<ChunkMatch>,
 }
 
 pub(crate) async fn search(
@@ -174,6 +192,9 @@ fn build_search_result_item(
         None => (result.title.clone(), Vec::new(), None, None),
     };
 
+    let match_chunk =
+        load_match_chunk(config_db, result.best_chunk_doc_id, byte_count);
+
     SearchResultItem {
         rank: result.rank,
         score: result.score,
@@ -185,7 +206,43 @@ fn build_search_result_item(
         excerpts,
         line_count,
         byte_count,
+        match_chunk,
     }
+}
+
+/// Look up the byte range of the winning chunk for a search hit.
+///
+/// Returns `None` when the hit didn't expose a chunk (BM25-only path),
+/// when the chunk's offset isn't in the table (corpus indexed before
+/// chunk offsets were tracked), or when the offset would land past the
+/// document's current end (for instance because the file shrank after
+/// indexing without a re-sync). The on-disk byte count is the
+/// authoritative upper bound — clamping here keeps the returned range
+/// safe for `apply_byte_range`.
+fn load_match_chunk(
+    config_db: &docbert_core::ConfigDb,
+    best_chunk_doc_id: Option<u64>,
+    document_byte_count: Option<u64>,
+) -> Option<ChunkMatch> {
+    let chunk_doc_id = best_chunk_doc_id?;
+    let offset = config_db.get_chunk_offset(chunk_doc_id).ok().flatten()?;
+    let end_byte = offset.inclusive_end()?;
+
+    if let Some(total_bytes) = document_byte_count
+        && offset.start_byte >= total_bytes
+    {
+        return None;
+    }
+
+    let clamped_end = match document_byte_count {
+        Some(total_bytes) if total_bytes > 0 => end_byte.min(total_bytes - 1),
+        _ => end_byte,
+    };
+
+    Some(ChunkMatch {
+        start_byte: offset.start_byte,
+        end_byte: clamped_end,
+    })
 }
 
 /// Load the document content used to derive the title, excerpts, and size
@@ -294,6 +351,7 @@ mod tests {
             collection: "notes".to_string(),
             path: path.to_string(),
             title: title.to_string(),
+            best_chunk_doc_id: None,
         }
     }
 
@@ -334,6 +392,107 @@ mod tests {
         );
         assert_eq!(item.line_count, Some(4));
         assert_eq!(item.byte_count, Some(38));
+    }
+
+    #[test]
+    fn web_search_result_item_returns_match_chunk_when_offset_recorded() {
+        // The semantic leg now hands `build_search_result_item` the
+        // winning chunk's `chunk_doc_id`. When the corresponding byte
+        // offset is in the table, the result should expose it as a
+        // `match_chunk` so the chat agent can read just that range.
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "long.md",
+            // 30 bytes total; the "matching" chunk lives at bytes 6-13.
+            "alpha\nbeta\ngamma\ndelta\nepsilon",
+            None,
+        );
+        let chunk_id = docbert_core::chunking::chunk_doc_id(did.numeric, 1);
+        let config_db = state.open_config_db().unwrap();
+        config_db
+            .set_chunk_offset(
+                chunk_id,
+                docbert_core::ChunkByteOffset {
+                    start_byte: 6,
+                    byte_len: 8,
+                },
+            )
+            .unwrap();
+
+        let mut result = final_result(&did, "Long", "long.md");
+        result.best_chunk_doc_id = Some(chunk_id);
+        let item = build_search_result_item(&state, &config_db, result, "");
+
+        assert_eq!(
+            item.match_chunk,
+            Some(ChunkMatch {
+                start_byte: 6,
+                end_byte: 13,
+            })
+        );
+    }
+
+    #[test]
+    fn web_search_result_item_clamps_match_chunk_to_document_size() {
+        // If the file shrinks after indexing without a re-sync, a
+        // recorded chunk offset can land past the document's end.
+        // `match_chunk` must clamp the inclusive end to the current
+        // byte count instead of returning a range `apply_byte_range`
+        // would treat as out-of-bounds.
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "shrunk.md",
+            "now only ten",
+            None,
+        );
+        let chunk_id = docbert_core::chunking::chunk_doc_id(did.numeric, 1);
+        let config_db = state.open_config_db().unwrap();
+        config_db
+            .set_chunk_offset(
+                chunk_id,
+                docbert_core::ChunkByteOffset {
+                    start_byte: 0,
+                    byte_len: 100,
+                },
+            )
+            .unwrap();
+
+        let mut result = final_result(&did, "Shrunk", "shrunk.md");
+        result.best_chunk_doc_id = Some(chunk_id);
+        let item = build_search_result_item(&state, &config_db, result, "");
+
+        let m = item.match_chunk.expect("clamped match");
+        assert_eq!(m.start_byte, 0);
+        assert_eq!(m.end_byte, "now only ten".len() as u64 - 1);
+    }
+
+    #[test]
+    fn web_search_result_item_omits_match_chunk_for_bm25_only_hits() {
+        // BM25-only hits don't carry a `best_chunk_doc_id`, so the
+        // search response should also omit `match_chunk` instead of
+        // surfacing a stale range.
+        let (_tmp, state) = test_state();
+        let did = seed_filesystem_document(
+            &state,
+            "notes",
+            "plain.md",
+            "alpha beta gamma",
+            None,
+        );
+
+        let config_db = state.open_config_db().unwrap();
+        let item = build_search_result_item(
+            &state,
+            &config_db,
+            final_result(&did, "Plain", "plain.md"),
+            "alpha",
+        );
+
+        assert!(item.match_chunk.is_none());
     }
 
     #[test]

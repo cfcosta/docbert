@@ -55,6 +55,15 @@ export interface SearchExcerpt {
   end_line: number;
 }
 
+/// Inclusive byte range of the chunk that scored highest for one search
+/// hit. Surfaced when the result came from the semantic leg so the
+/// chat agent can pass the same range to `analyze_document` and read
+/// only the matching slice instead of the whole file.
+export interface ChunkMatch {
+  start_byte: number;
+  end_byte: number;
+}
+
 export interface SearchResult {
   rank: number;
   score: number;
@@ -70,6 +79,10 @@ export interface SearchResult {
   line_count?: number;
   /// Total byte count of the matching document, when readable.
   byte_count?: number;
+  /// Byte range of the matching chunk for semantic hits. Omitted for
+  /// BM25-only matches and for documents indexed before chunk offsets
+  /// were tracked.
+  match_chunk?: ChunkMatch;
 }
 
 export interface SearchResponse {

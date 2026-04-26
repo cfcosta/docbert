@@ -4,6 +4,7 @@ use pdf_oxide::{converters::ConversionOptions, document::PdfDocument};
 
 use crate::{
     chunking::{self, Config},
+    config_db::ChunkByteOffset,
     doc_id::DocumentId,
     ingestion,
     text,
@@ -169,10 +170,29 @@ fn is_pdf(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
-pub fn embedding_chunks(
+/// One chunk staged for embedding: the chunk's stable ID, its text, and
+/// the byte range it occupies in the document's `searchable_body`.
+///
+/// The byte range is what lets a search consumer surface "the matching
+/// chunk lives at bytes X-Y" without re-running the chunker. It's stored
+/// alongside the embedding via [`crate::ConfigDb::set_chunk_offset`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkPlan {
+    pub chunk_doc_id: u64,
+    pub text: String,
+    pub offset: ChunkByteOffset,
+}
+
+/// Plan every chunk for one document — emitting both the embedding-ready
+/// `(chunk_doc_id, text)` and the byte offset of each chunk in the
+/// document's `searchable_body`.
+///
+/// Replaces the older `(u64, String)`-only return so the indexer can
+/// persist offsets in the same pass it builds the embedding batch.
+pub fn chunk_plan(
     document: &SearchDocument,
     chunking_config: Config,
-) -> Vec<(u64, String)> {
+) -> Vec<ChunkPlan> {
     chunking::chunk_text(
         &document.searchable_body,
         chunking_config.chunk_size,
@@ -180,12 +200,33 @@ pub fn embedding_chunks(
     )
     .into_iter()
     .map(|chunk| {
-        (
-            chunking::chunk_doc_id(document.did.numeric, chunk.index),
-            chunk.text,
-        )
+        let byte_len = chunk.text.len() as u64;
+        ChunkPlan {
+            chunk_doc_id: chunking::chunk_doc_id(
+                document.did.numeric,
+                chunk.index,
+            ),
+            text: chunk.text,
+            offset: ChunkByteOffset {
+                start_byte: chunk.start_offset as u64,
+                byte_len,
+            },
+        }
     })
     .collect()
+}
+
+/// Convenience: keep only the `(chunk_doc_id, text)` pairs that the
+/// embedding pipeline needs. Existing call sites wanting offsets should
+/// use [`chunk_plan`] directly.
+pub fn embedding_chunks(
+    document: &SearchDocument,
+    chunking_config: Config,
+) -> Vec<(u64, String)> {
+    chunk_plan(document, chunking_config)
+        .into_iter()
+        .map(|plan| (plan.chunk_doc_id, plan.text))
+        .collect()
 }
 
 pub fn collect_chunks<F>(

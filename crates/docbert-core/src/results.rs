@@ -46,6 +46,7 @@ mod tests {
             collection: "notes".to_string(),
             path: format!("{doc_num_id}.md"),
             title: format!("Doc {doc_num_id}"),
+            best_chunk_doc_id: None,
         }
     }
 

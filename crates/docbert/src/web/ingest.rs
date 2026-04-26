@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use docbert_core::{
+    ChunkByteOffset,
     DocumentId,
     chunking::document_family_key,
     error,
@@ -46,6 +47,7 @@ pub(crate) fn ingest_prepared_document(
     collection: &str,
     document: &SearchDocument,
     embedding_entries: &[EmbeddingEntry],
+    chunk_offsets: &[(u64, ChunkByteOffset)],
 ) -> error::Result<IngestedDocument> {
     let config_db = state.open_config_db_blocking()?;
     let embedding_db = state.open_embedding_db_blocking()?;
@@ -62,6 +64,10 @@ pub(crate) fn ingest_prepared_document(
         .iter()
         .map(|(doc_id, _, _, _)| *doc_id)
         .collect();
+    let existing_chunk_offsets = load_document_family_chunk_offsets(
+        &config_db,
+        &existing_embedding_ids,
+    )?;
 
     let previous_metadata =
         config_db.get_document_metadata_typed(document.did.numeric)?;
@@ -86,12 +92,39 @@ pub(crate) fn ingest_prepared_document(
         return Err(err);
     }
 
+    // Persist chunk byte offsets in lockstep with the embedding store. We
+    // wipe any prior family entries first so a replacement that produces
+    // fewer chunks doesn't leak offsets for chunk indexes that no longer
+    // exist; then write the new offsets.
+    if let Err(err) =
+        persist_chunk_offsets(&config_db, document.did.numeric, chunk_offsets)
+    {
+        let _ = writer.rollback();
+        let _ = embedding_db.batch_remove(&current_embedding_ids);
+        restore_previous_embeddings(
+            &embedding_db,
+            &existing_embeddings,
+            &current_embedding_ids,
+        )?;
+        restore_previous_chunk_offsets(
+            &config_db,
+            document.did.numeric,
+            &existing_chunk_offsets,
+        )?;
+        return Err(err);
+    }
+
     if let Err(err) = persist_metadata(&config_db, collection, document) {
         let _ = writer.rollback();
         restore_previous_embeddings(
             &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
+        )?;
+        restore_previous_chunk_offsets(
+            &config_db,
+            document.did.numeric,
+            &existing_chunk_offsets,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -107,6 +140,11 @@ pub(crate) fn ingest_prepared_document(
             &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
+        )?;
+        restore_previous_chunk_offsets(
+            &config_db,
+            document.did.numeric,
+            &existing_chunk_offsets,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -129,6 +167,11 @@ pub(crate) fn ingest_prepared_document(
             &embedding_db,
             &existing_embeddings,
             &current_embedding_ids,
+        )?;
+        restore_previous_chunk_offsets(
+            &config_db,
+            document.did.numeric,
+            &existing_chunk_offsets,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -164,6 +207,7 @@ pub(crate) struct PreviousDocumentState {
     pub(crate) metadata: Option<incremental::DocumentMetadata>,
     pub(crate) user_metadata: Option<serde_json::Value>,
     pub(crate) embeddings: Vec<EmbeddingEntry>,
+    pub(crate) chunk_offsets: Vec<(u64, ChunkByteOffset)>,
 }
 
 /// Capture the full pre-existing state of a document before overwriting it.
@@ -186,12 +230,17 @@ pub(crate) fn capture_previous_state(
     let embedding_db = state.open_embedding_db_blocking()?;
     let embeddings =
         load_document_family_embeddings(&embedding_db, did.numeric)?;
+    let embedding_ids: Vec<u64> =
+        embeddings.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
+    let chunk_offsets =
+        load_document_family_chunk_offsets(&config_db, &embedding_ids)?;
 
     Ok(Some(PreviousDocumentState {
         did,
         metadata,
         user_metadata,
         embeddings,
+        chunk_offsets,
     }))
 }
 
@@ -221,6 +270,16 @@ pub(crate) fn rollback_document(
             // Restore previous embeddings.
             if !prev.embeddings.is_empty() {
                 embedding_db.batch_store(&prev.embeddings)?;
+            }
+
+            // Wipe and restore the chunk byte offsets the same way: the
+            // overwrite that just failed already wrote new offsets, so we
+            // clear the family and replay the captured pre-overwrite set.
+            config_db.batch_remove_chunk_offsets_for_document_families(&[
+                prev.did.numeric,
+            ])?;
+            if !prev.chunk_offsets.is_empty() {
+                config_db.batch_set_chunk_offsets(&prev.chunk_offsets)?;
             }
 
             // Restore previous metadata.
@@ -311,6 +370,8 @@ pub(crate) fn delete_document(
     embedding_db.remove_document_family(did.numeric)?;
     config_db.remove_document_metadata(did.numeric)?;
     config_db.remove_document_user_metadata(did.numeric)?;
+    config_db
+        .batch_remove_chunk_offsets_for_document_families(&[did.numeric])?;
 
     // Commit the Tantivy deletion last — it's the visible "point of no
     // return".  All metadata/embeddings are already gone, so no orphan
@@ -480,6 +541,49 @@ fn restore_previous_metadata(
     Ok(())
 }
 
+fn persist_chunk_offsets(
+    config_db: &docbert_core::ConfigDb,
+    base_doc_id: u64,
+    chunk_offsets: &[(u64, ChunkByteOffset)],
+) -> error::Result<()> {
+    // Wipe the family before writing. A re-ingest that produces fewer
+    // chunks (e.g. the document shrank) would otherwise leave offsets
+    // behind for chunk indexes that no longer exist, and search would
+    // happily surface those stale ranges.
+    config_db
+        .batch_remove_chunk_offsets_for_document_families(&[base_doc_id])?;
+    config_db.batch_set_chunk_offsets(chunk_offsets)?;
+    Ok(())
+}
+
+fn restore_previous_chunk_offsets(
+    config_db: &docbert_core::ConfigDb,
+    base_doc_id: u64,
+    previous_chunk_offsets: &[(u64, ChunkByteOffset)],
+) -> error::Result<()> {
+    // The just-failed ingest already wrote (and may have wiped) the
+    // family's offsets — clear what is there now and replay the pre-ingest
+    // set so the table matches the embeddings + metadata we are
+    // restoring.
+    config_db
+        .batch_remove_chunk_offsets_for_document_families(&[base_doc_id])?;
+    config_db.batch_set_chunk_offsets(previous_chunk_offsets)?;
+    Ok(())
+}
+
+fn load_document_family_chunk_offsets(
+    config_db: &docbert_core::ConfigDb,
+    chunk_doc_ids: &[u64],
+) -> error::Result<Vec<(u64, ChunkByteOffset)>> {
+    let mut entries = Vec::with_capacity(chunk_doc_ids.len());
+    for &chunk_doc_id in chunk_doc_ids {
+        if let Some(offset) = config_db.get_chunk_offset(chunk_doc_id)? {
+            entries.push((chunk_doc_id, offset));
+        }
+    }
+    Ok(entries)
+}
+
 fn remove_stale_previous_embeddings(
     embedding_db: &docbert_core::EmbeddingDb,
     previous_embedding_ids: &[u64],
@@ -581,6 +685,32 @@ mod tests {
         entries
     }
 
+    /// Build a synthetic chunk-offset table that mirrors the embedding
+    /// IDs `fake_embedding_entries` would produce. Each chunk gets a
+    /// distinct, monotonically increasing byte range so tests can assert
+    /// that the right entry survives roundtripping without colliding.
+    fn fake_chunk_offsets(
+        doc_id: u64,
+        chunk_count: usize,
+    ) -> Vec<(u64, ChunkByteOffset)> {
+        (0..chunk_count)
+            .map(|chunk_index| {
+                let id = if chunk_index == 0 {
+                    doc_id
+                } else {
+                    chunk_doc_id(doc_id, chunk_index)
+                };
+                (
+                    id,
+                    ChunkByteOffset {
+                        start_byte: (chunk_index as u64) * 100,
+                        byte_len: 50,
+                    },
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn web_ingest_initial_ingest_stores_index_embeddings_and_metadata() {
         let (tmp, state) = test_state();
@@ -600,6 +730,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
+            &fake_chunk_offsets(document.did.numeric, 2),
         )
         .unwrap();
 
@@ -658,6 +789,7 @@ mod tests {
             "notes",
             &first,
             &fake_embedding_entries(first.did.numeric, 2),
+            &fake_chunk_offsets(first.did.numeric, 2),
         )
         .unwrap();
         let first_snapshot = test_config_db(&state)
@@ -679,6 +811,7 @@ mod tests {
             "notes",
             &second,
             &fake_embedding_entries(second.did.numeric, 2),
+            &fake_chunk_offsets(second.did.numeric, 2),
         )
         .unwrap();
 
@@ -719,6 +852,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 3),
+            &fake_chunk_offsets(document.did.numeric, 3),
         )
         .unwrap();
 
@@ -727,6 +861,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
+            &fake_chunk_offsets(document.did.numeric, 2),
         )
         .unwrap();
 
@@ -762,6 +897,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
+            &fake_chunk_offsets(document.did.numeric, 1),
         )
         .unwrap();
         let original_snapshot = test_config_db(&state)
@@ -780,6 +916,7 @@ mod tests {
                 "notes",
                 &updated,
                 &fake_embedding_entries(updated.did.numeric, 1),
+                &fake_chunk_offsets(updated.did.numeric, 1),
             )
             .is_err()
         );
@@ -803,6 +940,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
+            &fake_chunk_offsets(document.did.numeric, 1),
         )
         .unwrap();
         let original_snapshot = test_config_db(&state)
@@ -851,6 +989,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
+            &fake_chunk_offsets(document.did.numeric, 2),
         )
         .unwrap();
 
@@ -883,11 +1022,14 @@ mod tests {
         .unwrap();
         let original_embeddings =
             fake_embedding_entries(original.did.numeric, 2);
+        let original_chunk_offsets =
+            fake_chunk_offsets(original.did.numeric, 2);
         ingest_prepared_document(
             &state,
             "notes",
             &original,
             &original_embeddings,
+            &original_chunk_offsets,
         )
         .unwrap();
 
@@ -909,6 +1051,7 @@ mod tests {
             "notes",
             &updated,
             &fake_embedding_entries(updated.did.numeric, 3),
+            &fake_chunk_offsets(updated.did.numeric, 3),
         )
         .unwrap();
 
@@ -977,6 +1120,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
+            &fake_chunk_offsets(document.did.numeric, 1),
         )
         .unwrap();
 

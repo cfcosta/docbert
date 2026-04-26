@@ -22,6 +22,21 @@ const CONVERSATIONS: TableDefinition<&str, &[u8]> =
 const COLLECTION_MERKLE_SNAPSHOTS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("collection_merkle_snapshots");
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
+/// Per-chunk byte offsets in the original document.
+///
+/// Keyed by `chunk_doc_id` (the chunk-level numeric ID — see
+/// [`crate::chunking::chunk_doc_id`]) and storing a fixed-width
+/// `[start_offset:u64 LE][length:u64 LE]` pair.
+///
+/// Lets a search consumer look up "where in the file does this matching
+/// chunk live?" without re-running the chunker over the document. The
+/// chunker is deterministic, but its output depends on the chunking
+/// config that was active at index time, so we persist instead of
+/// re-derive — a config change must not silently invalidate offsets.
+const CHUNK_OFFSETS: TableDefinition<u64, &[u8]> =
+    TableDefinition::new("chunk_offsets");
+/// Width in bytes of one entry in [`CHUNK_OFFSETS`].
+const CHUNK_OFFSET_ENTRY_LEN: usize = 16;
 
 const KEY_LLM_PROVIDER: &str = "llm_provider";
 const KEY_LLM_MODEL: &str = "llm_model";
@@ -130,6 +145,7 @@ impl ConfigDb {
         txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)
             .map_err(map_schema_error)?;
         txn.open_table(SETTINGS).map_err(map_schema_error)?;
+        txn.open_table(CHUNK_OFFSETS).map_err(map_schema_error)?;
         txn.commit()?;
 
         Ok(Self { db })
@@ -896,6 +912,153 @@ impl ConfigDb {
         let key = document_user_metadata_key(doc_id);
         self.remove_json_setting(&key)
     }
+
+    // -- Chunk byte offsets --
+
+    /// Record the byte offset and length of a chunk in its source document.
+    ///
+    /// Keyed by `chunk_doc_id` (the chunk-level ID produced by
+    /// [`crate::chunking::chunk_doc_id`]). Overwrites any existing entry.
+    pub fn set_chunk_offset(
+        &self,
+        chunk_doc_id: u64,
+        offset: ChunkByteOffset,
+    ) -> Result<()> {
+        let bytes = encode_chunk_offset(offset);
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(CHUNK_OFFSETS)?;
+            table.insert(chunk_doc_id, bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Store many chunk offsets in a single write transaction.
+    pub fn batch_set_chunk_offsets(
+        &self,
+        entries: &[(u64, ChunkByteOffset)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(CHUNK_OFFSETS)?;
+            for &(chunk_doc_id, offset) in entries {
+                let bytes = encode_chunk_offset(offset);
+                table.insert(chunk_doc_id, bytes.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Look up the byte offset and length of a chunk by its
+    /// `chunk_doc_id`. Returns `None` when the chunk wasn't recorded —
+    /// e.g. for a corpus indexed before chunk offsets were tracked, or
+    /// when a chunk was deleted.
+    pub fn get_chunk_offset(
+        &self,
+        chunk_doc_id: u64,
+    ) -> Result<Option<ChunkByteOffset>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(CHUNK_OFFSETS)?;
+        let Some(guard) = table.get(chunk_doc_id)? else {
+            return Ok(None);
+        };
+        Ok(decode_chunk_offset(guard.value()))
+    }
+
+    /// Remove every chunk offset for one document family (base + chunks).
+    ///
+    /// `base_doc_ids` are the *base* numeric IDs of the documents whose
+    /// chunk offsets should be cleared. Internally walks the table and
+    /// matches by `document_family_key`, mirroring how
+    /// [`EmbeddingDb::batch_remove_document_families`] cleans embeddings.
+    pub fn batch_remove_chunk_offsets_for_document_families(
+        &self,
+        base_doc_ids: &[u64],
+    ) -> Result<()> {
+        if base_doc_ids.is_empty() {
+            return Ok(());
+        }
+
+        let family_keys: std::collections::HashSet<u64> = base_doc_ids
+            .iter()
+            .copied()
+            .map(crate::chunking::document_family_key)
+            .collect();
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(CHUNK_OFFSETS)?;
+            let mut to_remove = Vec::new();
+            for entry in table.iter()? {
+                let (key, _) = entry?;
+                let chunk_doc_id = key.value();
+                if family_keys.contains(&crate::chunking::document_family_key(
+                    chunk_doc_id,
+                )) {
+                    to_remove.push(chunk_doc_id);
+                }
+            }
+            for chunk_doc_id in to_remove {
+                table.remove(chunk_doc_id)?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+}
+
+/// Where a stored chunk lives in its source document.
+///
+/// Recorded once at index time and looked up at search time so a
+/// matching chunk can be surfaced as an inclusive byte range — letting
+/// the agent jump to the relevant slice of a large file instead of
+/// re-reading the whole document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkByteOffset {
+    /// Byte offset where the chunk begins in the original document.
+    pub start_byte: u64,
+    /// Byte length of the chunk in the original document.
+    pub byte_len: u64,
+}
+
+impl ChunkByteOffset {
+    /// Inclusive end byte (`start_byte + byte_len - 1`).
+    ///
+    /// Returns `None` for an empty chunk so callers don't accidentally
+    /// hand `apply_byte_range` a backwards range.
+    pub fn inclusive_end(self) -> Option<u64> {
+        if self.byte_len == 0 {
+            None
+        } else {
+            Some(self.start_byte + self.byte_len - 1)
+        }
+    }
+}
+
+fn encode_chunk_offset(
+    offset: ChunkByteOffset,
+) -> [u8; CHUNK_OFFSET_ENTRY_LEN] {
+    let mut bytes = [0u8; CHUNK_OFFSET_ENTRY_LEN];
+    bytes[0..8].copy_from_slice(&offset.start_byte.to_le_bytes());
+    bytes[8..16].copy_from_slice(&offset.byte_len.to_le_bytes());
+    bytes
+}
+
+fn decode_chunk_offset(bytes: &[u8]) -> Option<ChunkByteOffset> {
+    if bytes.len() != CHUNK_OFFSET_ENTRY_LEN {
+        return None;
+    }
+    let start_byte = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
+    let byte_len = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
+    Some(ChunkByteOffset {
+        start_byte,
+        byte_len,
+    })
 }
 
 impl std::fmt::Debug for ConfigDb {
@@ -1336,5 +1499,77 @@ mod tests {
 
         assert!(db.remove_conversation("conv-1").unwrap());
         assert!(db.get_conversation_typed("conv-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn chunk_offset_roundtrips_and_inclusive_end_handles_empty_chunks() {
+        let (_tmp, db) = test_db();
+
+        let offset = ChunkByteOffset {
+            start_byte: 1024,
+            byte_len: 256,
+        };
+        db.set_chunk_offset(7, offset).unwrap();
+
+        let loaded = db.get_chunk_offset(7).unwrap().unwrap();
+        assert_eq!(loaded, offset);
+        assert_eq!(loaded.inclusive_end(), Some(1024 + 256 - 1));
+        assert!(db.get_chunk_offset(8).unwrap().is_none());
+
+        let empty = ChunkByteOffset {
+            start_byte: 0,
+            byte_len: 0,
+        };
+        assert_eq!(empty.inclusive_end(), None);
+    }
+
+    #[test]
+    fn batch_remove_chunk_offsets_only_clears_requested_families() {
+        // The chunk-offset table is keyed by chunk_doc_id, but the
+        // ingestion path only knows the *base* doc_id of the document
+        // being replaced. The remover must walk the table and match by
+        // family (low 48 bits), mirroring how
+        // `EmbeddingDb::batch_remove_document_families` cleans
+        // embeddings — otherwise replacement would leak stale offsets
+        // for the higher chunk indexes.
+        use crate::{DocumentId, chunking};
+
+        let (_tmp, db) = test_db();
+        let target = DocumentId::new("notes", "target.md").numeric;
+        let unrelated = DocumentId::new("notes", "unrelated.md").numeric;
+        let target_chunk_2 = chunking::chunk_doc_id(target, 2);
+        let unrelated_chunk_1 = chunking::chunk_doc_id(unrelated, 1);
+
+        db.batch_set_chunk_offsets(&[
+            (
+                target,
+                ChunkByteOffset {
+                    start_byte: 0,
+                    byte_len: 100,
+                },
+            ),
+            (
+                target_chunk_2,
+                ChunkByteOffset {
+                    start_byte: 200,
+                    byte_len: 50,
+                },
+            ),
+            (
+                unrelated_chunk_1,
+                ChunkByteOffset {
+                    start_byte: 300,
+                    byte_len: 25,
+                },
+            ),
+        ])
+        .unwrap();
+
+        db.batch_remove_chunk_offsets_for_document_families(&[target])
+            .unwrap();
+
+        assert!(db.get_chunk_offset(target).unwrap().is_none());
+        assert!(db.get_chunk_offset(target_chunk_2).unwrap().is_none());
+        assert!(db.get_chunk_offset(unrelated_chunk_1).unwrap().is_some());
     }
 }

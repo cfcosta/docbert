@@ -10,6 +10,7 @@ use base64::{
     engine::general_purpose::STANDARD as BASE64_STANDARD,
 };
 use docbert_core::{
+    ChunkByteOffset,
     DocumentId,
     chunking,
     embedding,
@@ -183,21 +184,42 @@ fn document_mtime(full_path: &Path) -> std::io::Result<u64> {
         .as_secs())
 }
 
+/// What `compute_embedding_entries` produces: the embedding rows the
+/// model crunched, plus the byte-offset metadata for each chunk so the
+/// search consumer can later surface a matching range.
+type EmbeddingResult = (Vec<EmbeddingEntry>, Vec<(u64, ChunkByteOffset)>);
+
+/// Plan a document's chunks once, returning both the embedding-ready
+/// `(chunk_doc_id, num_tokens, dim, data)` entries and the byte offsets
+/// the search consumer surfaces alongside the result.
+///
+/// We re-use a single `chunk_plan` call so the offsets we persist always
+/// match the chunks we embed — drifting between the two would mean
+/// search returns offsets for chunks that were never indexed.
 fn compute_embedding_entries(
     state: &AppState,
     document: &SearchDocument,
-) -> Result<Vec<EmbeddingEntry>, StatusCode> {
-    let docs_to_embed =
-        preparation::embedding_chunks(document, upload_chunking_config());
-    if docs_to_embed.is_empty() {
+) -> Result<EmbeddingResult, StatusCode> {
+    let plans = preparation::chunk_plan(document, upload_chunking_config());
+    if plans.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let chunk_offsets: Vec<(u64, ChunkByteOffset)> = plans
+        .iter()
+        .map(|plan| (plan.chunk_doc_id, plan.offset))
+        .collect();
+    let docs_to_embed: Vec<(u64, String)> = plans
+        .into_iter()
+        .map(|plan| (plan.chunk_doc_id, plan.text))
+        .collect();
+
     if std::env::var_os(TEST_FAKE_EMBEDDINGS_ENV).is_some() {
-        return Ok(docs_to_embed
+        let entries = docs_to_embed
             .into_iter()
             .map(|(doc_id, _)| (doc_id, 1, 2, vec![1.0, 0.0]))
-            .collect());
+            .collect();
+        return Ok((entries, chunk_offsets));
     }
 
     // Recover from a poisoned mutex — a prior panic left the lock in
@@ -206,8 +228,9 @@ fn compute_embedding_entries(
         tracing::warn!("documents::ingest recovered from poisoned model mutex");
         poisoned.into_inner()
     });
-    embedding::embed_documents(&mut model, docs_to_embed)
-        .map_err(|err| log_internal_error(err, "documents::ingest embed"))
+    let entries = embedding::embed_documents(&mut model, docs_to_embed)
+        .map_err(|err| log_internal_error(err, "documents::ingest embed"))?;
+    Ok((entries, chunk_offsets))
 }
 
 pub(crate) async fn ingest(
@@ -291,13 +314,14 @@ pub(crate) async fn ingest(
                     mtime,
                 )
                 .map_err(map_error)?;
-                let embedding_entries =
+                let (embedding_entries, chunk_offsets) =
                     compute_embedding_entries(&state, &document)?;
                 let result = ingest::ingest_prepared_document(
                     &state,
                     &body.collection,
                     &document,
                     &embedding_entries,
+                    &chunk_offsets,
                 )
                 .map_err(map_error)?;
                 Ok(IngestedDoc {

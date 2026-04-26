@@ -141,13 +141,21 @@ fn process_document_batch(
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
-        let docs_to_embed = docbert_core::preparation::collect_chunks(
-            &document_batch.documents,
-            runtime.chunking_config,
-            |processed_count| {
-                let _ = pb.update_to(processed_count);
-            },
-        );
+        let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
+        let mut chunk_offset_entries: Vec<(
+            u64,
+            docbert_core::ChunkByteOffset,
+        )> = Vec::new();
+        for (i, document) in document_batch.documents.iter().enumerate() {
+            for plan in docbert_core::preparation::chunk_plan(
+                document,
+                runtime.chunking_config,
+            ) {
+                chunk_offset_entries.push((plan.chunk_doc_id, plan.offset));
+                docs_to_embed.push((plan.chunk_doc_id, plan.text));
+            }
+            let _ = pb.update_to(i + 1);
+        }
         finish_progress_bar(&mut pb);
 
         if !docs_to_embed.is_empty() {
@@ -163,6 +171,24 @@ fn process_document_batch(
                 },
             )?;
             finish_progress_bar(&mut pb);
+
+            // Persist chunk byte offsets only after the embedding batch
+            // commits. Doing it earlier would leave offsets pointing at
+            // chunks the embedding store doesn't have yet, which search
+            // would surface as ranges with no semantic backing.
+            //
+            // Wipe each base document's family first so a re-index that
+            // produces fewer chunks doesn't leak offsets for the
+            // higher chunk indexes.
+            let base_doc_ids: Vec<u64> = document_batch
+                .documents
+                .iter()
+                .map(|d| d.did.numeric)
+                .collect();
+            config_db.batch_remove_chunk_offsets_for_document_families(
+                &base_doc_ids,
+            )?;
+            config_db.batch_set_chunk_offsets(&chunk_offset_entries)?;
         }
     }
 
@@ -190,6 +216,9 @@ fn process_document_batch(
             );
             let _ =
                 remove_document_artifacts_for_ids(config_db, &batch_doc_ids);
+            let _ = config_db.batch_remove_chunk_offsets_for_document_families(
+                &batch_doc_ids,
+            );
             return Err(err);
         }
         eprintln!("  Indexed {} documents", document_batch.documents.len());

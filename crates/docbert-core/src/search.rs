@@ -147,6 +147,12 @@ pub struct FinalResult {
     pub path: String,
     /// Document title extracted from content or filename.
     pub title: String,
+    /// Numeric ID of the best-scoring chunk for this document, when the
+    /// result came from the semantic leg. `None` for BM25-only matches
+    /// where there is no per-chunk score, and for documents the
+    /// semantic leg never surfaced. Equal to `doc_num_id` when chunk 0
+    /// (the base chunk) was the best match.
+    pub best_chunk_doc_id: Option<u64>,
 }
 
 /// Run the hybrid search pipeline.
@@ -284,13 +290,22 @@ fn rrf(
 
     // Build FinalResults, preferring BM25-side metadata (which already carries
     // title) and falling back to semantic-side metadata for docs that only
-    // surfaced semantically.
+    // surfaced semantically. The semantic-side carries the winning chunk
+    // id (when known) so search consumers can surface that chunk's byte
+    // range; a doc that only surfaced via BM25 has no chunk-level score
+    // and gets `None`.
     let bm25_lookup: HashMap<u64, &SearchResult> =
         bm25_results.iter().map(|r| (r.doc_num_id, r)).collect();
+    let sem_best_chunk: HashMap<u64, Option<u64>> = sem_ranked
+        .iter()
+        .map(|r| (r.doc_num_id, r.best_chunk_doc_id))
+        .collect();
 
     let mut results: Vec<FinalResult> = fused
         .into_iter()
         .filter_map(|(doc_num_id, score)| {
+            let best_chunk_doc_id =
+                sem_best_chunk.get(&doc_num_id).copied().unwrap_or(None);
             if let Some(bm25) = bm25_lookup.get(&doc_num_id) {
                 return Some(FinalResult {
                     rank: 0,
@@ -300,6 +315,7 @@ fn rrf(
                     collection: bm25.collection.clone(),
                     path: bm25.path.clone(),
                     title: bm25.title.clone(),
+                    best_chunk_doc_id,
                 });
             }
             let meta = sem_metadata.get(&doc_num_id)?;
@@ -313,6 +329,7 @@ fn rrf(
                 collection: meta.collection.clone(),
                 path: meta.relative_path.clone(),
                 title: String::new(),
+                best_chunk_doc_id,
             })
         })
         .collect();
@@ -389,10 +406,11 @@ fn run_semantic_leg(
     let raw_results =
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
-    // Collapse chunk families to a single base-document score (keep the
-    // best chunk score per family), then drop anything outside the
-    // collection filter or missing metadata.
-    let mut best_per_family: HashMap<u64, f32> = HashMap::new();
+    // Collapse chunk families to a single base-document score, but
+    // remember which chunk produced that score so the search consumer
+    // can surface its byte range. Drop anything outside the collection
+    // filter or missing metadata.
+    let mut best_per_family: HashMap<u64, (f32, u64)> = HashMap::new();
     for result in raw_results {
         let base_id = document_family_key(result.doc_id);
         if !metadata.contains_key(&base_id) {
@@ -400,17 +418,22 @@ fn run_semantic_leg(
         }
         best_per_family
             .entry(base_id)
-            .and_modify(|current| {
-                if result.score > *current {
-                    *current = result.score;
+            .and_modify(|(best_score, best_chunk_id)| {
+                if result.score > *best_score {
+                    *best_score = result.score;
+                    *best_chunk_id = result.doc_id;
                 }
             })
-            .or_insert(result.score);
+            .or_insert((result.score, result.doc_id));
     }
 
     let mut ranked: Vec<RankedDocument> = best_per_family
         .into_iter()
-        .map(|(doc_num_id, score)| RankedDocument { doc_num_id, score })
+        .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
+            doc_num_id,
+            score,
+            best_chunk_doc_id: Some(best_chunk_doc_id),
+        })
         .collect();
     ranked.sort_by(|a, b| {
         b.score
@@ -508,20 +531,29 @@ fn semantic_final_results_from_ranked(
     let mut results: Vec<FinalResult> = ranked
         .into_iter()
         .filter(|ranked| ranked.score >= min_score)
-        .filter_map(|RankedDocument { doc_num_id, score }| {
-            let meta = metadata.get(&doc_num_id)?;
-            let did =
-                crate::DocumentId::new(&meta.collection, &meta.relative_path);
-            Some(FinalResult {
-                rank: 0,
-                score,
-                doc_id: short_doc_id(doc_num_id, &did.full_hex()),
-                doc_num_id,
-                collection: meta.collection.clone(),
-                path: meta.relative_path.clone(),
-                title: String::new(),
-            })
-        })
+        .filter_map(
+            |RankedDocument {
+                 doc_num_id,
+                 score,
+                 best_chunk_doc_id,
+             }| {
+                let meta = metadata.get(&doc_num_id)?;
+                let did = crate::DocumentId::new(
+                    &meta.collection,
+                    &meta.relative_path,
+                );
+                Some(FinalResult {
+                    rank: 0,
+                    score,
+                    doc_id: short_doc_id(doc_num_id, &did.full_hex()),
+                    doc_num_id,
+                    collection: meta.collection.clone(),
+                    path: meta.relative_path.clone(),
+                    title: String::new(),
+                    best_chunk_doc_id,
+                })
+            },
+        )
         .collect();
 
     let limit = if all { results.len() } else { count };
@@ -574,8 +606,9 @@ pub fn semantic(
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
     // Collapse chunk families, filter by collection/metadata presence,
-    // keep the best score per family.
-    let mut best_per_family: HashMap<u64, f32> = HashMap::new();
+    // keep the best score per family — and remember the best chunk's
+    // doc id so the search consumer can surface its byte range.
+    let mut best_per_family: HashMap<u64, (f32, u64)> = HashMap::new();
     for result in raw_results {
         let base_id = document_family_key(result.doc_id);
         if !metadata.contains_key(&base_id) {
@@ -583,17 +616,22 @@ pub fn semantic(
         }
         best_per_family
             .entry(base_id)
-            .and_modify(|current| {
-                if result.score > *current {
-                    *current = result.score;
+            .and_modify(|(best_score, best_chunk_id)| {
+                if result.score > *best_score {
+                    *best_score = result.score;
+                    *best_chunk_id = result.doc_id;
                 }
             })
-            .or_insert(result.score);
+            .or_insert((result.score, result.doc_id));
     }
 
     let mut ranked: Vec<RankedDocument> = best_per_family
         .into_iter()
-        .map(|(doc_num_id, score)| RankedDocument { doc_num_id, score })
+        .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
+            doc_num_id,
+            score,
+            best_chunk_doc_id: Some(best_chunk_doc_id),
+        })
         .collect();
     ranked.sort_by(|a, b| {
         b.score
@@ -771,6 +809,9 @@ fn bm25_to_final(results: &[SearchResult]) -> Vec<FinalResult> {
             collection: r.collection.clone(),
             path: r.path.clone(),
             title: r.title.clone(),
+            // BM25 indexes whole documents — there is no per-chunk
+            // score to point at, so leave the chunk offset hint empty.
+            best_chunk_doc_id: None,
         })
         .collect()
 }
@@ -1244,6 +1285,7 @@ mod tests {
             vec![RankedDocument {
                 doc_num_id: chunk_doc_id,
                 score: 0.9,
+                best_chunk_doc_id: None,
             }],
             0.0,
             10,
@@ -1271,6 +1313,7 @@ mod tests {
             vec![RankedDocument {
                 doc_num_id: base_doc_id,
                 score: 0.8,
+                best_chunk_doc_id: None,
             }],
             0.0,
             10,
@@ -1321,14 +1364,17 @@ mod tests {
                 RankedDocument {
                     doc_num_id: first_doc_id,
                     score: 0.9,
+                    best_chunk_doc_id: None,
                 },
                 RankedDocument {
                     doc_num_id: second_doc_id,
                     score: 0.7,
+                    best_chunk_doc_id: None,
                 },
                 RankedDocument {
                     doc_num_id: third_doc_id,
                     score: 0.4,
+                    best_chunk_doc_id: None,
                 },
             ],
             0.5,
@@ -2161,6 +2207,7 @@ mod tests {
                 collection: "notes".into(),
                 path: "a.md".into(),
                 title: "A".into(),
+                best_chunk_doc_id: None,
             },
             FinalResult {
                 rank: 2,
@@ -2170,6 +2217,7 @@ mod tests {
                 collection: "notes".into(),
                 path: "b.md".into(),
                 title: "B".into(),
+                best_chunk_doc_id: None,
             },
         ];
 
@@ -2266,6 +2314,7 @@ mod tests {
             collection: "notes".to_string(),
             path: "hello.md".to_string(),
             title: "Hello \"Rust\"".to_string(),
+            best_chunk_doc_id: None,
         }];
 
         let json = format_json_string(&results, "rust\nquery");
@@ -2286,6 +2335,7 @@ mod tests {
             collection: "notes".to_string(),
             path: "hello.md".to_string(),
             title: "Hello".to_string(),
+            best_chunk_doc_id: None,
         }];
 
         let json = format_json_string(&results, "rust");
