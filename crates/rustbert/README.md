@@ -17,7 +17,7 @@ Every operation is scoped to a single `(crate, version)`; there is no global cro
 # Fetch and parse a specific version
 rustbert fetch serde@1.0.219
 
-# Search inside a crate (auto-fetches on first hit)
+# Search inside a crate (auto-fetches on first hit, BM25 + ColBERT hybrid)
 rustbert search serde "Serializer" --kind trait
 
 # Print one item by qualified path
@@ -26,11 +26,17 @@ rustbert get serde "serde::Serializer::serialize_struct"
 # List items, filtered by kind / module
 rustbert list serde --kind trait --module "serde::de"
 
-# Pre-fetch every crates.io dep of a Rust project (parallel)
+# Pre-fetch every crates.io dep of a Rust project (parallel + embed + PLAID rebuild)
 rustbert sync --jobs 8
+
+# Lexical-only sync (skip ColBERT embedding, faster but no semantic ranking)
+rustbert sync --no-embed
 
 # Re-resolve cached `latest` entries against upstream
 rustbert refresh
+
+# Index a local Cargo project's source
+rustbert index .
 
 # Cache state
 rustbert status
@@ -51,9 +57,8 @@ Spec strings parse the same shape every time: `name`, `name@1.2.3`, `name@^1.0`,
 4. `rustbert sync` walks a `Cargo.lock` and pre-fetches every crates.io dep in parallel so the working set is hot before the first search runs.
 5. `rustbert refresh` re-resolves cached `latest` entries against upstream without re-downloading.
 
-## What's out of scope (for v1)
+## What's out of scope
 
-- Indexing your project's own source. `rustbert sync` indexes the project's _dependencies_, not the project itself. A "look at my own crate" feature can layer on later — it's a separate scope.
 - Indexing the whole crates.io corpus. Fetches are demand-driven or scoped to a project's lockfile.
 - Type resolution / cross-crate `pub use` chasing.
 - Macro expansion. Items synthesized by macros are invisible to source-level parsing.
@@ -94,9 +99,23 @@ Wire it up in your editor / agent config the same way you'd wire any other stdio
 
 CLI flag `--data-dir <path>` takes precedence over both.
 
-## Status
+## What's in scope (continued)
 
-v1 implementation — lexical search only. The design (`docs/rustbert.md`) sketches a Phase 2 that layers ColBERT semantic ranking via `docbert-core` on top of the existing in-memory search; the lowering layer (`lowering::SearchDocument`) is already shaped to match `docbert_core::SearchDocument` so the swap is mechanical.
+- Indexing your own project's source via `rustbert index <path>`. The indexed package becomes a synthetic collection (`<name>@<version>`) and `search` / `get` / `list` work against it identically to fetched crates. Workspace roots without a `[package]` table aren't supported — point at individual member directories.
+- Best-effort docs.rs rustdoc JSON enrichment. When docs.rs has a JSON build for the requested `(crate, version)`, the raw JSON lands at `<data_dir>/items/<crate>-<version>.rustdoc.json` for downstream tooling. 404 / 410 responses (the common case for crates without published JSON) are silently skipped — syn-only parsing remains the source of truth.
+
+## How search works
+
+`rustbert search` runs the same hybrid retrieval stack `docbert search` uses:
+
+- **BM25** via Tantivy with English stemming and fuzzy matching for the lexical leg.
+- **ColBERT** via `docbert-pylate` (the workspace fork of `pylate-rs`) for the semantic leg.
+- **Reciprocal Rank Fusion** combines the two ranked lists at `k=60`.
+- **PLAID** compresses the ColBERT vectors for fast MaxSim retrieval.
+
+`--kind` and `--module` filters are applied post-rank against the cached items so the CLI stays predictable.
+
+`rustbert sync` triggers a ColBERT model download from HuggingFace on first use. Pass `--no-embed` if you want a fast lexical-only sync (no model download, no PLAID rebuild).
 
 ## License
 
