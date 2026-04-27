@@ -200,7 +200,7 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
     }
     extract::extract_crate_tarball(&bytes, &extract_dest)?;
 
-    let walked = crate_walker::walk_extracted_crate(
+    let mut walked = crate_walker::walk_extracted_crate(
         &extract_dest,
         &collection.crate_name,
         &collection.version,
@@ -211,11 +211,13 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
         load_failures = walked.failures.len(),
         "walk complete"
     );
-    cache.store(&collection, &walked.items)?;
 
     // Best-effort rustdoc JSON enrichment. docs.rs publishes JSON
-    // for many but not all crate builds; a 404 isn't fatal —
-    // we just skip the enrichment and rely on syn output.
+    // for many but not all crate builds; a 404 isn't fatal — we just
+    // skip the enrichment and rely on syn output. When present, the
+    // JSON gets cached on disk *and* its resolved doc strings are
+    // merged into the items before they hit the cache, so chunks
+    // include the resolved version.
     let docs_client = DocsRsClient::new(fetcher.clone());
     if let Ok(Some(json_bytes)) = docs_client
         .fetch_rustdoc_json(&collection.crate_name, &collection.version)
@@ -227,11 +229,18 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
             &collection.version,
             &json_bytes,
         );
+        let merged = crate::rustdoc_merge::merge_rustdoc_docs(
+            &mut walked.items,
+            &json_bytes,
+        );
         tracing::info!(
             bytes = json_bytes.len(),
-            "rustdoc JSON cached for enrichment"
+            merged_doc_strings = merged,
+            "rustdoc JSON merged"
         );
     }
+
+    cache.store(&collection, &walked.items)?;
 
     let load_failures: Vec<String> = walked
         .failures

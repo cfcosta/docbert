@@ -58,6 +58,7 @@ pub mod module_discovery;
 pub mod parse;
 pub mod reqwest_fetcher;
 pub mod resolver;
+pub mod rustdoc_merge;
 pub mod search;
 pub mod sync;
 

@@ -100,6 +100,11 @@ pub struct RustItem {
     /// `pub fn serialize_struct<S: Serializer>(&self, name: &'static str)`.
     pub signature: String,
     pub doc_markdown: String,
+    /// Full source rendering of the item, including its body (function
+    /// bodies, struct fields, impl methods, etc.). Produced via
+    /// `quote::ToTokens` so it captures every identifier and literal in
+    /// the item — what ColBERT actually needs to embed.
+    pub body: String,
     /// Source file path *relative* to the extracted crate root.
     pub source_file: PathBuf,
     /// Byte offset of the item in `source_file`. `byte_len == 0` means

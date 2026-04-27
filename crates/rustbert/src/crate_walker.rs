@@ -203,7 +203,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::item::RustItemKind;
 
     fn write(root: &Path, rel: &str, contents: &str) {
         let abs = root.join(rel);
@@ -298,10 +297,15 @@ mod tests {
     #[test]
     fn falls_back_to_main_rs_for_binaries() {
         let tmp = TempDir::new().unwrap();
-        write(tmp.path(), "src/main.rs", "fn main() {}");
+        // `pub fn`, not bare `fn`, so the public-only filter accepts it.
+        write(
+            tmp.path(),
+            "src/main.rs",
+            "pub fn helper() {}\nfn main() {}",
+        );
 
         let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
-        assert!(out.items.iter().any(|i| i.kind == RustItemKind::Fn));
+        assert!(out.items.iter().any(|i| i.qualified_path == "x::helper"));
     }
 
     #[test]

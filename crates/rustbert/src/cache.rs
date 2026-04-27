@@ -263,6 +263,7 @@ mod tests {
             qualified_path: qpath.to_string(),
             signature: "pub fn f()".to_string(),
             doc_markdown: String::new(),
+            body: "pub fn f () { }".to_string(),
             source_file: PathBuf::from("src/lib.rs"),
             byte_start: 0,
             byte_len: 0,

@@ -43,14 +43,41 @@ pub fn lower(
 
 fn build_searchable_body(item: &RustItem) -> String {
     let mut body = String::new();
+
+    // Header line: kind + qualified path. Top of every chunk so BM25
+    // and ColBERT both see the canonical name first.
     body.push_str(item.kind.as_str());
     body.push(' ');
     body.push_str(&item.qualified_path);
-    body.push_str("\n\n");
+    body.push('\n');
+
+    // Provenance: crate@version, module path, source location. Kept
+    // dense (no blank lines between) so they fit in chunk 0.
+    body.push_str(&format!(
+        "crate: {}@{}\n",
+        item.crate_name, item.crate_version
+    ));
+    if !item.module_path.is_empty() {
+        body.push_str(&format!("module: {}\n", item.module_path.join("::")));
+    }
+    body.push_str(&format!(
+        "source: {}:{}-{}\n",
+        item.source_file.display(),
+        item.line_start,
+        item.line_end,
+    ));
+
+    body.push('\n');
     body.push_str(&item.signature);
+
     if !item.doc_markdown.is_empty() {
         body.push_str("\n\n");
         body.push_str(&item.doc_markdown);
+    }
+
+    if !item.body.is_empty() && item.body != item.signature {
+        body.push_str("\n\n");
+        body.push_str(&item.body);
     }
     body
 }
@@ -93,6 +120,8 @@ mod tests {
             signature: "pub fn serialize_struct(&self) -> Result<()>"
                 .to_string(),
             doc_markdown: "Serialize a struct.".to_string(),
+            body: "pub fn serialize_struct (& self) -> Result < () > { ... }"
+                .to_string(),
             source_file: PathBuf::from("src/ser/mod.rs"),
             byte_start: 0,
             byte_len: 0,

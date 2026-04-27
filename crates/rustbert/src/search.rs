@@ -143,6 +143,7 @@ mod tests {
             qualified_path: qpath.to_string(),
             signature: sig.to_string(),
             doc_markdown: doc.to_string(),
+            body: String::new(),
             source_file: PathBuf::from("src/lib.rs"),
             byte_start: 0,
             byte_len: 0,

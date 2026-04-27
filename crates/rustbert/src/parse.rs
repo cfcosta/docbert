@@ -79,7 +79,7 @@ impl ParseCtx {
 
     fn visit_item(&mut self, item: &syn::Item, module_path: &[String]) {
         match item {
-            syn::Item::Fn(it) => self.emit(
+            syn::Item::Fn(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Fn,
                 Some(it.sig.ident.to_string()),
                 module_path,
@@ -88,7 +88,7 @@ impl ParseCtx {
                 fn_signature(it),
                 item,
             ),
-            syn::Item::Struct(it) => self.emit(
+            syn::Item::Struct(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Struct,
                 Some(it.ident.to_string()),
                 module_path,
@@ -97,7 +97,7 @@ impl ParseCtx {
                 struct_signature(it),
                 item,
             ),
-            syn::Item::Enum(it) => self.emit(
+            syn::Item::Enum(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Enum,
                 Some(it.ident.to_string()),
                 module_path,
@@ -106,7 +106,7 @@ impl ParseCtx {
                 enum_signature(it),
                 item,
             ),
-            syn::Item::Union(it) => self.emit(
+            syn::Item::Union(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Union,
                 Some(it.ident.to_string()),
                 module_path,
@@ -115,7 +115,7 @@ impl ParseCtx {
                 union_signature(it),
                 item,
             ),
-            syn::Item::Trait(it) => self.emit(
+            syn::Item::Trait(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Trait,
                 Some(it.ident.to_string()),
                 module_path,
@@ -124,6 +124,8 @@ impl ParseCtx {
                 trait_signature(it),
                 item,
             ),
+            // impls describe public API surface even though they don't
+            // have a visibility keyword; always emit.
             syn::Item::Impl(it) => self.emit(
                 RustItemKind::Impl,
                 None,
@@ -133,7 +135,7 @@ impl ParseCtx {
                 impl_signature(it),
                 item,
             ),
-            syn::Item::Const(it) => self.emit(
+            syn::Item::Const(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Const,
                 Some(it.ident.to_string()),
                 module_path,
@@ -142,7 +144,7 @@ impl ParseCtx {
                 const_signature(it),
                 item,
             ),
-            syn::Item::Static(it) => self.emit(
+            syn::Item::Static(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Static,
                 Some(it.ident.to_string()),
                 module_path,
@@ -151,7 +153,7 @@ impl ParseCtx {
                 static_signature(it),
                 item,
             ),
-            syn::Item::Type(it) => self.emit(
+            syn::Item::Type(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::TypeAlias,
                 Some(it.ident.to_string()),
                 module_path,
@@ -161,25 +163,35 @@ impl ParseCtx {
                 item,
             ),
             syn::Item::Macro(it) => {
-                if let Some(name) = it.ident.as_ref() {
+                // macro_rules! is exported via #[macro_export] attribute
+                // rather than `pub`; check for that attr instead.
+                let exported =
+                    it.attrs.iter().any(|a| a.path().is_ident("macro_export"));
+                if exported && let Some(name) = it.ident.as_ref() {
                     self.emit(
                         RustItemKind::Macro,
                         Some(name.to_string()),
                         module_path,
                         &it.attrs,
-                        &syn::Visibility::Inherited,
+                        &syn::Visibility::Public(syn::token::Pub::default()),
                         format!("macro_rules! {name}"),
                         item,
                     );
                 }
             }
             syn::Item::Mod(m) => self.visit_mod(m, module_path),
-            // ExternCrate, ForeignMod, Use, TraitAlias, Verbatim — skip
+            // Private items, ExternCrate, ForeignMod, Use, TraitAlias,
+            // Verbatim — skip.
             _ => {}
         }
     }
 
     fn visit_mod(&mut self, m: &syn::ItemMod, module_path: &[String]) {
+        // Skip private modules entirely — anything inside is unreachable
+        // from outside the crate even if individual items are `pub`.
+        if !is_visible(&m.vis) {
+            return;
+        }
         let name = m.ident.to_string();
 
         self.emit(
@@ -226,6 +238,7 @@ impl ParseCtx {
             name.as_deref(),
         );
         let (line_start, line_end) = span_node.line_span();
+        let body = span_node.full_token_stream();
         let item = RustItem {
             kind,
             crate_name: self.crate_name.clone(),
@@ -235,6 +248,7 @@ impl ParseCtx {
             qualified_path,
             signature,
             doc_markdown: extract_doc_string(attrs),
+            body,
             source_file: self.source_file.clone(),
             byte_start: 0, // populated by a future enrichment pass
             byte_len: 0,
@@ -249,6 +263,7 @@ impl ParseCtx {
 
 trait ToTokensSpan {
     fn line_span(&self) -> (u32, u32);
+    fn full_token_stream(&self) -> String;
 }
 
 impl<T: ToTokens> ToTokensSpan for T {
@@ -272,6 +287,14 @@ impl<T: ToTokens> ToTokensSpan for T {
         }
         (min_line, max_line.max(min_line))
     }
+
+    fn full_token_stream(&self) -> String {
+        self.to_token_stream().to_string()
+    }
+}
+
+fn is_visible(vis: &syn::Visibility) -> bool {
+    !matches!(vis, syn::Visibility::Inherited)
 }
 
 fn extract_doc_string(attrs: &[syn::Attribute]) -> String {
@@ -493,7 +516,7 @@ mod tests {
 
     #[test]
     fn parses_an_impl_block_without_a_name() {
-        let out = parse("struct S; impl S { pub fn new() -> Self { S } }");
+        let out = parse("pub struct S; impl S { pub fn new() -> Self { S } }");
         let kinds: Vec<_> = out.items.iter().map(|i| i.kind).collect();
         assert!(kinds.contains(&RustItemKind::Struct));
         assert!(kinds.contains(&RustItemKind::Impl));
@@ -519,15 +542,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_macro_rules() {
-        let out = parse("macro_rules! greet { () => { println!(\"hi\") } }");
+    fn parses_exported_macro_rules() {
+        let out = parse(
+            "#[macro_export]\nmacro_rules! greet { () => { println!(\"hi\") } }",
+        );
         assert_eq!(out.items[0].kind, RustItemKind::Macro);
         assert_eq!(out.items[0].name.as_deref(), Some("greet"));
     }
 
     #[test]
+    fn unexported_macro_rules_is_skipped() {
+        let out = parse("macro_rules! greet { () => { println!(\"hi\") } }");
+        assert!(out.items.is_empty());
+    }
+
+    #[test]
     fn inline_module_recurses_and_emits_mod_item() {
-        let out = parse("mod inner { pub fn ping() {} }");
+        let out = parse("pub mod inner { pub fn ping() {} }");
         let kinds: Vec<_> = out.items.iter().map(|i| i.kind).collect();
         assert!(kinds.contains(&RustItemKind::Mod));
         let inner_fn = out
@@ -540,20 +571,27 @@ mod tests {
     }
 
     #[test]
+    fn private_inline_module_is_skipped() {
+        // Private modules are unreachable from outside the crate, so
+        // their contents (even if `pub`) shouldn't appear in the
+        // index.
+        let out = parse("mod inner { pub fn ping() {} }");
+        assert!(out.items.is_empty());
+    }
+
+    #[test]
     fn external_module_decl_becomes_pending() {
-        let out = parse("mod inner;");
-        // Still emits a Mod item for the decl itself…
+        let out = parse("pub mod inner;");
         assert_eq!(out.items.len(), 1);
         assert_eq!(out.items[0].kind, RustItemKind::Mod);
-        // …and queues a pending resolution.
         assert_eq!(out.pending_modules.len(), 1);
         assert_eq!(out.pending_modules[0].name, "inner");
         assert!(out.pending_modules[0].path_attr.is_none());
     }
 
     #[test]
-    fn path_attr_on_external_mod_is_captured() {
-        let out = parse("#[path = \"renamed.rs\"]\nmod inner;");
+    fn path_attr_on_external_pub_mod_is_captured() {
+        let out = parse("#[path = \"renamed.rs\"]\npub mod inner;");
         assert_eq!(out.pending_modules.len(), 1);
         assert_eq!(
             out.pending_modules[0].path_attr.as_deref(),
@@ -599,9 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn private_visibility_is_classified() {
+    fn private_items_are_skipped() {
         let out = parse("fn private() {}");
-        assert_eq!(out.items[0].visibility, Visibility::Private);
+        assert!(
+            out.items.is_empty(),
+            "private items should not enter the index, got {:?}",
+            out.items
+                .iter()
+                .map(|i| &i.qualified_path)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
