@@ -4166,6 +4166,7 @@ version = "0.1.0"
 dependencies = [
  "cargo-lock",
  "clap",
+ "docbert-core",
  "flate2",
  "globset",
  "hegeltest",
@@ -4177,6 +4178,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "syn",
+ "tantivy",
  "tar",
  "tempfile",
  "thiserror 2.0.18",

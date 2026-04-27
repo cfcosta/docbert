@@ -46,6 +46,7 @@ pub mod download;
 pub mod error;
 pub mod extract;
 pub mod fetcher;
+pub mod indexer;
 pub mod ingestion;
 pub mod item;
 pub mod lockfile;

@@ -73,4 +73,7 @@ pub enum Error {
 
     #[error("Cargo.lock not found in cwd or any ancestor")]
     LockfileNotFound,
+
+    #[error("Tantivy error: {0}")]
+    Tantivy(#[from] tantivy::error::TantivyError),
 }

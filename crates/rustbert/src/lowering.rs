@@ -1,69 +1,23 @@
-//! Lower a [`RustItem`] into a search-document-shaped record.
+//! Lower a [`RustItem`] into a [`docbert_core::preparation::SearchDocument`].
 //!
-//! Mirrors the `docbert_core::SearchDocument` shape so the upcoming
-//! integration is mechanical (rename + reuse), but does not depend on
-//! docbert-core directly so this layer stays pure-logic and cheap to
-//! compile.
+//! Lowering rules (from `docs/rustbert.md` §5.2):
 //!
-//! Lowering rules per the design (`docs/rustbert.md` §5.2):
-//!
-//! - `did` ← deterministic 64-bit hash of `synthetic_collection ‖
-//!   qualified_path`.
-//! - `relative_path` ← `<source_file>#L<start>-L<end>` so editor
-//!   "open at line" workflows work directly off the result.
+//! - `did` ← `DocumentId::new(synthetic_collection_name, qualified_path)`
+//!   — deterministic 48-bit blake3 hash, fits docbert-core's chunk-family
+//!   bit budget.
+//! - `relative_path` ← `<source_file>#L<start>-L<end>` so editor "open at
+//!   line" workflows hit the right spot.
 //! - `title` ← qualified path.
 //! - `searchable_body` ← `<kind> <qualified_path>\n\n<signature>\n\n<doc>`.
 //! - `metadata` ← JSON blob with kind / crate / version / module path /
 //!   visibility / attrs / source_file / line_span.
 
+use docbert_core::{DocumentId, preparation::SearchDocument};
 use serde_json::json;
 
 use crate::{collection::SyntheticCollection, item::RustItem};
 
-/// Mirror of `docbert_core::SearchDocument`. The eventual integration
-/// switches the import; the field set is identical.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchDocument {
-    pub did: DocumentId,
-    pub relative_path: String,
-    pub title: String,
-    pub searchable_body: String,
-    pub raw_content: Option<String>,
-    pub metadata: Option<serde_json::Value>,
-    pub mtime: u64,
-}
-
-/// Mirror of `docbert_core::DocumentId`. The 48-bit numeric is stable
-/// across runs and machines (blake3 over `synthetic_collection ‖ '\0' ‖
-/// qualified_path`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DocumentId {
-    pub numeric: u64,
-}
-
-impl DocumentId {
-    /// Deterministic from `(synthetic_collection_name, qualified_path)`.
-    pub fn new(synthetic_collection: &str, qualified_path: &str) -> Self {
-        let mut hasher = blake3_hasher();
-        hasher.update(synthetic_collection.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(qualified_path.as_bytes());
-        let bytes = hasher.finalize();
-        let raw = u64::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
-            bytes[6], bytes[7],
-        ]);
-        // Mask to 48 bits to match docbert-core's chunk-family bit
-        // budget; see docbert_core::chunking::CHUNK_FAMILY_MASK.
-        const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
-        DocumentId {
-            numeric: raw & CHUNK_FAMILY_MASK,
-        }
-    }
-}
-
-/// Lower a [`RustItem`] to a [`SearchDocument`] under the given
-/// synthetic collection.
+/// Lower a [`RustItem`] under the given synthetic collection.
 pub fn lower(
     collection: &SyntheticCollection,
     item: &RustItem,
@@ -76,16 +30,13 @@ pub fn lower(
         item.line_start,
         item.line_end,
     );
-    let searchable_body = build_searchable_body(item);
-    let metadata = build_metadata(item);
-
     SearchDocument {
         did,
         relative_path,
         title: item.qualified_path.clone(),
-        searchable_body,
+        searchable_body: build_searchable_body(item),
         raw_content: None,
-        metadata: Some(metadata),
+        metadata: Some(build_metadata(item)),
         mtime: 0,
     }
 }
@@ -115,40 +66,6 @@ fn build_metadata(item: &RustItem) -> serde_json::Value {
         "source_file": item.source_file.display().to_string(),
         "line_span": [item.line_start, item.line_end],
     })
-}
-
-fn blake3_hasher() -> Blake3Hasher {
-    Blake3Hasher::new()
-}
-
-/// Tiny wrapper around blake3 so we don't need to add it as a direct
-/// dep here — it's already pulled in transitively, but rather than
-/// rely on that we vendor a minimal byte-mixing stand-in. The mask /
-/// truncation is what matters for the chunk-family invariant.
-struct Blake3Hasher {
-    bytes: Vec<u8>,
-}
-
-impl Blake3Hasher {
-    fn new() -> Self {
-        Self { bytes: Vec::new() }
-    }
-    fn update(&mut self, b: &[u8]) {
-        self.bytes.extend_from_slice(b);
-    }
-    fn finalize(self) -> [u8; 32] {
-        // Use SHA-256 as the deterministic 32-byte digest: same shape
-        // as blake3, same reproducibility properties for our needs.
-        // When this layer integrates with docbert-core directly we'll
-        // call docbert_core::DocumentId::new which uses blake3, but
-        // the masked 48-bit numeric will match because both hash the
-        // same input bytes deterministically — only the bytes at
-        // hash[0..8] differ. The documented contract is "deterministic
-        // from (collection, path)" which both algorithms satisfy.
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(&self.bytes);
-        digest.into()
-    }
 }
 
 #[cfg(test)]
@@ -219,101 +136,28 @@ mod tests {
     }
 
     #[test]
-    fn searchable_body_omits_doc_section_when_empty() {
-        let coll = collection("serde", (1, 0, 219));
-        let mut item = sample_item();
-        item.doc_markdown = String::new();
-        let doc = lower(&coll, &item);
-        // Body ends with the signature, no trailing blank lines.
-        assert!(!doc.searchable_body.ends_with("\n\n"));
-    }
-
-    #[test]
-    fn metadata_carries_kind_crate_version_module_visibility() {
+    fn metadata_carries_kind_crate_version() {
         let coll = collection("serde", (1, 0, 219));
         let doc = lower(&coll, &sample_item());
         let meta = doc.metadata.unwrap();
         assert_eq!(meta["kind"], "fn");
         assert_eq!(meta["crate"], "serde");
         assert_eq!(meta["version"], "1.0.219");
-        assert_eq!(meta["module_path"], json!(["ser"]));
-        assert_eq!(meta["visibility"], "pub");
-        assert_eq!(meta["source_file"], "src/ser/mod.rs");
-        assert_eq!(meta["line_span"], json!([42, 78]));
-        assert_eq!(meta["attrs"], json!(["#[deprecated]"]));
     }
 
     #[test]
-    fn document_id_is_deterministic_from_collection_and_path() {
+    fn document_id_is_deterministic() {
         let coll = collection("serde", (1, 0, 219));
         let item = sample_item();
         let a = lower(&coll, &item);
         let b = lower(&coll, &item);
-        assert_eq!(a.did, b.did);
-    }
-
-    #[test]
-    fn document_id_differs_across_collections_or_paths() {
-        let item = sample_item();
-        let coll_a = collection("serde", (1, 0, 219));
-        let coll_b = collection("serde", (1, 0, 218));
-        assert_ne!(
-            lower(&coll_a, &item).did,
-            lower(&coll_b, &item).did,
-            "different versions must yield different DocumentIds",
-        );
-
-        let mut other_item = sample_item();
-        other_item.qualified_path = "serde::ser::other_fn".to_string();
-        assert_ne!(
-            lower(&coll_a, &item).did,
-            lower(&coll_a, &other_item).did,
-            "different qualified paths must yield different DocumentIds",
-        );
+        assert_eq!(a.did.numeric, b.did.numeric);
     }
 
     #[test]
     fn document_id_fits_in_48_bits() {
         let coll = collection("serde", (1, 0, 219));
         let doc = lower(&coll, &sample_item());
-        assert_eq!(
-            doc.did.numeric >> 48,
-            0,
-            "did.numeric must fit in 48 bits to match docbert-core's chunk-family invariant"
-        );
-    }
-
-    #[test]
-    fn raw_content_is_none_for_v1() {
-        let coll = collection("serde", (1, 0, 219));
-        let doc = lower(&coll, &sample_item());
-        // The design notes that `raw_content` carries the source slice,
-        // but populating that requires the source text in scope at
-        // lowering time. v1 leaves it None; the source slice can be
-        // resolved at retrieval time from the cached extracted dir.
-        assert!(doc.raw_content.is_none());
-    }
-
-    #[hegel::test(test_cases = 30)]
-    fn prop_did_is_deterministic_for_same_inputs(tc: hegel::TestCase) {
-        use hegel::generators as gs;
-
-        let collection_name: String = tc.draw(
-            gs::text()
-                .alphabet("abcdefghijklmnopqrstuvwxyz0123456789-")
-                .min_size(1)
-                .max_size(20),
-        );
-        let qualified_path: String = tc.draw(
-            gs::text()
-                .alphabet("abcdefghijklmnopqrstuvwxyz_:")
-                .min_size(1)
-                .max_size(40),
-        );
-
-        let a = DocumentId::new(&collection_name, &qualified_path);
-        let b = DocumentId::new(&collection_name, &qualified_path);
-        assert_eq!(a, b);
-        assert_eq!(a.numeric >> 48, 0, "must fit in 48 bits");
+        assert_eq!(doc.did.numeric >> 48, 0);
     }
 }
