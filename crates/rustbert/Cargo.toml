@@ -9,6 +9,7 @@ description = "Rust crate docs lookup — fetch and search published Rust APIs"
 cargo-lock = "10"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros"] }
 

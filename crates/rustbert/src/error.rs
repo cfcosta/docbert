@@ -27,4 +27,10 @@ pub enum Error {
 
     #[error("HTTP {status} fetching {url}")]
     HttpStatus { url: String, status: u16 },
+
+    #[error("crate not found on registry: {name}")]
+    CrateNotFound { name: String },
+
+    #[error("crates.io API error: {0}")]
+    CratesIoApi(String),
 }
