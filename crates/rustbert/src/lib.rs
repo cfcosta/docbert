@@ -7,6 +7,7 @@
 pub mod collection;
 pub mod crate_ref;
 pub mod crates_io;
+pub mod download;
 pub mod error;
 pub mod fetcher;
 pub mod lockfile;

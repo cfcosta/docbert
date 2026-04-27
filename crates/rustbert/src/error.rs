@@ -36,4 +36,14 @@ pub enum Error {
 
     #[error("no version of `{name}` matches `{spec}`")]
     NoMatchingVersion { name: String, spec: String },
+
+    #[error(
+        "checksum mismatch for {name}@{version}: expected {expected}, got {actual}"
+    )]
+    ChecksumMismatch {
+        name: String,
+        version: semver::Version,
+        expected: String,
+        actual: String,
+    },
 }
