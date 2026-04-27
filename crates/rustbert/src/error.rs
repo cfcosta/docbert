@@ -59,4 +59,7 @@ pub enum Error {
         #[source]
         source: syn::Error,
     },
+
+    #[error("no crate entry point (src/lib.rs or src/main.rs) found in {path}")]
+    NoEntryPoint { path: String },
 }

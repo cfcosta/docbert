@@ -6,6 +6,7 @@
 
 pub mod collection;
 pub mod crate_ref;
+pub mod crate_walker;
 pub mod crates_io;
 pub mod download;
 pub mod error;
