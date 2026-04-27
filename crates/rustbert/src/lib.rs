@@ -11,6 +11,7 @@ pub mod download;
 pub mod error;
 pub mod extract;
 pub mod fetcher;
+pub mod item;
 pub mod lockfile;
 pub mod resolver;
 
@@ -19,5 +20,6 @@ pub use crate_ref::{CrateRef, VersionSpec};
 pub use crates_io::{CrateMetadata, CratesIoApi, PublishedVersion};
 pub use error::{Error, Result};
 pub use fetcher::{FakeFetcher, Fetcher};
+pub use item::{RustItem, RustItemKind, Visibility};
 pub use lockfile::{LockedCrate, crates_io_packages_from_str};
 pub use resolver::{Resolution, resolve};
