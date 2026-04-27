@@ -17,7 +17,10 @@
 //! - Path / git deps in the project's tree are not auto-fetched —
 //!   `rustbert sync` is the path for those.
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     cache::CrateCache,
@@ -36,6 +39,10 @@ pub struct ProjectInfo {
 /// Read minimal `[package] name = "..."  version = "..."` from a
 /// project root's `Cargo.toml`. Returns an error if the file is
 /// missing or doesn't expose a `[package]` table.
+///
+/// Handles workspace inheritance: when `version.workspace = true`,
+/// walks up directories to find the workspace root's
+/// `[workspace.package].version` and uses that.
 pub fn read_project_info(project_root: &Path) -> Result<ProjectInfo> {
     let manifest_path = project_root.join("Cargo.toml");
     let text = fs::read_to_string(&manifest_path).map_err(|e| {
@@ -66,15 +73,80 @@ pub fn read_project_info(project_root: &Path) -> Result<ProjectInfo> {
         })?
         .to_string();
 
-    let version_str = package
-        .get("version")
-        .and_then(toml::Value::as_str)
-        .unwrap_or("0.0.0");
-    let version = semver::Version::parse(version_str).map_err(|e| {
+    let version_str = resolve_field(
+        package.get("version"),
+        project_root,
+        "version",
+    )?
+    .ok_or_else(|| {
+        Error::Cache(
+            "Cargo.toml [package] missing `version` (and no inheritable workspace.package.version found)".to_string(),
+        )
+    })?;
+    let version = semver::Version::parse(&version_str).map_err(|e| {
         Error::Cache(format!("Cargo.toml [package].version: {e}"))
     })?;
 
     Ok(ProjectInfo { name, version })
+}
+
+/// Resolve a `[package]` field value, honoring `workspace = true`
+/// inheritance. Returns `Ok(None)` when the field is absent and
+/// has no resolvable workspace inheritance.
+fn resolve_field(
+    field: Option<&toml::Value>,
+    project_root: &Path,
+    field_name: &str,
+) -> Result<Option<String>> {
+    let Some(field) = field else { return Ok(None) };
+
+    // Direct string: `version = "1.0.0"`.
+    if let Some(s) = field.as_str() {
+        return Ok(Some(s.to_string()));
+    }
+
+    // Workspace inheritance: `version.workspace = true`.
+    if let Some(table) = field.as_table()
+        && table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+    {
+        let ws = find_workspace_root(project_root)?;
+        let ws_text = fs::read_to_string(ws.join("Cargo.toml"))?;
+        let ws_value: toml::Value =
+            ws_text.parse().map_err(|e: toml::de::Error| {
+                Error::Cache(format!("workspace Cargo.toml parse: {e}"))
+            })?;
+        return Ok(ws_value
+            .get("workspace")
+            .and_then(|w| w.get("package"))
+            .and_then(|p| p.get(field_name))
+            .and_then(toml::Value::as_str)
+            .map(String::from));
+    }
+
+    Ok(None)
+}
+
+/// Walk up from `start` looking for a `Cargo.toml` with a
+/// `[workspace]` table.
+fn find_workspace_root(start: &Path) -> Result<PathBuf> {
+    let mut current =
+        start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    loop {
+        let manifest = current.join("Cargo.toml");
+        if manifest.is_file()
+            && let Ok(text) = fs::read_to_string(&manifest)
+            && let Ok(value) = text.parse::<toml::Value>()
+            && value.get("workspace").is_some()
+        {
+            return Ok(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    Err(Error::Cache(
+        "no [workspace] root found above project — `workspace = true` won't resolve".to_string(),
+    ))
 }
 
 /// Walk a local Cargo project, index its items, and store them as a
@@ -147,6 +219,45 @@ mod tests {
         let err = read_project_info(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("[package]"), "got {msg:?}");
+    }
+
+    #[test]
+    fn resolves_workspace_inherited_version() {
+        let tmp = TempDir::new().unwrap();
+        // Workspace root with [workspace.package].version
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/foo\"]\n\n[workspace.package]\nversion = \"2.5.0\"\n",
+        )
+        .unwrap();
+        let member = tmp.path().join("crates/foo");
+        fs::create_dir_all(member.join("src")).unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        fs::write(member.join("src/lib.rs"), "pub fn x() {}").unwrap();
+
+        let info = read_project_info(&member).unwrap();
+        assert_eq!(info.name, "foo");
+        assert_eq!(info.version, semver::Version::new(2, 5, 0));
+    }
+
+    #[test]
+    fn workspace_inheritance_without_root_errors() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"orphan\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        let err = read_project_info(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workspace") || msg.contains("[workspace]"),
+            "got {msg:?}"
+        );
     }
 
     #[test]
