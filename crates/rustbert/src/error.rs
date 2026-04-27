@@ -21,4 +21,10 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("HTTP transport error fetching {url}: {message}")]
+    HttpTransport { url: String, message: String },
+
+    #[error("HTTP {status} fetching {url}")]
+    HttpStatus { url: String, status: u16 },
 }
