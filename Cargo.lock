@@ -4165,6 +4165,7 @@ name = "rustbert"
 version = "0.1.0"
 dependencies = [
  "cargo-lock",
+ "clap",
  "flate2",
  "hegeltest",
  "proc-macro2",
@@ -4179,6 +4180,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

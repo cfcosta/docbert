@@ -49,6 +49,13 @@ impl<F: Fetcher> CratesIoApi<F> {
         }
     }
 
+    /// Borrow the underlying fetcher. Used by code paths that need
+    /// to issue additional requests (tarball downloads, etc.) through
+    /// the same client.
+    pub fn fetcher(&self) -> &F {
+        &self.fetcher
+    }
+
     /// URL for `GET /api/v1/crates/{name}` against the configured base.
     pub fn metadata_url(&self, name: &str) -> String {
         format!("{}/api/v1/crates/{}", self.base_url, name)
