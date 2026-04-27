@@ -70,4 +70,7 @@ pub enum Error {
 
     #[error("cache error: {0}")]
     Cache(String),
+
+    #[error("Cargo.lock not found in cwd or any ancestor")]
+    LockfileNotFound,
 }

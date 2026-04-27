@@ -28,10 +28,13 @@ pub trait Fetcher: Send + Sync {
 
 /// In-memory fake: returns canned bytes for pre-registered URLs and
 /// records every request for later assertion.
-#[derive(Default)]
+///
+/// `Clone` shares state via `Arc`s, so cloning the fake gives every
+/// holder the same response table and the same request log.
+#[derive(Default, Clone)]
 pub struct FakeFetcher {
-    responses: Mutex<HashMap<String, FakeResponse>>,
-    requests: Mutex<Vec<String>>,
+    responses: std::sync::Arc<Mutex<HashMap<String, FakeResponse>>>,
+    requests: std::sync::Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]

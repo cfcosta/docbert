@@ -23,6 +23,7 @@ pub mod parse;
 pub mod reqwest_fetcher;
 pub mod resolver;
 pub mod search;
+pub mod sync;
 
 pub use collection::SyntheticCollection;
 pub use crate_ref::{CrateRef, VersionSpec};

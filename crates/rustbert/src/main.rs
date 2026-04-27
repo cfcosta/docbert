@@ -13,7 +13,9 @@ use rustbert::{
     ingestion::{self, IngestionOptions, IngestionReport},
     item::{RustItem, RustItemKind},
     reqwest_fetcher::ReqwestFetcher,
+    resolver,
     search::{self, SearchOptions},
+    sync as sync_mod,
 };
 
 #[derive(Parser, Debug)]
@@ -89,6 +91,37 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+
+    /// Walk a project's Cargo.lock and pre-fetch every crates.io
+    /// dependency in parallel.
+    Sync {
+        /// Path to a specific Cargo.lock (default: walk up from cwd).
+        #[arg(long)]
+        lock: Option<PathBuf>,
+        /// Concurrency for parallel fetches.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Re-fetch even if cached.
+        #[arg(long)]
+        force: bool,
+        /// Show the plan without fetching.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip crates matching this glob (repeatable).
+        #[arg(long)]
+        exclude: Vec<String>,
+    },
+
+    /// Re-resolve cached `latest`/semver-pattern entries against
+    /// upstream. Does not re-download; use `sync --force` for that.
+    Refresh {
+        /// Optional crate name to refresh (default: all).
+        crate_name: Option<String>,
+        /// Only refresh entries older than this many seconds (default:
+        /// always refresh).
+        #[arg(long)]
+        older_than: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -130,6 +163,17 @@ async fn real_main() -> Result<()> {
         } => cmd_list(&cache, &spec, kind, module, limit).await,
         Command::Status { crate_name } => cmd_status(&cache, crate_name),
         Command::Evict { spec, all } => cmd_evict(&cache, spec, all),
+        Command::Sync {
+            lock,
+            jobs,
+            force,
+            dry_run,
+            exclude,
+        } => cmd_sync(&cache, lock, jobs, force, dry_run, exclude).await,
+        Command::Refresh {
+            crate_name,
+            older_than,
+        } => cmd_refresh(&cache, crate_name, older_than).await,
     }
 }
 
@@ -332,6 +376,139 @@ fn cmd_evict(
         removed += 1;
     }
     println!("evicted {removed} entries");
+    Ok(())
+}
+
+async fn cmd_sync(
+    cache: &CrateCache,
+    lock: Option<PathBuf>,
+    jobs: usize,
+    force: bool,
+    dry_run: bool,
+    exclude: Vec<String>,
+) -> Result<()> {
+    let lockfile = match lock {
+        Some(p) => p,
+        None => sync_mod::discover_lockfile(&std::env::current_dir()?)?,
+    };
+    println!("using lockfile: {}", lockfile.display());
+
+    let text = std::fs::read_to_string(&lockfile)?;
+    let opts = sync_mod::SyncOptions {
+        force,
+        jobs,
+        exclude,
+        dry_run,
+    };
+    let plan = sync_mod::build_plan(&text, cache, &opts)?;
+    println!(
+        "{} crates queued, {} skipped",
+        plan.queued.len(),
+        plan.skipped.len(),
+    );
+    for (name, version, reason) in &plan.skipped {
+        let r = match reason {
+            sync_mod::SkipReason::AlreadyCached => "already cached",
+            sync_mod::SkipReason::NotOnCratesIo => "not on crates.io",
+            sync_mod::SkipReason::Excluded => "excluded",
+        };
+        println!("  - {name}@{version} ({r})");
+    }
+    if dry_run {
+        println!("(dry run; no fetches performed)");
+        return Ok(());
+    }
+    if plan.queued.is_empty() {
+        println!("nothing to do");
+        return Ok(());
+    }
+
+    let fetcher = ReqwestFetcher::new()?;
+    let api = CratesIoApi::new(fetcher.clone());
+    let outcome =
+        sync_mod::execute_plan(plan, fetcher, api, cache.clone(), &opts)
+            .await?;
+    println!(
+        "\ndone: {} succeeded, {} failed",
+        outcome.successes.len(),
+        outcome.failures.len(),
+    );
+    for (name, version, items) in &outcome.successes {
+        println!("  ✓ {name}@{version}  {items} items");
+    }
+    if !outcome.failures.is_empty() {
+        eprintln!();
+        for (name, version, error) in &outcome.failures {
+            eprintln!("  ✗ {name}@{version}: {error}");
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_refresh(
+    cache: &CrateCache,
+    crate_filter: Option<String>,
+    older_than: Option<u64>,
+) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Walk the registry's resolved-version table and re-resolve each
+    // non-concrete request.
+    let entries = cache.entries()?;
+    let mut checked = 0usize;
+    let mut changed = 0usize;
+
+    for entry in entries {
+        if let Some(filter) = &crate_filter
+            && &entry.crate_name != filter
+        {
+            continue;
+        }
+        // We re-resolve via the latest record only; concrete versions
+        // never refresh.
+        let Some(resolved) = cache.resolved(&entry.crate_name, "latest")?
+        else {
+            continue;
+        };
+        if let Some(threshold) = older_than {
+            let age = now.saturating_sub(resolved.resolved_at);
+            if age < threshold {
+                continue;
+            }
+        }
+        checked += 1;
+
+        let fetcher = ReqwestFetcher::new()?;
+        let api = CratesIoApi::new(fetcher);
+        let metadata = api.crate_metadata(&entry.crate_name).await?;
+        let new_resolution = resolver::resolve(
+            &rustbert::crate_ref::VersionSpec::Latest,
+            &metadata,
+        )?;
+        if new_resolution.version != resolved.resolved_version {
+            cache.record_resolved(
+                &entry.crate_name,
+                "latest",
+                &new_resolution.version,
+            )?;
+            println!(
+                "{}@latest: {} → {}",
+                entry.crate_name,
+                resolved.resolved_version,
+                new_resolution.version,
+            );
+            changed += 1;
+        } else {
+            println!(
+                "{}@latest: {} (unchanged)",
+                entry.crate_name, resolved.resolved_version,
+            );
+        }
+    }
+    println!("\nchecked {checked} entries, {changed} updated");
     Ok(())
 }
 

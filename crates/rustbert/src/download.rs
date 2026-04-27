@@ -17,7 +17,7 @@ use crate::{
 /// `expected_checksum` is the lowercase hex digest as published in the
 /// crates.io metadata. An empty `expected_checksum` is rejected — the
 /// caller never wants to skip the integrity check silently.
-pub async fn download_verified<F: Fetcher>(
+pub async fn download_verified<F: Fetcher + Clone>(
     api: &CratesIoApi<F>,
     fetcher: &F,
     name: &str,

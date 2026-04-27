@@ -63,7 +63,7 @@ pub struct IngestionOptions {
 /// Ingest one crate. Resolves the version against crates.io if
 /// necessary, downloads the verified tarball, extracts, walks, and
 /// stores the item set in the cache.
-pub async fn ingest<F: Fetcher>(
+pub async fn ingest<F: Fetcher + Clone>(
     fetcher: &F,
     api: &CratesIoApi<F>,
     cache: &CrateCache,

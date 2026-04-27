@@ -58,6 +58,7 @@ struct RegistryFile {
     resolved: BTreeMap<String, ResolvedRequest>,
 }
 
+#[derive(Clone)]
 pub struct CrateCache {
     data_dir: PathBuf,
 }

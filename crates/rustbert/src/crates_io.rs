@@ -29,12 +29,13 @@ pub struct PublishedVersion {
     pub checksum: String,
 }
 
-pub struct CratesIoApi<F: Fetcher> {
+#[derive(Clone)]
+pub struct CratesIoApi<F: Fetcher + Clone> {
     fetcher: F,
     base_url: String,
 }
 
-impl<F: Fetcher> CratesIoApi<F> {
+impl<F: Fetcher + Clone> CratesIoApi<F> {
     pub fn new(fetcher: F) -> Self {
         Self {
             fetcher,

@@ -4167,6 +4167,7 @@ dependencies = [
  "cargo-lock",
  "clap",
  "flate2",
+ "globset",
  "hegeltest",
  "proc-macro2",
  "quote",
