@@ -14,6 +14,7 @@ use rustbert::{
     crate_ref::CrateRef,
     crates_io::CratesIoApi,
     fetcher::FakeFetcher,
+    indexer::Indexer,
     ingestion::{self, IngestionOptions, IngestionReport},
     item::RustItemKind,
     search::{self, SearchOptions},
@@ -119,6 +120,7 @@ async fn fetch_parse_index_and_search_roundtrip() {
 
     let tmp = TempDir::new().unwrap();
     let cache = CrateCache::new(tmp.path()).unwrap();
+    let indexer = Indexer::open(tmp.path()).unwrap();
 
     // Step 1: ingest from `latest` — exercises metadata fetch, version
     // resolution, tarball download, checksum verification, extraction,
@@ -127,6 +129,7 @@ async fn fetch_parse_index_and_search_roundtrip() {
         &fetcher,
         &api,
         &cache,
+        &indexer,
         &CrateRef::parse("demo").unwrap(),
         IngestionOptions::default(),
     )
@@ -182,6 +185,7 @@ async fn fetch_parse_index_and_search_roundtrip() {
         &fetcher,
         &api,
         &cache,
+        &indexer,
         &CrateRef::parse("demo").unwrap(),
         IngestionOptions::default(),
     )
@@ -219,11 +223,13 @@ async fn yanked_version_is_flagged_in_report() {
     let api = CratesIoApi::new(fetcher.clone());
     let tmp = TempDir::new().unwrap();
     let cache = CrateCache::new(tmp.path()).unwrap();
+    let indexer = Indexer::open(tmp.path()).unwrap();
 
     let report = ingestion::ingest(
         &fetcher,
         &api,
         &cache,
+        &indexer,
         &CrateRef::parse("demo@2.0.0").unwrap(),
         IngestionOptions::default(),
     )

@@ -25,6 +25,7 @@ use crate::{
     crates_io::CratesIoApi,
     error::{Error, Result},
     fetcher::Fetcher,
+    indexer::Indexer,
     ingestion::{self, IngestionOptions, IngestionReport},
     lockfile,
 };
@@ -67,6 +68,10 @@ pub struct SyncOptions {
     pub jobs: usize,
     pub exclude: Vec<String>,
     pub dry_run: bool,
+    /// Skip ColBERT embedding (and the PLAID rebuild). Lexical search
+    /// still works; semantic search becomes available next time embed
+    /// happens.
+    pub no_embed: bool,
 }
 
 impl SyncOptions {
@@ -133,13 +138,16 @@ fn build_exclude_set(globs: &[String]) -> Result<GlobSet> {
 }
 
 /// Execute a plan: fetch each queued crate via the supplied fetcher
-/// with bounded concurrency. Failures don't abort the run.
+/// with bounded concurrency, then sequentially write each successful
+/// crate's items into the lexical index, embed them, and rebuild the
+/// PLAID index once at the end. Failures don't abort the run.
 #[tracing::instrument(skip_all, fields(queued = plan.queued.len(), jobs = options.jobs()))]
 pub async fn execute_plan<F>(
     plan: SyncPlan,
     fetcher: F,
     api: CratesIoApi<F>,
     cache: CrateCache,
+    indexer: &mut Indexer,
     options: &SyncOptions,
 ) -> Result<SyncOutcome>
 where
@@ -175,7 +183,7 @@ where
                 name: task_name.clone(),
                 version: VersionSpec::Concrete(task_version.clone()),
             };
-            let result = ingestion::ingest(
+            let result = ingestion::ingest_to_cache(
                 &f,
                 &a,
                 &c,
@@ -213,6 +221,67 @@ where
             }
         }
     }
+
+    // Sequential indexing + embedding pass over every crate that
+    // successfully landed in the cache. The indexer is shared mutable,
+    // so this can't run in parallel — but Tantivy writes are fast and
+    // ColBERT encoding is the actual bottleneck regardless.
+    let mut indexed = 0usize;
+    let mut embedded = 0usize;
+    for (name, version, _) in &outcome.successes {
+        let coll = crate::collection::SyntheticCollection {
+            crate_name: name.clone(),
+            version: version.clone(),
+        };
+        let items = match cache.load(&coll) {
+            Ok(i) => i,
+            Err(e) => {
+                outcome.failures.push((
+                    name.clone(),
+                    version.clone(),
+                    e.to_string(),
+                ));
+                continue;
+            }
+        };
+        if let Err(e) = indexer.index_lexical(&coll, &items) {
+            outcome.failures.push((
+                name.clone(),
+                version.clone(),
+                e.to_string(),
+            ));
+            continue;
+        }
+        indexed += 1;
+        if !options.no_embed {
+            match indexer.embed_items(&coll, &items) {
+                Ok(_) => embedded += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        crate = %name,
+                        version = %version,
+                        error = %e,
+                        "embedding failed; lexical search still works",
+                    );
+                }
+            }
+        }
+    }
+    if embedded > 0
+        && let Err(e) = indexer.rebuild_plaid()
+    {
+        tracing::warn!(
+            error = %e,
+            "PLAID rebuild failed; semantic search disabled until next sync",
+        );
+    }
+    tracing::info!(
+        indexed = indexed,
+        embedded = embedded,
+        successes = outcome.successes.len(),
+        failures = outcome.failures.len(),
+        "sync complete",
+    );
     Ok(outcome)
 }
 
@@ -372,11 +441,13 @@ source = "git+https://github.com/foo/bar?rev=abc#abc123def4567890123456789012345
             .enable_all()
             .build()
             .unwrap();
+        let mut indexer = Indexer::open(tmp.path()).unwrap();
         let outcome = runtime.block_on(execute_plan(
             plan.clone(),
             crate::FakeFetcher::new(),
             CratesIoApi::new(crate::FakeFetcher::new()),
             cache,
+            &mut indexer,
             &opts,
         ));
         let outcome = outcome.unwrap();

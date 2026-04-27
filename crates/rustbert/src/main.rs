@@ -110,6 +110,10 @@ enum Command {
         /// Skip crates matching this glob (repeatable).
         #[arg(long)]
         exclude: Vec<String>,
+        /// Skip ColBERT embedding and the PLAID rebuild. Lexical
+        /// search still works; semantic ranking is unavailable.
+        #[arg(long)]
+        no_embed: bool,
     },
 
     /// Re-resolve cached `latest`/semver-pattern entries against
@@ -172,7 +176,11 @@ async fn real_main() -> Result<()> {
             force,
             dry_run,
             exclude,
-        } => cmd_sync(&cache, lock, jobs, force, dry_run, exclude).await,
+            no_embed,
+        } => {
+            cmd_sync(&cache, lock, jobs, force, dry_run, exclude, no_embed)
+                .await
+        }
         Command::Refresh {
             crate_name,
             older_than,
@@ -211,10 +219,12 @@ async fn cmd_fetch(cache: &CrateCache, spec: &str, force: bool) -> Result<()> {
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
+    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
     let report = ingestion::ingest(
         &fetcher,
         &api,
         cache,
+        &indexer,
         &crate_ref,
         IngestionOptions { force },
     )
@@ -225,6 +235,7 @@ async fn cmd_fetch(cache: &CrateCache, spec: &str, force: bool) -> Result<()> {
 
 async fn ensure_cached<F: Fetcher + Clone>(
     cache: &CrateCache,
+    indexer: &rustbert::indexer::Indexer,
     fetcher: &F,
     api: &CratesIoApi<F>,
     crate_ref: &CrateRef,
@@ -233,6 +244,7 @@ async fn ensure_cached<F: Fetcher + Clone>(
         fetcher,
         api,
         cache,
+        indexer,
         crate_ref,
         IngestionOptions::default(),
     )
@@ -251,21 +263,51 @@ async fn cmd_search(
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let coll = ensure_cached(cache, &fetcher, &api, &crate_ref).await?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let coll =
+        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+
+    // BM25 + (when available) ColBERT hybrid via the docbert-core
+    // stack. Kind / module filters are applied post-rank against the
+    // cached items.
+    let kind_filter = parse_kind(kind)?;
+    let module_filter = module;
+    let params = docbert_core::search::SearchParams {
+        query: query.to_string(),
+        count: limit * 4, // overfetch to leave room for post-filtering
+        collection: Some(coll.to_string()),
+        min_score: 0.0,
+        bm25_only: false,
+        no_fuzzy: false,
+        all: false,
+    };
+    let results = indexer.search(params)?;
     let items = cache.load(&coll)?;
 
-    let opts = SearchOptions {
-        kind: parse_kind(kind)?,
-        module_prefix: module,
-        limit: Some(limit),
-    };
-    let hits = search::search(&items, query, &opts);
-    if hits.is_empty() {
-        println!("(no matches)");
-        return Ok(());
+    let mut shown = 0;
+    for r in results {
+        let Some(item) = items.iter().find(|i| i.qualified_path == r.title)
+        else {
+            continue;
+        };
+        if let Some(k) = kind_filter
+            && item.kind != k
+        {
+            continue;
+        }
+        if let Some(prefix) = &module_filter
+            && !item.qualified_path.starts_with(prefix)
+        {
+            continue;
+        }
+        print_item_one_line(item, Some((r.score * 1000.0) as u32));
+        shown += 1;
+        if shown >= limit {
+            break;
+        }
     }
-    for hit in hits {
-        print_item_one_line(hit.item, Some(hit.score));
+    if shown == 0 {
+        println!("(no matches)");
     }
     Ok(())
 }
@@ -274,7 +316,9 @@ async fn cmd_get(cache: &CrateCache, spec: &str, path: &str) -> Result<()> {
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let coll = ensure_cached(cache, &fetcher, &api, &crate_ref).await?;
+    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let coll =
+        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
     let item =
         search::get(&items, path).ok_or_else(|| Error::NoMatchingVersion {
@@ -295,7 +339,9 @@ async fn cmd_list(
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let coll = ensure_cached(cache, &fetcher, &api, &crate_ref).await?;
+    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let coll =
+        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
     let opts = SearchOptions {
         kind: parse_kind(kind)?,
@@ -390,6 +436,7 @@ async fn cmd_sync(
     force: bool,
     dry_run: bool,
     exclude: Vec<String>,
+    no_embed: bool,
 ) -> Result<()> {
     let lockfile = match lock {
         Some(p) => p,
@@ -403,6 +450,7 @@ async fn cmd_sync(
         jobs,
         exclude,
         dry_run,
+        no_embed,
     };
     let plan = sync_mod::build_plan(&text, cache, &opts)?;
     println!(
@@ -429,9 +477,16 @@ async fn cmd_sync(
 
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let outcome =
-        sync_mod::execute_plan(plan, fetcher, api, cache.clone(), &opts)
-            .await?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let outcome = sync_mod::execute_plan(
+        plan,
+        fetcher,
+        api,
+        cache.clone(),
+        &mut indexer,
+        &opts,
+    )
+    .await?;
     println!(
         "\ndone: {} succeeded, {} failed",
         outcome.successes.len(),

@@ -22,6 +22,7 @@ use crate::{
     error::Result,
     extract,
     fetcher::Fetcher,
+    indexer::Indexer,
     resolver,
 };
 
@@ -62,9 +63,32 @@ pub struct IngestionOptions {
 
 /// Ingest one crate. Resolves the version against crates.io if
 /// necessary, downloads the verified tarball, extracts, walks, and
-/// stores the item set in the cache.
-#[tracing::instrument(skip(fetcher, api, cache), fields(crate_name = %crate_ref.name))]
+/// stores the item set in the cache + lexical index.
+///
+/// Embedding is intentionally deferred to [`crate::sync`] (which
+/// handles batch embedding + PLAID rebuild after a full sync run) —
+/// single-crate auto-fetch from `search`/`get`/`list` shouldn't pay
+/// the embedding cost.
+#[tracing::instrument(skip(fetcher, api, cache, indexer), fields(crate_name = %crate_ref.name))]
 pub async fn ingest<F: Fetcher + Clone>(
+    fetcher: &F,
+    api: &CratesIoApi<F>,
+    cache: &CrateCache,
+    indexer: &Indexer,
+    crate_ref: &CrateRef,
+    options: IngestionOptions,
+) -> Result<IngestionReport> {
+    let report =
+        ingest_to_cache(fetcher, api, cache, crate_ref, options).await?;
+    let items = cache.load(report.collection())?;
+    indexer.index_lexical(report.collection(), &items)?;
+    Ok(report)
+}
+
+/// Cache-only ingest path. Use this from parallel runners where each
+/// task can't share an `Indexer` mutably — index sequentially after
+/// the parallel fetch completes via [`Indexer::index_lexical`].
+pub async fn ingest_to_cache<F: Fetcher + Clone>(
     fetcher: &F,
     api: &CratesIoApi<F>,
     cache: &CrateCache,
@@ -213,10 +237,11 @@ mod tests {
         .into_bytes()
     }
 
-    fn setup() -> (TempDir, CrateCache) {
+    fn setup() -> (TempDir, CrateCache, Indexer) {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
-        (tmp, cache)
+        let indexer = Indexer::open(tmp.path()).unwrap();
+        (tmp, cache, indexer)
     }
 
     #[tokio::test]
@@ -239,11 +264,12 @@ mod tests {
             metadata_payload("1.0.0", &checksum),
         ));
 
-        let (_tmp, cache) = setup();
+        let (_tmp, cache, indexer) = setup();
         let report = ingest(
             &fetcher,
             &api,
             &cache,
+            &indexer,
             &CrateRef::parse("demo").unwrap(),
             IngestionOptions::default(),
         )
@@ -281,11 +307,12 @@ mod tests {
                 .with_bytes("https://crates.io/api/v1/crates/demo", meta),
         );
 
-        let (_tmp, cache) = setup();
+        let (_tmp, cache, indexer) = setup();
         let r1 = ingest(
             &fetcher,
             &api,
             &cache,
+            &indexer,
             &CrateRef::parse("demo").unwrap(),
             IngestionOptions::default(),
         )
@@ -302,6 +329,7 @@ mod tests {
             &FakeFetcher::new(), // empty fetcher — would error if used
             &api2,
             &cache,
+            &indexer,
             &CrateRef::parse("demo").unwrap(),
             IngestionOptions::default(),
         )
@@ -319,7 +347,7 @@ mod tests {
         let checksum = sha256_hex(&tarball);
         let meta = metadata_payload("1.0.0", &checksum);
 
-        let (_tmp, cache) = setup();
+        let (_tmp, cache, indexer) = setup();
         // Pre-populate
         let coll = SyntheticCollection {
             crate_name: "demo".to_string(),
@@ -342,6 +370,7 @@ mod tests {
             &fetcher,
             &api,
             &cache,
+            &indexer,
             &CrateRef::parse("demo").unwrap(),
             IngestionOptions { force: true },
         )
@@ -371,11 +400,12 @@ mod tests {
                 .with_bytes("https://crates.io/api/v1/crates/demo", meta),
         );
 
-        let (_tmp, cache) = setup();
+        let (_tmp, cache, indexer) = setup();
         ingest(
             &fetcher,
             &api,
             &cache,
+            &indexer,
             &CrateRef::parse("demo").unwrap(),
             IngestionOptions::default(),
         )
