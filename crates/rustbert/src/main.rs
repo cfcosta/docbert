@@ -140,10 +140,24 @@ enum Command {
     Mcp,
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
     init_tracing();
-    match real_main().await {
+    // syn's recursive parser blows tokio's default 2 MB worker stack on
+    // crates with deeply nested types or macro expansions. Bump every
+    // worker to 8 MB (matching the OS-thread default) so realistic
+    // crates parse cleanly under sync's parallel runner.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(8 * 1024 * 1024)
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("rustbert: tokio runtime: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(real_main()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rustbert: {e}");
