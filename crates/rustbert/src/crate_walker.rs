@@ -56,15 +56,63 @@ pub fn walk_extracted_crate(
 }
 
 fn locate_entry_point(crate_root: &Path) -> Result<PathBuf> {
+    // Prefer Cargo.toml-declared paths (`[lib].path`, `[[bin]].path`).
+    // Some published crates use a flat layout (`lib.rs` at the root)
+    // and configure it via `[lib]`; without honoring that, walking
+    // them fails with "no entry point".
+    if let Some(path) = manifest_entry_point(crate_root) {
+        return Ok(path);
+    }
+
+    // Standard Cargo layout fallback.
     for candidate in ["src/lib.rs", "src/main.rs"] {
         let abs = crate_root.join(candidate);
         if abs.is_file() {
             return Ok(PathBuf::from(candidate));
         }
     }
+
+    // Last-ditch: a `lib.rs` at the project root with no manifest
+    // declaration (very old crates).
+    if crate_root.join("lib.rs").is_file() {
+        return Ok(PathBuf::from("lib.rs"));
+    }
+
     Err(Error::NoEntryPoint {
         path: crate_root.display().to_string(),
     })
+}
+
+fn manifest_entry_point(crate_root: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(crate_root.join("Cargo.toml")).ok()?;
+    let value: toml::Value = text.parse().ok()?;
+
+    // [lib] path = "..."
+    if let Some(p) = value
+        .get("lib")
+        .and_then(|t| t.get("path"))
+        .and_then(toml::Value::as_str)
+    {
+        let candidate = PathBuf::from(p);
+        if crate_root.join(&candidate).is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // [[bin]] path = "..." — first bin wins.
+    if let Some(bins) = value.get("bin").and_then(toml::Value::as_array)
+        && let Some(p) = bins
+            .first()
+            .and_then(|b| b.get("path"))
+            .and_then(toml::Value::as_str)
+    {
+        let candidate = PathBuf::from(p);
+        if crate_root.join(&candidate).is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 struct CrateWalker {
@@ -252,6 +300,49 @@ mod tests {
         let err =
             walk_extracted_crate(tmp.path(), "x", &version()).unwrap_err();
         assert!(matches!(err, Error::NoEntryPoint { .. }));
+    }
+
+    #[test]
+    fn flat_layout_with_explicit_lib_path() {
+        // Mimics fnv@1.0.7: `lib.rs` at the root, `[lib] path = "lib.rs"`.
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"lib.rs\"\n",
+        );
+        write(tmp.path(), "lib.rs", "pub fn root() {}");
+
+        let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
+        assert!(out.items.iter().any(|i| i.qualified_path == "x::root"));
+    }
+
+    #[test]
+    fn flat_layout_without_lib_section_falls_back_to_root_lib_rs() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        );
+        write(tmp.path(), "lib.rs", "pub fn root() {}");
+
+        let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
+        assert!(out.items.iter().any(|i| i.qualified_path == "x::root"));
+    }
+
+    #[test]
+    fn manifest_bin_path_is_honored() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"x\"\npath = \"runner.rs\"\n",
+        );
+        write(tmp.path(), "runner.rs", "pub fn run() {}");
+
+        let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
+        assert!(out.items.iter().any(|i| i.qualified_path == "x::run"));
     }
 
     #[test]
