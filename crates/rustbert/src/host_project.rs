@@ -267,8 +267,7 @@ fn expand_member_glob(
         return Ok(vec![workspace_root.join(pattern)]);
     }
 
-    let (parent, leaf) =
-        pattern.rsplit_once('/').unwrap_or(("", pattern));
+    let (parent, leaf) = pattern.rsplit_once('/').unwrap_or(("", pattern));
     let parent_dir = if parent.is_empty() {
         workspace_root.to_path_buf()
     } else {

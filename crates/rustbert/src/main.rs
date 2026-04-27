@@ -522,6 +522,45 @@ async fn cmd_sync(
     };
     println!("using lockfile: {}", lockfile.display());
 
+    // Index the host project too. The lockfile's parent is either a
+    // workspace root or a single-package root; either way the user
+    // expects `sync` to leave their own crates searchable alongside
+    // the deps.
+    if !dry_run && let Some(project_root) = lockfile.parent() {
+        let host_indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+        if rustbert::host_project::is_workspace_root(project_root) {
+            println!("indexing host workspace members:");
+            let outcomes = rustbert::host_project::index_workspace(
+                project_root,
+                cache,
+                &host_indexer,
+            )?;
+            for o in &outcomes {
+                match &o.result {
+                    Ok(m) => println!(
+                        "  ✓ {}@{}  {} items",
+                        m.collection.crate_name,
+                        m.collection.version,
+                        m.item_count
+                    ),
+                    Err(e) => eprintln!("  ✗ {}: {}", o.path.display(), e),
+                }
+            }
+        } else if project_root.join("Cargo.toml").is_file() {
+            match rustbert::host_project::index_project(
+                project_root,
+                cache,
+                &host_indexer,
+            ) {
+                Ok((coll, items, _)) => println!(
+                    "indexed host project {}@{}  {} items",
+                    coll.crate_name, coll.version, items
+                ),
+                Err(e) => eprintln!("host project skipped: {e}"),
+            }
+        }
+    }
+
     let text = std::fs::read_to_string(&lockfile)?;
     let opts = sync_mod::SyncOptions {
         force,
