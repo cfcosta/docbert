@@ -16,6 +16,7 @@ pub mod item;
 pub mod lockfile;
 pub mod module_discovery;
 pub mod parse;
+pub mod reqwest_fetcher;
 pub mod resolver;
 
 pub use collection::SyntheticCollection;
@@ -25,4 +26,5 @@ pub use error::{Error, Result};
 pub use fetcher::{FakeFetcher, Fetcher};
 pub use item::{RustItem, RustItemKind, Visibility};
 pub use lockfile::{LockedCrate, crates_io_packages_from_str};
+pub use reqwest_fetcher::ReqwestFetcher;
 pub use resolver::{Resolution, resolve};
