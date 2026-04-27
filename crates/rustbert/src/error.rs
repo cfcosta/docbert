@@ -33,4 +33,7 @@ pub enum Error {
 
     #[error("crates.io API error: {0}")]
     CratesIoApi(String),
+
+    #[error("no version of `{name}` matches `{spec}`")]
+    NoMatchingVersion { name: String, spec: String },
 }
