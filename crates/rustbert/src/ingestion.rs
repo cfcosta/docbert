@@ -96,6 +96,58 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
     crate_ref: &CrateRef,
     options: IngestionOptions,
 ) -> Result<IngestionReport> {
+    // Concrete-version short-circuit: if the user asked for an exact
+    // version and we already have it cached (from a fetch or from
+    // `rustbert index`), skip the crates.io round-trip entirely.
+    if !options.force
+        && let VersionSpec::Concrete(ref v) = crate_ref.version
+    {
+        let collection = SyntheticCollection {
+            crate_name: crate_ref.name.clone(),
+            version: v.clone(),
+        };
+        if cache.has(&collection) {
+            let count = cache.load(&collection)?.len();
+            return Ok(IngestionReport::AlreadyCached {
+                collection,
+                item_count: count,
+            });
+        }
+    }
+
+    // Latest / req short-circuit: if we have ANY cached version of
+    // this crate, surface the highest one. That's not strictly the
+    // upstream "latest", but it lets `rustbert search myproj` work
+    // against a host-indexed project without hitting crates.io.
+    if !options.force && matches!(crate_ref.version, VersionSpec::Latest) {
+        let mut best: Option<SyntheticCollection> = None;
+        for entry in cache.entries()? {
+            if entry.crate_name != crate_ref.name {
+                continue;
+            }
+            best = match best {
+                None => Some(SyntheticCollection {
+                    crate_name: entry.crate_name,
+                    version: entry.version,
+                }),
+                Some(prev) if entry.version > prev.version => {
+                    Some(SyntheticCollection {
+                        crate_name: entry.crate_name,
+                        version: entry.version,
+                    })
+                }
+                Some(prev) => Some(prev),
+            };
+        }
+        if let Some(coll) = best {
+            let count = cache.load(&coll)?.len();
+            return Ok(IngestionReport::AlreadyCached {
+                collection: coll,
+                item_count: count,
+            });
+        }
+    }
+
     let metadata = api.crate_metadata(&crate_ref.name).await?;
     let resolution = resolver::resolve(&crate_ref.version, &metadata)?;
     let collection = SyntheticCollection {

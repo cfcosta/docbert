@@ -414,12 +414,15 @@ fn cmd_evict(
     spec: Option<String>,
     all: bool,
 ) -> Result<()> {
+    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+
     if all {
         for e in cache.entries()? {
             let coll = rustbert::collection::SyntheticCollection {
                 crate_name: e.crate_name,
                 version: e.version,
             };
+            indexer.remove_collection(&coll)?;
             cache.remove(&coll)?;
         }
         println!("evicted everything");
@@ -447,6 +450,7 @@ fn cmd_evict(
             crate_name: e.crate_name.clone(),
             version: e.version.clone(),
         };
+        indexer.remove_collection(&coll)?;
         cache.remove(&coll)?;
         removed += 1;
     }

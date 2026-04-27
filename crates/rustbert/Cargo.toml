@@ -47,3 +47,10 @@ sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+
+[features]
+default = []
+mkl = ["docbert-core/mkl"]
+accelerate = ["docbert-core/accelerate"]
+metal = ["docbert-core/metal"]
+cuda = ["docbert-core/cuda"]
