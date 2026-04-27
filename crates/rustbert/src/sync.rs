@@ -134,6 +134,7 @@ fn build_exclude_set(globs: &[String]) -> Result<GlobSet> {
 
 /// Execute a plan: fetch each queued crate via the supplied fetcher
 /// with bounded concurrency. Failures don't abort the run.
+#[tracing::instrument(skip_all, fields(queued = plan.queued.len(), jobs = options.jobs()))]
 pub async fn execute_plan<F>(
     plan: SyncPlan,
     fetcher: F,

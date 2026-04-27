@@ -63,6 +63,7 @@ pub struct IngestionOptions {
 /// Ingest one crate. Resolves the version against crates.io if
 /// necessary, downloads the verified tarball, extracts, walks, and
 /// stores the item set in the cache.
+#[tracing::instrument(skip(fetcher, api, cache), fields(crate_name = %crate_ref.name))]
 pub async fn ingest<F: Fetcher + Clone>(
     fetcher: &F,
     api: &CratesIoApi<F>,
@@ -76,6 +77,7 @@ pub async fn ingest<F: Fetcher + Clone>(
         crate_name: crate_ref.name.clone(),
         version: resolution.version.clone(),
     };
+    tracing::info!(version = %resolution.version, "resolved");
 
     // Pin "latest"/semver-pattern requests so subsequent calls don't
     // hit crates.io for the resolution alone.
@@ -94,11 +96,13 @@ pub async fn ingest<F: Fetcher + Clone>(
 
     if !options.force && cache.has(&collection) {
         let count = cache.load(&collection)?.len();
+        tracing::debug!(item_count = count, "already cached");
         return Ok(IngestionReport::AlreadyCached {
             collection,
             item_count: count,
         });
     }
+    tracing::info!("fetching tarball");
 
     let bytes = download::download_verified(
         api,
@@ -125,6 +129,11 @@ pub async fn ingest<F: Fetcher + Clone>(
         &collection.version,
     )?;
 
+    tracing::info!(
+        item_count = walked.items.len(),
+        load_failures = walked.failures.len(),
+        "walk complete"
+    );
     cache.store(&collection, &walked.items)?;
 
     let load_failures: Vec<String> = walked
