@@ -62,4 +62,9 @@ pub enum Error {
 
     #[error("no crate entry point (src/lib.rs or src/main.rs) found in {path}")]
     NoEntryPoint { path: String },
+
+    #[error(
+        "could not resolve a data directory: set $RUSTBERT_DATA_DIR or $HOME"
+    )]
+    DataDirUnknown,
 }
