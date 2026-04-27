@@ -15,6 +15,7 @@ pub mod extract;
 pub mod fetcher;
 pub mod item;
 pub mod lockfile;
+pub mod lowering;
 pub mod module_discovery;
 pub mod parse;
 pub mod reqwest_fetcher;
