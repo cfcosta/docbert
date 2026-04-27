@@ -46,4 +46,10 @@ pub enum Error {
         expected: String,
         actual: String,
     },
+
+    #[error("tarball entry escapes extraction root: {path}")]
+    UnsafeTarballEntry { path: String },
+
+    #[error("tarball is empty or has no top-level directory")]
+    EmptyTarball,
 }
