@@ -14,6 +14,7 @@ pub mod download;
 pub mod error;
 pub mod extract;
 pub mod fetcher;
+pub mod ingestion;
 pub mod item;
 pub mod lockfile;
 pub mod lowering;
@@ -21,6 +22,7 @@ pub mod module_discovery;
 pub mod parse;
 pub mod reqwest_fetcher;
 pub mod resolver;
+pub mod search;
 
 pub use collection::SyntheticCollection;
 pub use crate_ref::{CrateRef, VersionSpec};
