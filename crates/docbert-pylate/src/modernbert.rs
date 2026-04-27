@@ -560,7 +560,6 @@ impl ModernBertLayer {
         seqlens: &Tensor,
         max_seq_len: usize,
         local_window: Option<usize>,
-        padding_cache: &Mutex<HashMap<usize, Tensor>>,
     ) -> Result<Tensor> {
         let mut xs = packed_xs.clone();
         if let Some(norm) = &self.attn_norm {
@@ -575,13 +574,8 @@ impl ModernBertLayer {
                 max_seq_len,
             )?
         } else {
-            let padded_xs = unpack_varlen_bsd(
-                &xs,
-                valid_lens,
-                max_seq_len,
-                xs.device(),
-                padding_cache,
-            )?;
+            let padded_xs =
+                unpack_varlen_bsd(&xs, valid_lens, max_seq_len, xs.device())?;
             self.attn.forward_varlen_packed(
                 &padded_xs,
                 valid_lens,
@@ -728,7 +722,6 @@ fn unpack_varlen_bsd(
     valid_lens: &[usize],
     max_seq_len: usize,
     device: &Device,
-    padding_rows: &Mutex<HashMap<usize, Tensor>>,
 ) -> Result<Tensor> {
     let (_, dim) = xs.dims2()?;
     let mut batches = Vec::with_capacity(valid_lens.len());
@@ -738,17 +731,7 @@ fn unpack_varlen_bsd(
         offset += len;
         if len < max_seq_len {
             let pad_len = max_seq_len - len;
-            let padding = {
-                let mut padding_cache = padding_rows.lock().unwrap();
-                if let Some(padding) = padding_cache.get(&pad_len) {
-                    padding.clone()
-                } else {
-                    let padding =
-                        Tensor::zeros((pad_len, dim), xs.dtype(), device)?;
-                    padding_cache.insert(pad_len, padding.clone());
-                    padding
-                }
-            };
+            let padding = Tensor::zeros((pad_len, dim), xs.dtype(), device)?;
             batches.push(Tensor::cat(&[&valid, &padding], 0)?);
         } else {
             batches.push(valid);
@@ -786,8 +769,6 @@ pub struct ModernBert {
     final_norm: LayerNorm,
     local_attention_size: usize,
     local_attention_masks: Arc<Mutex<HashMap<usize, Tensor>>>,
-    #[cfg(feature = "cuda")]
-    varlen_padding_rows: Arc<Mutex<HashMap<usize, Tensor>>>,
     #[cfg(feature = "cuda")]
     varlen_positions: Arc<Mutex<HashMap<Vec<usize>, Tensor>>>,
 }
@@ -846,8 +827,6 @@ impl ModernBert {
             final_norm,
             local_attention_size: config.local_attention,
             local_attention_masks: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "cuda")]
-            varlen_padding_rows: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "cuda")]
             varlen_positions: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -953,7 +932,6 @@ impl ModernBert {
                 &seqlens,
                 max_seq_len,
                 effective_window,
-                &self.varlen_padding_rows,
             )?;
         }
         let xs = unpack_varlen_bsd(
@@ -961,7 +939,6 @@ impl ModernBert {
             valid_lens,
             max_seq_len,
             xs.device(),
-            &self.varlen_padding_rows,
         )?;
         xs.apply(&self.final_norm)
     }
