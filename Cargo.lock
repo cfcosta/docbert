@@ -594,6 +594,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-lock"
+version = "10.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c06acb4f71407ba205a07cb453211e0e6a67b21904e47f6ba1f9589e38f2e454"
+dependencies = [
+ "semver",
+ "serde",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4020,6 +4032,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustbert"
+version = "0.1.0"
+dependencies = [
+ "cargo-lock",
+ "hegeltest",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4147,6 +4171,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "seq-macro"

@@ -4,5 +4,6 @@ members = [
   "crates/docbert-core",
   "crates/docbert-plaid",
   "crates/docbert-pylate",
+  "crates/rustbert",
 ]
 resolver = "3"
