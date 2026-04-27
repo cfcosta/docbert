@@ -73,8 +73,8 @@ pub fn lower(
     let relative_path = format!(
         "{}#L{}-L{}",
         item.source_file.display(),
-        item.line_span.start,
-        item.line_span.end,
+        item.line_start,
+        item.line_end,
     );
     let searchable_body = build_searchable_body(item);
     let metadata = build_metadata(item);
@@ -113,7 +113,7 @@ fn build_metadata(item: &RustItem) -> serde_json::Value {
         "visibility": item.visibility.as_str(),
         "attrs": item.attrs,
         "source_file": item.source_file.display().to_string(),
-        "line_span": [item.line_span.start, item.line_span.end],
+        "line_span": [item.line_start, item.line_end],
     })
 }
 
@@ -177,8 +177,10 @@ mod tests {
                 .to_string(),
             doc_markdown: "Serialize a struct.".to_string(),
             source_file: PathBuf::from("src/ser/mod.rs"),
-            byte_span: 0..0,
-            line_span: 42..78,
+            byte_start: 0,
+            byte_len: 0,
+            line_start: 42,
+            line_end: 78,
             visibility: Visibility::Public,
             attrs: vec!["#[deprecated]".to_string()],
         }

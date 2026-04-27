@@ -67,4 +67,7 @@ pub enum Error {
         "could not resolve a data directory: set $RUSTBERT_DATA_DIR or $HOME"
     )]
     DataDirUnknown,
+
+    #[error("cache error: {0}")]
+    Cache(String),
 }

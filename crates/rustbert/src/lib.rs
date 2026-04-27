@@ -4,6 +4,7 @@
 //! This crate is in early implementation; only foundational pure-logic
 //! modules are wired up so far.
 
+pub mod cache;
 pub mod collection;
 pub mod crate_ref;
 pub mod crate_walker;

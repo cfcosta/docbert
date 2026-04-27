@@ -4,9 +4,12 @@
 //! const, static, type alias, macro) along with the metadata needed
 //! to format a search result and resolve back to source.
 
-use std::{ops::Range, path::PathBuf};
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RustItemKind {
     Fn,
     Struct,
@@ -58,7 +61,8 @@ impl RustItemKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Visibility {
     Public,
     Crate,
@@ -78,7 +82,7 @@ impl Visibility {
 }
 
 /// One Rust source item, ready to be lowered into a search document.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustItem {
     pub kind: RustItemKind,
     pub crate_name: String,
@@ -98,8 +102,14 @@ pub struct RustItem {
     pub doc_markdown: String,
     /// Source file path *relative* to the extracted crate root.
     pub source_file: PathBuf,
-    pub byte_span: Range<usize>,
-    pub line_span: Range<u32>,
+    /// Byte offset of the item in `source_file`. `byte_len == 0` means
+    /// the span is unpopulated (v1 stub).
+    pub byte_start: u64,
+    pub byte_len: u64,
+    /// 1-based start line, inclusive.
+    pub line_start: u32,
+    /// 1-based end line, inclusive.
+    pub line_end: u32,
     pub visibility: Visibility,
     /// Pre-rendered attribute strings (e.g. "#[deprecated]",
     /// "#[cfg(unix)]"). Order matches source order.

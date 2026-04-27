@@ -225,7 +225,7 @@ impl ParseCtx {
             module_path,
             name.as_deref(),
         );
-        let line_span = span_node.line_span();
+        let (line_start, line_end) = span_node.line_span();
         let item = RustItem {
             kind,
             crate_name: self.crate_name.clone(),
@@ -236,8 +236,10 @@ impl ParseCtx {
             signature,
             doc_markdown: extract_doc_string(attrs),
             source_file: self.source_file.clone(),
-            byte_span: 0..0, // populated by a future enrichment pass
-            line_span,
+            byte_start: 0, // populated by a future enrichment pass
+            byte_len: 0,
+            line_start,
+            line_end,
             visibility: from_syn_vis(vis),
             attrs: rendered_attrs(attrs),
         };
@@ -246,15 +248,12 @@ impl ParseCtx {
 }
 
 trait ToTokensSpan {
-    fn line_span(&self) -> std::ops::Range<u32>;
+    fn line_span(&self) -> (u32, u32);
 }
 
 impl<T: ToTokens> ToTokensSpan for T {
-    fn line_span(&self) -> std::ops::Range<u32> {
+    fn line_span(&self) -> (u32, u32) {
         let tokens = self.to_token_stream();
-        // Walk the token stream to find the min start.line and the
-        // max end.line — token-by-token spans are reliable when the
-        // outer span is reported as call_site.
         let mut min_line = u32::MAX;
         let mut max_line = 0u32;
         for tt in tokens {
@@ -269,9 +268,9 @@ impl<T: ToTokens> ToTokensSpan for T {
             }
         }
         if min_line == u32::MAX {
-            return 0..0;
+            return (0, 0);
         }
-        min_line..max_line.max(min_line)
+        (min_line, max_line.max(min_line))
     }
 }
 
