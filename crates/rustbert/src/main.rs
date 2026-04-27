@@ -127,6 +127,15 @@ enum Command {
         older_than: Option<u64>,
     },
 
+    /// Index a local Cargo project's source as a synthetic
+    /// collection. Subsequent `search`/`get`/`list` calls work
+    /// against the local project the same way they do against
+    /// fetched crates.
+    Index {
+        /// Path to the Cargo project root (default: current dir).
+        path: Option<PathBuf>,
+    },
+
     /// Run the MCP server on stdio.
     Mcp,
 }
@@ -185,8 +194,24 @@ async fn real_main() -> Result<()> {
             crate_name,
             older_than,
         } => cmd_refresh(&cache, crate_name, older_than).await,
+        Command::Index { path } => cmd_index(&cache, path),
         Command::Mcp => rustbert::mcp::serve(cache.clone()).await,
     }
+}
+
+fn cmd_index(cache: &CrateCache, path: Option<PathBuf>) -> Result<()> {
+    let project_root = match path {
+        Some(p) => p,
+        None => std::env::current_dir()?,
+    };
+    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let (coll, items, failures) =
+        rustbert::host_project::index_project(&project_root, cache, &indexer)?;
+    println!(
+        "indexed {} items from {}@{} ({} failures)",
+        items, coll.crate_name, coll.version, failures,
+    );
+    Ok(())
 }
 
 fn init_tracing() {

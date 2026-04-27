@@ -18,6 +18,7 @@ use crate::{
     crate_walker,
     crates_io::CratesIoApi,
     data_dir,
+    docs_rs::DocsRsClient,
     download,
     error::Result,
     extract,
@@ -159,6 +160,26 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
         "walk complete"
     );
     cache.store(&collection, &walked.items)?;
+
+    // Best-effort rustdoc JSON enrichment. docs.rs publishes JSON
+    // for many but not all crate builds; a 404 isn't fatal —
+    // we just skip the enrichment and rely on syn output.
+    let docs_client = DocsRsClient::new(fetcher.clone());
+    if let Ok(Some(json_bytes)) = docs_client
+        .fetch_rustdoc_json(&collection.crate_name, &collection.version)
+        .await
+    {
+        let _ = crate::docs_rs::write_rustdoc_json(
+            cache.data_dir(),
+            &collection.crate_name,
+            &collection.version,
+            &json_bytes,
+        );
+        tracing::info!(
+            bytes = json_bytes.len(),
+            "rustdoc JSON cached for enrichment"
+        );
+    }
 
     let load_failures: Vec<String> = walked
         .failures
