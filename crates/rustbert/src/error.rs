@@ -52,4 +52,11 @@ pub enum Error {
 
     #[error("tarball is empty or has no top-level directory")]
     EmptyTarball,
+
+    #[error("syn parse error in {path}: {source}")]
+    Syn {
+        path: String,
+        #[source]
+        source: syn::Error,
+    },
 }

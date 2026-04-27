@@ -13,6 +13,7 @@ pub mod extract;
 pub mod fetcher;
 pub mod item;
 pub mod lockfile;
+pub mod parse;
 pub mod resolver;
 
 pub use collection::SyntheticCollection;
