@@ -122,6 +122,9 @@ enum Command {
         #[arg(long)]
         older_than: Option<u64>,
     },
+
+    /// Run the MCP server on stdio.
+    Mcp,
 }
 
 #[tokio::main]
@@ -174,6 +177,7 @@ async fn real_main() -> Result<()> {
             crate_name,
             older_than,
         } => cmd_refresh(&cache, crate_name, older_than).await,
+        Command::Mcp => rustbert::mcp::serve(cache.clone()).await,
     }
 }
 

@@ -18,6 +18,7 @@ pub mod ingestion;
 pub mod item;
 pub mod lockfile;
 pub mod lowering;
+pub mod mcp;
 pub mod module_discovery;
 pub mod parse;
 pub mod reqwest_fetcher;
