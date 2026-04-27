@@ -218,6 +218,35 @@
             name = "docbert-metal";
             buildFeatures = [ "metal" ];
           };
+
+          # rustbert is a separate binary in the same workspace; it
+          # has no UI, no completions subcommand, and no GPU-accelerated
+          # variants — so it doesn't need the docbert-specific
+          # `mkPackage` plumbing.
+          rustbert =
+            let
+              rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+              rustPlatform = pkgs.makeRustPlatform {
+                rustc = rust;
+                cargo = rust;
+              };
+            in
+            rustPlatform.buildRustPackage {
+              name = "rustbert";
+              src = ./.;
+              cargoBuildFlags = [
+                "-p"
+                "rustbert"
+              ];
+              cargoTestFlags = [
+                "-p"
+                "rustbert"
+              ];
+              doCheck = false;
+              cargoLock.lockFile = ./Cargo.lock;
+              RUSTFLAGS = "-C target-cpu=native";
+              meta.mainProgram = "rustbert";
+            };
         }
       );
 
