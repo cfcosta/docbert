@@ -56,26 +56,41 @@ pub fn walk_extracted_crate(
 }
 
 fn locate_entry_point(crate_root: &Path) -> Result<PathBuf> {
-    // Prefer Cargo.toml-declared paths (`[lib].path`, `[[bin]].path`).
-    // Some published crates use a flat layout (`lib.rs` at the root)
-    // and configure it via `[lib]`; without honoring that, walking
-    // them fails with "no entry point".
-    if let Some(path) = manifest_entry_point(crate_root) {
-        return Ok(path);
+    // Library entry points take precedence over binaries. A crate
+    // that ships both (very common: rustbert itself, clap, tokio
+    // examples) wants its library indexed — `src/main.rs` is just
+    // the runner.
+    //
+    // Resolution order:
+    //   1. standard `src/lib.rs`
+    //   2. `[lib].path` from Cargo.toml
+    //   3. root-level `lib.rs` (legacy flat layout)
+    //   4. `[[bin]].path` from Cargo.toml (first bin)
+    //   5. standard `src/main.rs`
+
+    if crate_root.join("src/lib.rs").is_file() {
+        return Ok(PathBuf::from("src/lib.rs"));
     }
 
-    // Standard Cargo layout fallback.
-    for candidate in ["src/lib.rs", "src/main.rs"] {
-        let abs = crate_root.join(candidate);
-        if abs.is_file() {
-            return Ok(PathBuf::from(candidate));
-        }
+    let manifest = read_manifest(crate_root);
+
+    if let Some(p) = manifest.as_ref().and_then(lib_path) {
+        return Ok(p);
     }
 
-    // Last-ditch: a `lib.rs` at the project root with no manifest
-    // declaration (very old crates).
     if crate_root.join("lib.rs").is_file() {
         return Ok(PathBuf::from("lib.rs"));
+    }
+
+    if let Some(p) = manifest
+        .as_ref()
+        .and_then(|m| first_bin_path(m, crate_root))
+    {
+        return Ok(p);
+    }
+
+    if crate_root.join("src/main.rs").is_file() {
+        return Ok(PathBuf::from("src/main.rs"));
     }
 
     Err(Error::NoEntryPoint {
@@ -83,36 +98,31 @@ fn locate_entry_point(crate_root: &Path) -> Result<PathBuf> {
     })
 }
 
-fn manifest_entry_point(crate_root: &Path) -> Option<PathBuf> {
+fn read_manifest(crate_root: &Path) -> Option<toml::Value> {
     let text = std::fs::read_to_string(crate_root.join("Cargo.toml")).ok()?;
-    let value: toml::Value = text.parse().ok()?;
+    text.parse().ok()
+}
 
-    // [lib] path = "..."
-    if let Some(p) = value
+fn lib_path(manifest: &toml::Value) -> Option<PathBuf> {
+    manifest
         .get("lib")
         .and_then(|t| t.get("path"))
         .and_then(toml::Value::as_str)
-    {
-        let candidate = PathBuf::from(p);
-        if crate_root.join(&candidate).is_file() {
-            return Some(candidate);
-        }
-    }
+        .map(PathBuf::from)
+}
 
-    // [[bin]] path = "..." — first bin wins.
-    if let Some(bins) = value.get("bin").and_then(toml::Value::as_array)
-        && let Some(p) = bins
-            .first()
-            .and_then(|b| b.get("path"))
-            .and_then(toml::Value::as_str)
-    {
-        let candidate = PathBuf::from(p);
-        if crate_root.join(&candidate).is_file() {
-            return Some(candidate);
-        }
+fn first_bin_path(
+    manifest: &toml::Value,
+    crate_root: &Path,
+) -> Option<PathBuf> {
+    let bins = manifest.get("bin").and_then(toml::Value::as_array)?;
+    let p = bins.first()?.get("path").and_then(toml::Value::as_str)?;
+    let candidate = PathBuf::from(p);
+    if crate_root.join(&candidate).is_file() {
+        Some(candidate)
+    } else {
+        None
     }
-
-    None
 }
 
 struct CrateWalker {
@@ -343,6 +353,34 @@ mod tests {
 
         let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
         assert!(out.items.iter().any(|i| i.qualified_path == "x::run"));
+    }
+
+    #[test]
+    fn lib_takes_priority_over_bin_when_both_exist() {
+        // Mimics rustbert / clap / many crates: src/lib.rs +
+        // `[[bin]] path = "src/main.rs"`. The library should win;
+        // main.rs is just the runner and would otherwise hide every
+        // library item.
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"x\"\npath = \"src/main.rs\"\n",
+        );
+        write(tmp.path(), "src/lib.rs", "pub fn library_fn() {}");
+        write(tmp.path(), "src/main.rs", "fn main() { x::library_fn() }");
+
+        let out = walk_extracted_crate(tmp.path(), "x", &version()).unwrap();
+        assert!(
+            out.items
+                .iter()
+                .any(|i| i.qualified_path == "x::library_fn"),
+            "lib should be indexed, items: {:?}",
+            out.items
+                .iter()
+                .map(|i| &i.qualified_path)
+                .collect::<Vec<_>>(),
+        );
     }
 
     #[test]

@@ -219,6 +219,41 @@ fn cmd_index(cache: &CrateCache, path: Option<PathBuf>) -> Result<()> {
         None => std::env::current_dir()?,
     };
     let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+
+    if rustbert::host_project::is_workspace_root(&project_root) {
+        let outcomes = rustbert::host_project::index_workspace(
+            &project_root,
+            cache,
+            &indexer,
+        )?;
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        let mut total_items = 0usize;
+        for outcome in &outcomes {
+            match &outcome.result {
+                Ok(member) => {
+                    println!(
+                        "  ✓ {name}@{version}  {items} items ({failures} failures)",
+                        name = member.collection.crate_name,
+                        version = member.collection.version,
+                        items = member.item_count,
+                        failures = member.failure_count,
+                    );
+                    succeeded += 1;
+                    total_items += member.item_count;
+                }
+                Err(e) => {
+                    eprintln!("  ✗ {}: {}", outcome.path.display(), e);
+                    failed += 1;
+                }
+            }
+        }
+        println!(
+            "\nindexed {succeeded} workspace members ({total_items} items total, {failed} failed)",
+        );
+        return Ok(());
+    }
+
     let (coll, items, failures) =
         rustbert::host_project::index_project(&project_root, cache, &indexer)?;
     println!(

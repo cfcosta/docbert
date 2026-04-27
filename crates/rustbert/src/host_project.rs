@@ -178,6 +178,148 @@ pub fn index_project(
     Ok((collection, item_count, failure_count))
 }
 
+/// Per-member outcome from [`index_workspace`].
+#[derive(Debug, Clone)]
+pub struct WorkspaceMemberOutcome {
+    pub path: PathBuf,
+    pub result: std::result::Result<MemberIndexed, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemberIndexed {
+    pub collection: SyntheticCollection,
+    pub item_count: usize,
+    pub failure_count: usize,
+}
+
+/// True when `path/Cargo.toml` declares a `[workspace]` table.
+pub fn is_workspace_root(path: &Path) -> bool {
+    let manifest = path.join("Cargo.toml");
+    let Ok(text) = fs::read_to_string(&manifest) else {
+        return false;
+    };
+    text.parse::<toml::Value>()
+        .map(|v| v.get("workspace").is_some())
+        .unwrap_or(false)
+}
+
+/// Resolve `[workspace].members` (with simple `*` glob support) into
+/// concrete member directories under `workspace_root`.
+pub fn workspace_members(workspace_root: &Path) -> Result<Vec<PathBuf>> {
+    let manifest = workspace_root.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).map_err(|e| {
+        Error::Cache(format!(
+            "workspace Cargo.toml read at {}: {e}",
+            manifest.display()
+        ))
+    })?;
+    let value: toml::Value = text.parse().map_err(|e: toml::de::Error| {
+        Error::Cache(format!("workspace Cargo.toml parse: {e}"))
+    })?;
+
+    let workspace = value.get("workspace").ok_or_else(|| {
+        Error::Cache("Cargo.toml has no [workspace] table".to_string())
+    })?;
+    let exclude_set: std::collections::HashSet<String> = workspace
+        .get("exclude")
+        .and_then(toml::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(toml::Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut members: Vec<PathBuf> = Vec::new();
+    if let Some(entries) =
+        workspace.get("members").and_then(toml::Value::as_array)
+    {
+        for entry in entries.iter().filter_map(toml::Value::as_str) {
+            for resolved in expand_member_glob(workspace_root, entry)? {
+                let rel = resolved
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(&resolved)
+                    .to_string_lossy()
+                    .to_string();
+                if exclude_set.contains(&rel) {
+                    continue;
+                }
+                if resolved.join("Cargo.toml").is_file() {
+                    members.push(resolved);
+                }
+            }
+        }
+    }
+    members.sort();
+    members.dedup();
+    Ok(members)
+}
+
+fn expand_member_glob(
+    workspace_root: &Path,
+    pattern: &str,
+) -> Result<Vec<PathBuf>> {
+    // Cargo workspace members use simple `*` globs at one level. Real
+    // glob support is rarely needed; we handle no-glob and trailing
+    // `*` cases, which covers the vast majority of crates in the wild.
+    if !pattern.contains('*') {
+        return Ok(vec![workspace_root.join(pattern)]);
+    }
+
+    let (parent, leaf) =
+        pattern.rsplit_once('/').unwrap_or(("", pattern));
+    let parent_dir = if parent.is_empty() {
+        workspace_root.to_path_buf()
+    } else {
+        workspace_root.join(parent)
+    };
+
+    let mut out = Vec::new();
+    let entries = match fs::read_dir(&parent_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(out),
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if leaf == "*" || name.as_ref() == leaf {
+            out.push(entry.path());
+        }
+    }
+    Ok(out)
+}
+
+/// Index every member of a Cargo workspace at `workspace_root`.
+/// Returns one outcome per member; per-member failures don't abort
+/// the run.
+pub fn index_workspace(
+    workspace_root: &Path,
+    cache: &CrateCache,
+    indexer: &Indexer,
+) -> Result<Vec<WorkspaceMemberOutcome>> {
+    let members = workspace_members(workspace_root)?;
+    let mut outcomes = Vec::with_capacity(members.len());
+    for member in members {
+        let result = match index_project(&member, cache, indexer) {
+            Ok((collection, item_count, failure_count)) => Ok(MemberIndexed {
+                collection,
+                item_count,
+                failure_count,
+            }),
+            Err(e) => Err(e.to_string()),
+        };
+        outcomes.push(WorkspaceMemberOutcome {
+            path: member,
+            result,
+        });
+    }
+    Ok(outcomes)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
