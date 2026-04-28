@@ -17,7 +17,7 @@ use rustbert::{
     indexer::Indexer,
     ingestion::{self, IngestionOptions, IngestionReport},
     item::RustItemKind,
-    search::{self, SearchOptions},
+    lookup::{self, ListOptions},
 };
 use tempfile::TempDir;
 
@@ -148,31 +148,34 @@ async fn fetch_parse_index_and_search_roundtrip() {
     // Step 2: load items from the cache.
     let items = cache.load(&coll).unwrap();
 
-    // Step 3: search hits the function we documented as "Greet".
-    let hits = search::search(&items, "greet", &SearchOptions::default());
-    assert!(!hits.is_empty());
-    assert_eq!(hits[0].item.qualified_path, "demo::greet");
-
-    // Step 4: search the nested module finds the trait.
-    let hits = search::search(
-        &items,
-        "ping",
-        &SearchOptions {
-            kind: Some(RustItemKind::Trait),
-            ..Default::default()
-        },
+    // Step 3: BM25 search via the indexer (the same path the CLI and
+    // MCP take). The corpus is too small for a PLAID rebuild so the
+    // semantic leg auto-falls-back to BM25-only — no model load.
+    let params = docbert_core::search::SearchParams {
+        query: "greet".to_string(),
+        count: 10,
+        collection: Some(coll.to_string()),
+        min_score: 0.0,
+        bm25_only: false,
+        no_fuzzy: false,
+        all: false,
+    };
+    let hits = indexer.search(params).unwrap();
+    assert!(
+        hits.iter().any(|h| h.title == "demo::greet"),
+        "indexer should surface demo::greet for query 'greet', got {:?}",
+        hits.iter().map(|h| &h.title).collect::<Vec<_>>(),
     );
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].item.qualified_path, "demo::nested::Pingable");
 
-    // Step 5: get by exact qualified path.
-    let item = search::get(&items, "demo::Holder").unwrap();
+    // Step 4: get by exact qualified path uses the cache directly
+    // (no search needed for an exact lookup).
+    let item = lookup::get(&items, "demo::Holder").unwrap();
     assert_eq!(item.kind, RustItemKind::Struct);
 
-    // Step 6: list with kind filter returns alphabetical order.
-    let listed = search::list(
+    // Step 5: list with kind filter returns alphabetical order.
+    let listed = lookup::list(
         &items,
-        &SearchOptions {
+        &ListOptions {
             kind: Some(RustItemKind::Const),
             ..Default::default()
         },

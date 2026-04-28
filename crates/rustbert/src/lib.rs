@@ -52,6 +52,7 @@ pub mod indexer;
 pub mod ingestion;
 pub mod item;
 pub mod lockfile;
+pub mod lookup;
 pub mod lowering;
 pub mod mcp;
 pub mod module_discovery;
@@ -59,7 +60,6 @@ pub mod parse;
 pub mod reqwest_fetcher;
 pub mod resolver;
 pub mod rustdoc_merge;
-pub mod search;
 pub mod sync;
 
 pub use collection::SyntheticCollection;

@@ -12,9 +12,9 @@ use rustbert::{
     fetcher::Fetcher,
     ingestion::{self, IngestionOptions, IngestionReport},
     item::{RustItem, RustItemKind},
+    lookup::{self, ListOptions},
     reqwest_fetcher::ReqwestFetcher,
     resolver,
-    search::{self, SearchOptions},
     sync as sync_mod,
 };
 
@@ -390,7 +390,7 @@ async fn cmd_get(cache: &CrateCache, spec: &str, path: &str) -> Result<()> {
         ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
     let item =
-        search::get(&items, path).ok_or_else(|| Error::NoMatchingVersion {
+        lookup::get(&items, path).ok_or_else(|| Error::NoMatchingVersion {
             name: format!("item not found: {path}"),
             spec: coll.to_string(),
         })?;
@@ -412,12 +412,12 @@ async fn cmd_list(
     let coll =
         ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
-    let opts = SearchOptions {
+    let opts = ListOptions {
         kind: parse_kind(kind)?,
         module_prefix: module,
         limit: Some(limit),
     };
-    let listed = search::list(&items, &opts);
+    let listed = lookup::list(&items, &opts);
     for item in listed {
         print_item_one_line(item, None);
     }

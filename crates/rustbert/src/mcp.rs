@@ -30,8 +30,8 @@ use crate::{
     fetcher::Fetcher,
     ingestion::{self, IngestionOptions},
     item::{RustItem, RustItemKind},
+    lookup::{self, ListOptions},
     reqwest_fetcher::ReqwestFetcher,
-    search::{self, SearchOptions},
 };
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -406,7 +406,7 @@ async fn tool_get(
     let coll =
         ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
-    match search::get(&items, path) {
+    match lookup::get(&items, path) {
         Some(item) => Ok(format_item_full(item)),
         None => Err((
             -32000,
@@ -423,7 +423,7 @@ async fn tool_list(
     cache: &CrateCache,
 ) -> std::result::Result<String, (i32, String)> {
     let crate_ref = parse_crate_ref(args)?;
-    let opts = SearchOptions {
+    let opts = ListOptions {
         kind: args
             .get("kind")
             .and_then(Value::as_str)
@@ -444,7 +444,7 @@ async fn tool_list(
     let coll =
         ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
-    let listed = search::list(&items, &opts);
+    let listed = lookup::list(&items, &opts);
     let mut out = format!(
         "{count} items in {name}@{version}\n",
         count = listed.len(),
