@@ -73,7 +73,9 @@ pub async fn serve(cache: CrateCache) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let response = handle_line(&line, &cache).await;
+        let Some(response) = handle_line(&line, &cache).await else {
+            continue;
+        };
         let bytes = serde_json::to_vec(&response).map_err(|e| {
             crate::error::Error::Cache(format!("mcp encode: {e}"))
         })?;
@@ -84,11 +86,11 @@ pub async fn serve(cache: CrateCache) -> Result<()> {
     Ok(())
 }
 
-async fn handle_line(line: &str, cache: &CrateCache) -> Response {
+async fn handle_line(line: &str, cache: &CrateCache) -> Option<Response> {
     let request: Request = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return Response {
+            return Some(Response {
                 jsonrpc: "2.0",
                 id: Value::Null,
                 result: None,
@@ -96,16 +98,17 @@ async fn handle_line(line: &str, cache: &CrateCache) -> Response {
                     code: -32700,
                     message: format!("parse error: {e}"),
                 }),
-            };
+            });
         }
     };
 
-    let id = request.id.clone().unwrap_or(Value::Null);
+    // JSON-RPC 2.0: a request without `id` is a notification — never reply.
+    let id = request.id.clone()?;
     if request.jsonrpc != "2.0" {
-        return error_response(id, -32600, "invalid jsonrpc version");
+        return Some(error_response(id, -32600, "invalid jsonrpc version"));
     }
 
-    match dispatch(&request, cache).await {
+    Some(match dispatch(&request, cache).await {
         Ok(value) => Response {
             jsonrpc: "2.0",
             id,
@@ -113,7 +116,7 @@ async fn handle_line(line: &str, cache: &CrateCache) -> Response {
             error: None,
         },
         Err((code, msg)) => error_response(id, code, &msg),
-    }
+    })
 }
 
 fn error_response(id: Value, code: i32, msg: &str) -> Response {
@@ -532,7 +535,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         let result = response.result.unwrap();
         assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(result["serverInfo"]["name"], "rustbert");
@@ -543,7 +546,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         let tools = &response.result.unwrap()["tools"];
         let names: Vec<_> = tools
             .as_array()
@@ -563,7 +566,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"nonsense"}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32601);
     }
@@ -572,7 +575,7 @@ mod tests {
     async fn malformed_json_returns_parse_error() {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
-        let response = handle_line("not json", &cache).await;
+        let response = handle_line("not json", &cache).await.unwrap();
         assert_eq!(response.error.unwrap().code, -32700);
     }
 
@@ -581,7 +584,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"1.0","id":1,"method":"tools/list"}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         assert_eq!(response.error.unwrap().code, -32600);
     }
 
@@ -590,7 +593,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rustbert_status","arguments":{}}}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         let result = response.result.unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("no cached crates"));
@@ -601,7 +604,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unknown","arguments":{}}}"#;
-        let response = handle_line(line, &cache).await;
+        let response = handle_line(line, &cache).await.unwrap();
         assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn notifications_are_silent() {
+        // JSON-RPC 2.0: messages without an `id` are notifications and
+        // MUST NOT be answered. Replying — even with an error — breaks
+        // strict clients (Claude Code's MCP loop drops the connection).
+        let tmp = TempDir::new().unwrap();
+        let cache = CrateCache::new(tmp.path()).unwrap();
+        let line = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert!(handle_line(line, &cache).await.is_none());
     }
 }
