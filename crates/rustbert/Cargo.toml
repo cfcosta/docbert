@@ -15,6 +15,12 @@ clap = { version = "4.6", features = ["derive", "env"] }
 docbert-core = { path = "../docbert-core" }
 flate2 = "1"
 globset = "0.4"
+# Direct dep solely to enable the `span-locations` feature on the
+# proc-macro2 instance that links into rustbert's binary, so
+# `tt.span().start().line` in `parse.rs` returns real line numbers
+# instead of dummy zeros. Cargo unifies features per build target;
+# without this entry the runtime-side proc-macro2 (reached transitively
+# through syn/quote) resolves without `span-locations`.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 reqwest = { version = "0.13.2", default-features = false, features = [
@@ -54,3 +60,10 @@ mkl = ["docbert-core/mkl"]
 accelerate = ["docbert-core/accelerate"]
 metal = ["docbert-core/metal"]
 cuda = ["docbert-core/cuda"]
+
+[package.metadata.cargo-machete]
+# proc-macro2 has no `use proc_macro2::…` lines in our source — it's
+# pulled in to flip the `span-locations` feature on the runtime-side
+# instance (see comment on the dep above). cargo-machete can't infer
+# feature-only deps, so silence the false positive here.
+ignored = ["proc-macro2"]
