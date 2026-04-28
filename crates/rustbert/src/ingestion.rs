@@ -240,6 +240,21 @@ pub async fn ingest_to_cache<F: Fetcher + Clone>(
 
     cache.store(&collection, &walked.items)?;
 
+    // Persist this crate's `impl Trait for Type` records into the
+    // workspace-wide implementor registry. Trait pages render their
+    // "Implementors" section by querying that registry at read
+    // time, which is how cross-crate impls show up — `candle-core`
+    // defines `Module`, `docbert-pylate` implements it, and the
+    // trait page joins them.
+    let mut registry = crate::implementor_registry::ImplementorRegistry::open(
+        cache.data_dir(),
+    )?;
+    registry.set_for_crate(
+        &collection.crate_name,
+        &collection.version,
+        &walked.implementors,
+    )?;
+
     let load_failures: Vec<String> = walked
         .failures
         .iter()

@@ -7,7 +7,10 @@
 //! [`PendingModule`] entries so the higher-level crate-tree walker can
 //! resolve them to disk paths.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use quote::ToTokens;
 
@@ -15,6 +18,118 @@ use crate::{
     error::{Error, Result},
     item::{RustItem, RustItemKind, Visibility},
 };
+
+/// Per-file map from a name as it appears in source (the leaf segment
+/// of a `use`, plus any `as` alias) to the fully-qualified path it
+/// resolves to. Used to canonicalise the trait path on
+/// `impl Trait for Type` so the implementor record can be matched
+/// against trait items by their stored qualified path.
+///
+/// Wildcards (`use foo::*;`) are tracked separately because they
+/// don't bind a single name — the resolver walks them as a fallback
+/// when nothing in the explicit map matches.
+///
+/// Special prefixes (`crate::`, `self::`, `super::`) are kept in the
+/// stored path verbatim. Resolving them to absolute paths needs the
+/// caller's module context, which the parser threads in only when it
+/// matters (the trait-path resolver expands them before lookup).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UseMap {
+    aliases: HashMap<String, Vec<String>>,
+    wildcards: Vec<Vec<String>>,
+}
+
+impl UseMap {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a `use a::b::c;` (with `name = "c"`) or
+    /// `use a::b::c as d;` (`name = "d"`) — the leaf name is what the
+    /// surrounding code refers to.
+    fn insert_alias(&mut self, name: String, path: Vec<String>) {
+        self.aliases.insert(name, path);
+    }
+
+    /// Record a `use a::b::*;` so a later trait reference like `Foo`
+    /// (not in the explicit alias map) can be tried under each
+    /// wildcard prefix.
+    fn insert_wildcard(&mut self, prefix: Vec<String>) {
+        self.wildcards.push(prefix);
+    }
+
+    /// Resolve a path written in source against this file's `use`
+    /// statements. Returns the fully-qualified path components when
+    /// the leading segment is bound, otherwise the input path
+    /// segments unchanged so the caller can fall back to its own
+    /// resolution heuristics.
+    pub(crate) fn resolve(&self, segments: &[String]) -> Vec<String> {
+        let Some((head, tail)) = segments.split_first() else {
+            return Vec::new();
+        };
+        if let Some(prefix) = self.aliases.get(head) {
+            let mut out = prefix.clone();
+            out.extend_from_slice(tail);
+            return out;
+        }
+        // Single-segment lookup against the wildcards: any prefix
+        // could supply this name, so prefer the first match. Multiple
+        // wildcards on the same name resolve unambiguously in real
+        // code (it's a compile error otherwise), so we don't need to
+        // disambiguate.
+        if tail.is_empty()
+            && let Some(prefix) = self.wildcards.first()
+        {
+            let mut out = prefix.clone();
+            out.push(head.clone());
+            return out;
+        }
+        segments.to_vec()
+    }
+}
+
+/// Walk a `use a::b::{c, d::e as f, g::*};` tree, recording every
+/// alias and wildcard against `out`. `prefix` carries the path
+/// accumulated so far during recursion.
+pub(crate) fn collect_use_tree(
+    out: &mut UseMap,
+    prefix: &mut Vec<String>,
+    tree: &syn::UseTree,
+) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            collect_use_tree(out, prefix, &p.tree);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) => {
+            let ident = n.ident.to_string();
+            // Skip `use self;` / `use super;` — those don't bind a
+            // new name, they just carry the path forward.
+            if matches!(ident.as_str(), "self" | "super" | "crate") {
+                return;
+            }
+            let mut full = prefix.clone();
+            full.push(ident.clone());
+            out.insert_alias(ident, full);
+        }
+        syn::UseTree::Rename(r) => {
+            let original = r.ident.to_string();
+            let alias = r.rename.to_string();
+            let mut full = prefix.clone();
+            full.push(original);
+            out.insert_alias(alias, full);
+        }
+        syn::UseTree::Glob(_) => {
+            out.insert_wildcard(prefix.clone());
+        }
+        syn::UseTree::Group(g) => {
+            for item in &g.items {
+                collect_use_tree(out, prefix, item);
+            }
+        }
+    }
+}
 
 /// A `mod foo;` declaration that needs resolving against the
 /// filesystem. The crate-tree walker (Task 18) consumes these.
@@ -30,10 +145,43 @@ pub struct PendingModule {
     pub source_file: PathBuf,
 }
 
+/// One `impl Trait for Type` site captured during parse.
+///
+/// Carries the bits the workspace-wide implementor registry needs to
+/// render a rustdoc-flavoured "Implementors" section on the trait's
+/// page: the `impl` line itself, the method signatures inside, and
+/// the source location for clickability. The trait's resolved path
+/// (best-effort against the file's `use` statements) is the match
+/// key the registry indexes against.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraitImplementor {
+    /// Fully-qualified trait path, resolved through the file's
+    /// `use` statements when possible. Falls back to whatever the
+    /// author wrote when no `use` statement covers the leading
+    /// segment — partial paths in source land here verbatim.
+    pub trait_path: String,
+    /// Last identifier of the impl's self-type, generics stripped
+    /// (`Tensor`, not `Tensor<T>`). Empty when the self-type isn't
+    /// a path (`impl Display for [T]`, `impl Display for &str`).
+    pub self_type: String,
+    /// The full `impl …` line for display, e.g.
+    /// `impl<T: Send> Display for Holder<T>`.
+    pub impl_signature: String,
+    /// Each contained `fn`'s signature, in source order. Trait-impl
+    /// methods are surfaced here (rather than as their own items)
+    /// because the trait already declares them.
+    pub method_signatures: Vec<String>,
+    /// Source path of the impl, for clickability.
+    pub source_file: PathBuf,
+    pub line_start: u32,
+    pub line_end: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParseOutcome {
     pub items: Vec<RustItem>,
     pub pending_modules: Vec<PendingModule>,
+    pub implementors: Vec<TraitImplementor>,
 }
 
 /// Parse one Rust source file and emit items.
@@ -58,6 +206,7 @@ pub fn parse_file(
         crate_version: crate_version.clone(),
         source_file: source_file.to_path_buf(),
         out: ParseOutcome::default(),
+        use_map: UseMap::new(),
     };
     ctx.visit_items(&file.items, module_path);
     Ok(ctx.out)
@@ -68,6 +217,7 @@ struct ParseCtx {
     crate_version: semver::Version,
     source_file: PathBuf,
     out: ParseOutcome,
+    use_map: UseMap,
 }
 
 impl ParseCtx {
@@ -146,12 +296,14 @@ impl ParseCtx {
                 // methods live on the trait already, and the
                 // implementor record (collected separately) attaches
                 // back to the trait's page.
-                if it.trait_.is_none()
-                    && let Some(self_segment) = self_type_segment(&it.self_ty)
-                {
-                    let mut inner_path = module_path.to_vec();
-                    inner_path.push(self_segment);
-                    self.visit_inherent_impl_items(&it.items, &inner_path);
+                if it.trait_.is_none() {
+                    if let Some(self_segment) = self_type_segment(&it.self_ty) {
+                        let mut inner_path = module_path.to_vec();
+                        inner_path.push(self_segment);
+                        self.visit_inherent_impl_items(&it.items, &inner_path);
+                    }
+                } else {
+                    self.collect_trait_implementor(it);
                 }
             }
             syn::Item::Const(it) if is_visible(&it.vis) => self.emit(
@@ -199,7 +351,14 @@ impl ParseCtx {
                 }
             }
             syn::Item::Mod(m) => self.visit_mod(m, module_path),
-            // Private items, ExternCrate, ForeignMod, Use, TraitAlias,
+            syn::Item::Use(u) => {
+                // `use a::b::c;` etc. don't surface as items, but
+                // their alias bindings are needed by the trait-path
+                // resolver in the impl-record collector.
+                let mut prefix = Vec::new();
+                collect_use_tree(&mut self.use_map, &mut prefix, &u.tree);
+            }
+            // Private items, ExternCrate, ForeignMod, TraitAlias,
             // Verbatim — skip.
             _ => {}
         }
@@ -242,6 +401,47 @@ impl ParseCtx {
                 });
             }
         }
+    }
+
+    /// Stash a record for each `impl Trait for Type` so the
+    /// workspace-wide implementor registry can render a rustdoc-style
+    /// "Implementors" section on the trait's page later. Trait path
+    /// is resolved through the file's `use` map; if no alias covers
+    /// the leading segment, the path the author wrote lands in the
+    /// record verbatim.
+    fn collect_trait_implementor(&mut self, it: &syn::ItemImpl) {
+        let Some((_, trait_path, _)) = &it.trait_ else {
+            return;
+        };
+        let written: Vec<String> = trait_path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        let resolved = self.use_map.resolve(&written);
+        let trait_path_str = resolved.join("::");
+
+        let self_type = self_type_segment(&it.self_ty).unwrap_or_default();
+        let impl_signature = impl_signature(it);
+        let method_signatures = it
+            .items
+            .iter()
+            .filter_map(|impl_item| match impl_item {
+                syn::ImplItem::Fn(m) => Some(impl_method_signature(m)),
+                _ => None,
+            })
+            .collect();
+
+        let (line_start, line_end) = it.line_span();
+        self.out.implementors.push(TraitImplementor {
+            trait_path: trait_path_str,
+            self_type,
+            impl_signature,
+            method_signatures,
+            source_file: self.source_file.clone(),
+            line_start,
+            line_end,
+        });
     }
 
     /// Emit each `pub` item from an inherent `impl Foo { ... }` block
@@ -871,6 +1071,133 @@ mod tests {
         assert!(
             !paths.contains(&"x::Foo::hello"),
             "trait-impl method should not be unrolled, got {paths:?}",
+        );
+    }
+
+    /// Build a `UseMap` from a list of `use ...;` statements so the
+    /// resolver tests stay focused on lookups rather than syn parsing.
+    fn use_map(srcs: &[&str]) -> UseMap {
+        let mut map = UseMap::new();
+        for src in srcs {
+            let file = syn::parse_file(src).unwrap();
+            for item in file.items {
+                if let syn::Item::Use(u) = item {
+                    let mut prefix = Vec::new();
+                    collect_use_tree(&mut map, &mut prefix, &u.tree);
+                }
+            }
+        }
+        map
+    }
+
+    fn segs(s: &str) -> Vec<String> {
+        s.split("::").map(String::from).collect()
+    }
+
+    #[test]
+    fn use_map_resolves_simple_alias() {
+        let m = use_map(&["use std::fmt::Display;"]);
+        assert_eq!(m.resolve(&segs("Display")), vec!["std", "fmt", "Display"],);
+    }
+
+    #[test]
+    fn use_map_resolves_renamed_alias() {
+        let m = use_map(&["use std::fmt::Display as Disp;"]);
+        assert_eq!(m.resolve(&segs("Disp")), vec!["std", "fmt", "Display"],);
+        // The original name is *not* bound when an alias is given.
+        assert_eq!(m.resolve(&segs("Display")), vec!["Display"]);
+    }
+
+    #[test]
+    fn use_map_handles_grouped_imports() {
+        let m = use_map(&["use std::fmt::{Display, Debug};"]);
+        assert_eq!(m.resolve(&segs("Display")), vec!["std", "fmt", "Display"],);
+        assert_eq!(m.resolve(&segs("Debug")), vec!["std", "fmt", "Debug"],);
+    }
+
+    #[test]
+    fn use_map_handles_nested_groups() {
+        let m = use_map(&[
+            "use serde::{de::{Deserializer, Visitor}, ser::Serializer};",
+        ]);
+        assert_eq!(m.resolve(&segs("Visitor")), vec!["serde", "de", "Visitor"],);
+        assert_eq!(
+            m.resolve(&segs("Serializer")),
+            vec!["serde", "ser", "Serializer"],
+        );
+    }
+
+    #[test]
+    fn use_map_resolves_partial_path_via_first_segment() {
+        // `use std::fmt;` then writing `fmt::Display` in source: the
+        // resolver looks up `fmt` and joins the remainder.
+        let m = use_map(&["use std::fmt;"]);
+        assert_eq!(
+            m.resolve(&segs("fmt::Display")),
+            vec!["std", "fmt", "Display"],
+        );
+    }
+
+    #[test]
+    fn use_map_wildcard_provides_fallback_for_unbound_names() {
+        let m = use_map(&["use std::fmt::*;"]);
+        // `Display` isn't explicitly aliased, but the wildcard
+        // `std::fmt::*` covers it.
+        assert_eq!(m.resolve(&segs("Display")), vec!["std", "fmt", "Display"],);
+    }
+
+    #[test]
+    fn use_map_returns_input_unchanged_for_unknown_path() {
+        let m = use_map(&["use std::fmt::Display;"]);
+        assert_eq!(
+            m.resolve(&segs("Unrelated::Path")),
+            vec!["Unrelated", "Path"],
+        );
+    }
+
+    #[test]
+    fn trait_impl_records_implementor_with_resolved_path() {
+        let out = parse(
+            "use std::fmt::Display;\n\
+             pub struct Foo;\n\
+             impl Display for Foo { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { Ok(()) } }",
+        );
+        assert_eq!(out.implementors.len(), 1);
+        let imp = &out.implementors[0];
+        assert_eq!(imp.trait_path, "std::fmt::Display");
+        assert_eq!(imp.self_type, "Foo");
+        assert!(
+            imp.impl_signature.contains("impl Display for Foo"),
+            "got {}",
+            imp.impl_signature
+        );
+        assert_eq!(imp.method_signatures.len(), 1);
+        assert!(
+            imp.method_signatures[0].contains("fn fmt"),
+            "got {}",
+            imp.method_signatures[0]
+        );
+    }
+
+    #[test]
+    fn trait_impl_falls_back_to_authored_path_when_unresolved() {
+        // No `use` statement covers the trait; the path written
+        // in source is what lands in the record. Cross-crate
+        // resolution at registry-merge time is what compensates.
+        let out = parse(
+            "pub struct Foo;\n\
+             impl serde::Serialize for Foo { fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> where S: serde::Serializer { unimplemented!() } }",
+        );
+        assert_eq!(out.implementors.len(), 1);
+        assert_eq!(out.implementors[0].trait_path, "serde::Serialize");
+    }
+
+    #[test]
+    fn inherent_impl_does_not_produce_implementor_record() {
+        let out = parse("pub struct Foo;\nimpl Foo { pub fn bar() {} }");
+        assert!(
+            out.implementors.is_empty(),
+            "inherent impls don't belong on the trait page",
         );
     }
 

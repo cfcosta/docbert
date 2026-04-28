@@ -48,6 +48,7 @@ pub mod error;
 pub mod extract;
 pub mod fetcher;
 pub mod host_project;
+pub mod implementor_registry;
 pub mod indexer;
 pub mod ingestion;
 pub mod item;

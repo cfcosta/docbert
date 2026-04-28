@@ -31,6 +31,10 @@ pub struct LoadFailure {
 pub struct WalkOutcome {
     pub items: Vec<RustItem>,
     pub failures: Vec<LoadFailure>,
+    /// Every `impl Trait for Type` site found across the crate's
+    /// files. Drives the workspace-wide implementor registry —
+    /// see `parse::TraitImplementor`.
+    pub implementors: Vec<crate::parse::TraitImplementor>,
 }
 
 /// Walk an extracted crate at `crate_root` and emit every `RustItem`
@@ -169,6 +173,7 @@ impl CrateWalker {
         };
 
         self.out.items.extend(outcome.items);
+        self.out.implementors.extend(outcome.implementors);
 
         // Recurse into resolved external modules.
         for pending in outcome.pending_modules {

@@ -120,6 +120,7 @@ impl CrateCache {
             item.qualified_path =
                 crate::item::normalize_qualified_path(&item.qualified_path);
         }
+        merge_implementors_into_traits(&self.data_dir, &mut items);
         Ok(items)
     }
 
@@ -242,6 +243,30 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Append the workspace-wide implementor records to each `Trait`
+/// item's body so it reads like a rustdoc trait page. Errors are
+/// swallowed: the registry is informational, not load-blocking — a
+/// missing or corrupt file just means traits render without the
+/// "Implementors" section.
+fn merge_implementors_into_traits(data_dir: &Path, items: &mut [RustItem]) {
+    let Ok(registry) =
+        crate::implementor_registry::ImplementorRegistry::open(data_dir)
+    else {
+        return;
+    };
+    for item in items {
+        if item.kind != crate::item::RustItemKind::Trait {
+            continue;
+        }
+        let hits = registry.lookup(&item.qualified_path);
+        if let Some(block) =
+            crate::implementor_registry::render_implementors_block(&hits)
+        {
+            item.body.push_str(&block);
+        }
+    }
 }
 
 fn json_err(e: serde_json::Error) -> Error {
