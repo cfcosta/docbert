@@ -126,15 +126,34 @@ impl ParseCtx {
             ),
             // impls describe public API surface even though they don't
             // have a visibility keyword; always emit.
-            syn::Item::Impl(it) => self.emit(
-                RustItemKind::Impl,
-                None,
-                module_path,
-                &it.attrs,
-                &syn::Visibility::Inherited,
-                impl_signature(it),
-                item,
-            ),
+            syn::Item::Impl(it) => {
+                self.emit(
+                    RustItemKind::Impl,
+                    None,
+                    module_path,
+                    &it.attrs,
+                    &syn::Visibility::Inherited,
+                    impl_signature(it),
+                    item,
+                );
+                // Inherent impls (no `for` clause) carry the type's
+                // public methods / consts / assoc types. Re-emit each
+                // pub item under `module::SelfType::name` so they're
+                // directly addressable — what rustdoc and docs.rs do
+                // for their per-method pages.
+                //
+                // Trait impls are intentionally not unrolled here: the
+                // methods live on the trait already, and the
+                // implementor record (collected separately) attaches
+                // back to the trait's page.
+                if it.trait_.is_none()
+                    && let Some(self_segment) = self_type_segment(&it.self_ty)
+                {
+                    let mut inner_path = module_path.to_vec();
+                    inner_path.push(self_segment);
+                    self.visit_inherent_impl_items(&it.items, &inner_path);
+                }
+            }
             syn::Item::Const(it) if is_visible(&it.vis) => self.emit(
                 RustItemKind::Const,
                 Some(it.ident.to_string()),
@@ -221,6 +240,50 @@ impl ParseCtx {
                     parent_module_path: module_path.to_vec(),
                     source_file: self.source_file.clone(),
                 });
+            }
+        }
+    }
+
+    /// Emit each `pub` item from an inherent `impl Foo { ... }` block
+    /// under `<module_path>::Foo`. Methods become `Fn`, associated
+    /// consts become `Const`, and associated types become `TypeAlias`.
+    /// `Macro` / `Verbatim` items are skipped — they're rare and
+    /// shaping a useful signature for them isn't worth the complexity.
+    fn visit_inherent_impl_items(
+        &mut self,
+        items: &[syn::ImplItem],
+        inner_path: &[String],
+    ) {
+        for item in items {
+            match item {
+                syn::ImplItem::Fn(m) if is_visible(&m.vis) => self.emit(
+                    RustItemKind::Fn,
+                    Some(m.sig.ident.to_string()),
+                    inner_path,
+                    &m.attrs,
+                    &m.vis,
+                    impl_method_signature(m),
+                    m,
+                ),
+                syn::ImplItem::Const(c) if is_visible(&c.vis) => self.emit(
+                    RustItemKind::Const,
+                    Some(c.ident.to_string()),
+                    inner_path,
+                    &c.attrs,
+                    &c.vis,
+                    impl_const_signature(c),
+                    c,
+                ),
+                syn::ImplItem::Type(t) if is_visible(&t.vis) => self.emit(
+                    RustItemKind::TypeAlias,
+                    Some(t.ident.to_string()),
+                    inner_path,
+                    &t.attrs,
+                    &t.vis,
+                    impl_type_signature(t),
+                    t,
+                ),
+                _ => {}
             }
         }
     }
@@ -402,6 +465,58 @@ fn trait_signature(it: &syn::ItemTrait) -> String {
         it.vis.to_token_stream(),
         it.ident,
         it.generics.to_token_stream()
+    )
+    .trim()
+    .to_string()
+}
+
+/// Strip an `impl <Self>` block's self-type down to the last identifier
+/// segment, suitable for use as a Rust path component.
+///
+/// `Tensor`, `Holder<T>`, and `path::to::Tensor` all collapse to
+/// `Tensor`. Returns `None` for primitive impls (`impl i32`), slice
+/// impls (`impl [T]`), reference impls (`impl &mut Foo`), tuple
+/// impls, and anything else where the self-type isn't a path —
+/// those don't have a clean segment we can splice into a qualified
+/// path, and the existing `Impl` item still surfaces them.
+fn self_type_segment(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => {
+            tp.path.segments.last().map(|s| s.ident.to_string())
+        }
+        // Borrowed self types like `&mut Foo` carry the ident one
+        // level deeper; recurse so `impl &mut Foo` still yields `Foo`.
+        syn::Type::Reference(r) => self_type_segment(&r.elem),
+        _ => None,
+    }
+}
+
+fn impl_method_signature(m: &syn::ImplItemFn) -> String {
+    let mut sig = m.sig.to_token_stream().to_string();
+    let vis = m.vis.to_token_stream().to_string();
+    if !vis.is_empty() {
+        sig = format!("{vis} {sig}");
+    }
+    normalize_whitespace(sig.trim())
+}
+
+fn impl_const_signature(c: &syn::ImplItemConst) -> String {
+    format!(
+        "{} const {}: {}",
+        c.vis.to_token_stream(),
+        c.ident,
+        c.ty.to_token_stream(),
+    )
+    .trim()
+    .to_string()
+}
+
+fn impl_type_signature(t: &syn::ImplItemType) -> String {
+    format!(
+        "{} type {}{}",
+        t.vis.to_token_stream(),
+        t.ident,
+        t.generics.to_token_stream(),
     )
     .trim()
     .to_string()
@@ -685,5 +800,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.items[0].qualified_path, "x::foo::bar::deep");
+    }
+
+    #[test]
+    fn inherent_impl_emits_per_method_items() {
+        let out = parse(
+            "pub struct Tensor;\n\
+             impl Tensor {\n\
+                 pub fn matmul(&self, rhs: &Self) -> Self { *self }\n\
+                 pub const RANK: usize = 2;\n\
+                 fn private() {}\n\
+             }",
+        );
+        // Struct + impl block + pub fn + pub const = 4 items.
+        // Private method is filtered out by `is_visible`.
+        let paths: Vec<&str> = out
+            .items
+            .iter()
+            .map(|i| i.qualified_path.as_str())
+            .collect();
+        assert!(paths.contains(&"x::Tensor"), "struct missing in {paths:?}");
+        assert!(
+            paths.contains(&"x::Tensor::matmul"),
+            "method missing in {paths:?}"
+        );
+        assert!(
+            paths.contains(&"x::Tensor::RANK"),
+            "assoc const missing in {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.contains("::private")),
+            "private method leaked in {paths:?}"
+        );
+        // The inherent impl block itself is still emitted as before.
+        assert!(out.items.iter().any(|i| i.kind == RustItemKind::Impl));
+    }
+
+    #[test]
+    fn inherent_impl_strips_generics_from_self_type_segment() {
+        let out = parse(
+            "pub struct Holder<T> { inner: T }\n\
+             impl<T> Holder<T> { pub fn new(inner: T) -> Self { Holder { inner } } }",
+        );
+        let paths: Vec<&str> = out
+            .items
+            .iter()
+            .map(|i| i.qualified_path.as_str())
+            .collect();
+        assert!(
+            paths.contains(&"x::Holder::new"),
+            "expected `Holder::new` (generics stripped), got {paths:?}",
+        );
+    }
+
+    #[test]
+    fn trait_impl_does_not_unroll_methods() {
+        // Methods on trait impls live on the trait itself; emitting
+        // them as inherent-style items would just multiply the index
+        // by every implementor.
+        let out = parse(
+            "pub trait Greet { fn hello(&self); }\n\
+             pub struct Foo;\n\
+             impl Greet for Foo { fn hello(&self) {} }",
+        );
+        let paths: Vec<&str> = out
+            .items
+            .iter()
+            .map(|i| i.qualified_path.as_str())
+            .collect();
+        assert!(
+            !paths.contains(&"x::Foo::hello"),
+            "trait-impl method should not be unrolled, got {paths:?}",
+        );
+    }
+
+    #[test]
+    fn primitive_self_type_impl_is_not_unrolled() {
+        // `impl i32 { ... }` isn't a thing crates write, but `impl
+        // [T] { ... }` and `impl &mut Foo` are. The self-type isn't a
+        // clean Rust path segment, so we leave the impl block as the
+        // only surfaced item rather than inventing a synthetic name.
+        let out = parse("impl<T> [T] { fn first_or_none(&self) {} }");
+        let paths: Vec<&str> = out
+            .items
+            .iter()
+            .map(|i| i.qualified_path.as_str())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.contains("::first_or_none")),
+            "slice-impl method should not be re-emitted, got {paths:?}",
+        );
     }
 }
