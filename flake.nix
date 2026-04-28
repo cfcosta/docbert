@@ -106,21 +106,31 @@
                 '';
               };
 
-              mkPackage =
+              # Common skeleton for any binary in this workspace. The
+              # docbert / rustbert helpers below layer their crate-specific
+              # bits (UI build, completions subcommand, etc.) on top.
+              mkWorkspaceBinary =
                 {
                   name,
-                  cargoPackage ? "docbert",
-                  mainProgram ? "docbert",
+                  cargoPackage,
+                  mainProgram,
                   buildFeatures ? [ ],
                   buildInputs ? [ ],
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
-                  extraPreBuild ? "",
+                  preBuild ? "",
+                  postInstall ? "",
                 }:
                 rustPlatform.buildRustPackage (
                   {
-                    inherit name buildInputs buildFeatures;
-                    nativeBuildInputs = nativeBuildInputs;
+                    inherit
+                      name
+                      buildFeatures
+                      buildInputs
+                      nativeBuildInputs
+                      preBuild
+                      postInstall
+                      ;
                     src = ./.;
                     cargoBuildFlags = [
                       "-p"
@@ -133,34 +143,84 @@
                     doCheck = false;
                     cargoLock.lockFile = ./Cargo.lock;
                     RUSTFLAGS = "-C target-cpu=native";
-                    preBuild =
-                      pkgs.lib.optionalString (uiPath != null) ''
-                        rm -rf crates/docbert/ui/dist
-                        mkdir -p crates/docbert/ui
-                        cp -r ${uiPath} crates/docbert/ui/dist
-                      ''
-                      + extraPreBuild;
-
-                    postInstall = ''
-                      # Generate shell completions
-                      mkdir -p $out/share/bash-completion/completions
-                      mkdir -p $out/share/zsh/site-functions
-                      mkdir -p $out/share/fish/vendor_completions.d
-
-                      $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-                      $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-                      $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-                    '';
-
                     meta.mainProgram = mainProgram;
                   }
                   // extraEnv
                 );
+
+              # Builds the docbert binary, with the React UI bundled in
+              # at compile time and shell completions emitted from the
+              # binary itself. Use this for every `.#docbert-*` output.
+              mkDocbertPackage =
+                {
+                  name,
+                  buildFeatures ? [ ],
+                  buildInputs ? [ ],
+                  nativeBuildInputs ? [ ],
+                  extraEnv ? { },
+                  extraPreBuild ? "",
+                }:
+                mkWorkspaceBinary {
+                  inherit
+                    name
+                    buildFeatures
+                    buildInputs
+                    nativeBuildInputs
+                    extraEnv
+                    ;
+                  cargoPackage = "docbert";
+                  mainProgram = "docbert";
+                  preBuild =
+                    pkgs.lib.optionalString (uiPath != null) ''
+                      rm -rf crates/docbert/ui/dist
+                      mkdir -p crates/docbert/ui
+                      cp -r ${uiPath} crates/docbert/ui/dist
+                    ''
+                    + extraPreBuild;
+                  postInstall = ''
+                    # Generate shell completions for docbert.
+                    mkdir -p $out/share/bash-completion/completions
+                    mkdir -p $out/share/zsh/site-functions
+                    mkdir -p $out/share/fish/vendor_completions.d
+
+                    $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
+                    $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
+                    $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
+                  '';
+                };
+
+              # Builds the rustbert binary. No UI, no completions
+              # subcommand — just the rust-crate-docs CLI / MCP server.
+              # Same `cuda` / `metal` feature plumbing as docbert because
+              # rustbert depends on docbert-core, which is the heavy
+              # GPU-aware crate.
+              mkRustbertPackage =
+                {
+                  name,
+                  buildFeatures ? [ ],
+                  buildInputs ? [ ],
+                  nativeBuildInputs ? [ ],
+                  extraEnv ? { },
+                  extraPreBuild ? "",
+                }:
+                mkWorkspaceBinary {
+                  inherit
+                    name
+                    buildFeatures
+                    buildInputs
+                    nativeBuildInputs
+                    extraEnv
+                    ;
+                  cargoPackage = "rustbert";
+                  mainProgram = "rustbert";
+                  preBuild = extraPreBuild;
+                };
             in
             {
               inherit
                 formatter
-                mkPackage
+                mkDocbertPackage
+                mkRustbertPackage
                 pkgs
                 rust
                 system
@@ -171,7 +231,12 @@
     in
     {
       packages = forEachSupportedSystem (
-        { mkPackage, pkgs, ... }:
+        {
+          mkDocbertPackage,
+          mkRustbertPackage,
+          pkgs,
+          ...
+        }:
         let
           cudaNativeBuildInputs = with pkgs; [
             cudaPackages.cuda_nvcc
@@ -186,67 +251,61 @@
             CUDA_COMPUTE_CAP = "80";
             CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
           };
+          # cudaforge fetches NVIDIA/cutlass via git at build time.
+          # Pre-stage a sandbox-resident copy with a stubbed `.git` so
+          # the build doesn't need network and `git rev-parse HEAD`
+          # returns the pinned commit. Shared between every
+          # `*-cuda` output that pulls candle-flash-attn.
+          cudaforgeEnv = cudaEnv // {
+            CUDAFORGE_HOME = "/tmp/cudaforge-cache";
+          };
+          cudaforgePreBuild = ''
+            dest=$CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
+            mkdir -p $CUDAFORGE_HOME/git/checkouts
+            cp -r ${nvidia-cutlass} $dest
+            chmod -R u+w $dest
+
+            # Stub a minimal .git dir so cudaforge's `git rev-parse HEAD`
+            # returns the expected commit hash and skips any network fetch.
+            mkdir -p $dest/.git/objects $dest/.git/refs
+            echo "7d49e6c7e2f8896c47f586706e67e1fb215529dc" > $dest/.git/HEAD
+          '';
 
         in
         {
-          default = mkPackage { name = "docbert"; };
+          default = mkDocbertPackage { name = "docbert"; };
 
-          docbert = mkPackage { name = "docbert"; };
+          docbert = mkDocbertPackage { name = "docbert"; };
 
-          docbert-cuda = mkPackage {
+          docbert-cuda = mkDocbertPackage {
             name = "docbert-cuda";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
             buildInputs = cudaBuildInputs;
-            extraEnv = cudaEnv // {
-              CUDAFORGE_HOME = "/tmp/cudaforge-cache";
-            };
-            extraPreBuild = ''
-              dest=$CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
-              mkdir -p $CUDAFORGE_HOME/git/checkouts
-              cp -r ${nvidia-cutlass} $dest
-              chmod -R u+w $dest
-
-              # Stub a minimal .git dir so cudaforge's `git rev-parse HEAD`
-              # returns the expected commit hash and skips any network fetch.
-              mkdir -p $dest/.git/objects $dest/.git/refs
-              echo "7d49e6c7e2f8896c47f586706e67e1fb215529dc" > $dest/.git/HEAD
-            '';
+            extraEnv = cudaforgeEnv;
+            extraPreBuild = cudaforgePreBuild;
           };
 
-          docbert-metal = mkPackage {
+          docbert-metal = mkDocbertPackage {
             name = "docbert-metal";
             buildFeatures = [ "metal" ];
           };
 
-          # rustbert is a separate binary in the same workspace; it
-          # has no UI, no completions subcommand, and no GPU-accelerated
-          # variants — so it doesn't need the docbert-specific
-          # `mkPackage` plumbing.
-          rustbert =
-            let
-              rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-              rustPlatform = pkgs.makeRustPlatform {
-                rustc = rust;
-                cargo = rust;
-              };
-            in
-            rustPlatform.buildRustPackage {
-              name = "rustbert";
-              src = ./.;
-              cargoBuildFlags = [
-                "-p"
-                "rustbert"
-              ];
-              cargoTestFlags = [
-                "-p"
-                "rustbert"
-              ];
-              doCheck = false;
-              cargoLock.lockFile = ./Cargo.lock;
-              RUSTFLAGS = "-C target-cpu=native";
-              meta.mainProgram = "rustbert";
-            };
+          rustbert = mkRustbertPackage { name = "rustbert"; };
+
+          rustbert-cuda = mkRustbertPackage {
+            name = "rustbert-cuda";
+            buildFeatures = [ "cuda" ];
+            nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
+            buildInputs = cudaBuildInputs;
+            extraEnv = cudaforgeEnv;
+            extraPreBuild = cudaforgePreBuild;
+          };
+
+          rustbert-metal = mkRustbertPackage {
+            name = "rustbert-metal";
+            buildFeatures = [ "metal" ];
+          };
         }
       );
 
