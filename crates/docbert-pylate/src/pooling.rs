@@ -99,16 +99,15 @@ pub fn hierarchical_pooling(
 
         let cosine_similarities =
             embeddings_to_pool.matmul(&embeddings_to_pool.t()?)?;
-        let distance_matrix_tensor = (1.0 - cosine_similarities)?;
+        let distance_matrix = (1.0 - cosine_similarities)?.to_vec2::<f32>()?;
 
-        let mut condensed_distances: Vec<f64> = Vec::new();
+        let mut condensed_distances: Vec<f64> = Vec::with_capacity(
+            num_embeddings_to_pool * (num_embeddings_to_pool - 1) / 2,
+        );
         for row in 0..num_embeddings_to_pool - 1 {
-            for col in row + 1..num_embeddings_to_pool {
-                let dist = distance_matrix_tensor
-                    .get(row)?
-                    .get(col)?
-                    .to_scalar::<f32>()? as f64;
-                condensed_distances.push(dist);
+            let row_slice = &distance_matrix[row];
+            for &dist in &row_slice[row + 1..num_embeddings_to_pool] {
+                condensed_distances.push(dist as f64);
             }
         }
 
