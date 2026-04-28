@@ -18,6 +18,7 @@ mod shared;
 
 use std::hint::black_box;
 
+use candle_core::Tensor;
 use criterion::{
     BenchmarkId,
     Criterion,
@@ -25,7 +26,10 @@ use criterion::{
     criterion_group,
     criterion_main,
 };
-use docbert_plaid::kmeans::{assign_points, fit, update_centroids};
+use docbert_plaid::{
+    device::default_device,
+    kmeans::{assign_points, fit, update_centroids},
+};
 
 const DIM: usize = 128;
 const K: usize = 256;
@@ -49,21 +53,31 @@ fn bench_assign_points(c: &mut Criterion) {
 
 fn bench_update_centroids(c: &mut Criterion) {
     let mut group = c.benchmark_group("kmeans/update_centroids");
-    let previous = shared::random_unit_vectors(0xC047, K, DIM);
+    let device = default_device();
+    let previous_vec = shared::random_unit_vectors(0xC047, K, DIM);
+    let previous_t =
+        Tensor::from_slice(previous_vec.as_slice(), (K, DIM), device).unwrap();
     for &n in &[10_000usize, 50_000] {
-        let points = shared::random_unit_vectors(0xDA7A, n, DIM);
+        let points_vec = shared::random_unit_vectors(0xDA7A, n, DIM);
+        let p_t = Tensor::from_slice(points_vec.as_slice(), (n, DIM), device)
+            .unwrap();
         let centroids = shared::random_unit_vectors(0xC047, K, DIM);
         let assignments: Vec<usize> =
-            assign_points(&points, &centroids, DIM).unwrap();
+            assign_points(&points_vec, &centroids, DIM).unwrap();
+        let a_t = Tensor::from_vec(
+            assignments.iter().map(|&a| a as u32).collect::<Vec<_>>(),
+            (n,),
+            device,
+        )
+        .unwrap();
         group.throughput(Throughput::Elements(n as u64));
         group.sample_size(if n >= 50_000 { 10 } else { 30 });
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 update_centroids(
-                    black_box(&points),
-                    black_box(&assignments),
-                    black_box(&previous),
-                    DIM,
+                    black_box(&p_t),
+                    black_box(&a_t),
+                    black_box(&previous_t),
                 )
             });
         });

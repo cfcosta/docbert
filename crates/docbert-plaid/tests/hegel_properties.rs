@@ -404,12 +404,13 @@ fn prop_top_n_centroids_shape_sort_uniqueness(tc: TestCase) {
     }
 }
 
-/// Shape: `update_centroids` returns a `k × dim` buffer; every cluster
+/// Shape: `update_centroids` returns a `k × dim` tensor; every cluster
 /// with at least one assigned point equals the arithmetic mean of its
 /// points within float ε, and empty clusters keep their previous
 /// centroid byte-for-byte (preventing degenerate collapses to origin).
 #[hegel::test(test_cases = 100)]
 fn prop_update_centroids_shape_and_empty_cluster_preservation(tc: TestCase) {
+    use candle_core::Tensor;
     use docbert_plaid::kmeans::update_centroids;
     let dim = tc.draw(codec_dim());
     let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
@@ -428,7 +429,19 @@ fn prop_update_centroids_shape_and_empty_cluster_preservation(tc: TestCase) {
         (points, assignments)
     };
 
-    let updated = update_centroids(&points, &assignments, &previous, dim);
+    let device = docbert_plaid::device::default_device();
+    let p_t = Tensor::from_slice(points.as_slice(), (n, dim), device).unwrap();
+    let a_t = Tensor::from_vec(
+        assignments.iter().map(|&a| a as u32).collect::<Vec<_>>(),
+        (n,),
+        device,
+    )
+    .unwrap();
+    let prev_t =
+        Tensor::from_slice(previous.as_slice(), (k, dim), device).unwrap();
+
+    let updated_t = update_centroids(&p_t, &a_t, &prev_t).unwrap();
+    let updated: Vec<f32> = updated_t.flatten_all().unwrap().to_vec1().unwrap();
     assert_eq!(updated.len(), k * dim);
 
     for cluster in 0..k {
@@ -541,6 +554,7 @@ fn prop_fit_zero_iters_returns_input_rows(tc: TestCase) {
 /// configuration if the invariant ever breaks.
 #[hegel::test(test_cases = 50)]
 fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
+    use candle_core::Tensor;
     use docbert_plaid::{
         distance::squared_l2,
         kmeans::{assign_points, update_centroids},
@@ -549,6 +563,8 @@ fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
     let k = tc.draw(gs::integers::<usize>().min_value(2).max_value(6));
     let n = tc.draw(gs::integers::<usize>().min_value(k).max_value(32));
     let points = tc.draw(unit_rows(dim, n));
+    let device = docbert_plaid::device::default_device();
+    let p_t = Tensor::from_slice(points.as_slice(), (n, dim), device).unwrap();
     let mut centroids = points[..k * dim].to_vec();
 
     let mut prev = f64::INFINITY;
@@ -566,7 +582,20 @@ fn prop_lloyd_inertia_non_increasing(tc: TestCase) {
             "inertia rose from {prev} to {current} at iter {iter}",
         );
         prev = current;
-        centroids = update_centroids(&points, &assignments, &centroids, dim);
+        let a_t = Tensor::from_vec(
+            assignments.iter().map(|&a| a as u32).collect::<Vec<_>>(),
+            (n,),
+            device,
+        )
+        .unwrap();
+        let c_t =
+            Tensor::from_slice(centroids.as_slice(), (k, dim), device).unwrap();
+        centroids = update_centroids(&p_t, &a_t, &c_t)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
     }
 }
 

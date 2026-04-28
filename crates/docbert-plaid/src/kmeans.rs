@@ -24,12 +24,13 @@
 //! full-corpus assign happens later in [`crate::codec`] during
 //! encoding.
 //!
-//! [`nearest_centroid`] (single point) and [`update_centroids`] (the
-//! M-step) remain scalar — both are cheap relative to the assignment
-//! step at training scale (≤ k · 256 points) and the per-call
-//! tensor-allocation overhead would dominate.
+//! [`nearest_centroid`] (single point) is the only scalar primitive
+//! left — it's a pure-CPU helper used outside the training loop.
+//! [`update_centroids`] (the M-step) and the assignment step both run
+//! through candle, so the whole Lloyd loop dispatches to whichever
+//! backend `p_tensor.device()` lives on.
 
-use candle_core::Tensor;
+use candle_core::{DType, Tensor};
 use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 
 use crate::{Result, device::default_device, distance::squared_l2};
@@ -102,79 +103,67 @@ pub fn nearest_centroid(point: &[f32], centroids: &[f32], dim: usize) -> usize {
 
 /// Recompute centroids as the mean of the points currently assigned to them.
 ///
-/// This is the M-step of Lloyd's algorithm. If a cluster ends up with no
-/// points assigned, its centroid is copied from `previous` unchanged —
-/// this keeps empty clusters from collapsing to the origin and follows
-/// what fast-plaid's index builder does.
+/// This is the M-step of Lloyd's algorithm, expressed as candle ops so a
+/// single implementation runs on whichever device the input tensors live
+/// on — CUDA when the build has the `cuda` feature and the points were
+/// uploaded to the GPU, the candle CPU backend otherwise. There's no
+/// separate scalar fallback to keep in sync.
 ///
-/// `points` is row-major `n_points × dim`, `assignments` has length
-/// `n_points` with values in `0..k`, and `previous` is row-major
-/// `k × dim`. Returns a new `k × dim` buffer.
+/// Builds a `[N, k]` one-hot of the assignments, then computes
+/// `sums = oneᵀ × points` (`[k, dim]`) and `counts = oneᵀ.sum(1)`
+/// (`[k, 1]`) in one matmul each. Empty clusters keep their `previous`
+/// centroid via `where_cond` so the cluster count stays stable across
+/// iterations — same behaviour as fast-plaid's reference.
 ///
-/// # Panics
+/// `p_tensor` is `[N, dim]` f32. `assignments` is `[N]` u32 with values
+/// in `0..k` (the contract of [`assign_as_tensor`]). `previous` is
+/// `[k, dim]` f32. The returned tensor is `[k, dim]` f32 on the same
+/// device.
 ///
-/// Panics if any shape invariant is violated or if an assignment is
-/// out of range.
+/// # Errors
+///
+/// Returns [`PlaidError::Tensor`] if any underlying tensor op fails.
+///
+/// [`PlaidError::Tensor`]: crate::PlaidError::Tensor
 pub fn update_centroids(
-    points: &[f32],
-    assignments: &[usize],
-    previous: &[f32],
-    dim: usize,
-) -> Vec<f32> {
-    assert!(dim > 0, "update_centroids: dim must be positive");
-    assert!(
-        points.len().is_multiple_of(dim),
-        "update_centroids: points length {} is not a multiple of dim {}",
-        points.len(),
-        dim,
-    );
-    assert!(
-        previous.len().is_multiple_of(dim) && !previous.is_empty(),
-        "update_centroids: previous length {} is not a positive multiple of dim {}",
-        previous.len(),
-        dim,
-    );
-    let k = previous.len() / dim;
-    assert_eq!(
-        assignments.len(),
-        points.len() / dim,
-        "update_centroids: {} assignments for {} points",
-        assignments.len(),
-        points.len() / dim,
-    );
+    p_tensor: &Tensor,
+    assignments: &Tensor,
+    previous: &Tensor,
+) -> Result<Tensor> {
+    let (n, _) = p_tensor.dims2()?;
+    let (k, _) = previous.dims2()?;
+    let device = p_tensor.device();
+    let dtype = p_tensor.dtype();
 
-    let mut sums = vec![0.0f32; k * dim];
-    let mut counts = vec![0usize; k];
-
-    for (point, &cluster) in points.chunks_exact(dim).zip(assignments.iter()) {
-        assert!(
-            cluster < k,
-            "update_centroids: assignment {cluster} out of range 0..{k}"
-        );
-        let slot = &mut sums[cluster * dim..(cluster + 1) * dim];
-        for (s, p) in slot.iter_mut().zip(point.iter()) {
-            *s += *p;
-        }
-        counts[cluster] += 1;
+    // No points → every cluster is empty → `previous` survives intact.
+    // Skipping avoids calling matmul against an empty operand, which a
+    // few candle backends are picky about.
+    if n == 0 {
+        return Ok(previous.clone());
     }
 
-    let mut new_centroids = vec![0.0f32; k * dim];
-    for (cluster, &count) in counts.iter().enumerate() {
-        let start = cluster * dim;
-        let end = start + dim;
-        if count == 0 {
-            new_centroids[start..end].copy_from_slice(&previous[start..end]);
-            continue;
-        }
-        let inv = 1.0f32 / count as f32;
-        for (out, s) in
-            new_centroids[start..end].iter_mut().zip(&sums[start..end])
-        {
-            *out = s * inv;
-        }
-    }
+    // One-hot encode assignments. `assignments[i] == j` is broadcast
+    // against an `arange(k)` row; the result lives on-device and is
+    // cast to the points' dtype so the matmul below has matching
+    // operands.
+    let cluster_ids =
+        Tensor::arange(0u32, k as u32, device)?.reshape((1, k))?;
+    let one_hot = assignments
+        .reshape((n, 1))?
+        .broadcast_eq(&cluster_ids)?
+        .to_dtype(dtype)?;
 
-    new_centroids
+    // [k, N] × [N, dim] = [k, dim]; [k, N].sum(1) = [k, 1].
+    let one_hot_t = one_hot.t()?.contiguous()?;
+    let sums = one_hot_t.matmul(p_tensor)?;
+    let counts = one_hot_t.sum_keepdim(1)?;
+
+    // Empty clusters would divide by zero; clamp the divisor and then
+    // overwrite those rows with `previous` via `where_cond`.
+    let safe_counts = counts.clamp(1.0f32, f32::MAX)?;
+    let means = sums.broadcast_div(&safe_counts)?;
+    let empty_mask = counts.eq(0.0f32)?.broadcast_as(means.shape())?;
+    Ok(empty_mask.where_cond(previous, &means)?)
 }
 
 /// Run Lloyd's algorithm starting from an explicit set of initial centroids.
@@ -229,10 +218,18 @@ pub fn fit_with_init(
     let n_points = points.len() / dim;
     let device = default_device();
     let p_tensor = Tensor::from_slice(points, (n_points, dim), device)?;
-    fit_with_init_on_tensor(&p_tensor, points, initial, dim, max_iters)
+    fit_with_init_on_tensor(&p_tensor, initial, dim, max_iters)
 }
 
 /// Run Lloyd's algorithm against an already-uploaded `p_tensor`.
+///
+/// The whole loop stays on `p_tensor.device()`: assignments come back
+/// from [`assign_as_tensor`] as a device-resident u32 tensor, the
+/// M-step folds them into new centroids via candle ops in
+/// [`update_centroids`], and the convergence check compares
+/// successive assignment tensors via a single scalar host pull. Only
+/// the final centroids round-trip back to a host `Vec<f32>` for the
+/// caller.
 ///
 /// Factored out so [`fit`] can upload the points tensor once and share
 /// it with [`farthest_first_init_on_tensor`]. Duplicating the upload
@@ -240,26 +237,31 @@ pub fn fit_with_init(
 /// pushed the build into CUDA OOM on 12 GB cards.
 fn fit_with_init_on_tensor(
     p_tensor: &Tensor,
-    points: &[f32],
     initial: &[f32],
     dim: usize,
     max_iters: usize,
 ) -> Result<Vec<f32>> {
-    let mut centroids = initial.to_vec();
     let k = initial.len() / dim;
     let device = p_tensor.device();
+    let mut centroids_t = Tensor::from_slice(initial, (k, dim), device)?;
 
-    let mut previous_assignments: Option<Vec<usize>> = None;
+    let mut previous_assignments: Option<Tensor> = None;
     for _ in 0..max_iters {
-        let c_tensor = Tensor::from_slice(&centroids, (k, dim), device)?;
-        let assignments = assign_tensor(p_tensor, &c_tensor)?;
-        if previous_assignments.as_deref() == Some(assignments.as_slice()) {
-            break;
+        let assignments = assign_as_tensor(p_tensor, &centroids_t)?;
+        if let Some(prev) = &previous_assignments {
+            let mismatches = assignments
+                .ne(prev)?
+                .to_dtype(DType::F32)?
+                .sum_all()?
+                .to_scalar::<f32>()?;
+            if mismatches == 0.0 {
+                break;
+            }
         }
-        centroids = update_centroids(points, &assignments, &centroids, dim);
+        centroids_t = update_centroids(p_tensor, &assignments, &centroids_t)?;
         previous_assignments = Some(assignments);
     }
-    Ok(centroids)
+    Ok(centroids_t.flatten_all()?.to_vec1::<f32>()?)
 }
 
 /// Run k-means over a subsample of `points`.
@@ -315,13 +317,7 @@ pub fn fit(
     let training_tensor =
         Tensor::from_slice(&training_points, (n_train, dim), device)?;
     let initial = training_points[..k * dim].to_vec();
-    fit_with_init_on_tensor(
-        &training_tensor,
-        &training_points,
-        &initial,
-        dim,
-        max_iters,
-    )
+    fit_with_init_on_tensor(&training_tensor, &initial, dim, max_iters)
 }
 
 /// Same as [`fit`] but accepts an already-uploaded `p_tensor` covering
@@ -347,9 +343,7 @@ pub fn fit_on_tensor(
 
     if same_as_pool {
         // Tiny corpus — reuse the caller's tensor directly.
-        return fit_with_init_on_tensor(
-            p_tensor, points, &initial, dim, max_iters,
-        );
+        return fit_with_init_on_tensor(p_tensor, &initial, dim, max_iters);
     }
 
     // Otherwise build the training tensor from the subsample. The
@@ -361,13 +355,7 @@ pub fn fit_on_tensor(
     let n_train = training_points.len() / dim;
     let training_tensor =
         Tensor::from_slice(&training_points, (n_train, dim), device)?;
-    fit_with_init_on_tensor(
-        &training_tensor,
-        &training_points,
-        &initial,
-        dim,
-        max_iters,
-    )
+    fit_with_init_on_tensor(&training_tensor, &initial, dim, max_iters)
 }
 
 /// Sample up to `k · MAX_POINTS_PER_CENTROID` rows from `points` with
@@ -723,38 +711,52 @@ mod tests {
 
     // -- Lloyd M-step --
 
+    /// Materialise a `[k, dim]` host slice from a `[k, dim]` tensor for
+    /// equality assertions. Only used in M-step tests.
+    fn centroids_to_vec(t: &Tensor) -> Vec<f32> {
+        t.flatten_all().unwrap().to_vec1::<f32>().unwrap()
+    }
+
     #[test]
     fn update_centroids_averages_assigned_points() {
         // Two clusters. Cluster 0 gets (0,0) and (2,0); cluster 1 gets (10,0).
-        let points = [0.0, 0.0, 2.0, 0.0, 10.0, 0.0];
-        let assignments = [0, 0, 1];
-        let previous = [0.0, 0.0, 0.0, 0.0];
+        let device = default_device();
+        let points = Tensor::from_vec(
+            vec![0.0_f32, 0.0, 2.0, 0.0, 10.0, 0.0],
+            (3, 2),
+            device,
+        )
+        .unwrap();
+        let assignments =
+            Tensor::from_vec(vec![0u32, 0, 1], (3,), device).unwrap();
+        let previous =
+            Tensor::from_vec(vec![0.0_f32; 4], (2, 2), device).unwrap();
 
-        let updated = update_centroids(&points, &assignments, &previous, 2);
+        let updated =
+            update_centroids(&points, &assignments, &previous).unwrap();
 
-        assert_eq!(updated, vec![1.0, 0.0, 10.0, 0.0]);
+        assert_eq!(centroids_to_vec(&updated), vec![1.0, 0.0, 10.0, 0.0]);
     }
 
     #[test]
     fn update_centroids_keeps_previous_for_empty_clusters() {
         // Cluster 1 receives no points; its centroid must survive.
-        let points = [0.0, 0.0, 2.0, 0.0];
-        let assignments = [0, 0];
-        let previous = [5.0, 5.0, 99.0, -99.0];
+        let device = default_device();
+        let points =
+            Tensor::from_vec(vec![0.0_f32, 0.0, 2.0, 0.0], (2, 2), device)
+                .unwrap();
+        let assignments =
+            Tensor::from_vec(vec![0u32, 0], (2,), device).unwrap();
+        let previous =
+            Tensor::from_vec(vec![5.0_f32, 5.0, 99.0, -99.0], (2, 2), device)
+                .unwrap();
 
-        let updated = update_centroids(&points, &assignments, &previous, 2);
+        let updated =
+            update_centroids(&points, &assignments, &previous).unwrap();
+        let updated = centroids_to_vec(&updated);
 
         assert_eq!(updated[..2], [1.0, 0.0]);
         assert_eq!(updated[2..], [99.0, -99.0]);
-    }
-
-    #[test]
-    #[should_panic(expected = "out of range")]
-    fn update_centroids_panics_on_out_of_range_assignment() {
-        let points = [0.0, 0.0];
-        let assignments = [5];
-        let previous = [0.0, 0.0];
-        let _ = update_centroids(&points, &assignments, &previous, 2);
     }
 
     // -- Lloyd driver --
