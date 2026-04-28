@@ -294,30 +294,100 @@ async fn tool_search(
         .get("query")
         .and_then(Value::as_str)
         .ok_or((-32602, "missing `query`".to_string()))?;
-    let opts = SearchOptions {
-        kind: args
-            .get("kind")
-            .and_then(Value::as_str)
-            .and_then(RustItemKind::parse),
-        module_prefix: args
-            .get("module_prefix")
-            .and_then(Value::as_str)
-            .map(String::from),
-        limit: args
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize),
-    };
+    let kind_filter = args
+        .get("kind")
+        .and_then(Value::as_str)
+        .and_then(RustItemKind::parse);
+    let module_filter: Option<String> = args
+        .get("module_prefix")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let limit: usize = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(10);
 
     let fetcher = ReqwestFetcher::new().map_err(|e| (-32000, e.to_string()))?;
     let api = CratesIoApi::new(fetcher.clone());
     let mut indexer = crate::indexer::Indexer::open(cache.data_dir())
         .map_err(|e| (-32000, e.to_string()))?;
+
+    // ensure_cached calls `ingest()`, which fetches + parses +
+    // indexes + embeds + rebuilds PLAID on the first hit for any
+    // (crate, version) not already in the indexer. By the time we
+    // get past this line, the crate is fully searchable.
     let coll =
         ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
+
+    // Hybrid (BM25 + ColBERT/PLAID) search via the docbert-core
+    // stack — the same path the CLI takes. Kind / module filters
+    // apply post-rank against the cached items.
+    let params = docbert_core::search::SearchParams {
+        query: query.to_string(),
+        count: limit * 4, // overfetch for post-filter headroom
+        collection: Some(coll.to_string()),
+        min_score: 0.0,
+        bm25_only: false,
+        no_fuzzy: false,
+        all: false,
+    };
+    let results = indexer
+        .search(params)
+        .map_err(|e| (-32000, e.to_string()))?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
-    let hits = search::search(&items, query, &opts);
-    Ok(format_hits(&items, &coll, &hits))
+    Ok(format_hybrid_hits(
+        &coll,
+        &items,
+        &results,
+        kind_filter,
+        module_filter.as_deref(),
+        limit,
+    ))
+}
+
+fn format_hybrid_hits(
+    coll: &crate::collection::SyntheticCollection,
+    items: &[RustItem],
+    results: &[docbert_core::search::FinalResult],
+    kind_filter: Option<RustItemKind>,
+    module_filter: Option<&str>,
+    limit: usize,
+) -> String {
+    let mut out = String::new();
+    let mut shown = 0usize;
+    for r in results {
+        let Some(item) = items.iter().find(|i| i.qualified_path == r.title)
+        else {
+            continue;
+        };
+        if let Some(k) = kind_filter
+            && item.kind != k
+        {
+            continue;
+        }
+        if let Some(prefix) = module_filter
+            && !item.qualified_path.starts_with(prefix)
+        {
+            continue;
+        }
+        out.push_str(&format!(
+            "[{score:.3}] {}\n",
+            format_item_one_line(item),
+            score = r.score,
+        ));
+        shown += 1;
+        if shown >= limit {
+            break;
+        }
+    }
+    if shown == 0 {
+        return format!("(no matches in {}@{})", coll.crate_name, coll.version);
+    }
+    format!(
+        "{shown} matches in {}@{}\n\n{out}",
+        coll.crate_name, coll.version
+    )
 }
 
 async fn tool_get(
@@ -415,28 +485,6 @@ fn tool_status(
         ));
     }
     Ok(out)
-}
-
-fn format_hits(
-    _items: &[RustItem],
-    coll: &crate::collection::SyntheticCollection,
-    hits: &[search::SearchHit<'_>],
-) -> String {
-    if hits.is_empty() {
-        return format!("(no matches in {}@{})", coll.crate_name, coll.version);
-    }
-    let mut out = format!(
-        "{} matches in {}@{}\n\n",
-        hits.len(),
-        coll.crate_name,
-        coll.version,
-    );
-    for h in hits {
-        out.push_str(&format!("[{score}] ", score = h.score));
-        out.push_str(&format_item_one_line(h.item));
-        out.push('\n');
-    }
-    out
 }
 
 fn format_item_one_line(item: &RustItem) -> String {
