@@ -110,10 +110,6 @@ enum Command {
         /// Skip crates matching this glob (repeatable).
         #[arg(long)]
         exclude: Vec<String>,
-        /// Skip ColBERT embedding and the PLAID rebuild. Lexical
-        /// search still works; semantic ranking is unavailable.
-        #[arg(long)]
-        no_embed: bool,
     },
 
     /// Re-resolve cached `latest`/semver-pattern entries against
@@ -199,11 +195,7 @@ async fn real_main() -> Result<()> {
             force,
             dry_run,
             exclude,
-            no_embed,
-        } => {
-            cmd_sync(&cache, lock, jobs, force, dry_run, exclude, no_embed)
-                .await
-        }
+        } => cmd_sync(&cache, lock, jobs, force, dry_run, exclude).await,
         Command::Refresh {
             crate_name,
             older_than,
@@ -218,13 +210,13 @@ fn cmd_index(cache: &CrateCache, path: Option<PathBuf>) -> Result<()> {
         Some(p) => p,
         None => std::env::current_dir()?,
     };
-    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
 
     if rustbert::host_project::is_workspace_root(&project_root) {
         let outcomes = rustbert::host_project::index_workspace(
             &project_root,
             cache,
-            &indexer,
+            &mut indexer,
         )?;
         let mut succeeded = 0usize;
         let mut failed = 0usize;
@@ -254,8 +246,11 @@ fn cmd_index(cache: &CrateCache, path: Option<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
-    let (coll, items, failures) =
-        rustbert::host_project::index_project(&project_root, cache, &indexer)?;
+    let (coll, items, failures) = rustbert::host_project::index_project(
+        &project_root,
+        cache,
+        &mut indexer,
+    )?;
     println!(
         "indexed {} items from {}@{} ({} failures)",
         items, coll.crate_name, coll.version, failures,
@@ -293,12 +288,12 @@ async fn cmd_fetch(cache: &CrateCache, spec: &str, force: bool) -> Result<()> {
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
     let report = ingestion::ingest(
         &fetcher,
         &api,
         cache,
-        &indexer,
+        &mut indexer,
         &crate_ref,
         IngestionOptions { force },
     )
@@ -309,7 +304,7 @@ async fn cmd_fetch(cache: &CrateCache, spec: &str, force: bool) -> Result<()> {
 
 async fn ensure_cached<F: Fetcher + Clone>(
     cache: &CrateCache,
-    indexer: &rustbert::indexer::Indexer,
+    indexer: &mut rustbert::indexer::Indexer,
     fetcher: &F,
     api: &CratesIoApi<F>,
     crate_ref: &CrateRef,
@@ -339,7 +334,7 @@ async fn cmd_search(
     let api = CratesIoApi::new(fetcher.clone());
     let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
 
     // BM25 + (when available) ColBERT hybrid via the docbert-core
     // stack. Kind / module filters are applied post-rank against the
@@ -390,9 +385,9 @@ async fn cmd_get(cache: &CrateCache, spec: &str, path: &str) -> Result<()> {
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
     let item =
         search::get(&items, path).ok_or_else(|| Error::NoMatchingVersion {
@@ -413,9 +408,9 @@ async fn cmd_list(
     let crate_ref = CrateRef::parse(spec)?;
     let fetcher = ReqwestFetcher::new()?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+    let mut indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll)?;
     let opts = SearchOptions {
         kind: parse_kind(kind)?,
@@ -514,7 +509,6 @@ async fn cmd_sync(
     force: bool,
     dry_run: bool,
     exclude: Vec<String>,
-    no_embed: bool,
 ) -> Result<()> {
     let lockfile = match lock {
         Some(p) => p,
@@ -527,13 +521,14 @@ async fn cmd_sync(
     // expects `sync` to leave their own crates searchable alongside
     // the deps.
     if !dry_run && let Some(project_root) = lockfile.parent() {
-        let host_indexer = rustbert::indexer::Indexer::open(cache.data_dir())?;
+        let mut host_indexer =
+            rustbert::indexer::Indexer::open(cache.data_dir())?;
         if rustbert::host_project::is_workspace_root(project_root) {
             println!("indexing host workspace members:");
             let outcomes = rustbert::host_project::index_workspace(
                 project_root,
                 cache,
-                &host_indexer,
+                &mut host_indexer,
             )?;
             for o in &outcomes {
                 match &o.result {
@@ -550,7 +545,7 @@ async fn cmd_sync(
             match rustbert::host_project::index_project(
                 project_root,
                 cache,
-                &host_indexer,
+                &mut host_indexer,
             ) {
                 Ok((coll, items, _)) => println!(
                     "indexed host project {}@{}  {} items",
@@ -567,7 +562,6 @@ async fn cmd_sync(
         jobs,
         exclude,
         dry_run,
-        no_embed,
     };
     let plan = sync_mod::build_plan(&text, cache, &opts)?;
     println!(

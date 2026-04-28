@@ -68,10 +68,6 @@ pub struct SyncOptions {
     pub jobs: usize,
     pub exclude: Vec<String>,
     pub dry_run: bool,
-    /// Skip ColBERT embedding (and the PLAID rebuild). Lexical search
-    /// still works; semantic search becomes available next time embed
-    /// happens.
-    pub no_embed: bool,
 }
 
 impl SyncOptions {
@@ -222,62 +218,52 @@ where
         }
     }
 
-    // Sequential indexing + embedding pass over every crate that
-    // successfully landed in the cache. The indexer is shared mutable,
-    // so this can't run in parallel — but Tantivy writes are fast and
-    // ColBERT encoding is the actual bottleneck regardless.
+    // Sequential index + embed pass over every crate that
+    // successfully landed in the cache. Lexical and ColBERT indexing
+    // are coupled inside `index_items` — either both succeed or the
+    // crate's lexical entries are rolled back. Crates whose indexing
+    // fails get reclassified as failures so the report stays honest.
     let mut indexed = 0usize;
-    let mut embedded = 0usize;
-    for (name, version, _) in &outcome.successes {
+    let mut still_successful = Vec::new();
+    let mut promoted_failures: Vec<(String, semver::Version, String)> =
+        Vec::new();
+    for (name, version, items) in std::mem::take(&mut outcome.successes) {
         let coll = crate::collection::SyntheticCollection {
             crate_name: name.clone(),
             version: version.clone(),
         };
-        let items = match cache.load(&coll) {
-            Ok(i) => i,
-            Err(e) => {
-                outcome.failures.push((
-                    name.clone(),
-                    version.clone(),
-                    e.to_string(),
-                ));
-                continue;
-            }
-        };
-        if let Err(e) = indexer.index_lexical(&coll, &items) {
-            outcome.failures.push((
-                name.clone(),
-                version.clone(),
-                e.to_string(),
-            ));
-            continue;
-        }
-        indexed += 1;
-        if !options.no_embed {
-            match indexer.embed_items(&coll, &items) {
-                Ok(_) => embedded += 1,
-                Err(e) => {
-                    tracing::warn!(
-                        crate = %name,
-                        version = %version,
-                        error = %e,
-                        "embedding failed; lexical search still works",
-                    );
+        match cache.load(&coll) {
+            Ok(loaded) => match indexer.index_items(&coll, &loaded) {
+                Ok(_) => {
+                    indexed += 1;
+                    still_successful.push((name, version, items));
                 }
-            }
+                Err(e) => promoted_failures.push((
+                    name,
+                    version,
+                    format!("index_items: {e}"),
+                )),
+            },
+            Err(e) => promoted_failures.push((
+                name,
+                version,
+                format!("cache.load: {e}"),
+            )),
         }
     }
-    if embedded > 0
+    outcome.successes = still_successful;
+    outcome.failures.extend(promoted_failures);
+
+    if indexed > 0
         && let Err(e) = indexer.rebuild_plaid()
     {
         tracing::warn!(
             error = %e,
-            "PLAID rebuild failed; semantic search disabled until next sync",
+            "PLAID rebuild failed — search will fall back to BM25-only",
         );
     }
     tracing::info!(
         indexed = indexed,
-        embedded = embedded,
         successes = outcome.successes.len(),
         failures = outcome.failures.len(),
         "sync complete",
@@ -437,6 +423,7 @@ source = "git+https://github.com/foo/bar?rev=abc#abc123def4567890123456789012345
             dry_run: true,
             ..Default::default()
         };
+        // (the dry-run path doesn't open the indexer for index_items)
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

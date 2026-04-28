@@ -266,7 +266,7 @@ fn parse_crate_ref(
 
 async fn ensure_cached<F: Fetcher + Clone>(
     cache: &CrateCache,
-    indexer: &crate::indexer::Indexer,
+    indexer: &mut crate::indexer::Indexer,
     fetcher: &F,
     api: &CratesIoApi<F>,
     crate_ref: &CrateRef,
@@ -311,10 +311,10 @@ async fn tool_search(
 
     let fetcher = ReqwestFetcher::new().map_err(|e| (-32000, e.to_string()))?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = crate::indexer::Indexer::open(cache.data_dir())
+    let mut indexer = crate::indexer::Indexer::open(cache.data_dir())
         .map_err(|e| (-32000, e.to_string()))?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
     let hits = search::search(&items, query, &opts);
     Ok(format_hits(&items, &coll, &hits))
@@ -331,10 +331,10 @@ async fn tool_get(
         .ok_or((-32602, "missing `path`".to_string()))?;
     let fetcher = ReqwestFetcher::new().map_err(|e| (-32000, e.to_string()))?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = crate::indexer::Indexer::open(cache.data_dir())
+    let mut indexer = crate::indexer::Indexer::open(cache.data_dir())
         .map_err(|e| (-32000, e.to_string()))?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
     match search::get(&items, path) {
         Some(item) => Ok(format_item_full(item)),
@@ -369,10 +369,10 @@ async fn tool_list(
     };
     let fetcher = ReqwestFetcher::new().map_err(|e| (-32000, e.to_string()))?;
     let api = CratesIoApi::new(fetcher.clone());
-    let indexer = crate::indexer::Indexer::open(cache.data_dir())
+    let mut indexer = crate::indexer::Indexer::open(cache.data_dir())
         .map_err(|e| (-32000, e.to_string()))?;
     let coll =
-        ensure_cached(cache, &indexer, &fetcher, &api, &crate_ref).await?;
+        ensure_cached(cache, &mut indexer, &fetcher, &api, &crate_ref).await?;
     let items = cache.load(&coll).map_err(|e| (-32000, e.to_string()))?;
     let listed = search::list(&items, &opts);
     let mut out = format!(

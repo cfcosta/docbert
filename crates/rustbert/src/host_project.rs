@@ -152,11 +152,13 @@ fn find_workspace_root(start: &Path) -> Result<PathBuf> {
 /// Walk a local Cargo project, index its items, and store them as a
 /// synthetic collection `<name>@<version>`. Mirrors the pipeline
 /// `ingestion::ingest` runs against fetched crates, minus the network
-/// fetch / tarball extraction steps.
+/// fetch / tarball extraction steps. Lexical + semantic indexing are
+/// a single unit; PLAID is **not** rebuilt here so callers can batch
+/// it after walking every workspace member.
 pub fn index_project(
     project_root: &Path,
     cache: &CrateCache,
-    indexer: &Indexer,
+    indexer: &mut Indexer,
 ) -> Result<(SyntheticCollection, usize, usize)> {
     let info = read_project_info(project_root)?;
     let collection = SyntheticCollection {
@@ -173,7 +175,7 @@ pub fn index_project(
     let failure_count = walked.failures.len();
 
     cache.store(&collection, &walked.items)?;
-    indexer.index_lexical(&collection, &walked.items)?;
+    indexer.index_items(&collection, &walked.items)?;
 
     Ok((collection, item_count, failure_count))
 }
@@ -298,12 +300,12 @@ fn expand_member_glob(
 pub fn index_workspace(
     workspace_root: &Path,
     cache: &CrateCache,
-    indexer: &Indexer,
+    indexer: &mut Indexer,
 ) -> Result<Vec<WorkspaceMemberOutcome>> {
     let members = workspace_members(workspace_root)?;
     let mut outcomes = Vec::with_capacity(members.len());
     for member in members {
-        let result = match index_project(&member, cache, indexer) {
+        let result = match index_project(&member, cache, &mut *indexer) {
             Ok((collection, item_count, failure_count)) => Ok(MemberIndexed {
                 collection,
                 item_count,
@@ -420,10 +422,10 @@ mod tests {
 
         let tmp_cache = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp_cache.path()).unwrap();
-        let indexer = Indexer::open(tmp_cache.path()).unwrap();
+        let mut indexer = Indexer::open(tmp_cache.path()).unwrap();
 
         let (coll, items, failures) =
-            index_project(tmp_proj.path(), &cache, &indexer).unwrap();
+            index_project(tmp_proj.path(), &cache, &mut indexer).unwrap();
 
         assert_eq!(coll.crate_name, "demo");
         assert_eq!(coll.version, semver::Version::new(0, 1, 0));

@@ -78,9 +78,31 @@ impl Indexer {
         &self.data_dir
     }
 
-    /// Index a crate's items into Tantivy + ConfigDb metadata.
-    /// Embeddings are written separately by [`Indexer::embed_items`].
-    pub fn index_lexical(
+    /// Index a crate's items + embed them as a single unit. Either
+    /// both succeed or the lexical entries are rolled back so the
+    /// data store never holds half-indexed crates.
+    ///
+    /// PLAID is **not** rebuilt here — call [`Self::rebuild_plaid`]
+    /// once after a batch of ingestions completes.
+    pub fn index_items(
+        &mut self,
+        collection: &SyntheticCollection,
+        items: &[RustItem],
+    ) -> Result<usize> {
+        let count = self.index_lexical(collection, items)?;
+        if let Err(e) = self.embed_items(collection, items) {
+            // Roll back the lexical entries so an embed failure
+            // doesn't leave the index inconsistent.
+            let _ = self.remove_collection(collection);
+            return Err(e);
+        }
+        Ok(count)
+    }
+
+    /// Internal: lexical write only. Use [`Self::index_items`] from
+    /// production paths so the lexical and semantic indexes stay
+    /// coupled.
+    fn index_lexical(
         &self,
         collection: &SyntheticCollection,
         items: &[RustItem],
@@ -139,10 +161,11 @@ impl Indexer {
         Ok(documents.len())
     }
 
-    /// Embed each item's `searchable_body` via the ColBERT model and
-    /// store per-chunk vectors in the embedding DB. Triggers the
-    /// model download on first call.
-    pub fn embed_items(
+    /// Internal: embed each item's `searchable_body` via the ColBERT
+    /// model and store per-chunk vectors in the embedding DB.
+    /// Triggers the model download on first call. Use
+    /// [`Self::index_items`] from production paths.
+    fn embed_items(
         &mut self,
         collection: &SyntheticCollection,
         items: &[RustItem],
@@ -166,13 +189,29 @@ impl Indexer {
     /// Rebuild the PLAID index from every stored embedding. Cheap at
     /// startup, expensive on large corpora — call after a sync, not
     /// after every single ingest.
+    ///
+    /// Fail-soft: PLAID is a search *optimization* over the
+    /// embeddings already in `EmbeddingDb`. When the corpus is too
+    /// small for the configured k-means (the common "first crate
+    /// indexed" case yields fewer than 256 tokens), this logs a
+    /// warning and returns Ok — `search::run` falls back to a linear
+    /// MaxSim scan when no PLAID index exists.
     pub fn rebuild_plaid(&self) -> Result<()> {
         let params = PlaidBuildParams::default();
-        let index =
-            plaid::build_index_from_embedding_db(&self.embedding_db, params)
-                .map_err(map_core_err)?;
-        plaid::save_index(&index, &self.data_dir).map_err(map_core_err)?;
-        Ok(())
+        match plaid::build_index_from_embedding_db(&self.embedding_db, params) {
+            Ok(index) => {
+                plaid::save_index(&index, &self.data_dir)
+                    .map_err(map_core_err)?;
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "PLAID rebuild skipped — search falls back to linear MaxSim"
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Hybrid (BM25 + ColBERT/PLAID) search via docbert-core. Falls
@@ -295,6 +334,9 @@ mod tests {
             sample("demo::greet", "say hello to a friend"),
             sample("demo::farewell", "say bye to a friend"),
         ];
+        // Tests use `index_lexical` directly to avoid loading the
+        // ColBERT model in CI; production paths must go through
+        // `index_items` so lexical + embed stay coupled.
         indexer.index_lexical(&coll, &items).unwrap();
 
         let params = SearchParams {
