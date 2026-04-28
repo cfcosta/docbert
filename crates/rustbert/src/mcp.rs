@@ -1,7 +1,7 @@
 //! Minimal MCP server over JSON-RPC stdio.
 //!
-//! Implements the four tools described in the design (`rustbert_search`,
-//! `rustbert_get`, `rustbert_list`, `rustbert_status`) plus the standard
+//! Implements the four tools described in the design (`rustdocs_search`,
+//! `rustdocs_get`, `rustdocs_list`, `rustdocs_status`) plus the standard
 //! MCP `initialize` / `tools/list` / `tools/call` lifecycle.
 //!
 //! Hand-rolled rather than going through rmcp because the surface is
@@ -14,7 +14,7 @@
 //! ```jsonc
 //! { "jsonrpc": "2.0", "id": 1, "method": "tools/list" }
 //! { "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-//!   "params": { "name": "rustbert_search", "arguments": {"crate":"serde", "query":"Serializer"}}}
+//!   "params": { "name": "rustdocs_search", "arguments": {"crate":"serde", "query":"Serializer"}}}
 //! ```
 
 use std::io::{BufRead, Write};
@@ -158,55 +158,108 @@ fn tools_list_result() -> Value {
 fn tool_definitions() -> Vec<Value> {
     vec![
         tool_def(
-            "rustbert_search",
-            "Search a Rust crate's items by query.",
+            "rustdocs_search",
+            "Look up Rust crate documentation: search the public API of a \
+             published crate from crates.io for items (functions, structs, \
+             enums, traits, modules, macros, ...) matching a query. Use this \
+             whenever you are writing, reviewing, or debugging Rust code and \
+             need to discover what a crate exposes — including unfamiliar \
+             dependencies, APIs you half-remember, or items whose exact path \
+             you don't know. Returns ranked qualified paths you can pass to \
+             `rustdocs_get` for full signatures and doc comments. Pin \
+             `version` to the one in your Cargo.lock when accuracy matters; \
+             otherwise `latest` is fine.",
             json!({
                 "type": "object",
                 "properties": {
-                    "crate": { "type": "string" },
-                    "version": { "type": "string", "default": "latest" },
-                    "query": { "type": "string" },
-                    "kind": { "type": "string" },
-                    "module_prefix": { "type": "string" },
+                    "crate": {
+                        "type": "string",
+                        "description": "crates.io crate name, e.g. `serde`, `tokio`, `candle-core`."
+                    },
+                    "version": {
+                        "type": "string",
+                        "default": "latest",
+                        "description": "Exact version (`1.0.219`), semver req (`^1.0`), or `latest`."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Free-form search — item name, fragment of a signature, or natural-language description of what you're looking for."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional filter: `fn`, `struct`, `enum`, `trait`, `impl`, `mod`, `const`, `type`, `macro`."
+                    },
+                    "module_prefix": {
+                        "type": "string",
+                        "description": "Optional path prefix to scope results, e.g. `serde::de`."
+                    },
                     "limit": { "type": "integer", "default": 10 }
                 },
                 "required": ["crate", "query"]
             }),
         ),
         tool_def(
-            "rustbert_get",
-            "Fetch one item from a Rust crate by qualified path.",
+            "rustdocs_get",
+            "Read the full documentation entry for a single item in a \
+             published Rust crate — signature, doc comment, attributes, \
+             visibility, and source location — given its fully qualified path \
+             (e.g. `serde::Serializer::serialize_struct`). Use this after \
+             `rustdocs_search` finds a candidate, or whenever you already \
+             know the exact path and need its actual rustdoc rather than \
+             guessing from training data.",
             json!({
                 "type": "object",
                 "properties": {
                     "crate": { "type": "string" },
                     "version": { "type": "string", "default": "latest" },
-                    "path": { "type": "string" }
+                    "path": {
+                        "type": "string",
+                        "description": "Fully qualified item path, e.g. `tokio::sync::Mutex::lock`."
+                    }
                 },
                 "required": ["crate", "path"]
             }),
         ),
         tool_def(
-            "rustbert_list",
-            "List items in a Rust crate.",
+            "rustdocs_list",
+            "Browse the public API of a published Rust crate by listing its \
+             items, optionally filtered by kind or module prefix. Use this \
+             when you want to see what a crate exposes without a specific \
+             query in mind — for example, to enumerate all traits in \
+             `serde::de`, or every public function in a small utility crate \
+             before deciding which to read.",
             json!({
                 "type": "object",
                 "properties": {
                     "crate": { "type": "string" },
                     "version": { "type": "string", "default": "latest" },
-                    "kind": { "type": "string" },
-                    "module_prefix": { "type": "string" },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional filter: `fn`, `struct`, `enum`, `trait`, `impl`, `mod`, `const`, `type`, `macro`."
+                    },
+                    "module_prefix": {
+                        "type": "string",
+                        "description": "Optional path prefix to scope results, e.g. `serde::de`."
+                    },
                     "limit": { "type": "integer", "default": 50 }
                 },
                 "required": ["crate"]
             }),
         ),
         tool_def(
-            "rustbert_status",
-            "Report cache state for a crate.",
+            "rustdocs_status",
+            "Report which Rust crates and versions are currently cached \
+             locally for documentation lookup, with item counts and fetch \
+             timestamps. Useful for confirming that a crate has been indexed \
+             before issuing a search, or for diagnosing stale results.",
             json!({
                 "type": "object",
-                "properties": { "crate": { "type": "string" } }
+                "properties": {
+                    "crate": {
+                        "type": "string",
+                        "description": "Optional: only report on this crate name."
+                    }
+                }
             }),
         ),
     ]
@@ -236,10 +289,10 @@ async fn tools_call(
         .unwrap_or(Value::Null);
 
     let text = match name {
-        "rustbert_search" => tool_search(&args, cache).await,
-        "rustbert_get" => tool_get(&args, cache).await,
-        "rustbert_list" => tool_list(&args, cache).await,
-        "rustbert_status" => tool_status(&args, cache),
+        "rustdocs_search" => tool_search(&args, cache).await,
+        "rustdocs_get" => tool_get(&args, cache).await,
+        "rustdocs_list" => tool_list(&args, cache).await,
+        "rustdocs_status" => tool_status(&args, cache),
         other => Err((-32601, format!("unknown tool: {other}"))),
     }?;
 
@@ -561,10 +614,10 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names.len(), 4);
-        assert!(names.contains(&"rustbert_search".to_string()));
-        assert!(names.contains(&"rustbert_get".to_string()));
-        assert!(names.contains(&"rustbert_list".to_string()));
-        assert!(names.contains(&"rustbert_status".to_string()));
+        assert!(names.contains(&"rustdocs_search".to_string()));
+        assert!(names.contains(&"rustdocs_get".to_string()));
+        assert!(names.contains(&"rustdocs_list".to_string()));
+        assert!(names.contains(&"rustdocs_status".to_string()));
     }
 
     #[tokio::test]
@@ -598,7 +651,7 @@ mod tests {
     async fn status_tool_reports_empty_cache() {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rustbert_status","arguments":{}}}"#;
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rustdocs_status","arguments":{}}}"#;
         let response = handle_line(line, &cache).await.unwrap();
         let result = response.result.unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();

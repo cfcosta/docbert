@@ -106,11 +106,13 @@ rustbert web --port 3031              # phase 3+, see §10
 
 ### 2.2 MCP tools
 
+All four tools are framed for an LLM caller as **Rust documentation lookup** — the agent should reach for them whenever it is writing, reviewing, or debugging Rust code and needs ground-truth API information from a published crate rather than relying on training data.
+
 ```jsonc
-// rustbert_search
+// rustdocs_search
 {
-  "name": "rustbert_search",
-  "description": "Search the public API of a published Rust crate by item-level relevance.",
+  "name": "rustdocs_search",
+  "description": "Look up Rust crate documentation: search a published crate's public API for items matching a query.",
   "input": {
     "crate": "serde",
     "version": "1.0.219",          // or "latest", or a semver req like "^1.0"
@@ -120,9 +122,10 @@ rustbert web --port 3031              # phase 3+, see §10
   }
 }
 
-// rustbert_get
+// rustdocs_get
 {
-  "name": "rustbert_get",
+  "name": "rustdocs_get",
+  "description": "Read the full rustdoc entry — signature, doc comment, source location — for one item by qualified path.",
   "input": {
     "crate": "serde",
     "version": "1.0.219",
@@ -130,9 +133,10 @@ rustbert web --port 3031              # phase 3+, see §10
   }
 }
 
-// rustbert_list
+// rustdocs_list
 {
-  "name": "rustbert_list",
+  "name": "rustdocs_list",
+  "description": "Browse a published crate's public API by listing items, optionally filtered by kind or module prefix.",
   "input": {
     "crate": "serde",
     "version": "latest",
@@ -141,14 +145,15 @@ rustbert web --port 3031              # phase 3+, see §10
   }
 }
 
-// rustbert_status
+// rustdocs_status
 {
-  "name": "rustbert_status",
+  "name": "rustdocs_status",
+  "description": "Report which Rust crates and versions are cached locally for documentation lookup.",
   "input": { "crate": "serde", "version": "latest" }   // both optional
 }
 ```
 
-`rustbert_sync` is **CLI-only**, not exposed as an MCP tool. Walking a `Cargo.lock` and fetching dozens-to-hundreds of crates can run for minutes; that's the wrong shape for an MCP request/response and would be a poor experience for an LLM caller.
+`sync` is **CLI-only**, not exposed as an MCP tool. Walking a `Cargo.lock` and fetching dozens-to-hundreds of crates can run for minutes; that's the wrong shape for an MCP request/response and would be a poor experience for an LLM caller.
 
 Resource template:
 
@@ -519,7 +524,7 @@ If post-search filtering proves expensive at scale, a follow-up could land a `ki
 
 - New crate `rustbert` with the manifest in §7.5; deployment topology (separate repo or sibling workspace member) is open and doesn't affect the user model.
 - CLI: `search`, `get`, `list`, `status`, `evict`, `fetch`, `sync`, `refresh`, `mcp`.
-- MCP tools: `rustbert_search`, `rustbert_get`, `rustbert_list`, `rustbert_status`.
+- MCP tools: `rustdocs_search`, `rustdocs_get`, `rustdocs_list`, `rustdocs_status`.
 - crates.io tarball ingestion via `reqwest` + `flate2` + `tar`.
 - `Cargo.lock` walking via `cargo-lock`.
 - Synthetic collection storage in rustbert's own data dir.
