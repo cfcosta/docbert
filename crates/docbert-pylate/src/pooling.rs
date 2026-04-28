@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-use anyhow::anyhow;
 use candle_core::{Device, Tensor};
 use candle_transformers::models::deepseek2::NonZeroOp;
 use kodama::{Method, linkage};
+
+use crate::error::ColbertError;
 
 /// A Disjoint Set Union (DSU) data structure using a HashMap to handle generic cluster labels.
 struct Dsu {
@@ -45,16 +46,16 @@ impl Dsu {
 pub fn hierarchical_pooling(
     documents_embeddings: &Tensor,
     pool_factor: usize,
-) -> anyhow::Result<Tensor> {
+) -> Result<Tensor, ColbertError> {
     if pool_factor <= 1 {
         return Ok(documents_embeddings.clone());
     }
 
     if documents_embeddings.dims().len() != 3 {
-        return Err(anyhow!(
+        return Err(ColbertError::Operation(format!(
             "Input tensor must have 3 dimensions [batch_size, n_tokens, embedding_dim], but got {} dimensions.",
             documents_embeddings.dims().len()
-        ));
+        )));
     }
 
     // Remember the caller's device — the kodama-based clustering
