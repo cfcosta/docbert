@@ -157,9 +157,7 @@ pub fn hierarchical_pooling(
         }
 
         let mut final_embeddings_list = pooled_document_embeddings;
-        for j in 0..1 {
-            final_embeddings_list.push(protected_embeddings.get(j)?);
-        }
+        final_embeddings_list.push(protected_embeddings.get(0)?);
 
         let final_doc_tensor = Tensor::stack(&final_embeddings_list, 0)?;
         all_pooled_embeddings.push(final_doc_tensor);
