@@ -612,12 +612,13 @@ fn batch_maxsim_with_cap(
 
         // `[chunk_tokens, dim] × [dim, n_q]` GEMM, same shape rule as
         // the pre-chunk implementation but bounded by the chunk cap.
+        // Pull the result back as a single flat host buffer — one
+        // allocation rather than the per-row Vec<Vec<f32>> that
+        // `to_vec2` builds.
         let scores_flat: Vec<f32> = decoded
             .matmul(&q_transposed)?
-            .to_vec2::<f32>()?
-            .into_iter()
-            .flatten()
-            .collect();
+            .flatten_all()?
+            .to_vec1::<f32>()?;
 
         for (i, &doc_idx) in chunk_candidates.iter().enumerate() {
             let range_start = chunk_offsets[i];
