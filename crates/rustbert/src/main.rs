@@ -353,9 +353,16 @@ async fn cmd_search(
     let results = indexer.search(params)?;
     let items = cache.load(&coll)?;
 
+    let module_filter_norm = module_filter
+        .as_deref()
+        .map(rustbert::item::normalize_qualified_path);
     let mut shown = 0;
     for r in results {
-        let Some(item) = items.iter().find(|i| i.qualified_path == r.title)
+        // Pre-normalisation indexes wrote `r.title` in the dashed
+        // `candle-core::…` form; cache.load normalises items on read,
+        // so we compare both sides through the same canonicaliser.
+        let title_norm = rustbert::item::normalize_qualified_path(&r.title);
+        let Some(item) = items.iter().find(|i| i.qualified_path == title_norm)
         else {
             continue;
         };
@@ -364,7 +371,7 @@ async fn cmd_search(
         {
             continue;
         }
-        if let Some(prefix) = &module_filter
+        if let Some(prefix) = module_filter_norm.as_deref()
             && !item.qualified_path.starts_with(prefix)
         {
             continue;

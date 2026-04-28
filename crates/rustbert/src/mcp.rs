@@ -359,8 +359,14 @@ fn format_hybrid_hits(
 ) -> String {
     let mut out = String::new();
     let mut shown = 0usize;
+    let module_filter_norm =
+        module_filter.map(crate::item::normalize_qualified_path);
     for r in results {
-        let Some(item) = items.iter().find(|i| i.qualified_path == r.title)
+        // Pre-normalisation indexes wrote `r.title` in the dashed
+        // `candle-core::…` form; cache.load normalises items on read,
+        // so we compare both sides through the same canonicaliser.
+        let title_norm = crate::item::normalize_qualified_path(&r.title);
+        let Some(item) = items.iter().find(|i| i.qualified_path == title_norm)
         else {
             continue;
         };
@@ -369,7 +375,7 @@ fn format_hybrid_hits(
         {
             continue;
         }
-        if let Some(prefix) = module_filter
+        if let Some(prefix) = module_filter_norm.as_deref()
             && !item.qualified_path.starts_with(prefix)
         {
             continue;
