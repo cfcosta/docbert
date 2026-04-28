@@ -15,7 +15,6 @@ tokenizers = { version = "0.22.2", default-features = false, features = [
 ] }
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
-safetensors = "0.7.0"
 thiserror = "2.0.18"
 hf-hub = { version = "0.5.0", default-features = false, features = [
   "ureq",
