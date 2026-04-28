@@ -9,7 +9,7 @@
 //! retrieval; reading items back from there would lose fields the
 //! CLI / MCP need to display.
 
-use crate::item::{RustItem, RustItemKind};
+use crate::item::{RustItem, RustItemKind, normalize_qualified_path};
 
 #[derive(Debug, Clone, Default)]
 pub struct ListOptions {
@@ -19,11 +19,16 @@ pub struct ListOptions {
 }
 
 /// Find one item by exact qualified path.
+///
+/// The query's first segment is normalised so callers can type the
+/// crates.io name with dashes (`candle-core::tensor`) and still hit
+/// the stored path, which always uses the underscored module name.
 pub fn get<'a>(
     items: &'a [RustItem],
     qualified_path: &str,
 ) -> Option<&'a RustItem> {
-    items.iter().find(|i| i.qualified_path == qualified_path)
+    let needle = normalize_qualified_path(qualified_path);
+    items.iter().find(|i| i.qualified_path == needle)
 }
 
 /// Filtered alphabetical listing of items in a cached crate.
@@ -41,16 +46,20 @@ pub fn list<'a>(
 }
 
 /// True when `item` passes every filter in `options`.
+///
+/// `module_prefix` is normalised the same way as [`get`]'s query so
+/// callers can write either `candle-core::tensor` or `candle_core::tensor`.
 pub fn matches(item: &RustItem, options: &ListOptions) -> bool {
     if let Some(k) = options.kind
         && item.kind != k
     {
         return false;
     }
-    if let Some(prefix) = &options.module_prefix
-        && !item.qualified_path.starts_with(prefix)
-    {
-        return false;
+    if let Some(prefix) = &options.module_prefix {
+        let prefix = normalize_qualified_path(prefix);
+        if !item.qualified_path.starts_with(&prefix) {
+            return false;
+        }
     }
     true
 }
@@ -92,6 +101,37 @@ mod tests {
         let got = get(&items, "x::b").unwrap();
         assert_eq!(got.qualified_path, "x::b");
         assert!(get(&items, "x::missing").is_none());
+    }
+
+    #[test]
+    fn get_accepts_dashed_crate_name_in_query() {
+        // Stored path uses the canonical Rust name (`candle_core::…`);
+        // a query that types the crates.io spelling (`candle-core::…`)
+        // must still resolve.
+        let items =
+            vec![item(RustItemKind::Struct, "candle_core::tensor::Tensor")];
+        let got = get(&items, "candle-core::tensor::Tensor").unwrap();
+        assert_eq!(got.qualified_path, "candle_core::tensor::Tensor");
+    }
+
+    #[test]
+    fn list_module_prefix_accepts_dashed_crate_name() {
+        let items = vec![
+            item(RustItemKind::Fn, "candle_core::tensor::a"),
+            item(RustItemKind::Fn, "candle_core::tensor::b"),
+            item(RustItemKind::Fn, "other::c"),
+        ];
+        let opts = ListOptions {
+            module_prefix: Some("candle-core::tensor".to_string()),
+            ..Default::default()
+        };
+        let listed = list(&items, &opts);
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .all(|i| i.qualified_path.starts_with("candle_core::tensor"))
+        );
     }
 
     #[test]

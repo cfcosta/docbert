@@ -109,7 +109,18 @@ impl CrateCache {
     ) -> Result<Vec<RustItem>> {
         let path = self.items_path(collection);
         let bytes = fs::read(&path)?;
-        serde_json::from_slice(&bytes).map_err(json_err)
+        let mut items: Vec<RustItem> =
+            serde_json::from_slice(&bytes).map_err(json_err)?;
+        // Older caches stored the crates.io spelling (`candle-core::…`)
+        // in `qualified_path`. Normalise on read so callers always
+        // see the canonical Rust form regardless of when the entry was
+        // written. New writes already produce the canonical form via
+        // `RustItem::build_qualified_path`.
+        for item in &mut items {
+            item.qualified_path =
+                crate::item::normalize_qualified_path(&item.qualified_path);
+        }
+        Ok(items)
     }
 
     pub fn has(&self, collection: &SyntheticCollection) -> bool {

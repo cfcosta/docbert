@@ -125,13 +125,18 @@ impl RustItem {
     /// Build a qualified path from a module path and an item name.
     /// Empty `name` is permitted (impl blocks); the path then ends at
     /// the module.
+    ///
+    /// The crate-name segment is canonicalised with [`crate_to_module_name`]
+    /// so the stored path always matches what a `use` statement would
+    /// type — `candle-core` on crates.io is `candle_core` in source.
     pub fn build_qualified_path(
         crate_name: &str,
         module_path: &[String],
         name: Option<&str>,
     ) -> String {
+        let crate_segment = crate_to_module_name(crate_name);
         let mut parts: Vec<&str> = Vec::with_capacity(module_path.len() + 2);
-        parts.push(crate_name);
+        parts.push(&crate_segment);
         parts.extend(module_path.iter().map(String::as_str));
         if let Some(n) = name
             && !n.is_empty()
@@ -139,6 +144,29 @@ impl RustItem {
             parts.push(n);
         }
         parts.join("::")
+    }
+}
+
+/// Canonicalise a crate name segment for use inside a Rust path.
+///
+/// crates.io allows `-` in crate names (e.g. `candle-core`), but Rust
+/// identifiers don't, so the actual module a `use` statement reaches
+/// is `candle_core`. We normalise once at every boundary that touches
+/// qualified paths so the stored / queried form is always the one that
+/// would compile.
+pub fn crate_to_module_name(crate_name: &str) -> String {
+    crate_name.replace('-', "_")
+}
+
+/// Normalise a user-supplied qualified path so its first segment uses
+/// `_` regardless of whether the caller typed `candle-core::foo` or
+/// `candle_core::foo`. Subsequent segments are left alone — `-` is not
+/// legal further down a Rust path so any dash there is genuinely the
+/// caller's bug, not a crate-name spelling difference.
+pub fn normalize_qualified_path(path: &str) -> String {
+    match path.split_once("::") {
+        Some((head, tail)) => format!("{}::{tail}", crate_to_module_name(head)),
+        None => crate_to_module_name(path),
     }
 }
 
@@ -210,6 +238,40 @@ mod tests {
         assert_eq!(
             RustItem::build_qualified_path("crate", &modules, Some("Item")),
             "crate::a::b::c::d::Item",
+        );
+    }
+
+    #[test]
+    fn qualified_path_canonicalises_dashed_crate_names() {
+        // crates.io allows `-` but Rust paths use `_`; the stored
+        // qualified path must match what a `use` statement would type.
+        assert_eq!(
+            RustItem::build_qualified_path(
+                "candle-core",
+                &["tensor".to_string()],
+                Some("Tensor"),
+            ),
+            "candle_core::tensor::Tensor",
+        );
+    }
+
+    #[test]
+    fn normalize_qualified_path_accepts_either_form() {
+        assert_eq!(
+            normalize_qualified_path("candle-core::tensor::Tensor"),
+            "candle_core::tensor::Tensor",
+        );
+        assert_eq!(
+            normalize_qualified_path("candle_core::tensor::Tensor"),
+            "candle_core::tensor::Tensor",
+        );
+        // Bare crate name with no `::` tail also normalises.
+        assert_eq!(normalize_qualified_path("candle-core"), "candle_core");
+        // Dashes past the first segment are left alone (not legal in
+        // Rust paths, so they're a real bug if they appear).
+        assert_eq!(
+            normalize_qualified_path("candle-core::weird-mod::T"),
+            "candle_core::weird-mod::T",
         );
     }
 }
