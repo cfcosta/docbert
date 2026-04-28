@@ -170,7 +170,7 @@ impl Indexer {
         collection: &SyntheticCollection,
         items: &[RustItem],
     ) -> Result<usize> {
-        let chunking_config = chunking::resolve_config("default-fallback");
+        let chunking_config = chunking::resolve_config(self.model.model_id());
 
         let mut chunks: Vec<(u64, String)> = Vec::new();
         for item in items {
