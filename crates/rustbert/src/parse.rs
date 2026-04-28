@@ -187,22 +187,26 @@ impl ParseCtx {
     }
 
     fn visit_mod(&mut self, m: &syn::ItemMod, module_path: &[String]) {
-        // Skip private modules entirely — anything inside is unreachable
-        // from outside the crate even if individual items are `pub`.
-        if !is_visible(&m.vis) {
-            return;
-        }
         let name = m.ident.to_string();
-
-        self.emit(
-            RustItemKind::Mod,
-            Some(name.clone()),
-            module_path,
-            &m.attrs,
-            &m.vis,
-            format!("mod {name}"),
-            &syn::Item::Mod(m.clone()),
-        );
+        // Many crates declare a private container module
+        // (`mod tensor;` in candle-core, `mod sealed;` in serde, etc.)
+        // and then `pub use container::Item;` at the crate root. Skipping
+        // private modules outright makes those items invisible to the
+        // index even though they're reachable from outside through the
+        // re-export. We still recurse, but only emit a `Mod` item for
+        // public modules so the listing surface matches what callers can
+        // address by module path directly.
+        if is_visible(&m.vis) {
+            self.emit(
+                RustItemKind::Mod,
+                Some(name.clone()),
+                module_path,
+                &m.attrs,
+                &m.vis,
+                format!("mod {name}"),
+                &syn::Item::Mod(m.clone()),
+            );
+        }
 
         match &m.content {
             Some((_brace, items)) => {
@@ -571,12 +575,20 @@ mod tests {
     }
 
     #[test]
-    fn private_inline_module_is_skipped() {
-        // Private modules are unreachable from outside the crate, so
-        // their contents (even if `pub`) shouldn't appear in the
-        // index.
+    fn private_inline_module_emits_pub_items_but_no_mod_item() {
+        // Crates routinely declare a private container module and
+        // re-export its public items at the root via `pub use`. The
+        // parser doesn't track those re-exports, but it does need to
+        // surface the contents — otherwise large swathes of the
+        // popular ecosystem (serde, candle-core, reqwest, …) end up
+        // looking empty.
+        //
+        // The container module itself is private, so we don't emit a
+        // `Mod` item for it; only the `pub fn ping` inside surfaces.
         let out = parse("mod inner { pub fn ping() {} }");
-        assert!(out.items.is_empty());
+        assert_eq!(out.items.len(), 1);
+        assert_eq!(out.items[0].kind, RustItemKind::Fn);
+        assert_eq!(out.items[0].qualified_path, "x::inner::ping");
     }
 
     #[test]
