@@ -873,6 +873,12 @@ fn document_has_semantic_body(
     !text::strip_yaml_frontmatter(&content).trim().is_empty()
 }
 
+/// Fill in titles for results that didn't pick one up from the BM25
+/// leg (i.e. semantic-only hits). BM25 entries already carry the
+/// stored Tantivy `title` — overwriting them with a content-derived
+/// fallback would replace, e.g., `demo::greet` with the file stem
+/// `lib`. Skipping non-empty titles keeps the BM25 spelling intact
+/// and only synthesises titles where there's nothing to lose.
 fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
     let mut collection_paths: std::collections::HashMap<
         String,
@@ -880,6 +886,9 @@ fn populate_titles(results: &mut [FinalResult], config_db: &ConfigDb) {
     > = std::collections::HashMap::new();
 
     for r in results {
+        if !r.title.is_empty() {
+            continue;
+        }
         let fallback = ingestion::extract_title("", Path::new(&r.path));
         let collection_path = collection_paths
             .entry(r.collection.clone())
@@ -2239,6 +2248,53 @@ mod tests {
     fn bm25_to_final_empty() {
         let results = bm25_to_final(&[]);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn populate_titles_preserves_non_empty_titles() {
+        // Regression: hybrid search ran the bm25 leg → set
+        // `r.title = "demo::greet"` from Tantivy's stored value, then
+        // `populate_titles` was called (because some entries had
+        // empty titles after fusion) and overwrote *every* title with
+        // the path-derived fallback. The fallback for
+        // `src/lib.rs#L3-L6` is the file stem `lib`, so BM25 hits
+        // came back titled `lib` instead of `demo::greet`.
+        //
+        // The fix: only fill in titles that are still empty.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+
+        let mut results = vec![
+            FinalResult {
+                rank: 1,
+                score: 0.0328,
+                doc_id: "#abcd12".to_string(),
+                doc_num_id: 1,
+                collection: "rustbert:demo@1.0.0".to_string(),
+                path: "src/lib.rs#L3-L6".to_string(),
+                // BM25 already populated this from Tantivy.
+                title: "demo::greet".to_string(),
+                best_chunk_doc_id: Some(1),
+            },
+            FinalResult {
+                rank: 2,
+                score: 0.016,
+                doc_id: "#ef3456".to_string(),
+                doc_num_id: 2,
+                collection: "rustbert:demo@1.0.0".to_string(),
+                path: "src/nested.rs#L1-L4".to_string(),
+                // Semantic-only hit: title is empty until populated.
+                title: String::new(),
+                best_chunk_doc_id: Some(2),
+            },
+        ];
+
+        populate_titles(&mut results, &config_db);
+
+        // BM25's stored title survives.
+        assert_eq!(results[0].title, "demo::greet");
+        // Semantic-only entry gets a path-derived fallback.
+        assert_eq!(results[1].title, "nested");
     }
 
     #[test]

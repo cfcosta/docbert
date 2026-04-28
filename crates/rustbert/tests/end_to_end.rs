@@ -148,18 +148,16 @@ async fn fetch_parse_index_and_search_roundtrip() {
     // Step 2: load items from the cache.
     let items = cache.load(&coll).unwrap();
 
-    // Step 3: BM25 search via the indexer (the same path the CLI and
-    // MCP take). The synthetic corpus is too small to give the
-    // hybrid (BM25 + ColBERT) join meaningful semantic candidates,
-    // so we force `bm25_only` here — exercising Tantivy + the
-    // indexer + the cache + the parser without depending on
-    // PLAID's fail-soft heuristics for a 7-item corpus.
+    // Step 3: hybrid (BM25 + ColBERT) search via the indexer — the
+    // same path the CLI and MCP take. The synthetic corpus is small,
+    // but big enough that PLAID actually trains and the fusion runs
+    // for real.
     let params = docbert_core::search::SearchParams {
         query: "greet".to_string(),
         count: 10,
         collection: Some(coll.to_string()),
         min_score: 0.0,
-        bm25_only: true,
+        bm25_only: false,
         no_fuzzy: false,
         all: false,
     };
