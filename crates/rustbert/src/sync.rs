@@ -124,13 +124,9 @@ pub fn build_plan(
 fn build_exclude_set(globs: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for g in globs {
-        let glob = Glob::new(g)
-            .map_err(|e| Error::Cache(format!("bad exclude glob: {e}")))?;
-        builder.add(glob);
+        builder.add(Glob::new(g)?);
     }
-    builder
-        .build()
-        .map_err(|e| Error::Cache(format!("globset build: {e}")))
+    Ok(builder.build()?)
 }
 
 /// Execute a plan: fetch each queued crate via the supplied fetcher

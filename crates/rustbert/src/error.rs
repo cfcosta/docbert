@@ -76,4 +76,7 @@ pub enum Error {
 
     #[error("Tantivy error: {0}")]
     Tantivy(#[from] tantivy::error::TantivyError),
+
+    #[error("invalid glob pattern: {0}")]
+    Globset(#[from] globset::Error),
 }
