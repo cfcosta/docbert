@@ -1,4 +1,8 @@
-use std::{io::ErrorKind, sync::Arc, time::Duration};
+use std::{
+    io::ErrorKind,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use axum::{
     Json,
@@ -27,6 +31,22 @@ const OPENAI_CODEX_SCOPE: &str = "openid profile email offline_access";
 const OPENAI_CODEX_CALLBACK_BIND_ADDR: &str = "127.0.0.1:1455";
 const OAUTH_REFRESH_SKEW_MS: u64 = 60_000;
 const OAUTH_CALLBACK_SERVER_TTL_SECS: u64 = 600;
+const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Shared `reqwest::Client` for OAuth calls. Built once so the
+/// connection pool and TLS session are reused across token
+/// exchanges, and so a stalled token endpoint can't hang the
+/// request handler past the configured timeout.
+fn oauth_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(concat!("docbert/", env!("CARGO_PKG_VERSION")))
+            .timeout(OAUTH_HTTP_TIMEOUT)
+            .build()
+            .expect("oauth reqwest client should build")
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct LlmSettings {
@@ -238,8 +258,7 @@ async fn exchange_openai_codex_authorization_code(
     code: &str,
     verifier: &str,
 ) -> Result<OpenAICodexOAuthCredentials, String> {
-    let client = reqwest::Client::new();
-    let response = client
+    let response = oauth_http_client()
         .post(OPENAI_CODEX_TOKEN_URL)
         .form(&[
             ("grant_type", "authorization_code"),
@@ -288,8 +307,7 @@ async fn exchange_openai_codex_authorization_code(
 async fn refresh_openai_codex_access_token(
     refresh_token: &str,
 ) -> Result<OpenAICodexOAuthCredentials, String> {
-    let client = reqwest::Client::new();
-    let response = client
+    let response = oauth_http_client()
         .post(OPENAI_CODEX_TOKEN_URL)
         .form(&[
             ("grant_type", "refresh_token"),
