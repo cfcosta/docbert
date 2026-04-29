@@ -1,0 +1,258 @@
+name: Release rustbert
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+# Independent from the docbert release flow — the two can run in
+# parallel without stepping on each other's bump/tag/push.
+concurrency:
+  group: release-rustbert-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    outputs:
+      old_version: ${{ steps.version.outputs.old_version }}
+      new_version: ${{ steps.version.outputs.new_version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit_sha: ${{ steps.push.outputs.commit_sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Bump rustbert version
+        id: version
+        shell: bash
+        run: |
+          python <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          release_type = "${{ github.event.inputs.release_type }}"
+
+          # rustbert versions independently of the docbert workspace
+          # crates. Only its own manifest and matching Cargo.lock entry
+          # are touched here — docbert/docbert-core/docbert-plaid/
+          # docbert-pylate keep whatever versions the docbert release
+          # flow last wrote.
+          toml_path = pathlib.Path("crates/rustbert/Cargo.toml")
+          cargo_lock_path = pathlib.Path("Cargo.lock")
+
+          manifest = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+          old_version = manifest["package"]["version"]
+
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", old_version)
+          if not match:
+              raise SystemExit(f"Unsupported version format: {old_version}")
+
+          major, minor, patch = map(int, match.groups())
+          if release_type == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif release_type == "minor":
+              minor, patch = minor + 1, 0
+          elif release_type == "patch":
+              patch += 1
+          else:
+              raise SystemExit(f"Unsupported release type: {release_type}")
+
+          new_version = f"{major}.{minor}.{patch}"
+          print(f"Bumping rustbert {old_version} -> {new_version}")
+
+          version_line = re.compile(r'(?m)^version = "[^"]+"$')
+          text = toml_path.read_text(encoding="utf-8")
+          text, n = version_line.subn(
+              f'version = "{new_version}"', text, count=1
+          )
+          if n != 1:
+              raise SystemExit(
+                  f"Could not locate a version line in {toml_path}"
+              )
+          toml_path.write_text(text, encoding="utf-8")
+
+          cargo_lock = cargo_lock_path.read_text(encoding="utf-8")
+          pattern = (
+              r'(\[\[package\]\]\nname = "rustbert"\nversion = ")[^"]+(")'
+          )
+          cargo_lock, n = re.subn(
+              pattern,
+              r"\g<1>" + new_version + r"\g<2>",
+              cargo_lock,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(
+                  "Could not update rustbert version in Cargo.lock"
+              )
+          cargo_lock_path.write_text(cargo_lock, encoding="utf-8")
+
+          github_output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as fh:
+              fh.write(f"old_version={old_version}\n")
+              fh.write(f"new_version={new_version}\n")
+              fh.write(f"tag=rustbert-v{new_version}\n")
+          PY
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create release commit
+        run: |
+          git add Cargo.lock crates/rustbert/Cargo.toml
+          git commit -m "release: rustbert-v${{ steps.version.outputs.new_version }}"
+
+      - name: Push release commit
+        id: push
+        run: |
+          git push origin HEAD:${{ github.ref_name }}
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: bump
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            features: ""
+            artifact: rustbert-x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            features: ""
+            artifact: rustbert-aarch64-unknown-linux-musl
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            features: metal
+            artifact: rustbert-aarch64-apple-darwin
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.bump.outputs.commit_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add musl target
+        if: contains(matrix.target, 'musl')
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rustbert-${{ matrix.target }}
+
+      # No bun/UI step here: rustbert is CLI + MCP only and `-p rustbert`
+      # keeps cargo from touching the docbert crate (which embeds the UI
+      # via include_dir).
+      - name: Build binary
+        run: |
+          FEATURES="${{ matrix.features }}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release -p rustbert --target ${{ matrix.target }} --features "$FEATURES"
+          else
+            cargo build --release -p rustbert --target ${{ matrix.target }}
+          fi
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/rustbert dist/rustbert
+          cd dist
+          tar czf ${{ matrix.artifact }}.tar.gz rustbert
+          shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.tar.gz*
+
+  release:
+    name: Create GitHub Release
+    needs: [bump, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.bump.outputs.commit_sha }}
+          # Need full history so the changelog step can walk back to
+          # the previous rustbert release tag.
+          fetch-depth: 0
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.bump.outputs.tag }}"
+          git push origin "${{ needs.bump.outputs.tag }}"
+
+      - name: Compose changelog
+        id: changelog
+        env:
+          TAG: ${{ needs.bump.outputs.tag }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Walk back to the previous rustbert release tag specifically
+          # so docbert's `v*` tags don't pollute the changelog window.
+          PREV_TAG="$(git describe --tags --abbrev=0 --match 'rustbert-v*' "${TAG}^" 2>/dev/null || true)"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            HEADER="## Changes since ${PREV_TAG}"
+          else
+            RANGE="${TAG}"
+            HEADER="## Changes"
+          fi
+
+          {
+            echo "$HEADER"
+            echo ""
+            git log \
+              --no-merges \
+              --reverse \
+              --pretty=format:"- [\`%h\`](${REPO_URL}/commit/%H) %s — %an" \
+              "$RANGE"
+            echo ""
+          } > changelog.md
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bump.outputs.tag }}
+          name: ${{ needs.bump.outputs.tag }}
+          body_path: changelog.md
+          files: artifacts/*
