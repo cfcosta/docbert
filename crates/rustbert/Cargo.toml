@@ -48,7 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 flate2 = "1"
-hegeltest = "0.6"
+hegeltest = "0.8"
 sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
