@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "docbert"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "docbert-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "docbert-plaid"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bytemuck",
  "candle-core",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "docbert-pylate"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "candle-core",
