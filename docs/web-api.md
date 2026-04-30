@@ -314,7 +314,8 @@ Behavior:
 Status codes:
 
 - `200 OK`
-- `400 Bad Request` for unsupported content types, invalid base64/PDF payloads, or invalid collection/path resolution
+- `400 Bad Request` for unsupported content types or invalid base64/PDF payloads
+- `404 Not Found` if the target `collection` is not registered
 - `500 Internal Server Error`
 
 ### `GET /v1/collections/{name}/documents`
@@ -353,29 +354,43 @@ Read one document and its stored metadata.
 
 For Markdown documents, `content` is the stored source text. For PDFs, `content` is extracted Markdown/text preview content rather than raw PDF bytes.
 
+Optional range query parameters (camelCase) let callers slice the response server-side:
+
+| Query param | Type    | Notes                        |
+| ----------- | ------- | ---------------------------- |
+| `startLine` | `usize` | 1-based inclusive first line |
+| `endLine`   | `usize` | 1-based inclusive last line  |
+| `startByte` | `u64`   | 0-based inclusive first byte |
+| `endByte`   | `u64`   | 0-based inclusive last byte  |
+
+Line and byte ranges are mutually exclusive — supplying any of `startLine`/`endLine` together with any of `startByte`/`endByte` returns `400 Bad Request`. Omitting all four returns the full document.
+
 Response body:
 
 ```json
 {
-  "doc_id": "notes:hello.md",
+  "doc_id": "#abc123",
   "collection": "notes",
   "path": "hello.md",
   "title": "Uploaded",
   "content": "# Uploaded\n\nBody",
-  "metadata": { "topic": "rust" }
+  "metadata": { "topic": "rust" },
+  "line_count": 3,
+  "byte_count": 18
 }
 ```
 
-Important note about `doc_id`:
+Field notes:
 
-- The response uses `DocumentId::to_string()`, which yields the full collection/path-style identifier.
-- This differs from some other endpoints, such as document listing and search results, which use the short display id.
+- `doc_id` is the short hex form (e.g. `#abc123`), produced by `disambiguated_short_id` (or `DocumentId::Display` as fallback). It matches the form returned by document listing and search.
+- `metadata` is omitted when the document has no stored user metadata.
+- `line_count` and `byte_count` describe the **un-sliced** document so callers can size a follow-up range request without a second round-trip; both are omitted when the file cannot be read.
 
 Status codes:
 
 - `200 OK`
+- `400 Bad Request` if both line and byte ranges are supplied, or if the current PDF content cannot be parsed
 - `404 Not Found` if the document metadata does not exist or the file cannot be read from disk
-- `400 Bad Request` if the collection/path cannot be resolved or the current PDF content cannot be parsed
 - `500 Internal Server Error`
 
 ### `DELETE /v1/documents/{collection}/{*path}`
@@ -386,14 +401,14 @@ Behavior:
 
 - The route first checks that stored metadata exists for the requested document.
 - It then deletes the source file from disk.
-- After that it removes indexed state, embeddings, and metadata.
+- After that it removes indexed state, embeddings, chunk offsets, and metadata.
 - The collection snapshot is updated as part of the deletion flow.
 
 Status codes:
 
 - `204 No Content`
-- `404 Not Found` if the document metadata is missing or the file cannot be removed from disk
 - `400 Bad Request` if the collection/path cannot be resolved
+- `404 Not Found` if the document metadata is missing or the file cannot be removed from disk
 - `500 Internal Server Error`
 
 ## Search
@@ -453,7 +468,13 @@ Response body:
           "start_line": 12,
           "end_line": 18
         }
-      ]
+      ],
+      "line_count": 42,
+      "byte_count": 1380,
+      "match_chunk": {
+        "start_byte": 320,
+        "end_byte": 612
+      }
     }
   ]
 }
@@ -463,8 +484,10 @@ Behavior notes:
 
 - The server defaults to `semantic` mode, not `hybrid`.
 - `title` is loaded from the current file on disk when possible.
-- `metadata` comes from stored document user metadata.
-- `excerpts` are derived from the current file content using the query text and may be empty.
+- `metadata` comes from stored document user metadata; omitted when none is stored.
+- `excerpts` are derived from the current file content using the query text and may be empty (omitted from the JSON when so).
+- `line_count` and `byte_count` describe the document on disk; both are omitted when the file cannot be read.
+- `match_chunk` carries the byte range of the best-scoring chunk surfaced by the semantic leg, clamped to the current file size. It is omitted on BM25-only hits (no chunk-level score), when chunk offsets weren't recorded, or when the document is unreadable.
 - The server returns `result_count` as the actual number of returned items.
 
 Status codes:
@@ -617,7 +640,5 @@ Status codes:
 - Uploads support both Markdown and PDF documents.
 - PDF uploads send base64-encoded bytes in the request, but document reads return extracted Markdown/text content.
 - Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"`.
-- Document and search endpoints do not use the same `doc_id` format everywhere:
-  - search/list responses use short ids
-  - single-document responses use the full `DocumentId::to_string()` form
+- All document/search endpoints surface `doc_id` as the short hex form (e.g. `#abc123`); there is no qualified `collection:path` form on the wire.
 - If you are consuming both the web UI client and the server directly, treat this page and the route implementation as the source of truth for what the server actually supports.
