@@ -1,18 +1,14 @@
 # rustbert — Rust crate docs lookup
 
-**Status:** design proposal, not yet implemented
-
-**Date:** 2026-04-27
-
 ## Why this file exists
 
-docbert's existing pipeline is built around _local collections_: a directory the user registers with `collection add`, syncs, and searches. That model is great for "my notes" or "this repo's docs" but is the wrong shape for the question this design solves:
+docbert's existing pipeline is built around _local collections_: a directory the user registers with `collection add`, syncs, and searches. That model is great for "my notes" or "this repo's docs" but is the wrong shape for the question rustbert solves:
 
 > "What does `serde::Serializer::serialize_struct` actually look like on `serde 1.0.219`, and what's its docstring?"
 
 The user does not want to clone serde, register it as a collection, sync, and search. They want a tool — MCP-shaped, like the existing `rust_docs` server — that takes a **crate name and version** and returns the answer on demand, with semantic + lexical search across the crate's public API.
 
-This document proposes a new project, **`rustbert`** — a separate binary with its own CLI and MCP server — that fetches Rust crate sources from canonical remotes (crates.io, optionally docs.rs), parses them, and serves item-level answers. It also exposes a `rustbert sync` command that walks a Rust project's `Cargo.lock` and proactively pre-fetches every dependency, so a working set of crates is hot in the cache before any search runs.
+`rustbert` is that tool: a separate binary with its own CLI and MCP server that fetches Rust crate sources from canonical remotes (crates.io, with best-effort docs.rs JSON enrichment), parses them, and serves item-level answers. It also exposes a `rustbert sync` command that walks a Rust project's `Cargo.lock` and proactively pre-fetches every dependency, so a working set of crates is hot in the cache before any search runs.
 
 ## Goals
 
@@ -26,15 +22,15 @@ This document proposes a new project, **`rustbert`** — a separate binary with 
 
 ## Non-goals
 
-1. **Indexing local Cargo projects' source.** `rustbert sync` indexes your project's _dependencies_, not the project itself. A "look at my own crate" feature can layer on later — it's out of scope for v1.
+1. **Sync indexing the host project itself.** `rustbert sync` indexes your project's _dependencies_, not the project itself. The host project is indexed by an explicit, separate command, `rustbert index` (see §2.1) — never folded into `sync`.
 2. **Indexing the entire crates.io corpus.** Fetches are demand-driven (one crate at a time) or scoped to a project's lockfile (`rustbert sync`). No mass ingestion.
-3. **Type resolution / cross-crate references.** Following `pub use` chains, resolving generic bounds, or mapping across crate boundaries is out of scope for v1.
+3. **Type resolution / cross-crate references.** Following `pub use` chains is partially supported (re-exports are recorded as metadata at the original item's path), but generic-bound resolution and full cross-crate type inference are out of scope.
 4. **Macro expansion.** Items synthesized by macros are invisible to source-level parsing; we accept that gap.
 5. **Editing or rewriting source.** Read-only. We download, parse, and serve.
 
 ## 1. What `rustbert` is
 
-rustbert is its own project — a separate binary with its own CLI, its own MCP server, and its own data directory. It is **not** a docbert subcommand and does not share storage with docbert. Architecturally, it depends on `docbert-core` as a library for storage / search / embedding primitives:
+rustbert is its own binary in this workspace, with its own CLI, its own MCP server, and its own data directory. It is **not** a docbert subcommand and does not share storage with docbert. Architecturally, it depends on `docbert-core` as a library for storage / search / embedding primitives:
 
 ```text
 rustbert (binary)
@@ -42,7 +38,7 @@ rustbert (binary)
         └──► docbert-plaid, docbert-pylate
 ```
 
-Whether rustbert ships from its own repository or lives as a sibling crate next to docbert in a Cargo workspace is a deployment choice that doesn't affect the user model. Either way:
+The user model:
 
 - the user runs `rustbert` directly — never `docbert rustbert <subcommand>`
 - the two MCP servers (`rustbert mcp` and `docbert mcp`) are independent and the user wires them up separately in their editor / agent config
@@ -66,18 +62,23 @@ rustbert uses its own data directory, parallel to docbert's:
     └── tokio-1.45.0/
 ```
 
-Defaults are overrideable with `RUSTBERT_DATA_DIR`. Sharing docbert's data dir is _not_ supported in v1 — keeping them separate avoids accidental cross-contamination of search results between user prose and Rust APIs.
+Defaults are overrideable with `RUSTBERT_DATA_DIR` or the global `--data-dir` CLI flag. Sharing docbert's data dir is _not_ supported — keeping them separate avoids accidental cross-contamination of search results between user prose and Rust APIs.
 
 ## 2. User-visible surface
 
 ### 2.1 CLI
 
 ```bash
-# Pre-fetch every dep of a Rust project (default: cwd, follows Cargo.lock)
+# Pre-fetch every dep of a Rust project by walking its Cargo.lock
 rustbert sync
-rustbert sync /path/to/project
 rustbert sync --lock /path/to/Cargo.lock
 rustbert sync --jobs 8 --force        # re-fetch even if cached, 8-way parallel
+rustbert sync --dry-run               # show the plan without fetching
+rustbert sync --exclude 'serde*'      # skip crates by glob (repeatable)
+
+# Index the host project itself (the case sync deliberately skips)
+rustbert index                        # current dir
+rustbert index /path/to/project       # explicit project root or workspace root
 
 # One-off lookup of a specific crate (also fetches if not cached)
 rustbert search serde@1.0.219 "serialize a struct with a custom field name"
@@ -95,13 +96,12 @@ rustbert evict --all                  # nuke the cache
 rustbert fetch serde@1.0.219
 
 # Re-resolve cached "latest" / semver-pattern entries against upstream
-rustbert refresh                      # all
-rustbert refresh serde                # one crate
-rustbert refresh --older-than 7d      # only stale entries
+rustbert refresh                              # all
+rustbert refresh serde                        # one crate
+rustbert refresh --older-than 604800          # only entries older than N seconds (here: 7 days)
 
-# Long-lived runtimes
+# Long-lived runtime
 rustbert mcp                          # stdio MCP server
-rustbert web --port 3031              # phase 3+, see §10
 ```
 
 ### 2.2 MCP tools
@@ -115,9 +115,10 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   "description": "Look up Rust crate documentation: search a published crate's public API for items matching a query.",
   "input": {
     "crate": "serde",
-    "version": "1.0.219",          // or "latest", or a semver req like "^1.0"
+    "version": "1.0.219",           // or "latest", or a semver req like "^1.0"; default "latest"
     "query": "serialize a struct with a custom field name",
     "kind": "fn",                   // optional: fn|struct|enum|trait|impl|mod|const|type|macro
+    "module_prefix": "serde::de",   // optional path prefix to scope results
     "limit": 10                     // optional, default 10
   }
 }
@@ -128,7 +129,7 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   "description": "Read the full rustdoc entry — signature, doc comment, source location — for one item by qualified path.",
   "input": {
     "crate": "serde",
-    "version": "1.0.219",
+    "version": "1.0.219",           // optional, default "latest"
     "path": "serde::Serializer::serialize_struct"
   }
 }
@@ -139,9 +140,10 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   "description": "Browse a published crate's public API by listing items, optionally filtered by kind or module prefix.",
   "input": {
     "crate": "serde",
-    "version": "latest",
+    "version": "latest",            // optional, default "latest"
     "kind": "trait",                // optional
-    "module_prefix": "serde::de"    // optional
+    "module_prefix": "serde::de",   // optional
+    "limit": 50                     // optional, default 50
   }
 }
 
@@ -149,9 +151,11 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
 {
   "name": "rustdocs_status",
   "description": "Report which Rust crates and versions are cached locally for documentation lookup.",
-  "input": { "crate": "serde", "version": "latest" }   // both optional
+  "input": { "crate": "serde" }     // optional; filters to one crate
 }
 ```
+
+The MCP server speaks JSON-RPC over stdio directly; tool schemas are emitted as plain `serde_json` literals (no `rmcp` or `schemars` runtime).
 
 `sync` is **CLI-only**, not exposed as an MCP tool. Walking a `Cargo.lock` and fetching dozens-to-hundreds of crates can run for minutes; that's the wrong shape for an MCP request/response and would be a poor experience for an LLM caller.
 
@@ -202,31 +206,26 @@ This is the headline command for users embedded in a real Rust project.
 
 ### 3.2 CLI flags
 
-| Flag               | Default    | Effect                                                                                                                                                                                          |
-| ------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lock PATH`      | discovered | Use a specific `Cargo.lock` instead of walking up from cwd                                                                                                                                      |
-| `--jobs N`         | `4`        | Parallel fetch concurrency. Capped to crates.io's polite ceiling                                                                                                                                |
-| `--force`          | off        | Re-fetch even cached `(crate, version)` pairs                                                                                                                                                   |
-| `--no-embed`       | off        | Escape hatch: download + parse + index but skip ColBERT embedding (deferred to first search). Embedding is part of `sync` by default — the whole point is "instant search after sync finishes." |
-| `--depth N`        | unlimited  | Only fetch packages at depth ≤ N in the dep graph (1 = direct deps)                                                                                                                             |
-| `--exclude GLOB`   | none       | Skip crates matching the pattern (repeatable)                                                                                                                                                   |
-| `--include-dev`    | on         | Include dev-dependencies (mirrors what's in `Cargo.lock`)                                                                                                                                       |
-| `--dry-run`        | off        | Print the plan without fetching                                                                                                                                                                 |
-| `--manifest PATH`  | none       | Alternative to `--lock`: parse `Cargo.toml`, run `cargo metadata --offline` to enumerate                                                                                                        |
-| `--registry URL`   | crates.io  | Custom registry base URL (matches Cargo's mirror story)                                                                                                                                         |
-| `--workspace-only` | off        | For workspaces, only sync deps of workspace members, not deps of every package found                                                                                                            |
+| Flag             | Default    | Effect                                                             |
+| ---------------- | ---------- | ------------------------------------------------------------------ |
+| `--lock PATH`    | discovered | Use a specific `Cargo.lock` instead of walking up from cwd         |
+| `--jobs N`       | `4`        | Parallel fetch concurrency                                         |
+| `--force`        | off        | Re-fetch even cached `(crate, version)` pairs                      |
+| `--dry-run`      | off        | Print the plan without fetching                                    |
+| `--exclude GLOB` | none       | Skip crates matching the glob (repeatable, evaluated by `globset`) |
+
+Embedding is part of `sync`: every `(crate, version)` is fetched, parsed, indexed (Tantivy + ColBERT), and stored before sync returns, so the cache is fully searchable on completion.
 
 ### 3.3 Concurrency, retries, rate limits
 
 - Default concurrency is 4. Crates.io publishes no hard limit, but we keep it polite: 4 parallel downloads, each ≤ a few MB, is well under any reasonable threshold.
 - 429 / 503 → exponential backoff with jitter, up to 3 retries.
-- Failures don't abort the run. The final report lists per-crate outcomes and `rustbert sync --resume` retries only the failures (it does **not** re-resolve `latest`-style entries — see [`rustbert refresh`](#36-refreshing-latest-entries) for that).
-- Network is gated by `RUSTBERT_OFFLINE=1`: in that mode, sync uses only what's already cached and reports the gap.
+- Failures don't abort the run. The final report lists per-crate outcomes; re-running `rustbert sync` retries failed entries on the next pass. Re-resolving `latest`-style entries is a separate command, [`rustbert refresh`](#36-refreshing-latest-entries).
 
 ### 3.4 What sync deliberately doesn't do
 
-- **Doesn't index your project's own source.** That's a future feature (Phase 4). v1 sync is strictly about deps on crates.io.
-- **Doesn't follow git/path deps.** They aren't on crates.io. The plan summary lists them as "skipped — non-crates.io source" so users see what's missing.
+- **Doesn't index your project's own source.** That's the job of `rustbert index` (see §2.1). `sync` is strictly about deps on crates.io.
+- **Doesn't follow git/path deps.** They aren't on crates.io. They're skipped silently when sync filters its package list down to crates.io entries.
 - **Doesn't write to `Cargo.toml` or `Cargo.lock`.** Read-only.
 - **Doesn't hold the lockfile open** during the fetch, so it's safe to run `cargo build` concurrently.
 - **Doesn't dedupe across feature flags.** A crate appears once per resolved version regardless of which features are active in different parts of your tree.
@@ -235,20 +234,19 @@ This is the headline command for users embedded in a real Rust project.
 
 For workspace projects (multiple `Cargo.toml` members under one `Cargo.lock`):
 
-- `rustbert sync` defaults to "every dep in the lockfile, regardless of which member uses it."
-- `rustbert sync --workspace-only` excludes deps that are themselves workspace members.
+- `rustbert sync` reads every dep in the resolved lockfile, regardless of which member uses it.
 - Multiple lockfiles in the same tree (rare) are handled one at a time — pass `--lock` explicitly.
 
 ### 3.6 Refreshing `latest` entries
 
-`rustbert sync` and `rustbert sync --resume` both leave previously cached `latest`-resolved entries alone — concrete versions are immutable, and a resume run is for retrying _failed_ work, not for chasing newer upstream releases.
+`rustbert sync` leaves previously cached `latest`-resolved entries alone — concrete versions are immutable, and the cache does not auto-expire.
 
 A separate command handles the "newer versions may exist upstream" case:
 
 ```bash
-rustbert refresh                 # re-resolve every cached "latest" / semver-pattern entry
-rustbert refresh serde           # only that crate
-rustbert refresh --older-than 7d # only entries older than the cutoff
+rustbert refresh                       # re-resolve every cached "latest" / semver-pattern entry
+rustbert refresh serde                 # only that crate
+rustbert refresh --older-than 604800   # only entries older than N seconds (here: 7 days)
 ```
 
 Refresh is its own command on purpose. Mixing version-rolling into `sync` would make the command's blast radius depend on how stale the cache happens to be, which is the opposite of what users want from "pre-fetch the deps of this project."
@@ -264,9 +262,9 @@ This is the path used both by `rustbert sync` (per-package) and by an on-demand 
 | crates.io tarball | `https://crates.io/api/v1/crates/{c}/{v}/download`  | `.crate` (gzip tar) | Always available; small; immutable per version | Source-only; needs syn parsing    |
 | docs.rs JSON      | `https://docs.rs/crate/{c}/{v}/json` (when shipped) | rustdoc-types JSON  | Fully resolved trait/type info; doc links      | Coverage uneven; format versioned |
 
-**v1 default:** crates.io tarball + `syn`. Robust, always works.
+**Default:** crates.io tarball + `syn`. Robust, always works.
 
-**Phase 2 enrichment:** when docs.rs JSON is available, layer it on top of the syn parse for trait-impl edges and intra-doc links.
+**docs.rs enrichment:** when docs.rs JSON is available for the resolved `(crate, version)`, rustbert layers the docstrings from that JSON on top of the syn parse via `rustdoc_merge::merge_rustdoc_docs`. This is best-effort — failures are logged and ignored, and the syn-only result is used unchanged.
 
 ### 4.2 Version resolution
 
@@ -274,14 +272,13 @@ This is the path used both by `rustbert sync` (per-package) and by an on-demand 
 "latest"  → GET https://crates.io/api/v1/crates/{name}
             → pick max stable, non-yanked version
             → cache (name, "latest", resolved_version, fetched_at)
-            → re-resolve after `latest_ttl` (default: 24h)
 
 "^1.0"    → resolve via semver against the same JSON
 "1.0.*"   → ditto
 "1.0.219" → use as-is; 404 → clean error to caller
 ```
 
-Concrete versions are immutable; "latest" / semver-pattern resolution is what's TTL-gated.
+Concrete versions are immutable. "latest" and semver-pattern resolutions are cached on first lookup and reused until the user runs `rustbert refresh` (or `rustbert evict`); there is no TTL.
 
 ### 4.3 Tarball handling
 
@@ -365,8 +362,8 @@ rustbert owns its own data directory, so there's no collision risk with docbert'
 
 ### 5.4 `cfg` and re-exports
 
-- `#[cfg(...)]` items: indexed unconditionally; the predicate is captured in `attrs` for future filtering.
-- `pub use` re-exports: indexed only at their _original_ path; the alias path is recorded as metadata, not as a separate item.
+- `#[cfg(...)]` items: indexed unconditionally; the predicate is captured in `attrs`. No filter currently consumes them — every `cfg`-gated item is searchable.
+- `pub use` re-exports: indexed only at their _original_ path. The lowering recurses into private modules so `pub use` chains that bottom out in non-public modules are still followed to the canonical item; alias paths are recorded as metadata, not as separate items.
 
 ## 6. Cache invariants and eviction
 
@@ -405,40 +402,37 @@ A future LRU policy gated by `cache.max_bytes` can layer on if the cache grows u
 
 ### 7.1 Source parsing
 
-- **`syn` (with `full`)**: v1 baseline. Stable toolchain, rich AST, robust. Already in the docbert lockfile transitively.
-- **`rustdoc-types`**: Phase 2 enrichment when docs.rs JSON is available.
+- **`syn` (`full`)** — primary AST source. Stable toolchain, rich AST, robust.
+- **rustdoc JSON via docs.rs** — best-effort docstring enrichment merged on top of the syn parse (`docs_rs.rs`, `rustdoc_merge.rs`). Schema-versioned and gracefully skipped when unavailable.
 - **`tree-sitter-rust`**: skipped. No win over syn.
 - **`ra_ap_*`**: skipped. IDE infrastructure, not a search-index dep.
 
 ### 7.2 Lockfile parsing
 
-`cargo-lock` (the official RustSec crate) reads `Cargo.lock` into a typed model with package, version, source, dependencies, and checksum fields. It's the right tool for `rustbert sync`'s discovery phase.
-
-`cargo_metadata` is still useful per-crate after extraction (to discover the `src/lib.rs` entry point in a downloaded tarball), but for the high-level dependency walk we go straight from `Cargo.lock` because it's faster and doesn't require a working build environment.
+`cargo-lock` (the official RustSec crate) reads `Cargo.lock` into a typed model with package, version, source, dependencies, and checksum fields. That's the lockfile-walking surface used by `rustbert sync`. Per-crate, manifest reading falls to `toml` directly; rustbert deliberately does not depend on `cargo_metadata` — it doesn't need a working build environment.
 
 ### 7.3 Network + archive
 
-- `reqwest` (rustls, no default features) — HTTP.
+- `reqwest` (rustls, no default features; `stream` feature for download streaming) — HTTP.
 - `flate2` — gzip.
 - `tar` — tarball extraction.
-- `semver` — version resolution.
+- `semver` (`serde` feature) — version resolution.
 - `sha2` — checksum verification.
 
 ### 7.4 Other
 
 - `serde` / `serde_json` — crates.io API, metadata blobs.
-- `proc-macro2` (`span-locations`) — byte spans.
-- `quote` + `prettyplease` — signature rendering.
-- `pulldown-cmark` — doc-comment markdown parsing.
-- `tokio` — async runtime (HTTP, parallelism).
-- `clap` — CLI parsing.
-- `rmcp` — MCP server (matches docbert's choice).
-- `indicatif` — progress bars for `rustbert sync`.
-- `tracing` / `tracing-subscriber` — logging.
-- `xdg` — data dir resolution.
+- `proc-macro2` (`span-locations`) — byte spans on the rustbert side. Listed directly in `[dependencies]` solely to flip the `span-locations` feature on the `proc-macro2` instance reached transitively through syn/quote (cargo-machete is told to ignore the absence of a `use` statement).
+- `quote` — signature token-tree rendering.
+- `tokio` (`rt`, `rt-multi-thread`, `macros`, `time`, `sync`) — async runtime.
+- `clap` (`derive`, `env`) — CLI parsing.
+- `tracing` / `tracing-subscriber` (`env-filter`) — logging.
+- `globset` — `--exclude` glob matching.
+- `toml` — read crate `Cargo.toml` files extracted from tarballs.
+- `tantivy` — direct dep so the lexical index can be opened independently of docbert-core's re-export when rustbert needs raw access.
 - `thiserror` — error definitions.
 
-### 7.5 Recommended manifest
+### 7.5 Manifest
 
 ```toml
 [package]
@@ -447,63 +441,55 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# `docbert-core` reference is deployment-dependent: a `path = "../docbert-core"`
-# entry if rustbert is a workspace sibling, a `git = "..."` entry if it lives in
-# its own repo without a published core crate, or a `version = "..."` entry once
-# `docbert-core` is published. The choice is up to whoever ships rustbert.
-docbert-core    = { path = "../docbert-core" }
+docbert-core = { path = "../docbert-core" }
 
 # CLI + runtime
-clap            = { version = "4.6", features = ["derive"] }
-tokio           = { version = "1", features = ["rt-multi-thread", "fs", "macros"] }
-rmcp            = { version = "1.5", features = ["transport-io", "server"] }
+clap            = { version = "4.6", features = ["derive", "env"] }
+tokio           = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 tracing         = "0.1"
-tracing-subscriber = "0.3"
-xdg             = "3"
-indicatif       = "0.18"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Network + archive
-reqwest         = { version = "0.13", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest         = { version = "0.13.2", default-features = false, features = ["rustls", "stream"] }
 flate2          = "1"
 tar             = "0.4"
-semver          = "1"
+semver          = { version = "1", features = ["serde"] }
 sha2            = "0.11"
 
 # Cargo / Rust parsing
 cargo-lock      = "10"
-cargo_metadata  = "0.20"
-syn             = { version = "2", features = ["full", "extra-traits", "visit"] }
+syn             = { version = "2", features = ["full"] }
 proc-macro2     = { version = "1", features = ["span-locations"] }
 quote           = "1"
-prettyplease    = "0.2"
-pulldown-cmark  = "0.13"
+toml            = "0.8"
+
+# Index + filesystem helpers
+tantivy         = "0.26.0"
+globset         = "0.4"
 
 # Serialization + errors
 serde           = { version = "1", features = ["derive"] }
 serde_json      = "1"
-schemars        = "1.2"             # MCP tool input schemas, matches docbert
 thiserror       = "2"
 
 [features]
-default = []
+default    = []
 mkl        = ["docbert-core/mkl"]
 accelerate = ["docbert-core/accelerate"]
 metal      = ["docbert-core/metal"]
 cuda       = ["docbert-core/cuda"]
 ```
 
-`syn` / `proc-macro2` / `quote` are already in the workspace lockfile transitively, so the marginal compile cost is small.
+The MCP server is hand-rolled JSON-RPC over stdio — there is no `rmcp` or `schemars` runtime. There is no `xdg` dep either; data-dir resolution is done in-tree against `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.
 
 ## 8. Integration with `docbert-core`
 
-rustbert reuses `docbert-core` as a library and contributes nothing back into core for v1:
+rustbert reuses `docbert-core` as a library and contributes nothing back into core:
 
 - `SearchDocument`, `DocumentId`, `ChunkPlan` — used as the lowering target.
 - `SearchIndex`, `EmbeddingDb`, `ConfigDb`, `DataDir` — used for storage.
 - `ModelManager` — used for ColBERT inference.
-- `docbert_core::search::run` — used for the search backend, with a `kind` filter applied on the metadata blob. The filter is implemented in rustbert (post-search rerank/filter), not in core, so docbert itself stays unchanged.
-
-If post-search filtering proves expensive at scale, a follow-up could land a `kind` filter inside `docbert-core::search::run` that operates on a Tantivy field. For v1, post-filter is fine.
+- `docbert_core::search::run` — used for the search backend. `kind` and `module_prefix` filters are applied **post-rank** in rustbert against the cached `RustItem` records (the `kind` field on the lowered metadata isn't pushed into a Tantivy field). If post-search filtering ever proves expensive at scale, a follow-up could land a typed filter inside `docbert-core::search::run`; today's post-filter is fine.
 
 ## 9. Failure modes
 
@@ -518,49 +504,41 @@ If post-search filtering proves expensive at scale, a follow-up could land a `ki
 - **`Cargo.lock` malformed (sync):** abort the sync with a clear error before any fetch.
 - **`Cargo.lock` not found (sync):** clean error, suggest `--lock`.
 
-## 10. Phasing
+## 10. Status
 
-**Phase 1 — v1 MVP**
+**Shipped (v0.1.0):**
 
-- New crate `rustbert` with the manifest in §7.5; deployment topology (separate repo or sibling workspace member) is open and doesn't affect the user model.
-- CLI: `search`, `get`, `list`, `status`, `evict`, `fetch`, `sync`, `refresh`, `mcp`.
-- MCP tools: `rustdocs_search`, `rustdocs_get`, `rustdocs_list`, `rustdocs_status`.
-- crates.io tarball ingestion via `reqwest` + `flate2` + `tar`.
+- The `rustbert` binary in this workspace, with the manifest in §7.5.
+- CLI: `search`, `get`, `list`, `status`, `evict`, `fetch`, `sync`, `refresh`, `index`, `mcp`. Global `--data-dir` flag (with `RUSTBERT_DATA_DIR` env fallback).
+- MCP tools: `rustdocs_search`, `rustdocs_get`, `rustdocs_list`, `rustdocs_status`. JSON-RPC over stdio, hand-rolled — no `rmcp` runtime.
+- crates.io tarball ingestion via `reqwest` + `flate2` + `tar`, with checksum verification against the crates.io index.
 - `Cargo.lock` walking via `cargo-lock`.
-- Synthetic collection storage in rustbert's own data dir.
+- Synthetic-collection storage in rustbert's own data dir.
+- Best-effort docs.rs JSON enrichment merged on top of the syn parse.
+- Host-project indexing via `rustbert index`, including workspace traversal (each member is indexed as its own synthetic collection).
 
-**Phase 2 — docs.rs enrichment**
+**Future work:**
 
-- Optional rustdoc JSON merge atop the syn parse.
-- Trait-impl edges and intra-doc link resolution.
-- Falls back to syn-only when JSON is unavailable.
-
-**Phase 3 — query ergonomics**
-
-- `kind` filter pushed into `docbert-core::search::run` if post-filter cost matters.
-- Web UI / API at `rustbert web`.
-- `rustbert://` MCP resource template implementation polish.
-
-**Phase 4 — your own crate too**
-
-- Optional: index the host project's own source (the case rustbert deliberately skips in v1) so a single search hits both your project and its deps.
+- Pushing `kind` / `module_prefix` filters into `docbert-core::search::run` if post-filter cost ever matters.
+- A `rustbert web` UI/HTTP surface (no `Web` subcommand exists today).
+- Polish on the `rustbert://` resource template / MCP resource API.
 - Custom registries / sparse / git protocols for non-crates.io sources.
 
 ## 11. Resolved decisions
 
-These were on the table during design discussion and are now baked in:
+These were on the table during design and are now baked in:
 
-- **Embedding is part of `rustbert sync` by default.** The whole point of sync is "instant search after it finishes." `--no-embed` exists as an escape hatch for users who explicitly want to defer the embedding cost, but it is not the default.
-- **`rustbert sync --resume` does not refresh `latest` entries.** Resume is for retrying _failed_ work in the previous run. Re-resolving `latest` / semver-pattern entries against upstream is a separate command, `rustbert refresh` (see §3.6).
+- **Embedding is part of `rustbert sync` by default.** The whole point of sync is "instant search after it finishes."
+- **Re-resolving `latest` is a separate command.** `rustbert sync` retries failed work; `rustbert refresh` re-resolves `latest` / semver-pattern entries against upstream.
 - **rustbert and docbert are separate projects.** No automatic cross-routing between docbert's chat agent and rustbert's MCP tools. Users wire up the two MCP servers independently if they want both.
 
 ## 12. Open questions
 
 1. **Concurrency cap.** `--jobs 4` is conservative. Tune after benchmarking on a real `Cargo.lock` with ~150 crates.
-2. **`latest` TTL.** 24h is the proposed default for "latest" / semver-pattern resolution. Open to tuning based on how stale results feel in practice.
-3. **Per-project data dirs.** rustbert defaults to `~/.local/share/rustbert/`. Should we offer a `--data-dir` flag for per-project caches? Useful for strict isolation; complicates cross-project sharing.
-4. **Should sync index dev-dependencies?** Default is yes (mirrors `Cargo.lock`). `--include-dev=false` opts out. Maybe the default should flip if dev-deps add too much noise.
-5. **`cfg`-gated items.** v1 indexes everything. If search drowns in platform-specific items, add a config knob to filter to the host platform.
+2. **Cache freshness for `latest`.** No TTL today; users run `rustbert refresh` (optionally with `--older-than <seconds>`) when they want a re-resolve. Worth revisiting if the manual step proves too easy to forget.
+3. **Per-project data dirs.** Today's `--data-dir` flag is a per-invocation override; persistent per-project caches would need a config file or env-var convention on top of that.
+4. **Filtering dev-dependencies.** `Cargo.lock` doesn't distinguish dev-deps from runtime deps, so `sync` indexes everything in the lockfile. A future opt-out would need to consult `cargo metadata` instead of the lockfile.
+5. **`cfg`-gated items.** Currently indexed unconditionally (the predicate is captured in `attrs`). If search drowns in platform-specific items, add a config knob to filter to the host platform.
 
 ## 13. Risks
 
