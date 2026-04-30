@@ -328,7 +328,6 @@ See:
 - [Web API reference](./docs/web-api.md)
 - [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
 - [MCP reference](./docs/mcp.md)
-- [Jina ColBERT v2 research notes](./docs/jina-colbert-v2-research.md) — historical context
 
 ## License
 
