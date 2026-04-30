@@ -16,10 +16,12 @@ The current implementation works against local files and local state. Registered
 ## What it does
 
 - named collections backed by filesystem directories
-- incremental indexing with collection snapshots
+- incremental indexing with collection snapshots (`docbert sync`), full rebuilds (`docbert rebuild`), and PLAID-only re-trains over existing embeddings (`docbert reindex`)
 - hybrid search with BM25 + ColBERT reranking
 - semantic-only search with `docbert ssearch`
 - Markdown, plain text, and PDF ingestion
+- per-collection context strings (`docbert context add/list/remove`) consumed by retrieval surfaces
+- runtime diagnostics via `docbert doctor` (accelerator availability) and `docbert status`
 - local web UI and JSON API via `docbert web`
 - persisted conversations and LLM settings for chat in the web UI, including ChatGPT Codex OAuth
 - MCP tools, prompt, and `bert://...` resources via `docbert mcp`
@@ -113,6 +115,10 @@ docbert rebuild
 
 # Rebuild one collection
 docbert rebuild -c docs
+
+# Rebuild only the PLAID semantic index from existing embeddings,
+# without re-encoding any documents
+docbert reindex
 ```
 
 Current indexing behavior:
@@ -274,7 +280,8 @@ Useful environment variables:
 
 - `DOCBERT_DATA_DIR`
 - `DOCBERT_MODEL`
-- `DOCBERT_LOG`
+- `DOCBERT_LOG` (only takes effect when at least one `-v` is also passed)
+- `DOCBERT_EMBEDDING_BATCH_SIZE` (override the default embedding batch size used during indexing)
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
