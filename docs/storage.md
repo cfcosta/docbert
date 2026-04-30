@@ -18,13 +18,13 @@ The actual location is resolved in this order:
 
 Within that root, docbert currently uses five storage layers:
 
-| Path / system            | Role                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| `config.db`              | collections, contexts, document metadata, conversations, collection snapshots, and settings |
-| `embeddings.db`          | stored ColBERT embedding matrices keyed by numeric document or chunk ID                     |
-| `tantivy/`               | lexical search index                                                                        |
-| `plaid.idx`              | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim  |
-| collection roots on disk | source document content used for indexing, document reads, titles, and excerpts             |
+| Path / system            | Role                                                                                                       |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `config.db`              | collections, contexts, document metadata, chunk offsets, conversations, collection snapshots, and settings |
+| `embeddings.db`          | stored ColBERT embedding matrices keyed by numeric document or chunk ID                                    |
+| `tantivy/`               | lexical search index                                                                                       |
+| `plaid.idx`              | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim                 |
+| collection roots on disk | source document content used for indexing, document reads, titles, and excerpts                            |
 
 A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
 
@@ -57,6 +57,7 @@ It currently owns these tables:
 - `collections`
 - `contexts`
 - `document_metadata`
+- `chunk_offsets`
 - `conversations`
 - `collection_merkle_snapshots`
 - `settings`
@@ -163,6 +164,23 @@ Important notes:
 - the numeric ID is derived deterministically from `(collection, relative_path)`
 - `sync` change detection is now driven by Merkle snapshots, not just these mtimes
 - the metadata is still required for document lookup, deletion, result decoration, and semantic-search candidate enumeration
+
+## Table: `chunk_offsets`
+
+Purpose:
+
+- record where each embedded chunk lives within its source document, so search consumers can surface the byte range of a matching chunk
+
+Shape:
+
+- key: chunk numeric ID (`u64`) — the same id stored alongside the chunk's row in `embeddings.db`
+- value: encoded `ChunkByteOffset` (offset and length within the source file)
+
+Important behavior:
+
+- written alongside chunk embeddings during sync/rebuild and web ingestion
+- removed by document family when documents are deleted, mirroring `EmbeddingDb::batch_remove_document_families`
+- looked up via `FinalResult.best_chunk_doc_id` from a search result; missing entries fall back to no chunk-range information (e.g. for documents indexed before chunk offsets were tracked)
 
 ## Table: `conversations`
 
@@ -343,19 +361,19 @@ Because embeddings are the largest stored artifact, `embeddings.db` is usually t
 
 The `tantivy/` directory stores the lexical index entries for each prepared document.
 
-The current indexed fields include:
+The current schema includes:
 
-- document ID string
-- numeric document ID
-- collection
-- relative path
-- title
-- body
-- mtime
+- document ID string (stored)
+- numeric document ID (stored, fast)
+- collection (stored, fast)
+- relative path (stored)
+- title (stored, indexed with English stemming and 2x boost)
+- body (indexed with English stemming, **not stored**)
+- mtime (stored, fast)
 
 Important boundary:
 
-- Tantivy stores enough to perform lexical retrieval and return candidate metadata
+- Tantivy stores enough metadata for retrieval result decoration but not the body itself; body bytes only exist in the inverted index
 - it is **not** the sole source of returned titles, excerpts, or document content
 - the web layer often rereads the source file from disk and recomputes title/excerpt information
 
@@ -379,7 +397,9 @@ May update:
 
 - `tantivy/`
 - `embeddings.db`
+- `plaid.idx` (rebuilt or incrementally updated for touched document families)
 - `config.db` `document_metadata`
+- `config.db` `chunk_offsets`
 - `config.db` `settings` via `embedding_model`
 - `config.db` `collection_merkle_snapshots`
 
@@ -387,6 +407,7 @@ May remove:
 
 - deleted documents from Tantivy
 - deleted document families from `embeddings.db`
+- deleted chunk offsets from `config.db` `chunk_offsets`
 - deleted document metadata and document user metadata from `config.db`
 
 ## `docbert rebuild`
@@ -395,12 +416,22 @@ May clear and rebuild:
 
 - `tantivy/`
 - `embeddings.db`
+- `plaid.idx`
 - `config.db` `document_metadata`
+- `config.db` `chunk_offsets`
 - `config.db` `collection_merkle_snapshots`
 
 Also updates:
 
 - `config.db` `settings.embedding_model`
+
+## `docbert reindex`
+
+Rewrites only:
+
+- `plaid.idx`
+
+Does not read or write source files, embeddings, Tantivy, or any other `config.db` table. The PLAID index is retrained over every embedding currently in `embeddings.db`. Use this when only the PLAID builder parameters changed (centroid count, codec bit-width, k-means iterations, …) and embeddings remain valid.
 
 ## Web document upload
 
@@ -409,6 +440,8 @@ Writes:
 - source file into the collection root
 - Tantivy entry for that document
 - embedding rows for that document family
+- chunk byte offsets for those embeddings
+- updated `plaid.idx` for the touched document family
 - `document_metadata`
 - optional `doc_meta:{doc_id}` JSON metadata
 - updated collection snapshot
@@ -420,6 +453,8 @@ Removes:
 - source file from the collection root
 - Tantivy entry
 - embedding family
+- chunk offsets for that family
+- entries for that family from `plaid.idx`
 - document metadata
 - optional `doc_meta:{doc_id}` JSON metadata
 

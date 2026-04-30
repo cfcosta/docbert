@@ -83,7 +83,7 @@ Fields:
 
 - `query` — required string
 - `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; ignored under RRF fusion, only applied when `bm25Only` is true; default `0.0`
+- `minScore` — optional minimum score threshold; applied when `bm25Only` is true, otherwise ignored under RRF fusion; default `0.0`
 - `collection` — optional collection filter
 - `bm25Only` — optional, skip the semantic leg and return BM25 results directly
 - `noFuzzy` — optional, disable fuzzy matching in the BM25 leg
@@ -92,7 +92,7 @@ Fields:
 
 ### Behavior
 
-- Uses `search::run(...)`, which runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion unless `bm25Only` is set.
+- Uses `search::run(...)`, which runs a BM25 leg and a semantic leg (against the PLAID index) and fuses them with Reciprocal Rank Fusion unless `bm25Only` is set.
 - Opens `config.db` and `embeddings.db` for the call.
 - Locks the shared `ModelManager` while searching.
 - If `includeSnippet` is true, the server tries to read the matching file from disk and extract a snippet for the query.
@@ -163,13 +163,14 @@ Fields:
 
 - `query` — required string
 - `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; default `0.0`
+- `minScore` — optional minimum score threshold; applied to PLAID MaxSim scores; default `0.0`
 - `all` — optional, return all results above threshold
 - `includeSnippet` — optional, defaults to `true`
 
 ### Behavior
 
-- Uses `search::semantic(...)`.
+- Uses `search::semantic(...)`, which loads the prebuilt PLAID index and ranks documents against it.
+- Fails with an MCP error if the PLAID index has not been built yet (see `Error::PlaidIndexMissing`).
 - Does **not** accept a collection parameter in the MCP schema.
 - Shares the same result formatting path as `docbert_search`.
 
@@ -311,7 +312,7 @@ Example skip text:
 
 ### No-match behavior
 
-If nothing matches, the tool returns an error-style text result:
+If nothing matches, the tool returns an error-style text result (`CallToolResult::error`) carrying:
 
 ```text
 No documents match '*.md'
@@ -334,7 +335,7 @@ None.
 
 - Reads collection registrations from `config.db`
 - Reads the list of document ids and metadata from `config.db`
-- Uses `model_name` from settings, falling back to `DEFAULT_MODEL_ID`
+- Reports `model_name` from settings, falling back to `DEFAULT_MODEL_ID`. This deliberately does **not** consult the `--model` CLI flag or `DOCBERT_MODEL`; the MCP server reports the persisted setting, not the resolved CLI-time model.
 - Counts documents per collection
 
 ### Tool output
@@ -477,8 +478,7 @@ Typical examples:
 
 Typical examples:
 
-- `docbert_multi_get` skip notices for unreadable files or missing collections
-- `docbert_multi_get` with no matches
+- `docbert_multi_get` skip notices for unreadable files or missing collections (mixed in among the resource entries of an otherwise successful tool result)
 
 This distinction matters when building clients:
 

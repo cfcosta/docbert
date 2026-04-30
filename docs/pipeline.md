@@ -13,12 +13,13 @@ The current implementation is shared across the CLI, the web runtime, and the MC
 
 A registered collection is just a named filesystem root stored in `config.db`.
 
-The pipeline then works across four kinds of state:
+The pipeline then works across these kinds of state:
 
 - **source files on disk** inside collection roots
 - **`tantivy/`** for lexical search
 - **`embeddings.db`** for ColBERT embeddings
-- **`config.db`** for collection registration, document metadata, settings, and collection Merkle snapshots
+- **`plaid.idx`** for the PLAID multi-vector index (the actual storage backing the semantic leg)
+- **`config.db`** for collection registration, document metadata, chunk byte offsets, settings, and collection Merkle snapshots
 
 One important architectural detail: docbert does **not** treat the index as the only source of truth for reads. Search result enrichment and document retrieval still read current file contents from disk.
 
@@ -32,6 +33,7 @@ Indexing happens through:
 
 - `docbert sync`
 - `docbert rebuild`
+- `docbert reindex` (PLAID-only — rebuilds the semantic index from existing embeddings without re-encoding)
 - web document ingestion and deletion via `docbert web`
 
 The CLI and web runtime use the same shared discovery, preparation, metadata, and snapshot primitives.
@@ -212,6 +214,10 @@ Chunk IDs are document-family aware:
 
 That means one source document can correspond to multiple embedding rows in `embeddings.db`.
 
+### Chunk byte offsets
+
+Each chunk's byte offset and length within the source document is persisted to the `chunk_offsets` table in `config.db` alongside the embeddings. Search consumers use these offsets to surface the exact byte range of the matching chunk back to callers (see `FinalResult.best_chunk_doc_id`).
+
 ### Empty semantic bodies
 
 If a document's searchable body is empty after preparation, chunk generation returns no embedding chunks.
@@ -265,8 +271,10 @@ If the indexing or mutation step fails, docbert keeps the previous snapshot.
 
 docbert currently exposes two main search modes:
 
-- **hybrid**: BM25 and ColBERT retrieval run in parallel and are fused with Reciprocal Rank Fusion
-- **semantic**: ColBERT-only retrieval over the stored document set
+- **hybrid**: a BM25 leg over Tantivy and a ColBERT/PLAID leg, fused with Reciprocal Rank Fusion
+- **semantic**: ColBERT/PLAID-only retrieval over the stored document set
+
+Both modes require a prebuilt PLAID index. If the index is missing, search fails with `Error::PlaidIndexMissing` (the web layer surfaces this as `503 Service Unavailable`); run `docbert sync`, `docbert rebuild`, or `docbert reindex` to build it.
 
 Different surfaces choose different defaults:
 
@@ -291,14 +299,14 @@ Current behavior:
 
 ### Step 2: semantic leg
 
-In parallel, the semantic leg runs the same pipeline as `search::semantic`:
+The semantic leg shares the PLAID query pipeline with `search::semantic`:
 
-1. load all stored document metadata from `config.db`
-2. filter to the requested collection, if any
-3. skip documents whose on-disk body is empty after frontmatter stripping
-4. encode the query with the active ColBERT model via `model.encode_query(...)`
-5. score every candidate embedding with ColBERT MaxSim
-6. keep the top `100` by score
+1. load the prebuilt PLAID index from `plaid.idx` (fails with `PlaidIndexMissing` if absent)
+2. load stored document metadata from `config.db`, optionally filtered to the requested collection
+3. encode the query with the active ColBERT model via `model.encode_query(...)`
+4. ask `plaid::search` for an oversampled candidate list (`max(count * 8, 64)`)
+5. collapse chunk families to one entry per base document, keeping the best-scoring chunk's id
+6. keep up to `100` candidates by score
 
 ### Step 3: Reciprocal Rank Fusion
 
@@ -317,7 +325,7 @@ After fusion, docbert:
 - applies the requested count unless `--all` is set
 - assigns final 1-based ranks
 
-`min_score` is ignored under RRF because fused scores are not on the BM25 scale. It still applies in `--bm25-only` mode.
+`min_score` is ignored under RRF because fused scores are not on the BM25 scale. It applies in `--bm25-only` mode and in semantic-only search (which filters by PLAID MaxSim score).
 
 ## Semantic-only search flow
 
@@ -325,16 +333,15 @@ Semantic-only search is implemented in `docbert_core::search::semantic`.
 
 Current behavior:
 
-1. load all stored document metadata from `config.db`
-2. optionally filter to one collection
-3. discard documents whose current on-disk content has no semantic body after frontmatter stripping
-4. encode the query
-5. rerank across all remaining document IDs using stored embeddings
-6. filter by `min_score`
-7. limit to `count` unless `all` is set
-8. populate titles from current file contents on disk
-
-This is broader and typically more expensive than hybrid search because it is not narrowed by a BM25 candidate stage first.
+1. load the prebuilt PLAID index (fails with `PlaidIndexMissing` if absent)
+2. load all stored document metadata from `config.db`
+3. optionally filter to one collection
+4. encode the query with the active ColBERT model
+5. ask `plaid::search` for an oversampled candidate list (`max(count * 8, 64)`)
+6. collapse chunk families to one entry per base document, keeping the best chunk's id and score
+7. filter by `min_score`
+8. limit to `count` unless `all` is set
+9. populate titles from current file contents on disk
 
 ## Result enrichment and document reads
 
@@ -415,7 +422,7 @@ A few pipeline details matter when operating docbert in practice:
 - Git ignore rules only matter when the collection root is itself a Git repo
 - PDFs are part of the current discovery and preparation pipeline
 - `sync` uses collection snapshots to detect new/changed/deleted files
-- semantic search depends on stored embeddings and current readable file content
+- both hybrid and semantic search require a prebuilt PLAID index; on a fresh data directory, search fails with `PlaidIndexMissing` until you run `docbert sync` (or `docbert rebuild`/`docbert reindex`)
 - search results and document reads can reflect current on-disk content even after indexing, because titles and excerpts are refreshed from disk at retrieval time
 - changing embedding models requires a rebuild before sync will proceed safely
 

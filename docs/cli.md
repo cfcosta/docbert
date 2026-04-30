@@ -127,21 +127,21 @@ This is the default search command. It uses the hybrid search path unless certai
 
 Options:
 
-| Option                    | Description                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| `-n, --count <count>`     | Number of results to return. Default: `10`.                                                         |
-| `-c, --collection <name>` | Restrict search to one collection.                                                                  |
-| `--json`                  | Emit JSON output.                                                                                   |
-| `--all`                   | Return all results above `--min-score`.                                                             |
-| `--files`                 | Print only matching file paths.                                                                     |
-| `--min-score <score>`     | Minimum score threshold. Only applied with `--bm25-only`; ignored under RRF fusion. Default: `0.0`. |
-| `--bm25-only`             | Skip the semantic leg and return BM25 results directly.                                             |
-| `--no-fuzzy`              | Disable fuzzy matching in the BM25 leg.                                                             |
+| Option                    | Description                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `-n, --count <count>`     | Number of results to return. Default: `10`.                                                    |
+| `-c, --collection <name>` | Restrict search to one collection.                                                             |
+| `--json`                  | Emit JSON output.                                                                              |
+| `--all`                   | Return all results above `--min-score`.                                                        |
+| `--files`                 | Print only matching file paths.                                                                |
+| `--min-score <score>`     | Minimum score threshold. Applied with `--bm25-only`; ignored under RRF fusion. Default: `0.0`. |
+| `--bm25-only`             | Skip the semantic leg and return BM25 results directly.                                        |
+| `--no-fuzzy`              | Disable fuzzy matching in the BM25 leg.                                                        |
 
 Behavior notes:
 
-- By default, docbert runs BM25 and semantic retrieval in parallel and fuses them with Reciprocal Rank Fusion (`SearchMode::Hybrid`).
-- If any of `--bm25-only`, `--no-fuzzy`, or `--all` are set, docbert calls `search::run` directly with the corresponding parameters.
+- By default, docbert runs the BM25 and semantic legs and fuses them with Reciprocal Rank Fusion (`SearchMode::Hybrid`). Both legs share `search::run`; `--no-fuzzy` and `--all` adjust that path rather than choosing a different one.
+- `--bm25-only` skips the semantic leg entirely and returns BM25 results directly. This is the only mode where `--min-score` filters results.
 - Output mode is chosen in this order:
   1. `--json`
   2. `--files`

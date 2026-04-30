@@ -28,7 +28,7 @@ The CLI is the main operational interface for:
 - collection registration
 - context management
 - search and retrieval
-- indexing (`sync`, `rebuild`)
+- indexing (`sync`, `rebuild`, `reindex`)
 - runtime inspection (`status`, `doctor`, `model show`)
 - starting the web or MCP runtimes
 
@@ -61,7 +61,7 @@ It owns:
 - indexing workflows and mutation orchestration
 - web runtime setup and route wiring
 - MCP server setup and tool/resource handling
-- runtime resource management around `config.db`, `embeddings.db`, and Tantivy writers
+- runtime resource management around `config.db`, `embeddings.db`, `plaid.idx`, and Tantivy writers
 
 Important modules:
 
@@ -135,11 +135,14 @@ The major persistent pieces are:
   - collections
   - contexts
   - document metadata
+  - chunk byte offsets
   - conversations
   - collection Merkle snapshots
   - settings, including model and LLM-related values
 - `embeddings.db`
   - ColBERT token embeddings
+- `plaid.idx`
+  - PLAID multi-vector index built over the embeddings
 - `tantivy/`
   - lexical search index
 - source collection directories on disk
@@ -158,6 +161,7 @@ Responsibilities:
 - map collection names to filesystem roots
 - store optional context strings
 - store document metadata and user metadata
+- store chunk byte offsets so search consumers can surface the byte range of a matching chunk
 - store persisted conversation history
 - store collection Merkle snapshots for sync/web mutation tracking
 - store general settings such as model selection and persisted LLM settings

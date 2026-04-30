@@ -301,16 +301,16 @@ See:
 
 ## How search works
 
-Hybrid search runs BM25 and ColBERT in parallel and fuses the two rankings with Reciprocal Rank Fusion:
+Hybrid search runs a BM25 leg and a ColBERT/PLAID leg over the same query, then fuses the rankings with Reciprocal Rank Fusion:
 
 1. Tantivy produces up to 100 BM25 candidates (fuzzy matching on by default).
-2. In parallel, the prebuilt PLAID semantic index produces up to 100 ColBERT MaxSim candidates for the same query.
+2. The prebuilt PLAID semantic index produces up to 100 ColBERT MaxSim candidates for the same query.
 3. The two ranked lists are combined with RRF (`k = 60`); each document contributes `1 / (k + rank_i)` from each list it appears in.
 4. The top `--count` fused results are returned (or all results, with `--all`).
 
-`--min-score` is ignored under RRF because fused scores are not on the BM25 scale; it only applies in `--bm25-only` mode, which skips the semantic leg entirely.
+`--min-score` is ignored under RRF because fused scores are not on the BM25 scale. It applies in `--bm25-only` mode and in semantic-only search (`docbert ssearch`, `POST /v1/search` with `mode=semantic`).
 
-Semantic-only search (`docbert ssearch`, `POST /v1/search` with `mode=semantic`) skips the BM25 leg and ranks all stored documents directly against the PLAID index. Both modes require a prebuilt PLAID index — run `docbert sync` if the server returns `PlaidIndexMissing`.
+Semantic-only search skips the BM25 leg and ranks documents directly against the PLAID index. Both modes require a prebuilt PLAID index — search fails with `Error::PlaidIndexMissing` (or HTTP 503 from the web API) until you run `docbert sync`, `docbert rebuild`, or `docbert reindex`.
 
 See:
 
