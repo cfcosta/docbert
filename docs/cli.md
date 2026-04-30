@@ -195,11 +195,11 @@ Accepted reference forms:
 
 Options:
 
-| Option   | Description                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------- |
-| `--json` | Emit JSON with metadata and content.                                                                          |
-| `--meta` | Print only collection/path/file metadata.                                                                     |
-| `--full` | Accepted, but currently not required because the default non-JSON, non-meta mode already prints full content. |
+| Option   | Description                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------- |
+| `--json` | Emit JSON with metadata and content.                                                                 |
+| `--meta` | Print only collection/path/file metadata.                                                            |
+| `--full` | Accepted but currently a no-op: the default non-JSON, non-meta mode already prints the full content. |
 
 Behavior notes:
 
@@ -346,7 +346,7 @@ Behavior notes:
   - document count
 - If the stored embedding model differs from the currently resolved model, status prints:
   - `Embedding model: <stored> (MISMATCH -- run \`docbert rebuild\`)`
-- JSON output includes `data_dir`, `model`, `model_source`, `embedding_model`, `collections`, and `documents`.
+- JSON output includes `data_dir`, `model`, `model_source`, `embedding_model`, `documents`, and `collections` — note that JSON's `collections` field is a count (`usize`), not the path list shown in human output.
 
 Example:
 
@@ -489,11 +489,11 @@ The resolved model used by commands is chosen in this priority order:
 
 ## Environment variables
 
-| Variable           | Description                                                                             |
-| ------------------ | --------------------------------------------------------------------------------------- |
-| `DOCBERT_DATA_DIR` | Override the data directory when `--data-dir` is not provided.                          |
-| `DOCBERT_MODEL`    | Override the resolved model when `--model` is not provided.                             |
-| `DOCBERT_LOG`      | Logging filter used when tracing is initialized. If set, it overrides the `-v` mapping. |
+| Variable           | Description                                                                                                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCBERT_DATA_DIR` | Override the data directory when `--data-dir` is not provided.                                                                                                          |
+| `DOCBERT_MODEL`    | Override the resolved model when `--model` is not provided.                                                                                                             |
+| `DOCBERT_LOG`      | Logging filter used when tracing is initialized. Only takes effect when at least one `-v` is also passed; without `-v`, logging stays off and `DOCBERT_LOG` is ignored. |
 
 ## Exit behavior
 
