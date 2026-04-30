@@ -624,6 +624,7 @@ That type contains:
 - `collection`
 - `path`
 - `title`
+- `best_chunk_doc_id` — `Option<u64>` carrying the chunk id of the best-scoring semantic-leg match, used to look up a chunk's byte range via `ConfigDb::get_chunk_offset`. `None` for BM25-only hits and for documents indexed before chunk offsets were tracked.
 
 If you want to attach JSON metadata for your own API/UI surface, use `results::enrich(...)`.
 
@@ -701,11 +702,14 @@ Common variants include:
 - `Error::NotFound`
 - `Error::DataDir`
 - `Error::Tantivy`
+- `Error::QueryParse`
 - `Error::Redb*`
 - `Error::Colbert`
 - `Error::Candle`
 - `Error::Json`
 - `Error::Pdf`
+- `Error::Plaid` — wraps `docbert_plaid::PlaidError`
+- `Error::PlaidIndexMissing` — sentinel raised by `search::run` and `search::semantic` when `plaid.idx` has not been built yet; surface as a "run `docbert sync`" message
 - `Error::Rkyv`
 
 ```rust,no_run
