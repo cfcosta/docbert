@@ -14,8 +14,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Top-level error type for docbert.
 ///
-/// Most variants wrap errors from lower layers such as redb, Tantivy, or
-/// the model stack.
+/// Most variants wrap errors from lower layers such as the LMDB-backed
+/// key-value store, Tantivy, or the model stack.
 ///
 /// # Examples
 ///
@@ -34,22 +34,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error("database error: {0}")]
-    Redb(#[from] redb::Error),
-
-    #[error("database error: {0}")]
-    RedbDatabase(#[from] redb::DatabaseError),
-
-    #[error("database storage error: {0}")]
-    RedbStorage(#[from] redb::StorageError),
-
-    #[error("database transaction error: {0}")]
-    RedbTransaction(#[from] redb::TransactionError),
-
-    #[error("database table error: {0}")]
-    RedbTable(#[from] redb::TableError),
-
-    #[error("database commit error: {0}")]
-    RedbCommit(#[from] redb::CommitError),
+    Heed(#[from] heed::Error),
 
     #[error("search index error: {0}")]
     Tantivy(#[from] tantivy::TantivyError),

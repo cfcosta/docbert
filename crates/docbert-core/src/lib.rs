@@ -100,6 +100,7 @@ pub mod model_manager;
 pub mod path_safety;
 pub mod plaid;
 pub mod preparation;
+pub mod redb_migration;
 pub mod reranker;
 pub mod results;
 pub mod search;

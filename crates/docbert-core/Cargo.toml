@@ -10,10 +10,15 @@ blake3 = "1.8.4"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.10.2"
 docbert-plaid = { path = "../docbert-plaid" }
+heed = "0.22"
 ignore = "0.4"
 docbert-pylate = { path = "../docbert-pylate" }
 kodama = "0.3"
 rayon = "1.12.0"
+# Kept as a regular dependency for the redb→heed migration path: when
+# users open a legacy redb-formatted config.db / embeddings.db the
+# migration module reads it through redb before copying into heed.
+# Once the upgrade window closes we can drop this back to dev-only.
 redb = "4.1.0"
 rkyv = "0.8.15"
 pdf_oxide = "0.3.35"
@@ -21,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tantivy = "0.26.0"
 thiserror = "2"
+tracing = "0.1"
 
 [features]
 default = []
@@ -34,6 +40,7 @@ cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 hegeltest = "0.8"
+proptest = "1"
 rand = "0.10"
 tempfile = "3"
 

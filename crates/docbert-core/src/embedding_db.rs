@@ -1,11 +1,26 @@
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use heed::{
+    Database,
+    Env,
+    byteorder::BigEndian,
+    types::{Bytes, U64},
+};
 
-use crate::{chunking::document_family_key, error::Result};
+use crate::{
+    chunking::document_family_key,
+    error::Result,
+    redb_migration::{self, EMBEDDINGS_MAX_DBS},
+};
 
-const EMBEDDINGS: TableDefinition<u64, &[u8]> =
-    TableDefinition::new("embeddings");
+/// Generous map size for the embeddings env. LMDB allocates a sparse
+/// file at this size on disk; the actual on-disk usage tracks the
+/// stored data, but the virtual address space stays mapped at this
+/// ceiling, so picking a number large enough that operators rarely
+/// hit it is the easiest path to "no surprises".
+const MAP_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GiB
+
+const EMBEDDINGS_DB_NAME: &str = "embeddings";
 
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
@@ -51,12 +66,24 @@ fn serialize_embedding_matrix(
 /// - 4 bytes: token count `T` (`u32`, little-endian)
 /// - 4 bytes: embedding dimension `D` (`u32`, little-endian)
 /// - `T * D * 4` bytes: `f32` values in row-major order
+///
+/// Backed by an [LMDB](https://www.symas.com/lmdb) environment via the
+/// [`heed`](https://docs.rs/heed) crate, which gives us multi-process
+/// readers and writers on the same data dir — useful when several
+/// `docbert mcp` / `docbert web` processes share a data dir. The
+/// open path transparently migrates legacy redb-format files via
+/// [`crate::redb_migration`].
 pub struct EmbeddingDb {
-    db: Database,
+    env: Env,
+    db: Database<U64<BigEndian>, Bytes>,
 }
 
 impl EmbeddingDb {
     /// Open or create an embeddings database at the given path.
+    ///
+    /// If the file at `path` is still in the legacy redb format, this
+    /// transparently migrates it to the heed/LMDB format before
+    /// returning. The original is preserved as `<path>.redb-bak`.
     ///
     /// # Examples
     ///
@@ -68,13 +95,14 @@ impl EmbeddingDb {
     /// assert!(db.list_ids().unwrap().is_empty());
     /// ```
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path)?;
-
-        let txn = db.begin_write()?;
-        txn.open_table(EMBEDDINGS)?;
-        txn.commit()?;
-
-        Ok(Self { db })
+        redb_migration::ensure_embedding_db_migrated(path)?;
+        let env =
+            redb_migration::open_heed_env(path, MAP_SIZE, EMBEDDINGS_MAX_DBS)?;
+        let mut wtxn = env.write_txn()?;
+        let db: Database<U64<BigEndian>, Bytes> =
+            env.create_database(&mut wtxn, Some(EMBEDDINGS_DB_NAME))?;
+        wtxn.commit()?;
+        Ok(Self { env, db })
     }
 
     /// Store an embedding matrix for a document.
@@ -111,12 +139,9 @@ impl EmbeddingDb {
 
         let bytes = serialize_embedding_matrix(num_tokens, dimension, data);
 
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(EMBEDDINGS)?;
-            table.insert(doc_id, bytes.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.db.put(&mut wtxn, &doc_id, bytes.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -141,14 +166,11 @@ impl EmbeddingDb {
     /// assert_eq!(matrix.data.len(), 6);
     /// ```
     pub fn load(&self, doc_id: u64) -> Result<Option<EmbeddingMatrix>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(EMBEDDINGS)?;
-
-        let Some(guard) = table.get(doc_id)? else {
+        let rtxn = self.env.read_txn()?;
+        let Some(bytes) = self.db.get(&rtxn, &doc_id)? else {
             return Ok(None);
         };
-
-        Ok(parse_embedding_matrix(guard.value()))
+        Ok(parse_embedding_matrix(bytes))
     }
 
     /// Remove an embedding entry. Returns `true` if it existed.
@@ -165,12 +187,9 @@ impl EmbeddingDb {
     /// assert!(!db.remove(42).unwrap()); // already gone
     /// ```
     pub fn remove(&self, doc_id: u64) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(EMBEDDINGS)?;
-            table.remove(doc_id)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.db.delete(&mut wtxn, &doc_id)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -195,14 +214,11 @@ impl EmbeddingDb {
         if doc_ids.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(EMBEDDINGS)?;
-            for &doc_id in doc_ids {
-                table.remove(doc_id)?;
-            }
+        let mut wtxn = self.env.write_txn()?;
+        for &doc_id in doc_ids {
+            self.db.delete(&mut wtxn, &doc_id)?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -228,25 +244,21 @@ impl EmbeddingDb {
             .iter()
             .map(|&doc_id| document_family_key(doc_id))
             .collect();
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(EMBEDDINGS)?;
-            let mut doc_ids_to_remove = Vec::new();
-            for entry in table.iter()? {
-                let (key, _) = entry?;
-                let doc_id = key.value();
-                if family_keys.contains(&document_family_key(doc_id)) {
-                    doc_ids_to_remove.push(doc_id);
-                }
-            }
 
-            let removed = doc_ids_to_remove.len();
-            for doc_id in doc_ids_to_remove {
-                table.remove(doc_id)?;
+        let mut wtxn = self.env.write_txn()?;
+        let mut doc_ids_to_remove = Vec::new();
+        for entry in self.db.iter(&wtxn)? {
+            let (doc_id, _) = entry?;
+            if family_keys.contains(&document_family_key(doc_id)) {
+                doc_ids_to_remove.push(doc_id);
             }
-            removed
-        };
-        txn.commit()?;
+        }
+
+        let removed = doc_ids_to_remove.len();
+        for doc_id in doc_ids_to_remove {
+            self.db.delete(&mut wtxn, &doc_id)?;
+        }
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -279,22 +291,19 @@ impl EmbeddingDb {
         if entries.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(EMBEDDINGS)?;
-            for (doc_id, num_tokens, dimension, data) in entries {
-                assert_eq!(
-                    data.len(),
-                    (*num_tokens as usize) * (*dimension as usize),
-                    "data length must equal num_tokens * dimension"
-                );
+        let mut wtxn = self.env.write_txn()?;
+        for (doc_id, num_tokens, dimension, data) in entries {
+            assert_eq!(
+                data.len(),
+                (*num_tokens as usize) * (*dimension as usize),
+                "data length must equal num_tokens * dimension"
+            );
 
-                let bytes =
-                    serialize_embedding_matrix(*num_tokens, *dimension, data);
-                table.insert(*doc_id, bytes.as_slice())?;
-            }
+            let bytes =
+                serialize_embedding_matrix(*num_tokens, *dimension, data);
+            self.db.put(&mut wtxn, doc_id, bytes.as_slice())?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -326,17 +335,15 @@ impl EmbeddingDb {
             return Ok(Vec::new());
         }
 
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(EMBEDDINGS)?;
-
+        let rtxn = self.env.read_txn()?;
         let mut results = Vec::with_capacity(doc_ids.len());
         for &doc_id in doc_ids {
-            let matrix = table
-                .get(doc_id)?
-                .and_then(|guard| parse_embedding_matrix(guard.value()));
+            let matrix = self
+                .db
+                .get(&rtxn, &doc_id)?
+                .and_then(parse_embedding_matrix);
             results.push((doc_id, matrix));
         }
-
         Ok(results)
     }
 
@@ -359,22 +366,20 @@ impl EmbeddingDb {
                 .map(|&doc_id| document_family_key(doc_id))
                 .collect();
 
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(EMBEDDINGS)?;
+        let rtxn = self.env.read_txn()?;
         let mut families: std::collections::HashMap<
             u64,
             Vec<(u64, EmbeddingMatrix)>,
         > = std::collections::HashMap::new();
 
-        for entry in table.iter()? {
-            let (key, value) = entry?;
-            let doc_id = key.value();
+        for entry in self.db.iter(&rtxn)? {
+            let (doc_id, bytes) = entry?;
             let family_key = document_family_key(doc_id);
             if !requested_family_keys.contains(&family_key) {
                 continue;
             }
 
-            let Some(matrix) = parse_embedding_matrix(value.value()) else {
+            let Some(matrix) = parse_embedding_matrix(bytes) else {
                 continue;
             };
 
@@ -413,12 +418,11 @@ impl EmbeddingDb {
     /// assert_eq!(ids, vec![10, 20]);
     /// ```
     pub fn list_ids(&self) -> Result<Vec<u64>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(EMBEDDINGS)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
-            let (k, _) = entry?;
-            result.push(k.value());
+        for entry in self.db.iter(&rtxn)? {
+            let (doc_id, _) = entry?;
+            result.push(doc_id);
         }
         Ok(result)
     }
@@ -437,12 +441,10 @@ impl EmbeddingDb {
     /// carries) are skipped silently, matching [`Self::load`]'s
     /// "return `None` on garbage" behaviour.
     pub fn list_shapes(&self) -> Result<Vec<(u64, u32, u32)>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(EMBEDDINGS)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
-            let (k, v) = entry?;
-            let bytes = v.value();
+        for entry in self.db.iter(&rtxn)? {
+            let (doc_id, bytes) = entry?;
             if bytes.len() < HEADER_SIZE {
                 continue;
             }
@@ -455,9 +457,20 @@ impl EmbeddingDb {
             if bytes.len() != expected_len {
                 continue;
             }
-            result.push((k.value(), num_tokens, dimension));
+            result.push((doc_id, num_tokens, dimension));
         }
         Ok(result)
+    }
+
+    /// Test-only escape hatch: write raw bytes for a `doc_id` so unit
+    /// tests can exercise [`Self::load`]'s parser against malformed
+    /// payloads without going through the public store/serialize path.
+    #[cfg(test)]
+    pub(crate) fn insert_raw(&self, doc_id: u64, bytes: &[u8]) -> Result<()> {
+        let mut wtxn = self.env.write_txn()?;
+        self.db.put(&mut wtxn, &doc_id, bytes)?;
+        wtxn.commit()?;
+        Ok(())
     }
 }
 
@@ -555,19 +568,10 @@ mod tests {
         assert!(db.load(999).unwrap().is_none());
     }
 
-    fn insert_raw_entry(db: &EmbeddingDb, doc_id: u64, bytes: &[u8]) {
-        let txn = db.db.begin_write().unwrap();
-        {
-            let mut table = txn.open_table(EMBEDDINGS).unwrap();
-            table.insert(doc_id, bytes).unwrap();
-        }
-        txn.commit().unwrap();
-    }
-
     #[test]
     fn load_returns_none_for_short_header() {
         let (_tmp, db) = test_db();
-        insert_raw_entry(&db, 7, &[1, 2, 3, 4]);
+        db.insert_raw(7, &[1, 2, 3, 4]).unwrap();
 
         assert!(db.load(7).unwrap().is_none());
     }
@@ -579,7 +583,7 @@ mod tests {
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0]));
-        insert_raw_entry(&db, 8, &bytes);
+        db.insert_raw(8, &bytes).unwrap();
 
         assert!(db.load(8).unwrap().is_none());
 
@@ -808,7 +812,7 @@ mod tests {
         malformed_bytes.extend_from_slice(&2u32.to_le_bytes());
         malformed_bytes
             .extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0]));
-        insert_raw_entry(&db, malformed_chunk_id, &malformed_bytes);
+        db.insert_raw(malformed_chunk_id, &malformed_bytes).unwrap();
 
         let loaded = db
             .batch_load_document_families(&[

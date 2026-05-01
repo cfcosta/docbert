@@ -1,27 +1,28 @@
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use heed::{
+    Database,
+    Env,
+    byteorder::BigEndian,
+    types::{Bytes, Str, U64},
+};
 
 use crate::{
     Conversation,
-    Error,
     error::Result,
     incremental::DocumentMetadata,
     merkle::Snapshot,
+    redb_migration::{self, CONFIG_MAX_DBS},
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
 };
 
-const COLLECTIONS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("collections");
-const CONTEXTS: TableDefinition<&str, &[u8]> = TableDefinition::new("contexts");
-const DOCUMENT_METADATA: TableDefinition<u64, &[u8]> =
-    TableDefinition::new("document_metadata");
-const CONVERSATIONS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("conversations");
-const COLLECTION_MERKLE_SNAPSHOTS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("collection_merkle_snapshots");
-const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
+const COLLECTIONS_DB: &str = "collections";
+const CONTEXTS_DB: &str = "contexts";
+const DOCUMENT_METADATA_DB: &str = "document_metadata";
+const CONVERSATIONS_DB: &str = "conversations";
+const COLLECTION_MERKLE_SNAPSHOTS_DB: &str = "collection_merkle_snapshots";
+const SETTINGS_DB: &str = "settings";
 /// Per-chunk byte offsets in the original document.
 ///
 /// Keyed by `chunk_doc_id` (the chunk-level numeric ID — see
@@ -33,24 +34,34 @@ const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 /// chunker is deterministic, but its output depends on the chunking
 /// config that was active at index time, so we persist instead of
 /// re-derive — a config change must not silently invalidate offsets.
-const CHUNK_OFFSETS: TableDefinition<u64, &[u8]> =
-    TableDefinition::new("chunk_offsets");
-/// Width in bytes of one entry in [`CHUNK_OFFSETS`].
+const CHUNK_OFFSETS_DB: &str = "chunk_offsets";
+/// Width in bytes of one entry in the `chunk_offsets` database.
 const CHUNK_OFFSET_ENTRY_LEN: usize = 16;
+
+const MAP_SIZE: usize = 1024 * 1024 * 1024; // 1 GiB
 
 const KEY_LLM_PROVIDER: &str = "llm_provider";
 const KEY_LLM_MODEL: &str = "llm_model";
 const KEY_LLM_API_KEY: &str = "llm_api_key";
 
-/// redb-backed store for collections, settings, and document metadata.
+/// Local store for collections, settings, and document metadata.
 ///
-/// It keeps four tables:
+/// It keeps seven named LMDB databases inside one
+/// [`heed::Env`](https://docs.rs/heed):
+///
 /// - **collections**: collection names to filesystem paths
 /// - **contexts**: URIs to human-readable descriptions
 /// - **document_metadata**: numeric document IDs to serialized metadata
+/// - **conversations**: conversation IDs to serialized chat history
+/// - **collection_merkle_snapshots**: collection name to last snapshot
 /// - **settings**: general key-value settings such as `model_name`
+/// - **chunk_offsets**: chunk-level numeric IDs to byte ranges in the
+///   source document
 ///
-/// The database itself is [redb](https://github.com/cberner/redb), so everything stays local.
+/// LMDB gives us proper cross-process readers and writers, so several
+/// `docbert mcp` / `docbert web` / CLI processes can share the same
+/// data dir. Legacy redb-formatted files are migrated on first open;
+/// see [`crate::redb_migration`].
 ///
 /// # Examples
 ///
@@ -69,7 +80,14 @@ const KEY_LLM_API_KEY: &str = "llm_api_key";
 /// assert_eq!(db.get_setting("model_name").unwrap(), Some("custom/model".to_string()));
 /// ```
 pub struct ConfigDb {
-    db: Database,
+    env: Env,
+    collections: Database<Str, Bytes>,
+    contexts: Database<Str, Bytes>,
+    document_metadata: Database<U64<BigEndian>, Bytes>,
+    conversations: Database<Str, Bytes>,
+    collection_merkle_snapshots: Database<Str, Bytes>,
+    settings: Database<Str, Bytes>,
+    chunk_offsets: Database<U64<BigEndian>, Bytes>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -110,20 +128,13 @@ fn document_user_metadata_key(doc_id: u64) -> String {
     format!("doc_meta:{doc_id}")
 }
 
-fn map_schema_error(err: redb::TableError) -> Error {
-    match err {
-        redb::TableError::TableTypeMismatch { .. }
-        | redb::TableError::TypeDefinitionChanged { .. } => Error::Config(
-            "config.db uses an older incompatible schema; back up the file and remove or reset config.db before restarting".to_string(),
-        ),
-        other => other.into(),
-    }
-}
-
 impl ConfigDb {
     /// Open or create a config database at the given path.
     ///
-    /// Creates all required tables on first open.
+    /// Creates all required named databases on first open. If the file
+    /// at `path` is still in the legacy redb format, this transparently
+    /// migrates it to the heed/LMDB format before returning. The
+    /// original is preserved as `<path>.redb-bak`.
     ///
     /// # Examples
     ///
@@ -133,22 +144,33 @@ impl ConfigDb {
     /// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
     /// ```
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path)?;
-
-        // Ensure all tables exist by opening them in a write transaction.
-        let txn = db.begin_write()?;
-        txn.open_table(COLLECTIONS).map_err(map_schema_error)?;
-        txn.open_table(CONTEXTS).map_err(map_schema_error)?;
-        txn.open_table(CONVERSATIONS).map_err(map_schema_error)?;
-        txn.open_table(DOCUMENT_METADATA)
-            .map_err(map_schema_error)?;
-        txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)
-            .map_err(map_schema_error)?;
-        txn.open_table(SETTINGS).map_err(map_schema_error)?;
-        txn.open_table(CHUNK_OFFSETS).map_err(map_schema_error)?;
-        txn.commit()?;
-
-        Ok(Self { db })
+        redb_migration::ensure_config_db_migrated(path)?;
+        let env =
+            redb_migration::open_heed_env(path, MAP_SIZE, CONFIG_MAX_DBS)?;
+        let mut wtxn = env.write_txn()?;
+        let collections =
+            env.create_database(&mut wtxn, Some(COLLECTIONS_DB))?;
+        let contexts = env.create_database(&mut wtxn, Some(CONTEXTS_DB))?;
+        let document_metadata =
+            env.create_database(&mut wtxn, Some(DOCUMENT_METADATA_DB))?;
+        let conversations =
+            env.create_database(&mut wtxn, Some(CONVERSATIONS_DB))?;
+        let collection_merkle_snapshots = env
+            .create_database(&mut wtxn, Some(COLLECTION_MERKLE_SNAPSHOTS_DB))?;
+        let settings = env.create_database(&mut wtxn, Some(SETTINGS_DB))?;
+        let chunk_offsets =
+            env.create_database(&mut wtxn, Some(CHUNK_OFFSETS_DB))?;
+        wtxn.commit()?;
+        Ok(Self {
+            env,
+            collections,
+            contexts,
+            document_metadata,
+            conversations,
+            collection_merkle_snapshots,
+            settings,
+            chunk_offsets,
+        })
     }
 
     // -- Collections --
@@ -164,12 +186,9 @@ impl ConfigDb {
     /// ```
     pub fn set_collection(&self, name: &str, path: &str) -> Result<()> {
         let encoded = encode_string(path)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(COLLECTIONS)?;
-            table.insert(name, encoded.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.collections.put(&mut wtxn, name, encoded.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -187,11 +206,10 @@ impl ConfigDb {
     /// assert_eq!(db.get_collection("notes").unwrap(), Some("/path".to_string()));
     /// ```
     pub fn get_collection(&self, name: &str) -> Result<Option<String>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(COLLECTIONS)?;
-        table
-            .get(name)?
-            .map(|v| decode_string(v.value()))
+        let rtxn = self.env.read_txn()?;
+        self.collections
+            .get(&rtxn, name)?
+            .map(decode_string)
             .transpose()
     }
 
@@ -207,12 +225,9 @@ impl ConfigDb {
     /// assert!(!db.remove_collection("notes").unwrap()); // already gone
     /// ```
     pub fn remove_collection(&self, name: &str) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(COLLECTIONS)?;
-            table.remove(name)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.collections.delete(&mut wtxn, name)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -229,12 +244,11 @@ impl ConfigDb {
     /// assert_eq!(collections.len(), 2);
     /// ```
     pub fn list_collections(&self) -> Result<Vec<(String, String)>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(COLLECTIONS)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
+        for entry in self.collections.iter(&rtxn)? {
             let (k, v) = entry?;
-            result.push((k.value().to_string(), decode_string(v.value())?));
+            result.push((k.to_string(), decode_string(v)?));
         }
         Ok(result)
     }
@@ -255,12 +269,9 @@ impl ConfigDb {
     /// ```
     pub fn set_context(&self, uri: &str, description: &str) -> Result<()> {
         let encoded = encode_string(description)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CONTEXTS)?;
-            table.insert(uri, encoded.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.contexts.put(&mut wtxn, uri, encoded.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -279,11 +290,10 @@ impl ConfigDb {
     /// );
     /// ```
     pub fn get_context(&self, uri: &str) -> Result<Option<String>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CONTEXTS)?;
-        table
-            .get(uri)?
-            .map(|v| decode_string(v.value()))
+        let rtxn = self.env.read_txn()?;
+        self.contexts
+            .get(&rtxn, uri)?
+            .map(decode_string)
             .transpose()
     }
 
@@ -299,12 +309,9 @@ impl ConfigDb {
     /// assert!(!db.remove_context("bert://notes").unwrap()); // already gone
     /// ```
     pub fn remove_context(&self, uri: &str) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(CONTEXTS)?;
-            table.remove(uri)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.contexts.delete(&mut wtxn, uri)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -321,12 +328,11 @@ impl ConfigDb {
     /// assert_eq!(contexts.len(), 2);
     /// ```
     pub fn list_contexts(&self) -> Result<Vec<(String, String)>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CONTEXTS)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
+        for entry in self.contexts.iter(&rtxn)? {
             let (k, v) = entry?;
-            result.push((k.value().to_string(), decode_string(v.value())?));
+            result.push((k.to_string(), decode_string(v)?));
         }
         Ok(result)
     }
@@ -339,12 +345,13 @@ impl ConfigDb {
         conversation: &Conversation,
     ) -> Result<()> {
         let data = conversation.serialize()?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CONVERSATIONS)?;
-            table.insert(conversation.id.as_str(), data.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.conversations.put(
+            &mut wtxn,
+            conversation.id.as_str(),
+            data.as_slice(),
+        )?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -353,38 +360,31 @@ impl ConfigDb {
         &self,
         id: &str,
     ) -> Result<Option<Conversation>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CONVERSATIONS)?;
-        table
-            .get(id)?
-            .map(|bytes| {
-                let mut aligned = rkyv::util::AlignedVec::<16>::new();
-                aligned.extend_from_slice(bytes.value());
-                Conversation::deserialize(&aligned)
-            })
-            .transpose()
+        let rtxn = self.env.read_txn()?;
+        let Some(bytes) = self.conversations.get(&rtxn, id)? else {
+            return Ok(None);
+        };
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        aligned.extend_from_slice(bytes);
+        Conversation::deserialize(&aligned).map(Some)
     }
 
     /// Remove a conversation by ID. Returns `true` if it existed.
     pub fn remove_conversation(&self, id: &str) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(CONVERSATIONS)?;
-            table.remove(id)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.conversations.delete(&mut wtxn, id)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
     /// List all conversations as typed records.
     pub fn list_conversations_typed(&self) -> Result<Vec<Conversation>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CONVERSATIONS)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
+        for entry in self.conversations.iter(&rtxn)? {
             let (_id, bytes) = entry?;
             let mut aligned = rkyv::util::AlignedVec::<16>::new();
-            aligned.extend_from_slice(bytes.value());
+            aligned.extend_from_slice(bytes);
             result.push(Conversation::deserialize(&aligned)?);
         }
         Ok(result)
@@ -409,12 +409,9 @@ impl ConfigDb {
     /// assert!(!db.remove_document_metadata(42).unwrap());
     /// ```
     pub fn remove_document_metadata(&self, doc_id: u64) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            table.remove(doc_id)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.document_metadata.delete(&mut wtxn, &doc_id)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -451,14 +448,11 @@ impl ConfigDb {
         if doc_ids.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            for &doc_id in doc_ids {
-                table.remove(doc_id)?;
-            }
+        let mut wtxn = self.env.write_txn()?;
+        for &doc_id in doc_ids {
+            self.document_metadata.delete(&mut wtxn, &doc_id)?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -469,12 +463,10 @@ impl ConfigDb {
         metadata: &DocumentMetadata,
     ) -> Result<()> {
         let data = metadata.serialize()?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            table.insert(doc_id, data.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.document_metadata
+            .put(&mut wtxn, &doc_id, data.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -483,11 +475,10 @@ impl ConfigDb {
         &self,
         doc_id: u64,
     ) -> Result<Option<DocumentMetadata>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(DOCUMENT_METADATA)?;
-        table
-            .get(doc_id)?
-            .map(|bytes| decode_aligned::<DocumentMetadata>(bytes.value()))
+        let rtxn = self.env.read_txn()?;
+        self.document_metadata
+            .get(&rtxn, &doc_id)?
+            .map(decode_aligned::<DocumentMetadata>)
             .transpose()
     }
 
@@ -500,15 +491,13 @@ impl ConfigDb {
             return Ok(());
         }
 
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(DOCUMENT_METADATA)?;
-            for (doc_id, metadata) in entries {
-                let data = metadata.serialize()?;
-                table.insert(*doc_id, data.as_slice())?;
-            }
+        let mut wtxn = self.env.write_txn()?;
+        for (doc_id, metadata) in entries {
+            let data = metadata.serialize()?;
+            self.document_metadata
+                .put(&mut wtxn, doc_id, data.as_slice())?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -536,12 +525,11 @@ impl ConfigDb {
     /// assert_eq!(ids, vec![10, 20]);
     /// ```
     pub fn list_document_ids(&self) -> Result<Vec<u64>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(DOCUMENT_METADATA)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
-            let (k, _v) = entry?;
-            result.push(k.value());
+        for entry in self.document_metadata.iter(&rtxn)? {
+            let (k, _) = entry?;
+            result.push(k);
         }
         Ok(result)
     }
@@ -550,15 +538,11 @@ impl ConfigDb {
     pub fn list_all_document_metadata_typed(
         &self,
     ) -> Result<Vec<(u64, DocumentMetadata)>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(DOCUMENT_METADATA)?;
+        let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
-        for entry in table.iter()? {
+        for entry in self.document_metadata.iter(&rtxn)? {
             let (k, v) = entry?;
-            result.push((
-                k.value(),
-                decode_aligned::<DocumentMetadata>(v.value())?,
-            ));
+            result.push((k, decode_aligned::<DocumentMetadata>(v)?));
         }
         Ok(result)
     }
@@ -654,12 +638,13 @@ impl ConfigDb {
         snapshot: &Snapshot,
     ) -> Result<()> {
         let data = snapshot.serialize()?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
-            table.insert(collection, data.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.collection_merkle_snapshots.put(
+            &mut wtxn,
+            collection,
+            data.as_slice(),
+        )?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -668,11 +653,10 @@ impl ConfigDb {
         &self,
         collection: &str,
     ) -> Result<Option<Snapshot>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
-        table
-            .get(collection)?
-            .map(|bytes| decode_aligned::<Snapshot>(bytes.value()))
+        let rtxn = self.env.read_txn()?;
+        self.collection_merkle_snapshots
+            .get(&rtxn, collection)?
+            .map(decode_aligned::<Snapshot>)
             .transpose()
     }
 
@@ -681,12 +665,11 @@ impl ConfigDb {
         &self,
         collection: &str,
     ) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(COLLECTION_MERKLE_SNAPSHOTS)?;
-            table.remove(collection)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self
+            .collection_merkle_snapshots
+            .delete(&mut wtxn, collection)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -703,12 +686,9 @@ impl ConfigDb {
     /// ```
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let encoded = encode_string(value)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(SETTINGS)?;
-            table.insert(key, encoded.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.settings.put(&mut wtxn, key, encoded.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -724,11 +704,10 @@ impl ConfigDb {
     /// assert_eq!(db.get_setting("model_name").unwrap().unwrap(), "custom/model");
     /// ```
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(SETTINGS)?;
-        table
-            .get(key)?
-            .map(|v| decode_string(v.value()))
+        let rtxn = self.env.read_txn()?;
+        self.settings
+            .get(&rtxn, key)?
+            .map(decode_string)
             .transpose()
     }
 
@@ -744,12 +723,9 @@ impl ConfigDb {
     /// assert!(!db.remove_setting("key").unwrap());
     /// ```
     pub fn remove_setting(&self, key: &str) -> Result<bool> {
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = txn.open_table(SETTINGS)?;
-            table.remove(key)?.is_some()
-        };
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        let removed = self.settings.delete(&mut wtxn, key)?;
+        wtxn.commit()?;
         Ok(removed)
     }
 
@@ -793,35 +769,32 @@ impl ConfigDb {
         let api_key =
             settings.api_key.as_deref().map(encode_string).transpose()?;
 
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(SETTINGS)?;
-            match provider.as_deref() {
-                Some(bytes) => {
-                    table.insert(KEY_LLM_PROVIDER, bytes)?;
-                }
-                None => {
-                    table.remove(KEY_LLM_PROVIDER)?;
-                }
+        let mut wtxn = self.env.write_txn()?;
+        match provider.as_deref() {
+            Some(bytes) => {
+                self.settings.put(&mut wtxn, KEY_LLM_PROVIDER, bytes)?;
             }
-            match model.as_deref() {
-                Some(bytes) => {
-                    table.insert(KEY_LLM_MODEL, bytes)?;
-                }
-                None => {
-                    table.remove(KEY_LLM_MODEL)?;
-                }
-            }
-            match api_key.as_deref() {
-                Some(bytes) => {
-                    table.insert(KEY_LLM_API_KEY, bytes)?;
-                }
-                None => {
-                    table.remove(KEY_LLM_API_KEY)?;
-                }
+            None => {
+                self.settings.delete(&mut wtxn, KEY_LLM_PROVIDER)?;
             }
         }
-        txn.commit()?;
+        match model.as_deref() {
+            Some(bytes) => {
+                self.settings.put(&mut wtxn, KEY_LLM_MODEL, bytes)?;
+            }
+            None => {
+                self.settings.delete(&mut wtxn, KEY_LLM_MODEL)?;
+            }
+        }
+        match api_key.as_deref() {
+            Some(bytes) => {
+                self.settings.put(&mut wtxn, KEY_LLM_API_KEY, bytes)?;
+            }
+            None => {
+                self.settings.delete(&mut wtxn, KEY_LLM_API_KEY)?;
+            }
+        }
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -832,12 +805,9 @@ impl ConfigDb {
         value: &serde_json::Value,
     ) -> Result<()> {
         let encoded = encode_bytes(&StoredJsonValue::from(value.clone()))?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(SETTINGS)?;
-            table.insert(key, encoded.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.settings.put(&mut wtxn, key, encoded.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -846,13 +816,10 @@ impl ConfigDb {
         &self,
         key: &str,
     ) -> Result<Option<serde_json::Value>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(SETTINGS)?;
-        table
-            .get(key)?
-            .map(|v| {
-                decode_aligned::<StoredJsonValue>(v.value()).map(Into::into)
-            })
+        let rtxn = self.env.read_txn()?;
+        self.settings
+            .get(&rtxn, key)?
+            .map(|v| decode_aligned::<StoredJsonValue>(v).map(Into::into))
             .transpose()
     }
 
@@ -868,23 +835,18 @@ impl ConfigDb {
             return Ok(());
         }
 
-        let txn = self.db.begin_write()?;
-        {
-            let mut metadata_table = txn.open_table(DOCUMENT_METADATA)?;
-            for &doc_id in doc_ids {
-                metadata_table.remove(doc_id)?;
-            }
+        let mut wtxn = self.env.write_txn()?;
+        for &doc_id in doc_ids {
+            self.document_metadata.delete(&mut wtxn, &doc_id)?;
         }
-        {
-            let mut settings_table = txn.open_table(SETTINGS)?;
-            for &doc_id in doc_ids {
-                let content_key = document_content_key(doc_id);
-                let user_metadata_key = document_user_metadata_key(doc_id);
-                settings_table.remove(content_key.as_str())?;
-                settings_table.remove(user_metadata_key.as_str())?;
-            }
+        for &doc_id in doc_ids {
+            let content_key = document_content_key(doc_id);
+            let user_metadata_key = document_user_metadata_key(doc_id);
+            self.settings.delete(&mut wtxn, content_key.as_str())?;
+            self.settings
+                .delete(&mut wtxn, user_metadata_key.as_str())?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -925,12 +887,10 @@ impl ConfigDb {
         offset: ChunkByteOffset,
     ) -> Result<()> {
         let bytes = encode_chunk_offset(offset);
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CHUNK_OFFSETS)?;
-            table.insert(chunk_doc_id, bytes.as_slice())?;
-        }
-        txn.commit()?;
+        let mut wtxn = self.env.write_txn()?;
+        self.chunk_offsets
+            .put(&mut wtxn, &chunk_doc_id, bytes.as_slice())?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -942,15 +902,16 @@ impl ConfigDb {
         if entries.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CHUNK_OFFSETS)?;
-            for &(chunk_doc_id, offset) in entries {
-                let bytes = encode_chunk_offset(offset);
-                table.insert(chunk_doc_id, bytes.as_slice())?;
-            }
+        let mut wtxn = self.env.write_txn()?;
+        for &(chunk_doc_id, offset) in entries {
+            let bytes = encode_chunk_offset(offset);
+            self.chunk_offsets.put(
+                &mut wtxn,
+                &chunk_doc_id,
+                bytes.as_slice(),
+            )?;
         }
-        txn.commit()?;
+        wtxn.commit()?;
         Ok(())
     }
 
@@ -962,12 +923,11 @@ impl ConfigDb {
         &self,
         chunk_doc_id: u64,
     ) -> Result<Option<ChunkByteOffset>> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(CHUNK_OFFSETS)?;
-        let Some(guard) = table.get(chunk_doc_id)? else {
+        let rtxn = self.env.read_txn()?;
+        let Some(bytes) = self.chunk_offsets.get(&rtxn, &chunk_doc_id)? else {
             return Ok(None);
         };
-        Ok(decode_chunk_offset(guard.value()))
+        Ok(decode_chunk_offset(bytes))
     }
 
     /// Remove every chunk offset for one document family (base + chunks).
@@ -976,6 +936,9 @@ impl ConfigDb {
     /// chunk offsets should be cleared. Internally walks the table and
     /// matches by `document_family_key`, mirroring how
     /// [`EmbeddingDb::batch_remove_document_families`] cleans embeddings.
+    ///
+    /// [`EmbeddingDb::batch_remove_document_families`]:
+    ///     crate::EmbeddingDb::batch_remove_document_families
     pub fn batch_remove_chunk_offsets_for_document_families(
         &self,
         base_doc_ids: &[u64],
@@ -990,24 +953,20 @@ impl ConfigDb {
             .map(crate::chunking::document_family_key)
             .collect();
 
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(CHUNK_OFFSETS)?;
-            let mut to_remove = Vec::new();
-            for entry in table.iter()? {
-                let (key, _) = entry?;
-                let chunk_doc_id = key.value();
-                if family_keys.contains(&crate::chunking::document_family_key(
-                    chunk_doc_id,
-                )) {
-                    to_remove.push(chunk_doc_id);
-                }
-            }
-            for chunk_doc_id in to_remove {
-                table.remove(chunk_doc_id)?;
+        let mut wtxn = self.env.write_txn()?;
+        let mut to_remove = Vec::new();
+        for entry in self.chunk_offsets.iter(&wtxn)? {
+            let (chunk_doc_id, _) = entry?;
+            if family_keys
+                .contains(&crate::chunking::document_family_key(chunk_doc_id))
+            {
+                to_remove.push(chunk_doc_id);
             }
         }
-        txn.commit()?;
+        for chunk_doc_id in to_remove {
+            self.chunk_offsets.delete(&mut wtxn, &chunk_doc_id)?;
+        }
+        wtxn.commit()?;
         Ok(())
     }
 }
@@ -1221,41 +1180,6 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_legacy_string_tables_with_reset_message() {
-        const LEGACY_COLLECTIONS: TableDefinition<&str, &str> =
-            TableDefinition::new("collections");
-        const LEGACY_CONTEXTS: TableDefinition<&str, &str> =
-            TableDefinition::new("contexts");
-        const LEGACY_SETTINGS: TableDefinition<&str, &str> =
-            TableDefinition::new("settings");
-
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.db");
-        let db = Database::create(&path).unwrap();
-        let txn = db.begin_write().unwrap();
-        {
-            let mut collections = txn.open_table(LEGACY_COLLECTIONS).unwrap();
-            collections.insert("notes", "/tmp/notes").unwrap();
-        }
-        {
-            let mut contexts = txn.open_table(LEGACY_CONTEXTS).unwrap();
-            contexts.insert("bert://notes", "legacy context").unwrap();
-        }
-        {
-            let mut settings = txn.open_table(LEGACY_SETTINGS).unwrap();
-            settings.insert("model_name", "legacy-model").unwrap();
-        }
-        txn.commit().unwrap();
-        drop(db);
-
-        let err = ConfigDb::open(&path).unwrap_err();
-        assert!(
-            err.to_string().contains("remove or reset config.db"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
     fn json_setting_roundtrips() {
         let (_tmp, db) = test_db();
         let value = serde_json::json!({
@@ -1456,7 +1380,7 @@ mod tests {
                 role: crate::conversation::ChatRole::Assistant,
                 actor: Some(crate::conversation::ChatActor::Parent),
                 parts: vec![crate::conversation::ChatPart::ToolCall {
-                    name: "search_hybrid".to_string(),
+                    name: "docbert_search".to_string(),
                     args: serde_json::json!({
                         "query": "rust",
                         "top_k": 5,
