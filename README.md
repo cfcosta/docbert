@@ -295,12 +295,12 @@ By default, docbert stores local state in the XDG data directory, typically:
 
 That state includes:
 
-- `config.db`
-- `embeddings.db`
+- `config.db` (LMDB env; `config.db-lock` lives next to it)
+- `embeddings.db` (LMDB env; `embeddings.db-lock` lives next to it)
 - `plaid.idx`
 - `tantivy/`
 
-The collection roots themselves can live anywhere on disk.
+`config.db` and `embeddings.db` are LMDB-backed via [`heed`](https://docs.rs/heed), so multiple `docbert mcp` / `docbert web` / CLI processes can share one data dir. Legacy redb-format files from earlier docbert versions are migrated to LMDB transparently on first open; the original is preserved as `<file>.redb-bak`. The collection roots themselves can live anywhere on disk.
 
 See:
 

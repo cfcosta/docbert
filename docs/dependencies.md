@@ -124,23 +124,25 @@ Used for:
 
 ### Direct dependencies
 
-| Dependency       | Version                                                                  | Role in current code                                                                               |
-| ---------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `blake3`         | `1.8.4`                                                                  | Merkle snapshot hashing                                                                            |
-| `bytemuck`       | `1.25.0` (`derive`)                                                      | Efficient `f32`/byte conversions in embedding storage; `derive` feature for `Pod`/`Zeroable` impls |
-| `candle-core`    | `0.10.2`                                                                 | Tensor representation and tensor operations for model/embedding work                               |
-| `docbert-plaid`  | workspace path `crates/docbert-plaid`                                    | PLAID multi-vector index used by the semantic leg of search                                        |
-| `docbert-pylate` | workspace path `crates/docbert-pylate` (vendored from `pylate-rs` 1.0.4) | ColBERT model loading, query/document encoding, and similarity scoring                             |
-| `ignore`         | `0.4`                                                                    | Filesystem walking with optional Git-ignore-aware discovery                                        |
-| `kodama`         | `0.3`                                                                    | Hierarchical Ward clustering for ColBERT token pooling                                             |
-| `pdf_oxide`      | `0.3.35`                                                                 | PDF-to-markdown/text extraction during preparation                                                 |
-| `rayon`          | `1.12.0`                                                                 | Parallel document loading/preparation work                                                         |
-| `redb`           | `4.1.0`                                                                  | `config.db` and `embeddings.db` storage                                                            |
-| `rkyv`           | `0.8.15`                                                                 | Binary serialization for typed stored data                                                         |
-| `serde`          | `1`                                                                      | Serialization support for public/config/runtime-facing data types                                  |
-| `serde_json`     | `1`                                                                      | JSON values and parsing for metadata, settings, and conversation payloads                          |
-| `tantivy`        | `0.26.0`                                                                 | Lexical indexing and BM25/fuzzy retrieval                                                          |
-| `thiserror`      | `2`                                                                      | Error definition for `docbert_core::Error`                                                         |
+| Dependency       | Version                                                                  | Role in current code                                                                                |
+| ---------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `blake3`         | `1.8.4`                                                                  | Merkle snapshot hashing                                                                             |
+| `bytemuck`       | `1.25.0` (`derive`)                                                      | Efficient `f32`/byte conversions in embedding storage; `derive` feature for `Pod`/`Zeroable` impls  |
+| `candle-core`    | `0.10.2`                                                                 | Tensor representation and tensor operations for model/embedding work                                |
+| `docbert-plaid`  | workspace path `crates/docbert-plaid`                                    | PLAID multi-vector index used by the semantic leg of search                                         |
+| `docbert-pylate` | workspace path `crates/docbert-pylate` (vendored from `pylate-rs` 1.0.4) | ColBERT model loading, query/document encoding, and similarity scoring                              |
+| `heed`           | `0.22`                                                                   | LMDB-backed `config.db` and `embeddings.db` storage with multi-process readers and writers          |
+| `ignore`         | `0.4`                                                                    | Filesystem walking with optional Git-ignore-aware discovery                                         |
+| `kodama`         | `0.3`                                                                    | Hierarchical Ward clustering for ColBERT token pooling                                              |
+| `pdf_oxide`      | `0.3.35`                                                                 | PDF-to-markdown/text extraction during preparation                                                  |
+| `rayon`          | `1.12.0`                                                                 | Parallel document loading/preparation work                                                          |
+| `redb`           | `4.1.0`                                                                  | Reads legacy redb-format `config.db` / `embeddings.db` files during the on-open redb→heed migration |
+| `rkyv`           | `0.8.15`                                                                 | Binary serialization for typed stored data                                                          |
+| `serde`          | `1`                                                                      | Serialization support for public/config/runtime-facing data types                                   |
+| `serde_json`     | `1`                                                                      | JSON values and parsing for metadata, settings, and conversation payloads                           |
+| `tantivy`        | `0.26.0`                                                                 | Lexical indexing and BM25/fuzzy retrieval                                                           |
+| `thiserror`      | `2`                                                                      | Error definition for `docbert_core::Error`                                                          |
+| `tracing`        | `0.1`                                                                    | Logging instrumentation, including the redb→heed migration's structured progress events             |
 
 ### Direct dev-dependencies
 
@@ -148,6 +150,7 @@ Used for:
 | ----------- | ------- | ------------------------------------------------------------------ |
 | `criterion` | `0.8`   | Benchmarks (`embedding_trim`, `embedding_compression`)             |
 | `hegeltest` | `0.8`   | Property-based / parameterized test helpers used by the core tests |
+| `proptest`  | `1`     | Round-trip property tests for the redb→heed migration              |
 | `rand`      | `0.10`  | Random data generation in unit tests and benches                   |
 | `tempfile`  | `3`     | Temporary directories/files in unit tests                          |
 
@@ -194,9 +197,9 @@ Used for:
 - collection/path lookups
 - fuzzy matching support
 
-#### `redb`
+#### `heed`
 
-Used for both major local databases:
+Wraps [LMDB](https://www.symas.com/lmdb) for both major local databases:
 
 - `config.db`
 - `embeddings.db`
@@ -208,7 +211,14 @@ Current code relies on it for:
 - conversations
 - collection Merkle snapshots
 - settings and JSON metadata blobs
+- chunk byte offsets
 - embedding matrix persistence
+
+LMDB's reader/writer locks let multiple `docbert mcp` / `docbert web` / CLI processes share one data dir without stepping on each other — the headline reason the storage layer moved off redb.
+
+#### `redb`
+
+Carried only as a read-side compatibility shim for the redb→heed migration: when `ConfigDb::open` / `EmbeddingDb::open` sniffs a legacy redb file, it opens it through `redb` to copy each table into a fresh heed env, then atomically swaps the new file in. New databases never touch redb, and the dep can drop back to dev-only once the upgrade window closes.
 
 #### `rkyv`
 
@@ -417,6 +427,7 @@ This page intentionally reflects the current manifests and removes stale or inco
 Important current realities include:
 
 - the workspace has five members: `docbert`, `docbert-core`, `docbert-plaid`, `docbert-pylate`, `rustbert`
+- `config.db` and `embeddings.db` are LMDB environments via `heed`, replacing the previous redb backend so multiple processes can share a data dir; `redb` stays as a read-side dep for the on-open migration of legacy files
 - `docbert-core` depends directly on `docbert-plaid` (PLAID index), `docbert-pylate` (ColBERT inference), and `kodama` (Ward clustering for token pooling); `hf-hub` is only pulled in transitively through `docbert-pylate`
 - `docbert` has direct runtime/web/MCP dependencies such as `axum`, `rmcp`, `tokio`, `schemars`, `include_dir`, `reqwest`, `sha2`, `rand`, `tracing`, and `tracing-subscriber`
 - `docbert-core` has direct dependencies for Merkle snapshots and PDF handling (`blake3`, `pdf_oxide`, `ignore`)

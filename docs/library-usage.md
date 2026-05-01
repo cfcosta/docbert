@@ -703,7 +703,7 @@ Common variants include:
 - `Error::DataDir`
 - `Error::Tantivy`
 - `Error::QueryParse`
-- `Error::Redb*`
+- `Error::Heed` — wraps `heed::Error`; covers every LMDB / heed failure surfaced by `ConfigDb` and `EmbeddingDb`
 - `Error::Colbert`
 - `Error::Candle`
 - `Error::Json`

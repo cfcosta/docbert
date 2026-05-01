@@ -18,13 +18,15 @@ The actual location is resolved in this order:
 
 Within that root, docbert currently uses five storage layers:
 
-| Path / system            | Role                                                                                                       |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `config.db`              | collections, contexts, document metadata, chunk offsets, conversations, collection snapshots, and settings |
-| `embeddings.db`          | stored ColBERT embedding matrices keyed by numeric document or chunk ID                                    |
-| `tantivy/`               | lexical search index                                                                                       |
-| `plaid.idx`              | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim                 |
-| collection roots on disk | source document content used for indexing, document reads, titles, and excerpts                            |
+| Path / system                    | Role                                                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `config.db` (+ `config.db-lock`) | collections, contexts, document metadata, chunk offsets, conversations, collection snapshots, and settings |
+| `embeddings.db` (+ `…-lock`)     | stored ColBERT embedding matrices keyed by numeric document or chunk ID                                    |
+| `tantivy/`                       | lexical search index                                                                                       |
+| `plaid.idx`                      | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim                 |
+| collection roots on disk         | source document content used for indexing, document reads, titles, and excerpts                            |
+
+The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`); the `*-lock` siblings are LMDB's inter-process lock files. After a redb-to-LMDB migration the former data file is also kept on disk as `*.db.redb-bak` (see [Migrating from older redb-format databases](#migrating-from-older-redb-format-databases)).
 
 A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
 
@@ -50,9 +52,9 @@ The collection roots themselves are **not** stored inside the data directory unl
 
 `config.db` is the main metadata and configuration database.
 
-It is a local [redb](https://github.com/cberner/redb) database opened by `ConfigDb`.
+It is a local [LMDB](https://www.symas.com/lmdb) environment opened through the [`heed`](https://docs.rs/heed) crate by `ConfigDb`. LMDB gives docbert proper cross-process readers and writers, so multiple `docbert mcp` / `docbert web` / CLI invocations can share one data dir without stepping on each other. Alongside the data file, LMDB writes a `<path>-lock` sibling — `config.db-lock` next to `config.db` — for its inter-process lock; the lock file is small and gets recreated on demand.
 
-It currently owns these tables:
+It currently owns these named LMDB databases:
 
 - `collections`
 - `contexts`
@@ -101,7 +103,7 @@ That means docbert stores **indexed state** locally, but still depends on the li
 
 `config.db` is not a plain SQL schema.
 
-Internally it is a redb key-value database with typed table definitions. Values are stored as binary blobs and decoded by `ConfigDb`.
+Internally it is an LMDB environment with seven named databases. Keys are typed (`&str` / `u64`); values are stored as binary blobs and decoded by `ConfigDb`.
 
 Current encoding patterns:
 
@@ -490,9 +492,21 @@ If you switch to a different embedding model and then run `sync`, docbert refuse
 
 ## Schema compatibility
 
-On open, `ConfigDb` ensures the expected tables exist.
+On open, `ConfigDb` ensures the expected named LMDB databases exist.
 
-If redb reports a table type mismatch or incompatible schema definition, docbert surfaces that as a configuration error and instructs you to back up and reset `config.db`.
+### Migrating from older redb-format databases
+
+docbert v0.8 and earlier stored `config.db` / `embeddings.db` as [redb](https://github.com/cberner/redb) files. Recent versions read those legacy files transparently:
+
+- on `ConfigDb::open` / `EmbeddingDb::open` we sniff the first nine bytes and check for the redb magic
+- if the file is redb, we copy every table into a fresh LMDB env at `<path>.heed-tmp`, then atomically rename the legacy file to `<path>.redb-bak` and the new env into place
+- the migration is logged via `tracing` (info-level for start/completion, debug-level per table)
+
+The `.redb-bak` files are intentionally kept on disk after migration so you can recover if the new env later proves broken; you can delete them manually once you're confident the new format is healthy.
+
+### Hard schema breaks
+
+If the LMDB env reports an unexpected database type or layout (very rare), docbert surfaces that as a configuration error and instructs you to back up and reset `config.db`.
 
 ## Related references
 
