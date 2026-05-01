@@ -92,43 +92,10 @@
                   };
                 }).config.build.wrapper;
 
-              # Build inputs for the UI derivation. Limited to the files
-              # bun + Vite actually need so that local `bun install` /
-              # `bun run build` runs (which mutate `node_modules/` and
-              # `dist/` inside the source tree) don't bust the Nix
-              # derivation hash and force a rebuild from scratch.
-              # Adding a new top-level config file (e.g. a postcss
-              # config) means adding it here too.
-              uiSrc = pkgs.lib.fileset.toSource {
-                root = ./crates/docbert/ui;
-                fileset = pkgs.lib.fileset.unions [
-                  ./crates/docbert/ui/bun.lock
-                  ./crates/docbert/ui/bun.nix
-                  ./crates/docbert/ui/eslint.config.js
-                  ./crates/docbert/ui/index.html
-                  ./crates/docbert/ui/package.json
-                  ./crates/docbert/ui/public
-                  ./crates/docbert/ui/src
-                  ./crates/docbert/ui/tsconfig.app.json
-                  ./crates/docbert/ui/tsconfig.json
-                  ./crates/docbert/ui/tsconfig.node.json
-                  ./crates/docbert/ui/vite.config.ts
-                ];
-              };
-
-              uiPath = pkgs.bun2nix.mkDerivation {
-                pname = "docbert-ui";
-                src = uiSrc;
-                packageJson = ./crates/docbert/ui/package.json;
-                bunDeps = pkgs.bun2nix.fetchBunDeps { bunNix = ./crates/docbert/ui/bun.nix; };
-                buildPhase = ''
-                  bun run build
-                '';
-                installPhase = ''
-                  mkdir $out
-                  cp -rf dist/* $out/
-                '';
-              };
+              # Each crate's build logic lives in its own default.nix.
+              # `callPackage` autoloads the rest of the args from `pkgs`
+              # plus the extended scope below.
+              uiPath = pkgs.callPackage ./crates/docbert/ui { };
 
               # Build inputs for every rust derivation in the workspace.
               # Same rationale as `uiSrc` above, on a bigger scale: the
@@ -145,7 +112,9 @@
               # rust src — `mkPackage` populates the prebuilt `dist/`
               # via `preBuild` from the cached `uiPath` derivation when
               # `bundleUi` is set, and Cargo never touches the rest of
-              # the UI source tree.
+              # the UI source tree. Stray `default.nix` files inside
+              # `crates/*/` are harmless to cargo (it ignores anything
+              # not referenced from `Cargo.toml`).
               rustSrc = pkgs.lib.fileset.toSource {
                 root = ./.;
                 fileset = pkgs.lib.fileset.unions [
@@ -231,11 +200,16 @@
                   }
                   // extraEnv
                 );
+
+              # Extended `callPackage` so each crate's `default.nix`
+              # can take `mkPackage` as a function arg the same way it
+              # takes `lib`, `bun2nix`, etc.
+              callPackage = pkgs.lib.callPackageWith (pkgs // { inherit mkPackage; });
             in
             {
               inherit
+                callPackage
                 formatter
-                mkPackage
                 pkgs
                 rust
                 system
@@ -246,7 +220,7 @@
     in
     {
       packages = forEachSupportedSystem (
-        { mkPackage, pkgs, ... }:
+        { callPackage, pkgs, ... }:
         let
           cudaNativeBuildInputs = with pkgs; [
             cudaPackages.cuda_nvcc
@@ -281,13 +255,19 @@
             echo "7d49e6c7e2f8896c47f586706e67e1fb215529dc" > $dest/.git/HEAD
           '';
 
+          # Each crate's `default.nix` returns a function that takes
+          # variant args (name, buildFeatures, …) and produces the
+          # final derivation; partial-applying it once per crate here
+          # keeps the variant call sites short.
+          docbert = callPackage ./crates/docbert;
+          rustbert = callPackage ./crates/rustbert;
         in
         {
-          default = mkPackage { name = "docbert"; };
+          default = docbert { };
 
-          docbert = mkPackage { name = "docbert"; };
+          docbert = docbert { };
 
-          docbert-cuda = mkPackage {
+          docbert-cuda = docbert {
             name = "docbert-cuda";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
@@ -296,14 +276,14 @@
             extraPreBuild = cudaforgePreBuild;
           };
 
-          docbert-metal = mkPackage {
+          docbert-metal = docbert {
             name = "docbert-metal";
             buildFeatures = [ "metal" ];
           };
 
-          rustbert = mkPackage { name = "rustbert"; };
+          rustbert = rustbert { };
 
-          rustbert-cuda = mkPackage {
+          rustbert-cuda = rustbert {
             name = "rustbert-cuda";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
@@ -312,7 +292,7 @@
             extraPreBuild = cudaforgePreBuild;
           };
 
-          rustbert-metal = mkPackage {
+          rustbert-metal = rustbert {
             name = "rustbert-metal";
             buildFeatures = [ "metal" ];
           };
