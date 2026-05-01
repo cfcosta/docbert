@@ -92,9 +92,33 @@
                   };
                 }).config.build.wrapper;
 
+              # Build inputs for the UI derivation. Limited to the files
+              # bun + Vite actually need so that local `bun install` /
+              # `bun run build` runs (which mutate `node_modules/` and
+              # `dist/` inside the source tree) don't bust the Nix
+              # derivation hash and force a rebuild from scratch.
+              # Adding a new top-level config file (e.g. a postcss
+              # config) means adding it here too.
+              uiSrc = pkgs.lib.fileset.toSource {
+                root = ./crates/docbert/ui;
+                fileset = pkgs.lib.fileset.unions [
+                  ./crates/docbert/ui/bun.lock
+                  ./crates/docbert/ui/bun.nix
+                  ./crates/docbert/ui/eslint.config.js
+                  ./crates/docbert/ui/index.html
+                  ./crates/docbert/ui/package.json
+                  ./crates/docbert/ui/public
+                  ./crates/docbert/ui/src
+                  ./crates/docbert/ui/tsconfig.app.json
+                  ./crates/docbert/ui/tsconfig.json
+                  ./crates/docbert/ui/tsconfig.node.json
+                  ./crates/docbert/ui/vite.config.ts
+                ];
+              };
+
               uiPath = pkgs.bun2nix.mkDerivation {
                 pname = "docbert-ui";
-                src = ./crates/docbert/ui;
+                src = uiSrc;
                 packageJson = ./crates/docbert/ui/package.json;
                 bunDeps = pkgs.bun2nix.fetchBunDeps { bunNix = ./crates/docbert/ui/bun.nix; };
                 buildPhase = ''
