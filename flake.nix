@@ -142,10 +142,10 @@
               # crate to recompile from scratch.
               #
               # We deliberately exclude `crates/docbert/ui/` from the
-              # rust src — `mkDocbertPackage` populates the prebuilt
-              # `dist/` via `preBuild` from the cached `uiPath`
-              # derivation, and Cargo never touches the rest of the UI
-              # source tree.
+              # rust src — `mkPackage` populates the prebuilt `dist/`
+              # via `preBuild` from the cached `uiPath` derivation when
+              # `bundleUi` is set, and Cargo never touches the rest of
+              # the UI source tree.
               rustSrc = pkgs.lib.fileset.toSource {
                 root = ./.;
                 fileset = pkgs.lib.fileset.unions [
@@ -159,21 +159,52 @@
                 ];
               };
 
-              # Common skeleton for any binary in this workspace. The
-              # docbert / rustbert helpers below layer their crate-specific
-              # bits (UI build, completions subcommand, etc.) on top.
-              mkWorkspaceBinary =
+              # Builds one workspace binary as a Nix package.
+              #
+              # Defaults are tuned to the two binaries we ship today:
+              # - `cargoPackage` defaults to the part of `name` before
+              #   the first `-`, so `docbert`, `docbert-cuda`, and
+              #   `docbert-metal` all build the same `docbert` workspace
+              #   member with different feature flags.
+              # - `bundleUi` and `shellCompletions` default to `true`
+              #   for `cargoPackage == "docbert"` because that's the
+              #   binary that embeds the React UI and exposes a
+              #   `completions` subcommand. Other binaries (rustbert
+              #   today, hypothetical future ones) opt in explicitly.
+              #
+              # Override any default by passing it explicitly. Adding a
+              # third workspace binary with its own quirks (different
+              # main program, different bundling) is just another set
+              # of arguments here, no new helper required.
+              mkPackage =
                 {
                   name,
-                  cargoPackage,
-                  mainProgram,
+                  cargoPackage ? builtins.head (pkgs.lib.splitString "-" name),
+                  mainProgram ? cargoPackage,
+                  bundleUi ? cargoPackage == "docbert",
+                  shellCompletions ? cargoPackage == "docbert",
                   buildFeatures ? [ ],
                   buildInputs ? [ ],
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
-                  preBuild ? "",
-                  postInstall ? "",
+                  extraPreBuild ? "",
                 }:
+                let
+                  uiPreBuild = pkgs.lib.optionalString bundleUi ''
+                    rm -rf crates/docbert/ui/dist
+                    mkdir -p crates/docbert/ui
+                    cp -r ${uiPath} crates/docbert/ui/dist
+                  '';
+                  completionsPostInstall = pkgs.lib.optionalString shellCompletions ''
+                    mkdir -p $out/share/bash-completion/completions
+                    mkdir -p $out/share/zsh/site-functions
+                    mkdir -p $out/share/fish/vendor_completions.d
+
+                    $out/bin/${mainProgram} completions bash > $out/share/bash-completion/completions/${mainProgram}
+                    $out/bin/${mainProgram} completions zsh > $out/share/zsh/site-functions/_${mainProgram}
+                    $out/bin/${mainProgram} completions fish > $out/share/fish/vendor_completions.d/${mainProgram}.fish
+                  '';
+                in
                 rustPlatform.buildRustPackage (
                   {
                     inherit
@@ -181,8 +212,6 @@
                       buildFeatures
                       buildInputs
                       nativeBuildInputs
-                      preBuild
-                      postInstall
                       ;
                     src = rustSrc;
                     cargoBuildFlags = [
@@ -197,83 +226,16 @@
                     cargoLock.lockFile = ./Cargo.lock;
                     RUSTFLAGS = "-C target-cpu=native";
                     meta.mainProgram = mainProgram;
+                    preBuild = uiPreBuild + extraPreBuild;
+                    postInstall = completionsPostInstall;
                   }
                   // extraEnv
                 );
-
-              # Builds the docbert binary, with the React UI bundled in
-              # at compile time and shell completions emitted from the
-              # binary itself. Use this for every `.#docbert-*` output.
-              mkDocbertPackage =
-                {
-                  name,
-                  buildFeatures ? [ ],
-                  buildInputs ? [ ],
-                  nativeBuildInputs ? [ ],
-                  extraEnv ? { },
-                  extraPreBuild ? "",
-                }:
-                mkWorkspaceBinary {
-                  inherit
-                    name
-                    buildFeatures
-                    buildInputs
-                    nativeBuildInputs
-                    extraEnv
-                    ;
-                  cargoPackage = "docbert";
-                  mainProgram = "docbert";
-                  preBuild =
-                    pkgs.lib.optionalString (uiPath != null) ''
-                      rm -rf crates/docbert/ui/dist
-                      mkdir -p crates/docbert/ui
-                      cp -r ${uiPath} crates/docbert/ui/dist
-                    ''
-                    + extraPreBuild;
-                  postInstall = ''
-                    # Generate shell completions for docbert.
-                    mkdir -p $out/share/bash-completion/completions
-                    mkdir -p $out/share/zsh/site-functions
-                    mkdir -p $out/share/fish/vendor_completions.d
-
-                    $out/bin/docbert completions bash > $out/share/bash-completion/completions/docbert
-                    $out/bin/docbert completions zsh > $out/share/zsh/site-functions/_docbert
-                    $out/bin/docbert completions fish > $out/share/fish/vendor_completions.d/docbert.fish
-                  '';
-                };
-
-              # Builds the rustbert binary. No UI, no completions
-              # subcommand — just the rust-crate-docs CLI / MCP server.
-              # Same `cuda` / `metal` feature plumbing as docbert because
-              # rustbert depends on docbert-core, which is the heavy
-              # GPU-aware crate.
-              mkRustbertPackage =
-                {
-                  name,
-                  buildFeatures ? [ ],
-                  buildInputs ? [ ],
-                  nativeBuildInputs ? [ ],
-                  extraEnv ? { },
-                  extraPreBuild ? "",
-                }:
-                mkWorkspaceBinary {
-                  inherit
-                    name
-                    buildFeatures
-                    buildInputs
-                    nativeBuildInputs
-                    extraEnv
-                    ;
-                  cargoPackage = "rustbert";
-                  mainProgram = "rustbert";
-                  preBuild = extraPreBuild;
-                };
             in
             {
               inherit
                 formatter
-                mkDocbertPackage
-                mkRustbertPackage
+                mkPackage
                 pkgs
                 rust
                 system
@@ -284,12 +246,7 @@
     in
     {
       packages = forEachSupportedSystem (
-        {
-          mkDocbertPackage,
-          mkRustbertPackage,
-          pkgs,
-          ...
-        }:
+        { mkPackage, pkgs, ... }:
         let
           cudaNativeBuildInputs = with pkgs; [
             cudaPackages.cuda_nvcc
@@ -326,11 +283,11 @@
 
         in
         {
-          default = mkDocbertPackage { name = "docbert"; };
+          default = mkPackage { name = "docbert"; };
 
-          docbert = mkDocbertPackage { name = "docbert"; };
+          docbert = mkPackage { name = "docbert"; };
 
-          docbert-cuda = mkDocbertPackage {
+          docbert-cuda = mkPackage {
             name = "docbert-cuda";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
@@ -339,14 +296,14 @@
             extraPreBuild = cudaforgePreBuild;
           };
 
-          docbert-metal = mkDocbertPackage {
+          docbert-metal = mkPackage {
             name = "docbert-metal";
             buildFeatures = [ "metal" ];
           };
 
-          rustbert = mkRustbertPackage { name = "rustbert"; };
+          rustbert = mkPackage { name = "rustbert"; };
 
-          rustbert-cuda = mkRustbertPackage {
+          rustbert-cuda = mkPackage {
             name = "rustbert-cuda";
             buildFeatures = [ "cuda" ];
             nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
@@ -355,7 +312,7 @@
             extraPreBuild = cudaforgePreBuild;
           };
 
-          rustbert-metal = mkRustbertPackage {
+          rustbert-metal = mkPackage {
             name = "rustbert-metal";
             buildFeatures = [ "metal" ];
           };
