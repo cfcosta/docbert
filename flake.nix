@@ -130,6 +130,35 @@
                 '';
               };
 
+              # Build inputs for every rust derivation in the workspace.
+              # Same rationale as `uiSrc` above, on a bigger scale: the
+              # rust build is 10-30 minutes cold and the previous
+              # `src = ./.` baked the entire repo into the derivation
+              # hash — including `target/` (mutated by every local
+              # `cargo build`), `.jj/` and `.git/` (every commit /
+              # snapshot), `output/` / `pkg/` / `db/` (data dirs), and
+              # the unfiltered `crates/docbert/ui/` tree. Any of those
+              # drifting between two `nix build` runs forced every
+              # crate to recompile from scratch.
+              #
+              # We deliberately exclude `crates/docbert/ui/` from the
+              # rust src — `mkDocbertPackage` populates the prebuilt
+              # `dist/` via `preBuild` from the cached `uiPath`
+              # derivation, and Cargo never touches the rest of the UI
+              # source tree.
+              rustSrc = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                  ./rust-toolchain.toml
+                  ./rustfmt.toml
+                  ./deny.toml
+                  (pkgs.lib.fileset.difference ./crates ./crates/docbert/ui)
+                  ./tests
+                ];
+              };
+
               # Common skeleton for any binary in this workspace. The
               # docbert / rustbert helpers below layer their crate-specific
               # bits (UI build, completions subcommand, etc.) on top.
@@ -155,7 +184,7 @@
                       preBuild
                       postInstall
                       ;
-                    src = ./.;
+                    src = rustSrc;
                     cargoBuildFlags = [
                       "-p"
                       cargoPackage
