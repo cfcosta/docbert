@@ -14,10 +14,6 @@ use crate::model_manager::DEFAULT_DOCUMENT_LENGTH;
 
 /// Approximate characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
-/// Mask used to strip the chunk-index bits out of a chunk `doc_id`,
-/// leaving the base-document bit space. Also the upper bound on a
-/// `DocumentId::new().numeric` — see [`crate::DocumentId::new`].
-pub(crate) const CHUNK_FAMILY_MASK: u64 = (1u64 << 48) - 1;
 
 /// Default chunk size in characters (roughly ~519 tokens / ~2K chars).
 pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
@@ -25,10 +21,17 @@ pub const DEFAULT_CHUNK_SIZE: usize = DEFAULT_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
 /// Default overlap between chunks in characters (0 to minimize chunk count).
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 
+/// Domain prefix for the chunk-doc-id hash. Bumping the version forces
+/// every key to change so callers re-derive ids without colliding with
+/// older indices.
+const CHUNK_DOC_ID_DOMAIN: &[u8] = b"docbert.chunk.v1\0";
+
 /// Chunking settings resolved from the model configuration.
 ///
 /// [`resolve_config`] reads `config_sentence_transformers.json` and,
-/// when it can, uses the model's `document_length` value.
+/// when it can, uses the model's `document_length` value. The resolved
+/// `model_id` is mixed into [`chunk_doc_id`] so embeddings produced by
+/// one model are not silently reused by a different one.
 ///
 /// # Examples
 ///
@@ -39,8 +42,9 @@ pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
 /// let config = resolve_config("lightonai/ColBERT-Zero");
 /// assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
 /// assert_eq!(config.document_length, None);
+/// assert_eq!(config.model_id, "lightonai/ColBERT-Zero");
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Maximum chunk size in characters.
     pub chunk_size: usize,
@@ -48,6 +52,9 @@ pub struct Config {
     pub overlap: usize,
     /// Token-based document length from the model config, if available.
     pub document_length: Option<usize>,
+    /// Identifier of the embedding model — mixed into [`chunk_doc_id`]
+    /// so embeddings can't leak across model swaps.
+    pub model_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +100,7 @@ pub fn resolve_config(model_id: &str) -> Config {
             chunk_size: chars_for_tokens(doc_len),
             overlap: DEFAULT_CHUNK_OVERLAP,
             document_length: Some(doc_len),
+            model_id: model_id.to_string(),
         };
     }
 
@@ -100,6 +108,7 @@ pub fn resolve_config(model_id: &str) -> Config {
         chunk_size: DEFAULT_CHUNK_SIZE,
         overlap: DEFAULT_CHUNK_OVERLAP,
         document_length: None,
+        model_id: model_id.to_string(),
     }
 }
 
@@ -235,53 +244,49 @@ fn find_word_boundary_char(
     pos_char
 }
 
-/// Build a chunk-specific document ID from a base ID and chunk index.
+/// Stable, content-derived chunk identifier.
 ///
-/// The format is `base_id XOR (chunk_index << 48)`. Chunk 0 keeps the base ID
-/// unchanged.
+/// The same chunk text under the same model produces the same id,
+/// regardless of which document it lives in. This lets the embedding
+/// cache dedupe identical chunks (license boilerplate, copy-pasted
+/// snippets, content that moved between files) and enables migrating
+/// `embeddings.db` between machines: any chunk whose text matches gets
+/// a free embedding from the imported cache.
+///
+/// `model_id` is mixed in so cached embeddings can't be silently reused
+/// across model swaps — different models hash to different ids and the
+/// cache simply misses, forcing a re-embed.
+///
+/// The 64-bit truncation of blake3 has a birthday-collision horizon
+/// near 4 × 10^9 distinct chunks; comfortably above any realistic
+/// personal corpus.
 ///
 /// # Examples
 ///
 /// ```
-/// use docbert_core::chunking::{chunk_doc_id, parse_chunk_doc_id};
+/// use docbert_core::chunking::chunk_doc_id;
 ///
-/// let base = 12345678u64;
-/// assert_eq!(chunk_doc_id(base, 0), base);
+/// // Same text + same model → same id, regardless of where it appears.
+/// let a = chunk_doc_id("colbert-v2", "Hello, world!");
+/// let b = chunk_doc_id("colbert-v2", "Hello, world!");
+/// assert_eq!(a, b);
 ///
-/// let chunk1 = chunk_doc_id(base, 1);
-/// assert_ne!(chunk1, base);
-/// let (recovered, idx) = parse_chunk_doc_id(chunk1);
-/// assert_eq!(recovered, base);
-/// assert_eq!(idx, 1);
+/// // Different model → different id.
+/// let c = chunk_doc_id("other-model", "Hello, world!");
+/// assert_ne!(a, c);
 /// ```
-pub fn chunk_doc_id(base_id: u64, chunk_index: usize) -> u64 {
-    if chunk_index == 0 {
-        base_id
-    } else {
-        base_id ^ ((chunk_index as u64) << 48)
-    }
-}
-
-/// Split a chunk document ID back into a base ID and chunk index.
-///
-/// This is exact for chunk 0, which reuses the base ID unchanged. For later
-/// chunks the base ID was XORed, so you need the chunk index to recover it.
-pub fn parse_chunk_doc_id(chunk_id: u64) -> (u64, usize) {
-    let chunk_index = (chunk_id >> 48) as usize;
-    if chunk_index == 0 {
-        (chunk_id, 0)
-    } else {
-        let base_id = chunk_id ^ ((chunk_index as u64) << 48);
-        (base_id, chunk_index)
-    }
-}
-
-/// Return the document-family key shared by a base document ID and its chunks.
-///
-/// Chunk IDs encode the chunk index in the high 16 bits, so the low 48 bits
-/// identify the whole document family.
-pub fn document_family_key(doc_id: u64) -> u64 {
-    doc_id & CHUNK_FAMILY_MASK
+pub fn chunk_doc_id(model_id: &str, chunk_text: &str) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CHUNK_DOC_ID_DOMAIN);
+    hasher.update(model_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(chunk_text.as_bytes());
+    let digest = hasher.finalize();
+    let bytes = digest.as_bytes();
+    u64::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+        bytes[7],
+    ])
 }
 
 #[cfg(test)]
@@ -326,44 +331,38 @@ mod tests {
     }
 
     #[test]
-    fn chunk_doc_id_roundtrip() {
-        let base = 12345678u64;
-
-        // Chunk 0 should be unchanged
-        assert_eq!(chunk_doc_id(base, 0), base);
-        let (recovered, idx) = parse_chunk_doc_id(chunk_doc_id(base, 0));
-        assert_eq!(recovered, base);
-        assert_eq!(idx, 0);
-
-        // Chunk 1+
-        let chunk1_id = chunk_doc_id(base, 1);
-        assert_ne!(chunk1_id, base);
-        let (recovered, idx) = parse_chunk_doc_id(chunk1_id);
-        assert_eq!(recovered, base);
-        assert_eq!(idx, 1);
+    fn chunk_doc_id_is_deterministic_per_content_and_model() {
+        let id_a = chunk_doc_id("colbert-v2", "hello world");
+        let id_b = chunk_doc_id("colbert-v2", "hello world");
+        assert_eq!(id_a, id_b);
     }
 
     #[test]
-    fn document_family_key_groups_base_ids_and_chunk_ids() {
-        let base_doc_id = crate::DocumentId::new("notes", "hello.md").numeric;
-        let other_doc_id = crate::DocumentId::new("notes", "other.md").numeric;
-
-        assert_eq!(
-            document_family_key(base_doc_id),
-            base_doc_id & CHUNK_FAMILY_MASK
-        );
-        assert_eq!(
-            document_family_key(chunk_doc_id(base_doc_id, 1)),
-            document_family_key(base_doc_id)
-        );
-        assert_eq!(
-            document_family_key(chunk_doc_id(base_doc_id, 42)),
-            document_family_key(base_doc_id)
-        );
+    fn chunk_doc_id_changes_with_content() {
+        let model = "colbert-v2";
         assert_ne!(
-            document_family_key(other_doc_id),
-            document_family_key(base_doc_id)
+            chunk_doc_id(model, "hello world"),
+            chunk_doc_id(model, "hello world!"),
         );
+    }
+
+    #[test]
+    fn chunk_doc_id_changes_with_model() {
+        let text = "shared content";
+        assert_ne!(
+            chunk_doc_id("colbert-v1", text),
+            chunk_doc_id("colbert-v2", text),
+        );
+    }
+
+    #[test]
+    fn chunk_doc_id_dedups_across_documents() {
+        // The whole point of content-based ids: the same chunk text in
+        // different documents collapses to the same id, which is what
+        // makes embedding migration work.
+        let model = "colbert-v2";
+        let shared = "Apache License 2.0 ...";
+        assert_eq!(chunk_doc_id(model, shared), chunk_doc_id(model, shared));
     }
 
     #[test]
@@ -416,19 +415,23 @@ mod tests {
         let config_path = dir.path().join("config_sentence_transformers.json");
         std::fs::write(&config_path, "{\"document_length\": 512}").unwrap();
 
-        let config = resolve_config(&dir.path().to_string_lossy());
+        let model_id = dir.path().to_string_lossy().to_string();
+        let config = resolve_config(&model_id);
         assert_eq!(config.document_length, Some(512));
         assert_eq!(config.chunk_size, 512 * CHARS_PER_TOKEN);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
+        assert_eq!(config.model_id, model_id);
     }
 
     #[test]
     fn resolve_config_defaults_without_config() {
         let dir = tempdir().unwrap();
-        let config = resolve_config(&dir.path().to_string_lossy());
+        let model_id = dir.path().to_string_lossy().to_string();
+        let config = resolve_config(&model_id);
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
+        assert_eq!(config.model_id, model_id);
     }
 
     #[test]
@@ -439,5 +442,6 @@ mod tests {
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);
+        assert_eq!(config.model_id, "lightonai/ColBERT-Zero");
     }
 }

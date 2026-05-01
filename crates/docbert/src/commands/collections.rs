@@ -1,9 +1,9 @@
-use docbert_core::{ConfigDb, DataDir, EmbeddingDb, SearchIndex, error};
+use docbert_core::{ConfigDb, DataDir, SearchIndex, error};
 
 use super::{
     indexing::{
+        remove_chunk_manifests_for_ids,
         remove_document_artifacts_for_ids,
-        remove_document_embeddings_for_ids,
     },
     json_output::collection_list_json_string,
 };
@@ -62,7 +62,6 @@ pub(crate) fn remove(
     search_index.delete_collection(&writer, name)?;
     writer.commit()?;
 
-    let embedding_db = EmbeddingDb::open(&data_dir.embeddings_db())?;
     let doc_ids: Vec<u64> = config_db
         .list_all_document_metadata_typed()?
         .into_iter()
@@ -70,11 +69,17 @@ pub(crate) fn remove(
             (meta.collection == name).then_some(doc_id)
         })
         .collect();
-    remove_document_embeddings_for_ids(&embedding_db, &doc_ids)?;
+    // Remove the manifests so chunk_owners stops attributing the
+    // collection's documents. Embedding entries are intentionally
+    // left in place — they live in a content-addressed cache so a
+    // future re-index that produces the same chunk text gets a free
+    // hit instead of re-running the encoder.
+    remove_chunk_manifests_for_ids(config_db, &doc_ids)?;
     remove_document_artifacts_for_ids(config_db, &doc_ids)?;
 
     config_db.remove_collection_merkle_snapshot(name)?;
     config_db.remove_collection(name)?;
+    let _ = data_dir; // data_dir kept in signature for callers/tests.
 
     println!("Removed collection '{name}'");
     Ok(())

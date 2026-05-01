@@ -202,85 +202,78 @@ pub fn update_index_from_embedding_db(
     )?)
 }
 
-/// Incrementally sync `existing` against `embedding_db` given the set
-/// of *base* doc_ids that were re-embedded during this sync pass.
+/// Incrementally sync `existing` against `embedding_db` for an explicit
+/// list of chunk ids and a separate explicit deletion list.
 ///
-/// The bridge handles the two pieces of bookkeeping the CLI would
-/// otherwise have to duplicate per call site:
+/// Callers are expected to derive both lists from the per-document
+/// chunk manifests (`ConfigDb::doc_chunks`) so that:
 ///
-/// 1. Each touched base is expanded into its current chunk doc_ids
-///    via [`EmbeddingDb::batch_load_document_families`]. Every such
-///    chunk is re-encoded against the existing codec — this covers
-///    both "file had the same chunking" (chunk ids match, tokens may
-///    have shifted) and "file re-chunked" (some new ids, some gone).
-/// 2. Deletions are computed as the set of doc_ids present in
-///    `existing` but absent from `embedding_db.list_ids()`. This
-///    catches both explicitly-deleted base families and any orphan
-///    chunks left behind when a changed file ended up with fewer
-///    chunks than last time.
+/// 1. `upsert_chunk_ids` is the deduplicated union of every chunk
+///    referenced by the documents that changed during this pass — the
+///    bridge re-reads each chunk's tokens from `embedding_db` and
+///    re-encodes them against the existing codec.
+/// 2. `deleted_chunk_ids` is whichever chunks the old index still
+///    remembers but no live document owns any more (the chunk_owners
+///    list collapsed to empty after the update).
 ///
-/// Returns [`Error::Config`] on dim mismatch, mirroring
-/// [`update_index_from_embedding_db`]. Returns a fresh `PlaidIndex`
-/// with the same codec as `existing`.
-pub fn update_index_for_touched_bases(
+/// Returns [`Error::Config`] when a chunk in `upsert_chunk_ids` is
+/// missing from `embedding_db` or has a dimensionality that doesn't
+/// match the index. Returns a fresh `PlaidIndex` with the same codec.
+pub fn update_index_with_chunks(
     embedding_db: &EmbeddingDb,
     existing: PlaidIndex,
-    touched_bases: &[u64],
+    upsert_chunk_ids: &[u64],
+    deleted_chunk_ids: &[u64],
 ) -> Result<PlaidIndex> {
     use std::collections::HashSet;
 
     let dim = existing.params.dim;
 
-    // Expand touched bases into (id, matrix) pairs. Uses one read
-    // transaction over the whole set.
-    let family_chunks =
-        embedding_db.batch_load_document_families(touched_bases)?;
-
-    let mut upsert_docs: Vec<DocumentTokens> =
-        Vec::with_capacity(family_chunks.len());
-    let mut upsert_ids: HashSet<u64> =
-        HashSet::with_capacity(family_chunks.len());
-    for (id, matrix) in family_chunks {
+    let mut seen: HashSet<u64> = HashSet::with_capacity(upsert_chunk_ids.len());
+    let mut upserts: Vec<DocumentTokens> =
+        Vec::with_capacity(upsert_chunk_ids.len());
+    for &chunk_doc_id in upsert_chunk_ids {
+        if !seen.insert(chunk_doc_id) {
+            // apply_update rejects duplicate ids in one batch; the
+            // caller deduplicates, but be defensive in case a
+            // dedup-by-content path slips up.
+            continue;
+        }
+        let Some(matrix) = embedding_db.load(chunk_doc_id)? else {
+            return Err(Error::Config(format!(
+                "cannot update PLAID index: chunk {chunk_doc_id} not found \
+                 in embedding_db",
+            )));
+        };
         let this_dim = matrix.dimension as usize;
         if this_dim != dim {
             return Err(Error::Config(format!(
-                "cannot update PLAID index: doc {id} has dim {this_dim} \
-                 but index expects {dim}",
+                "cannot update PLAID index: chunk {chunk_doc_id} has dim \
+                 {this_dim} but index expects {dim}",
             )));
         }
-        if !upsert_ids.insert(id) {
-            // Duplicate within one family would violate apply_update's
-            // "unique upsert ids" contract; surface it explicitly.
-            return Err(Error::Config(format!(
-                "embedding_db returned doc_id {id} twice in a single \
-                 family enumeration",
-            )));
-        }
-        upsert_docs.push(DocumentTokens {
-            doc_id: id,
+        upserts.push(DocumentTokens {
+            doc_id: chunk_doc_id,
             tokens: matrix.data,
             n_tokens: matrix.num_tokens as usize,
         });
     }
 
-    // Deletions: anything the old index remembers that the db no
-    // longer has. Upserts win if a chunk is both re-encoded and
-    // somehow also missing from the db — but that can't happen
-    // since upsert_ids came from the db in this same read.
-    let current_db_ids: HashSet<u64> =
-        embedding_db.list_ids()?.into_iter().collect();
-    let deletions: Vec<u64> = existing
-        .doc_ids
+    // Deletions are the caller-supplied list, restricted to chunks
+    // the old index actually carries — silently ignoring stragglers
+    // keeps the bridge safe to call on disjoint inputs.
+    let known: HashSet<u64> = existing.doc_ids.iter().copied().collect();
+    let deletions: Vec<u64> = deleted_chunk_ids
         .iter()
         .copied()
-        .filter(|id| !current_db_ids.contains(id))
-        .filter(|id| !upsert_ids.contains(id))
+        .filter(|id| known.contains(id))
+        .filter(|id| !seen.contains(id))
         .collect();
 
     Ok(plaid_update::apply_update(
         existing,
         IndexUpdate {
-            upserts: &upsert_docs,
+            upserts: &upserts,
             deletions: &deletions,
         },
     )?)
@@ -623,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn touched_bases_upsert_rewrites_a_single_chunk_family() {
+    fn update_with_chunks_rewrites_a_touched_chunk() {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         seed_small_db(&db);
@@ -631,22 +624,20 @@ mod tests {
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
         let old_encoded = index.doc_tokens_vec(index.position_of(1).unwrap());
 
-        // Simulate a re-embedding: the file for base doc_id 1 got
-        // different tokens (single-chunk family).
         db.store(1, 2, 2, &[10.0, 10.0, 10.1, 9.9]).unwrap();
 
-        let updated = update_index_for_touched_bases(&db, index, &[1]).unwrap();
+        let updated = update_index_with_chunks(&db, index, &[1], &[]).unwrap();
 
-        let pos = updated.position_of(1).expect("doc 1 survives upsert");
+        let pos = updated.position_of(1).expect("chunk 1 survives upsert");
         assert_ne!(
             updated.doc_tokens_vec(pos),
             old_encoded,
-            "the touched base must be re-encoded with the new tokens",
+            "the touched chunk must be re-encoded with the new tokens",
         );
     }
 
     #[test]
-    fn touched_bases_with_no_touches_only_prunes_orphans() {
+    fn update_with_chunks_only_deletions_prunes_chunks() {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         seed_small_db(&db);
@@ -654,71 +645,26 @@ mod tests {
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
         let before_codec = index.codec.clone();
 
-        // Remove doc 2 directly from the db to simulate a sync that
-        // ran before we got here. No bases were "touched" by this
-        // hypothetical sync — the doc was just deleted.
-        db.remove(2).unwrap();
-
-        let updated = update_index_for_touched_bases(&db, index, &[]).unwrap();
+        let updated = update_index_with_chunks(&db, index, &[], &[2]).unwrap();
 
         assert!(!updated.doc_ids.contains(&2));
         assert_eq!(updated.codec.centroids, before_codec.centroids);
     }
 
     #[test]
-    fn touched_bases_drops_chunks_that_disappeared_during_re_embedding() {
-        use crate::chunking::chunk_doc_id;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        // Seed with a few docs so k-means has enough training data.
-        seed_small_db(&db);
-
-        // Add a two-chunk family for base doc_id 100.
-        let base = 100u64;
-        let chunk_a = base; // chunk_doc_id(base, 0) == base
-        let chunk_b = chunk_doc_id(base, 1);
-        db.store(chunk_a, 1, 2, &[0.2, 0.2]).unwrap();
-        db.store(chunk_b, 1, 2, &[-0.1, 0.3]).unwrap();
-
-        let index =
-            build_index_from_embedding_db(&db, small_build_params()).unwrap();
-        assert!(index.doc_ids.contains(&chunk_a));
-        assert!(index.doc_ids.contains(&chunk_b));
-
-        // Simulate a re-embedding: the file for base 100 now produces
-        // only one chunk (chunk_a), with different tokens. chunk_b
-        // is orphaned in the index and must be deleted.
-        db.remove(chunk_b).unwrap();
-        db.store(chunk_a, 1, 2, &[9.9, 10.0]).unwrap();
-
-        let updated =
-            update_index_for_touched_bases(&db, index, &[base]).unwrap();
-
-        assert!(
-            updated.doc_ids.contains(&chunk_a),
-            "surviving chunk must still be present",
-        );
-        assert!(
-            !updated.doc_ids.contains(&chunk_b),
-            "chunk that disappeared from the db must be removed from the index",
-        );
-    }
-
-    #[test]
-    fn touched_bases_errors_on_dim_mismatch() {
+    fn update_with_chunks_errors_on_dim_mismatch() {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         seed_small_db(&db); // dim=2 entries
         let index =
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
 
-        // Replace doc 1's family with a 3-D embedding — incompatible
-        // with the 2-D codec on the existing index.
+        // Replace chunk 1 with a 3-D embedding — incompatible with the
+        // 2-D codec on the existing index.
         db.remove(1).unwrap();
         db.store(1, 1, 3, &[1.0, 2.0, 3.0]).unwrap();
 
-        let err = update_index_for_touched_bases(&db, index, &[1]).unwrap_err();
+        let err = update_index_with_chunks(&db, index, &[1], &[]).unwrap_err();
         match err {
             Error::Config(msg) => assert!(
                 msg.contains("dim"),
@@ -729,20 +675,18 @@ mod tests {
     }
 
     #[test]
-    fn touched_bases_preserves_untouched_chunks_verbatim() {
+    fn update_with_chunks_preserves_untouched_chunks_verbatim() {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         seed_small_db(&db);
         let index =
             build_index_from_embedding_db(&db, small_build_params()).unwrap();
-        // Snapshot the encoded tokens for docs we DON'T touch.
         let untouched_2 = index.doc_tokens_vec(index.position_of(2).unwrap());
         let untouched_3 = index.doc_tokens_vec(index.position_of(3).unwrap());
 
-        // Touch only doc 1 — 2 and 3 must carry through unchanged.
         db.store(1, 1, 2, &[0.15, -0.15]).unwrap();
 
-        let updated = update_index_for_touched_bases(&db, index, &[1]).unwrap();
+        let updated = update_index_with_chunks(&db, index, &[1], &[]).unwrap();
 
         assert_eq!(
             updated.doc_tokens_vec(updated.position_of(2).unwrap()),

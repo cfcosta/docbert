@@ -350,11 +350,12 @@ mod tests {
             chunk_size: 100,
             overlap: 0,
             document_length: None,
+            model_id: "test-model".to_string(),
         };
         let mut processed = 0;
         let chunks = docbert_core::preparation::collect_chunks(
             &docs,
-            chunking_config,
+            &chunking_config,
             |_| {
                 processed += 1;
             },

@@ -1,19 +1,16 @@
 use std::{collections::HashMap, path::Path};
 
 use crate::{
-    chunking::document_family_key,
     config_db::ConfigDb,
     data_dir::DataDir,
     doc_id::{format_document_ref, strip_document_ref_prefix},
-    embedding_db::EmbeddingDb,
     error::{Error, Result},
     incremental::DocumentMetadata,
     ingestion,
     model_manager::ModelManager,
     plaid,
-    reranker::{self, RankedDocument},
+    reranker::RankedDocument,
     tantivy_index::{SearchIndex, SearchResult},
-    text,
 };
 
 /// Reciprocal Rank Fusion constant.
@@ -406,35 +403,12 @@ fn run_semantic_leg(
     let raw_results =
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
-    // Collapse chunk families to a single base-document score, but
-    // remember which chunk produced that score so the search consumer
-    // can surface its byte range. Drop anything outside the collection
-    // filter or missing metadata.
-    let mut best_per_family: HashMap<u64, (f32, u64)> = HashMap::new();
-    for result in raw_results {
-        let base_id = document_family_key(result.doc_id);
-        if !metadata.contains_key(&base_id) {
-            continue;
-        }
-        best_per_family
-            .entry(base_id)
-            .and_modify(|(best_score, best_chunk_id)| {
-                if result.score > *best_score {
-                    *best_score = result.score;
-                    *best_chunk_id = result.doc_id;
-                }
-            })
-            .or_insert((result.score, result.doc_id));
-    }
-
-    let mut ranked: Vec<RankedDocument> = best_per_family
-        .into_iter()
-        .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
-            doc_num_id,
-            score,
-            best_chunk_doc_id: Some(best_chunk_doc_id),
-        })
-        .collect();
+    let mut ranked = collapse_chunks_to_documents(
+        config_db,
+        &metadata,
+        &raw_results,
+        limit,
+    )?;
     ranked.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -443,6 +417,49 @@ fn run_semantic_leg(
     ranked.truncate(limit);
 
     Ok((metadata, ranked))
+}
+
+/// Fan a list of chunk-level PLAID hits out to their owning documents
+/// and keep the best score per document.
+///
+/// Each chunk id is content-derived, so it can belong to multiple
+/// documents; the lookup against `chunk_owners` returns every document
+/// that contains the chunk. Owners absent from `metadata` (typically
+/// filtered out by a collection scope) are dropped silently.
+fn collapse_chunks_to_documents(
+    config_db: &ConfigDb,
+    metadata: &HashMap<u64, DocumentMetadata>,
+    raw_results: &[plaid::PlaidResult],
+    limit: usize,
+) -> Result<Vec<RankedDocument>> {
+    let mut best_per_doc: HashMap<u64, (f32, u64)> =
+        HashMap::with_capacity(limit);
+    for result in raw_results {
+        let owners = config_db.get_chunk_owners(result.doc_id)?;
+        for owner in owners {
+            if !metadata.contains_key(&owner) {
+                continue;
+            }
+            best_per_doc
+                .entry(owner)
+                .and_modify(|(best_score, best_chunk_id)| {
+                    if result.score > *best_score {
+                        *best_score = result.score;
+                        *best_chunk_id = result.doc_id;
+                    }
+                })
+                .or_insert((result.score, result.doc_id));
+        }
+    }
+
+    Ok(best_per_doc
+        .into_iter()
+        .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
+            doc_num_id,
+            score,
+            best_chunk_doc_id: Some(best_chunk_doc_id),
+        })
+        .collect())
 }
 
 /// Fuse any number of ranked document-id lists using Reciprocal Rank Fusion.
@@ -479,46 +496,6 @@ pub fn rrf_fuse(lists: &[&[u64]], k: usize) -> Vec<(u64, f32)> {
             .then_with(|| a.0.cmp(&b.0))
     });
     fused
-}
-
-// Kept only to back the legacy unit tests that exercised the
-// pre-PLAID semantic leg; the production code no longer calls it.
-#[cfg_attr(not(test), allow(dead_code))]
-fn semantic_candidates_from_metadata(
-    config_db: &ConfigDb,
-    collection: Option<&str>,
-    metadata_entries: Vec<(u64, DocumentMetadata)>,
-) -> (HashMap<u64, DocumentMetadata>, Vec<u64>) {
-    let mut metadata = HashMap::with_capacity(metadata_entries.len());
-    let mut doc_ids = Vec::with_capacity(metadata_entries.len());
-    let mut collection_paths = HashMap::new();
-
-    for (doc_id, meta) in metadata_entries {
-        if collection.is_none_or(|c| c == meta.collection.as_str())
-            && document_has_semantic_body(
-                config_db,
-                &mut collection_paths,
-                &meta,
-            )
-        {
-            doc_ids.push(doc_id);
-            metadata.insert(doc_id, meta);
-        }
-    }
-
-    (metadata, doc_ids)
-}
-
-// Same "test-only" reason as `semantic_candidates_from_metadata`
-// above — kept for the legacy pre-PLAID reranker tests.
-#[cfg_attr(not(test), allow(dead_code))]
-fn semantic_ranked_from_query_embedding(
-    query_embedding: &candle_core::Tensor,
-    doc_ids: &[u64],
-    embedding_db: &EmbeddingDb,
-    model: &ModelManager,
-) -> Result<Vec<RankedDocument>> {
-    reranker::rerank(query_embedding, doc_ids, embedding_db, model)
 }
 
 fn semantic_final_results_from_ranked(
@@ -605,34 +582,12 @@ pub fn semantic(
     let raw_results =
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
-    // Collapse chunk families, filter by collection/metadata presence,
-    // keep the best score per family — and remember the best chunk's
-    // doc id so the search consumer can surface its byte range.
-    let mut best_per_family: HashMap<u64, (f32, u64)> = HashMap::new();
-    for result in raw_results {
-        let base_id = document_family_key(result.doc_id);
-        if !metadata.contains_key(&base_id) {
-            continue;
-        }
-        best_per_family
-            .entry(base_id)
-            .and_modify(|(best_score, best_chunk_id)| {
-                if result.score > *best_score {
-                    *best_score = result.score;
-                    *best_chunk_id = result.doc_id;
-                }
-            })
-            .or_insert((result.score, result.doc_id));
-    }
-
-    let mut ranked: Vec<RankedDocument> = best_per_family
-        .into_iter()
-        .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
-            doc_num_id,
-            score,
-            best_chunk_doc_id: Some(best_chunk_doc_id),
-        })
-        .collect();
+    let mut ranked = collapse_chunks_to_documents(
+        config_db,
+        &metadata,
+        &raw_results,
+        args.count,
+    )?;
     ranked.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -842,37 +797,6 @@ pub fn short_doc_id(numeric: u64, full_hex: &str) -> String {
     }
 }
 
-// Only called by `semantic_candidates_from_metadata` (itself
-// test-only now) and directly from unit tests below.
-#[cfg_attr(not(test), allow(dead_code))]
-fn document_has_semantic_body(
-    config_db: &ConfigDb,
-    collection_paths: &mut std::collections::HashMap<String, Option<String>>,
-    meta: &DocumentMetadata,
-) -> bool {
-    let collection_path = collection_paths
-        .entry(meta.collection.clone())
-        .or_insert_with(|| {
-            config_db.get_collection(&meta.collection).ok().flatten()
-        });
-    let Some(collection_path) = collection_path.as_ref() else {
-        return false;
-    };
-    if collection_path.is_empty() {
-        return false;
-    }
-
-    let relative = Path::new(&meta.relative_path);
-    let full_path = Path::new(collection_path).join(relative);
-    let Ok(content) =
-        crate::preparation::load_preview_content(relative, &full_path)
-    else {
-        return false;
-    };
-
-    !text::strip_yaml_frontmatter(&content).trim().is_empty()
-}
-
 /// Fill in titles for results that didn't pick one up from the BM25
 /// leg (i.e. semantic-only hits). BM25 entries already carry the
 /// stored Tantivy `title` — overwriting them with a content-derived
@@ -1055,10 +979,9 @@ pub fn json_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use candle_core::Tensor;
-
     use super::*;
     use crate::{
+        EmbeddingDb,
         config_db::ConfigDb,
         doc_id::DocumentId,
         incremental::DocumentMetadata,
@@ -1087,84 +1010,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_body_skips_empty_and_frontmatter_only_docs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let collection_dir = tmp.path().join("notes");
-        std::fs::create_dir_all(&collection_dir).unwrap();
-        config_db
-            .set_collection("notes", collection_dir.to_str().unwrap())
-            .unwrap();
-
-        std::fs::write(collection_dir.join("empty.md"), "").unwrap();
-        std::fs::write(
-            collection_dir.join("frontmatter.md"),
-            "---\nid: 1\ntags:\n  - diary\n---\n",
-        )
-        .unwrap();
-        std::fs::write(
-            collection_dir.join("body.md"),
-            "---\ntitle: Hello\n---\nActual body text",
-        )
-        .unwrap();
-
-        let mut collection_paths = std::collections::HashMap::new();
-
-        let empty = DocumentMetadata {
-            collection: "notes".to_string(),
-            relative_path: "empty.md".to_string(),
-            mtime: 1,
-        };
-        assert!(!document_has_semantic_body(
-            &config_db,
-            &mut collection_paths,
-            &empty,
-        ));
-
-        let frontmatter_only = DocumentMetadata {
-            collection: "notes".to_string(),
-            relative_path: "frontmatter.md".to_string(),
-            mtime: 1,
-        };
-        assert!(!document_has_semantic_body(
-            &config_db,
-            &mut collection_paths,
-            &frontmatter_only,
-        ));
-
-        let with_body = DocumentMetadata {
-            collection: "notes".to_string(),
-            relative_path: "body.md".to_string(),
-            mtime: 1,
-        };
-        assert!(document_has_semantic_body(
-            &config_db,
-            &mut collection_paths,
-            &with_body,
-        ));
-    }
-
-    #[test]
-    fn filesystem_collections_only_document_has_semantic_body_returns_false_without_registered_path()
-     {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-
-        let meta = DocumentMetadata {
-            collection: "notes".to_string(),
-            relative_path: "api-doc.md".to_string(),
-            mtime: 1,
-        };
-
-        let mut collection_paths = std::collections::HashMap::new();
-        assert!(!document_has_semantic_body(
-            &config_db,
-            &mut collection_paths,
-            &meta,
-        ));
-    }
-
-    #[test]
     fn resolve_helpers_work_with_typed_document_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
@@ -1188,97 +1033,10 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_collections_only_semantic_candidates_respect_collection_filter()
-     {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
-        let notes_root = tmp.path().join("notes");
-        let docs_root = tmp.path().join("docs");
-        std::fs::create_dir_all(&notes_root).unwrap();
-        std::fs::create_dir_all(&docs_root).unwrap();
-        std::fs::write(notes_root.join("hello.md"), "# Hello\n\nBody").unwrap();
-        std::fs::write(docs_root.join("guide.md"), "# Guide\n\nBody").unwrap();
-        config_db
-            .set_collection("notes", notes_root.to_str().unwrap())
-            .unwrap();
-        config_db
-            .set_collection("docs", docs_root.to_str().unwrap())
-            .unwrap();
-
-        let notes_doc_id = DocumentId::new("notes", "hello.md").numeric;
-        let docs_doc_id = DocumentId::new("docs", "guide.md").numeric;
-        let metadata_entries = vec![
-            (
-                notes_doc_id,
-                DocumentMetadata {
-                    collection: "notes".to_string(),
-                    relative_path: "hello.md".to_string(),
-                    mtime: 1,
-                },
-            ),
-            (
-                docs_doc_id,
-                DocumentMetadata {
-                    collection: "docs".to_string(),
-                    relative_path: "guide.md".to_string(),
-                    mtime: 1,
-                },
-            ),
-        ];
-
-        let (notes_metadata, notes_doc_ids) = semantic_candidates_from_metadata(
-            &config_db,
-            Some("notes"),
-            metadata_entries.clone(),
-        );
-        assert_eq!(notes_doc_ids, vec![notes_doc_id]);
-        assert_eq!(notes_metadata.len(), 1);
-        assert!(notes_metadata.contains_key(&notes_doc_id));
-
-        let (all_metadata, all_doc_ids) = semantic_candidates_from_metadata(
-            &config_db,
-            None,
-            metadata_entries,
-        );
-        assert_eq!(all_doc_ids, vec![notes_doc_id, docs_doc_id]);
-        assert_eq!(all_metadata.len(), 2);
-    }
-
-    #[test]
-    fn semantic_ranked_from_query_embedding_uses_shared_reranker_for_chunk_only_families()
-     {
-        let tmp = tempfile::tempdir().unwrap();
-        let embedding_db =
-            EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let model = ModelManager::new();
-        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
-        let chunk_only_id = crate::chunking::chunk_doc_id(base_doc_id, 1);
-
-        let query_embedding = Tensor::zeros(
-            &[2, 128],
-            candle_core::DType::F32,
-            &crate::test_util::test_device(),
-        )
-        .unwrap();
-        embedding_db
-            .store(chunk_only_id, 2, 128, &vec![0.0; 256])
-            .unwrap();
-
-        let err = semantic_ranked_from_query_embedding(
-            &query_embedding,
-            &[base_doc_id],
-            &embedding_db,
-            &model,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("model not loaded"));
-    }
-
-    #[test]
     fn semantic_final_results_from_ranked_drops_rows_without_base_document_metadata()
      {
         let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
-        let chunk_doc_id = crate::chunking::chunk_doc_id(base_doc_id, 1);
+        let unrelated_doc_id = DocumentId::new("notes", "other.md").numeric;
         let mut metadata = HashMap::new();
         metadata.insert(
             base_doc_id,
@@ -1292,7 +1050,7 @@ mod tests {
         let results = semantic_final_results_from_ranked(
             &metadata,
             vec![RankedDocument {
-                doc_num_id: chunk_doc_id,
+                doc_num_id: unrelated_doc_id,
                 score: 0.9,
                 best_chunk_doc_id: None,
             }],

@@ -13,9 +13,9 @@ mod tests {
     use docbert_core::{
         ConfigDb,
         DataDir,
+        DocChunkEntry,
         DocumentId,
         EmbeddingDb,
-        chunking::chunk_doc_id,
         incremental,
         model_manager::{ModelResolution, ModelSource},
     };
@@ -23,8 +23,8 @@ mod tests {
     use super::{
         collections,
         indexing::{
+            remove_chunk_manifests_for_ids,
             remove_document_artifacts_for_ids,
-            remove_document_embeddings_for_ids,
         },
         json_output::{
             MultiGetJsonItem,
@@ -68,26 +68,39 @@ mod tests {
         doc_id
     }
 
+    /// Synthesize a per-document chunk id for tests. The actual
+    /// scheme isn't relevant — only that distinct documents get
+    /// distinct ids and the same (doc, index) pair is stable.
+    fn synthetic_chunk_id(doc_id: u64, chunk_index: usize) -> u64 {
+        doc_id.wrapping_add(chunk_index as u64).wrapping_add(0xC0DE)
+    }
+
     fn seed_document_embeddings(
+        config_db: &ConfigDb,
         data_dir: &DataDir,
         doc_id: &DocumentId,
         chunk_indices: &[usize],
     ) {
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
-        embedding_db
-            .store(doc_id.numeric, 1, 2, &[1.0, 2.0])
-            .unwrap();
+        let mut manifest = Vec::new();
+        let base_chunk = synthetic_chunk_id(doc_id.numeric, 0);
+        embedding_db.store(base_chunk, 1, 2, &[1.0, 2.0]).unwrap();
+        manifest.push(DocChunkEntry {
+            chunk_doc_id: base_chunk,
+            start_byte: 0,
+            byte_len: 50,
+        });
         for &chunk_index in chunk_indices {
-            embedding_db
-                .store(
-                    chunk_doc_id(doc_id.numeric, chunk_index),
-                    1,
-                    2,
-                    &[3.0, 4.0],
-                )
-                .unwrap();
+            let chunk = synthetic_chunk_id(doc_id.numeric, chunk_index);
+            embedding_db.store(chunk, 1, 2, &[3.0, 4.0]).unwrap();
+            manifest.push(DocChunkEntry {
+                chunk_doc_id: chunk,
+                start_byte: (chunk_index as u64) * 100,
+                byte_len: 50,
+            });
         }
+        config_db.set_doc_chunks(doc_id.numeric, &manifest).unwrap();
     }
 
     #[test]
@@ -159,11 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_collection_remove_removes_document_artifacts() {
+    fn cli_collection_remove_drops_metadata_and_manifests_but_keeps_cache() {
         let (_tmp, data_dir, config_db) = test_data_dir();
         config_db.set_collection("notes", "/tmp/notes").unwrap();
         let doc_id = seed_document_artifacts(&config_db, "notes", "hello.md");
-        seed_document_embeddings(&data_dir, &doc_id, &[1]);
+        seed_document_embeddings(&config_db, &data_dir, &doc_id, &[1]);
 
         collections::remove(&config_db, &data_dir, "notes").unwrap();
 
@@ -180,15 +193,24 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(
+            config_db.get_doc_chunks(doc_id.numeric).unwrap().is_none(),
+            "manifest should be dropped"
+        );
+
+        // Embedding cache survives — that's the immortal-cache property
+        // that lets a future re-index reuse the same content.
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
-        assert!(embedding_db.load(doc_id.numeric).unwrap().is_none());
-        assert!(
-            embedding_db
-                .load(chunk_doc_id(doc_id.numeric, 1))
-                .unwrap()
-                .is_none()
-        );
+        let base_chunk = synthetic_chunk_id(doc_id.numeric, 0);
+        let extra_chunk = synthetic_chunk_id(doc_id.numeric, 1);
+        assert!(embedding_db.load(base_chunk).unwrap().is_some());
+        assert!(embedding_db.load(extra_chunk).unwrap().is_some());
+
+        // ...but those chunks no longer have any owners in the reverse
+        // index, so search will skip them.
+        assert!(config_db.get_chunk_owners(base_chunk).unwrap().is_empty());
+        assert!(config_db.get_chunk_owners(extra_chunk).unwrap().is_empty());
     }
 
     #[test]
@@ -197,13 +219,10 @@ mod tests {
         let deleted =
             seed_document_artifacts(&config_db, "notes", "deleted.md");
         let retained = seed_document_artifacts(&config_db, "notes", "kept.md");
-        seed_document_embeddings(&data_dir, &deleted, &[1]);
-        seed_document_embeddings(&data_dir, &retained, &[1]);
+        seed_document_embeddings(&config_db, &data_dir, &deleted, &[1]);
+        seed_document_embeddings(&config_db, &data_dir, &retained, &[1]);
 
-        let embedding_db =
-            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
-        remove_document_embeddings_for_ids(&embedding_db, &[deleted.numeric])
-            .unwrap();
+        remove_chunk_manifests_for_ids(&config_db, &[deleted.numeric]).unwrap();
         remove_document_artifacts_for_ids(&config_db, &[deleted.numeric])
             .unwrap();
 
@@ -225,19 +244,27 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        assert!(embedding_db.load(deleted.numeric).unwrap().is_none());
+
+        // Manifests reflect the change.
+        assert!(config_db.get_doc_chunks(deleted.numeric).unwrap().is_none());
         assert!(
-            embedding_db
-                .load(chunk_doc_id(deleted.numeric, 1))
-                .unwrap()
-                .is_none()
-        );
-        assert!(embedding_db.load(retained.numeric).unwrap().is_some());
-        assert!(
-            embedding_db
-                .load(chunk_doc_id(retained.numeric, 1))
+            config_db
+                .get_doc_chunks(retained.numeric)
                 .unwrap()
                 .is_some()
+        );
+
+        // Embedding rows remain (immortal cache); chunk_owners
+        // distinguishes which docs still reference them.
+        let embedding_db =
+            EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        let retained_base = synthetic_chunk_id(retained.numeric, 0);
+        let retained_extra = synthetic_chunk_id(retained.numeric, 1);
+        assert!(embedding_db.load(retained_base).unwrap().is_some());
+        assert!(embedding_db.load(retained_extra).unwrap().is_some());
+        assert_eq!(
+            config_db.get_chunk_owners(retained_base).unwrap(),
+            vec![retained.numeric],
         );
     }
 

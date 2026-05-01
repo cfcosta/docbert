@@ -182,11 +182,4 @@ mod tests {
         let b = lower(&coll, &item);
         assert_eq!(a.did.numeric, b.did.numeric);
     }
-
-    #[test]
-    fn document_id_fits_in_48_bits() {
-        let coll = collection("serde", (1, 0, 219));
-        let doc = lower(&coll, &sample_item());
-        assert_eq!(doc.did.numeric >> 48, 0);
-    }
 }

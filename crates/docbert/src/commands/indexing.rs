@@ -21,13 +21,16 @@ use super::{
 };
 use crate::{cli, indexing};
 
-pub(super) fn remove_document_embeddings_for_ids(
-    embedding_db: &EmbeddingDb,
+/// Drop every document's chunk manifest in `doc_ids`, decrementing the
+/// chunk_owners reverse index in the same transaction.
+///
+/// Embedding entries are kept on disk so a re-index that produces the
+/// same chunk text gets a free cache hit.
+pub(super) fn remove_chunk_manifests_for_ids(
+    config_db: &ConfigDb,
     doc_ids: &[u64],
 ) -> error::Result<()> {
-    embedding_db
-        .batch_remove_document_families(doc_ids)
-        .map(|_| ())
+    config_db.batch_remove_doc_chunks(doc_ids)
 }
 
 pub(super) fn remove_document_artifacts_for_ids(
@@ -135,25 +138,41 @@ fn process_document_batch(
         .map(|d| d.did.numeric)
         .collect();
 
-    // Step 1: Compute and store embeddings (expensive, most likely to fail).
-    // Done before Tantivy so a model failure doesn't leave committed index
-    // entries without embeddings.
+    // Step 1: Plan chunks, embed any that aren't already cached, and
+    // record per-document manifests. Done before Tantivy so a model
+    // failure doesn't leave committed index entries without manifests.
     if embed_documents {
         let mut pb =
             create_progress_bar(document_batch.documents.len(), "Chunking");
-        let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
-        let mut chunk_offset_entries: Vec<(
+        let mut per_doc_manifests: Vec<(
             u64,
-            docbert_core::ChunkByteOffset,
-        )> = Vec::new();
+            Vec<docbert_core::DocChunkEntry>,
+        )> = Vec::with_capacity(document_batch.documents.len());
+        let mut docs_to_embed: Vec<(u64, String)> = Vec::new();
+        let mut already_queued: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
         for (i, document) in document_batch.documents.iter().enumerate() {
-            for plan in docbert_core::preparation::chunk_plan(
+            let plans = docbert_core::preparation::chunk_plan(
                 document,
-                runtime.chunking_config,
-            ) {
-                chunk_offset_entries.push((plan.chunk_doc_id, plan.offset));
+                &runtime.chunking_config,
+            );
+            let manifest: Vec<docbert_core::DocChunkEntry> =
+                plans.iter().map(|p| p.manifest_entry).collect();
+            for plan in plans {
+                // Skip chunks the cache already holds and chunks
+                // already queued for embedding in this batch — same
+                // chunk text under the same model produces the same id
+                // and therefore the same embedding.
+                if already_queued.contains(&plan.chunk_doc_id) {
+                    continue;
+                }
+                if runtime.embedding_db.load(plan.chunk_doc_id)?.is_some() {
+                    continue;
+                }
+                already_queued.insert(plan.chunk_doc_id);
                 docs_to_embed.push((plan.chunk_doc_id, plan.text));
             }
+            per_doc_manifests.push((document.did.numeric, manifest));
             let _ = pb.update_to(i + 1);
         }
         finish_progress_bar(&mut pb);
@@ -171,24 +190,13 @@ fn process_document_batch(
                 },
             )?;
             finish_progress_bar(&mut pb);
+        }
 
-            // Persist chunk byte offsets only after the embedding batch
-            // commits. Doing it earlier would leave offsets pointing at
-            // chunks the embedding store doesn't have yet, which search
-            // would surface as ranges with no semantic backing.
-            //
-            // Wipe each base document's family first so a re-index that
-            // produces fewer chunks doesn't leak offsets for the
-            // higher chunk indexes.
-            let base_doc_ids: Vec<u64> = document_batch
-                .documents
-                .iter()
-                .map(|d| d.did.numeric)
-                .collect();
-            config_db.batch_remove_chunk_offsets_for_document_families(
-                &base_doc_ids,
-            )?;
-            config_db.batch_set_chunk_offsets(&chunk_offset_entries)?;
+        // Persist each manifest after the embeddings it references are
+        // stored. set_doc_chunks atomically updates chunk_owners so
+        // the reverse index always agrees with the manifests.
+        for (doc_num_id, manifest) in &per_doc_manifests {
+            config_db.set_doc_chunks(*doc_num_id, manifest)?;
         }
     }
 
@@ -200,8 +208,9 @@ fn process_document_batch(
     )?;
 
     // Step 3: Commit to Tantivy last. If this fails, roll back the
-    // embeddings and metadata we persisted in steps 1-2 so all three
-    // stores stay consistent.
+    // manifests and metadata we persisted in steps 1-2 so the three
+    // stores stay consistent. Embedding entries themselves are left
+    // alone — the cache is content-addressed and treated as immortal.
     if index_documents {
         let mut writer = runtime.search_index.writer(15_000_000)?;
         if let Err(err) = ingestion::ingest_prepared_documents(
@@ -210,15 +219,9 @@ fn process_document_batch(
             collection,
             &document_batch.documents,
         ) {
-            let _ = remove_document_embeddings_for_ids(
-                &runtime.embedding_db,
-                &batch_doc_ids,
-            );
+            let _ = remove_chunk_manifests_for_ids(config_db, &batch_doc_ids);
             let _ =
                 remove_document_artifacts_for_ids(config_db, &batch_doc_ids);
-            let _ = config_db.batch_remove_chunk_offsets_for_document_families(
-                &batch_doc_ids,
-            );
             return Err(err);
         }
         eprintln!("  Indexed {} documents", document_batch.documents.len());
@@ -258,7 +261,9 @@ fn process_document_batch(
 fn sync_plaid_index(
     data_dir: &DataDir,
     embedding_db: &EmbeddingDb,
+    config_db: &ConfigDb,
     touched_bases: &[u64],
+    deleted_bases: &[u64],
 ) -> error::Result<()> {
     let Some(existing) = docbert_core::plaid::load_index(data_dir)? else {
         // First-time sync — we have no codec to reuse. Fall back to
@@ -266,16 +271,48 @@ fn sync_plaid_index(
         return rebuild_plaid_index(data_dir, embedding_db);
     };
 
+    // Expand each touched document into its current chunk_doc_ids by
+    // reading the manifest. Deduplicate across documents — content-based
+    // ids let two touched docs share chunks.
+    let mut upsert_chunks: std::collections::HashSet<u64> =
+        std::collections::HashSet::new();
+    for &doc_num_id in touched_bases {
+        if let Some(manifest) = config_db.get_doc_chunks(doc_num_id)? {
+            for entry in manifest {
+                upsert_chunks.insert(entry.chunk_doc_id);
+            }
+        }
+    }
+    let upserts: Vec<u64> = upsert_chunks.iter().copied().collect();
+
+    // Compute deletions: chunks the deleted documents *used to* own,
+    // intersected with chunks that have no remaining owners. The
+    // existing index can only "delete" chunks it actually carries, so
+    // unknown ids fall through harmlessly.
+    let mut deletion_candidates: std::collections::HashSet<u64> =
+        std::collections::HashSet::new();
+    for &chunk_doc_id in &existing.doc_ids {
+        if upsert_chunks.contains(&chunk_doc_id) {
+            continue;
+        }
+        if config_db.get_chunk_owners(chunk_doc_id)?.is_empty() {
+            deletion_candidates.insert(chunk_doc_id);
+        }
+    }
+    let deletions: Vec<u64> = deletion_candidates.into_iter().collect();
+
     let start = Instant::now();
     eprintln!(
-        "{} ({} touched base doc(s))...",
+        "{} ({} touched / {} deleted base doc(s))...",
         style::subheader(&"Updating PLAID index"),
         touched_bases.len(),
+        deleted_bases.len(),
     );
-    let updated = docbert_core::plaid::update_index_for_touched_bases(
+    let updated = docbert_core::plaid::update_index_with_chunks(
         embedding_db,
         existing,
-        touched_bases,
+        &upserts,
+        &deletions,
     )?;
     docbert_core::plaid::save_index(&updated, data_dir)?;
     eprintln!(
@@ -382,10 +419,11 @@ pub(crate) fn rebuild(
             })
             .collect();
         if !args.index_only {
-            remove_document_embeddings_for_ids(
-                &runtime.embedding_db,
-                &old_doc_ids,
-            )?;
+            // Drop the manifests so chunk_owners stops attributing the
+            // soon-to-be-rebuilt documents. The embedding rows
+            // themselves stay — they're content-addressed and become
+            // automatic cache hits if the new chunks match.
+            remove_chunk_manifests_for_ids(config_db, &old_doc_ids)?;
         }
         if !args.embeddings_only {
             remove_document_artifacts_for_ids(config_db, &old_doc_ids)?;
@@ -529,6 +567,9 @@ pub(crate) fn sync(
     // against the frozen codec — every untouched document keeps its
     // old encoding.
     let mut touched_bases: Vec<u64> = Vec::new();
+    // Track docs whose manifests we drop during this sync so the
+    // PLAID update can prune any chunks that lose their last owner.
+    let mut deleted_bases: Vec<u64> = Vec::new();
 
     for (name, path) in &collections {
         let root = std::path::Path::new(path);
@@ -598,8 +639,12 @@ pub(crate) fn sync(
                     })
                     .collect();
 
-                remove_document_embeddings_for_ids(
-                    &runtime.embedding_db,
+                // Embedding rows stay on disk; only drop the manifest
+                // bookkeeping so the deleted documents stop showing up
+                // in chunk_owners and document_metadata.
+                deleted_bases.extend_from_slice(&selection.deleted_ids);
+                remove_chunk_manifests_for_ids(
+                    config_db,
                     &selection.deleted_ids,
                 )?;
                 remove_document_artifacts_for_ids(
@@ -653,7 +698,13 @@ pub(crate) fn sync(
     config_db.set_setting(EMBEDDING_MODEL_KEY, model_id)?;
 
     let embedding_db = release_encoder_before_plaid(runtime)?;
-    sync_plaid_index(data_dir, &embedding_db, &touched_bases)?;
+    sync_plaid_index(
+        data_dir,
+        &embedding_db,
+        config_db,
+        &touched_bases,
+        &deleted_bases,
+    )?;
 
     eprintln!(
         "{} in {}.",
@@ -805,6 +856,7 @@ mod tests {
             chunk_size: 100,
             overlap: 0,
             document_length: None,
+            model_id: "test-model".to_string(),
         };
 
         let mut runtime = IndexingRuntime {
@@ -877,6 +929,7 @@ mod tests {
             chunk_size: 100,
             overlap: 0,
             document_length: None,
+            model_id: "test-model".to_string(),
         };
 
         let mut runtime = IndexingRuntime {
@@ -947,20 +1000,38 @@ mod tests {
         );
     }
 
+    /// Build a single-chunk manifest where `chunk_doc_id == doc_num_id`
+    /// — convenient for the PLAID tests, where the embedding ids and
+    /// the base doc ids both happen to live in the same u64 space.
+    fn seed_single_chunk_manifest(config_db: &ConfigDb, doc_num_id: u64) {
+        config_db
+            .set_doc_chunks(
+                doc_num_id,
+                &[docbert_core::DocChunkEntry {
+                    chunk_doc_id: doc_num_id,
+                    start_byte: 0,
+                    byte_len: 8,
+                }],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn sync_plaid_index_falls_back_to_full_build_when_no_index_exists() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
         embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
         embedding_db
             .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
             .unwrap();
+        seed_single_chunk_manifest(&config_db, 1);
+        seed_single_chunk_manifest(&config_db, 2);
 
-        // No index file exists yet — sync must fall back to a full
-        // build so the first post-sync PLAID index lands on disk.
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[])
+            .unwrap();
 
         let loaded = docbert_core::plaid::load_index(&data_dir)
             .unwrap()
@@ -974,21 +1045,23 @@ mod tests {
     fn sync_plaid_index_reuses_codec_across_an_untouched_sync() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
         embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
         embedding_db
             .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
             .unwrap();
+        seed_single_chunk_manifest(&config_db, 1);
+        seed_single_chunk_manifest(&config_db, 2);
 
-        // First sync: full build.
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[])
+            .unwrap();
         let first =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
 
-        // Second sync with no touches should take the incremental
-        // path and keep the trained codec bit-for-bit.
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[])
+            .unwrap();
         let second =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
 
@@ -1001,33 +1074,33 @@ mod tests {
     fn sync_plaid_index_re_encodes_a_touched_base() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
         embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
         embedding_db
             .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
             .unwrap();
+        seed_single_chunk_manifest(&config_db, 1);
+        seed_single_chunk_manifest(&config_db, 2);
 
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[])
+            .unwrap();
         let before =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
         let before_tokens_for_1 =
             before.doc_tokens_vec(before.position_of(1).unwrap());
         let before_codec = before.codec.clone();
 
-        // Re-embed doc 1 with tokens from the other cluster, then
-        // sync incrementally with 1 as the touched base.
         embedding_db.store(1, 2, 2, &[9.5, 9.5, 10.1, 9.9]).unwrap();
-        sync_plaid_index(&data_dir, &embedding_db, &[1]).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[1], &[])
+            .unwrap();
 
         let after =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();
         let after_tokens_for_1 =
             after.doc_tokens_vec(after.position_of(1).unwrap());
 
-        // Codec unchanged, but doc 1's encoding flipped to the other
-        // cluster — proof the incremental path re-read tokens and
-        // re-encoded them against the frozen codec.
         assert_eq!(after.codec.centroids, before_codec.centroids);
         assert_ne!(
             after_tokens_for_1, before_tokens_for_1,
@@ -1036,16 +1109,21 @@ mod tests {
     }
 
     #[test]
-    fn sync_plaid_index_prunes_docs_removed_from_the_db() {
+    fn sync_plaid_index_prunes_docs_with_no_remaining_owners() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
+        let config_db = ConfigDb::open(&data_dir.config_db()).unwrap();
         let embedding_db =
             EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
         embedding_db.store(1, 2, 2, &[0.0, 0.0, 0.1, 0.1]).unwrap();
         embedding_db
             .store(2, 2, 2, &[9.0, 9.0, 10.0, 10.0])
             .unwrap();
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        seed_single_chunk_manifest(&config_db, 1);
+        seed_single_chunk_manifest(&config_db, 2);
+
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[])
+            .unwrap();
         assert!(
             docbert_core::plaid::load_index(&data_dir)
                 .unwrap()
@@ -1054,9 +1132,12 @@ mod tests {
                 .contains(&2),
         );
 
-        // Simulate a deletion: doc 2 gone from the db, no base touched.
-        embedding_db.remove(2).unwrap();
-        sync_plaid_index(&data_dir, &embedding_db, &[]).unwrap();
+        // Drop doc 2's manifest (chunk 2 now has no owners) and tell
+        // the sync that doc 2 was deleted. The embedding row stays put,
+        // but PLAID drops the orphan chunk so search won't surface it.
+        config_db.remove_doc_chunks(2).unwrap();
+        sync_plaid_index(&data_dir, &embedding_db, &config_db, &[], &[2])
+            .unwrap();
 
         let after =
             docbert_core::plaid::load_index(&data_dir).unwrap().unwrap();

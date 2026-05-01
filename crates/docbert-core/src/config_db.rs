@@ -23,20 +23,26 @@ const DOCUMENT_METADATA_DB: &str = "document_metadata";
 const CONVERSATIONS_DB: &str = "conversations";
 const COLLECTION_MERKLE_SNAPSHOTS_DB: &str = "collection_merkle_snapshots";
 const SETTINGS_DB: &str = "settings";
-/// Per-chunk byte offsets in the original document.
+/// Per-document chunk manifest.
 ///
-/// Keyed by `chunk_doc_id` (the chunk-level numeric ID — see
-/// [`crate::chunking::chunk_doc_id`]) and storing a fixed-width
-/// `[start_offset:u64 LE][length:u64 LE]` pair.
+/// Keyed by `doc_num_id` and storing the ordered list of chunks the
+/// document was split into. Each entry carries the chunk's
+/// content-derived id (see [`crate::chunking::chunk_doc_id`]) plus the
+/// byte range it occupies in the source document.
 ///
-/// Lets a search consumer look up "where in the file does this matching
-/// chunk live?" without re-running the chunker over the document. The
-/// chunker is deterministic, but its output depends on the chunking
-/// config that was active at index time, so we persist instead of
-/// re-derive — a config change must not silently invalidate offsets.
-const CHUNK_OFFSETS_DB: &str = "chunk_offsets";
-/// Width in bytes of one entry in the `chunk_offsets` database.
-const CHUNK_OFFSET_ENTRY_LEN: usize = 16;
+/// Because chunk ids are now content-derived, the same chunk text can
+/// belong to many documents at different byte offsets — the manifest
+/// is the per-doc record of those offsets, complementing
+/// [`CHUNK_OWNERS_DB`] which records ownership in the reverse
+/// direction.
+const DOC_CHUNKS_DB: &str = "doc_chunks";
+/// Reverse index: chunk id → documents that contain it.
+///
+/// Keyed by `chunk_doc_id` and storing a sorted, deduplicated list of
+/// `doc_num_id` values that include this chunk. The semantic search
+/// path uses this to fan out a chunk hit in the PLAID index back to
+/// every document that owns it.
+const CHUNK_OWNERS_DB: &str = "chunk_owners";
 
 const MAP_SIZE: usize = 1024 * 1024 * 1024; // 1 GiB
 
@@ -46,7 +52,7 @@ const KEY_LLM_API_KEY: &str = "llm_api_key";
 
 /// Local store for collections, settings, and document metadata.
 ///
-/// It keeps seven named LMDB databases inside one
+/// It keeps eight named LMDB databases inside one
 /// [`heed::Env`](https://docs.rs/heed):
 ///
 /// - **collections**: collection names to filesystem paths
@@ -55,8 +61,10 @@ const KEY_LLM_API_KEY: &str = "llm_api_key";
 /// - **conversations**: conversation IDs to serialized chat history
 /// - **collection_merkle_snapshots**: collection name to last snapshot
 /// - **settings**: general key-value settings such as `model_name`
-/// - **chunk_offsets**: chunk-level numeric IDs to byte ranges in the
-///   source document
+/// - **doc_chunks**: numeric document ID to its ordered chunk manifest
+///   (each entry pairs a content-derived chunk id with its byte range)
+/// - **chunk_owners**: chunk id to the set of documents that contain
+///   it — populated atomically alongside `doc_chunks`
 ///
 /// LMDB gives us proper cross-process readers and writers, so several
 /// `docbert mcp` / `docbert web` / CLI processes can share the same
@@ -87,7 +95,8 @@ pub struct ConfigDb {
     conversations: Database<Str, Bytes>,
     collection_merkle_snapshots: Database<Str, Bytes>,
     settings: Database<Str, Bytes>,
-    chunk_offsets: Database<U64<BigEndian>, Bytes>,
+    doc_chunks: Database<U64<BigEndian>, Bytes>,
+    chunk_owners: Database<U64<BigEndian>, Bytes>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -158,8 +167,9 @@ impl ConfigDb {
         let collection_merkle_snapshots = env
             .create_database(&mut wtxn, Some(COLLECTION_MERKLE_SNAPSHOTS_DB))?;
         let settings = env.create_database(&mut wtxn, Some(SETTINGS_DB))?;
-        let chunk_offsets =
-            env.create_database(&mut wtxn, Some(CHUNK_OFFSETS_DB))?;
+        let doc_chunks = env.create_database(&mut wtxn, Some(DOC_CHUNKS_DB))?;
+        let chunk_owners =
+            env.create_database(&mut wtxn, Some(CHUNK_OWNERS_DB))?;
         wtxn.commit()?;
         Ok(Self {
             env,
@@ -169,7 +179,8 @@ impl ConfigDb {
             conversations,
             collection_merkle_snapshots,
             settings,
-            chunk_offsets,
+            doc_chunks,
+            chunk_owners,
         })
     }
 
@@ -875,100 +886,222 @@ impl ConfigDb {
         self.remove_json_setting(&key)
     }
 
-    // -- Chunk byte offsets --
+    // -- Per-document chunk manifest --
 
-    /// Record the byte offset and length of a chunk in its source document.
+    /// Replace a document's chunk manifest, atomically updating the
+    /// reverse `chunk_owners` index in the same transaction.
     ///
-    /// Keyed by `chunk_doc_id` (the chunk-level ID produced by
-    /// [`crate::chunking::chunk_doc_id`]). Overwrites any existing entry.
-    pub fn set_chunk_offset(
+    /// `manifest` is the new ordered list of chunks for `doc_num_id`.
+    /// Any chunk previously associated with the document but no longer
+    /// referenced is removed from that chunk's owners list (and the
+    /// owners entry is dropped entirely once empty). Newly-referenced
+    /// chunks are added.
+    ///
+    /// Passing an empty manifest is equivalent to
+    /// [`remove_doc_chunks`](Self::remove_doc_chunks).
+    pub fn set_doc_chunks(
         &self,
-        chunk_doc_id: u64,
-        offset: ChunkByteOffset,
+        doc_num_id: u64,
+        manifest: &[DocChunkEntry],
     ) -> Result<()> {
-        let bytes = encode_chunk_offset(offset);
         let mut wtxn = self.env.write_txn()?;
-        self.chunk_offsets
-            .put(&mut wtxn, &chunk_doc_id, bytes.as_slice())?;
-        wtxn.commit()?;
-        Ok(())
-    }
 
-    /// Store many chunk offsets in a single write transaction.
-    pub fn batch_set_chunk_offsets(
-        &self,
-        entries: &[(u64, ChunkByteOffset)],
-    ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let mut wtxn = self.env.write_txn()?;
-        for &(chunk_doc_id, offset) in entries {
-            let bytes = encode_chunk_offset(offset);
-            self.chunk_offsets.put(
-                &mut wtxn,
-                &chunk_doc_id,
-                bytes.as_slice(),
-            )?;
-        }
-        wtxn.commit()?;
-        Ok(())
-    }
-
-    /// Look up the byte offset and length of a chunk by its
-    /// `chunk_doc_id`. Returns `None` when the chunk wasn't recorded —
-    /// e.g. for a corpus indexed before chunk offsets were tracked, or
-    /// when a chunk was deleted.
-    pub fn get_chunk_offset(
-        &self,
-        chunk_doc_id: u64,
-    ) -> Result<Option<ChunkByteOffset>> {
-        let rtxn = self.env.read_txn()?;
-        let Some(bytes) = self.chunk_offsets.get(&rtxn, &chunk_doc_id)? else {
-            return Ok(None);
+        let previous_unique = match self.doc_chunks.get(&wtxn, &doc_num_id)? {
+            Some(bytes) => {
+                let entries: Vec<DocChunkEntry> = decode_aligned(bytes)?;
+                unique_chunk_ids(&entries)
+            }
+            None => Vec::new(),
         };
-        Ok(decode_chunk_offset(bytes))
-    }
+        let new_unique = unique_chunk_ids(manifest);
 
-    /// Remove every chunk offset for one document family (base + chunks).
-    ///
-    /// `base_doc_ids` are the *base* numeric IDs of the documents whose
-    /// chunk offsets should be cleared. Internally walks the table and
-    /// matches by `document_family_key`, mirroring how
-    /// [`EmbeddingDb::batch_remove_document_families`] cleans embeddings.
-    ///
-    /// [`EmbeddingDb::batch_remove_document_families`]:
-    ///     crate::EmbeddingDb::batch_remove_document_families
-    pub fn batch_remove_chunk_offsets_for_document_families(
-        &self,
-        base_doc_ids: &[u64],
-    ) -> Result<()> {
-        if base_doc_ids.is_empty() {
-            return Ok(());
-        }
+        let previous: std::collections::HashSet<u64> =
+            previous_unique.iter().copied().collect();
+        let current: std::collections::HashSet<u64> =
+            new_unique.iter().copied().collect();
 
-        let family_keys: std::collections::HashSet<u64> = base_doc_ids
-            .iter()
-            .copied()
-            .map(crate::chunking::document_family_key)
-            .collect();
-
-        let mut wtxn = self.env.write_txn()?;
-        let mut to_remove = Vec::new();
-        for entry in self.chunk_offsets.iter(&wtxn)? {
-            let (chunk_doc_id, _) = entry?;
-            if family_keys
-                .contains(&crate::chunking::document_family_key(chunk_doc_id))
-            {
-                to_remove.push(chunk_doc_id);
+        for &chunk_doc_id in &previous {
+            if !current.contains(&chunk_doc_id) {
+                remove_owner_in_txn(
+                    &self.chunk_owners,
+                    &mut wtxn,
+                    chunk_doc_id,
+                    doc_num_id,
+                )?;
             }
         }
-        for chunk_doc_id in to_remove {
-            self.chunk_offsets.delete(&mut wtxn, &chunk_doc_id)?;
+        for &chunk_doc_id in &current {
+            if !previous.contains(&chunk_doc_id) {
+                add_owner_in_txn(
+                    &self.chunk_owners,
+                    &mut wtxn,
+                    chunk_doc_id,
+                    doc_num_id,
+                )?;
+            }
+        }
+
+        if manifest.is_empty() {
+            self.doc_chunks.delete(&mut wtxn, &doc_num_id)?;
+        } else {
+            let manifest_vec: Vec<DocChunkEntry> = manifest.to_vec();
+            let bytes = encode_bytes(&manifest_vec)?;
+            self.doc_chunks
+                .put(&mut wtxn, &doc_num_id, bytes.as_slice())?;
+        }
+
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Load a document's chunk manifest. Returns `None` if the document
+    /// has no recorded chunks.
+    pub fn get_doc_chunks(
+        &self,
+        doc_num_id: u64,
+    ) -> Result<Option<Vec<DocChunkEntry>>> {
+        let rtxn = self.env.read_txn()?;
+        let Some(bytes) = self.doc_chunks.get(&rtxn, &doc_num_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(decode_aligned(bytes)?))
+    }
+
+    /// Look up the byte range of `chunk_doc_id` within `doc_num_id`.
+    ///
+    /// Because chunk ids are content-derived, the same chunk text can
+    /// land at different byte offsets in different documents — this is
+    /// the per-document lookup. Returns the first occurrence when a
+    /// chunk repeats inside one document.
+    pub fn get_chunk_offset_for_doc(
+        &self,
+        doc_num_id: u64,
+        chunk_doc_id: u64,
+    ) -> Result<Option<ChunkByteOffset>> {
+        let Some(manifest) = self.get_doc_chunks(doc_num_id)? else {
+            return Ok(None);
+        };
+        Ok(manifest
+            .into_iter()
+            .find(|entry| entry.chunk_doc_id == chunk_doc_id)
+            .map(|entry| ChunkByteOffset {
+                start_byte: entry.start_byte,
+                byte_len: entry.byte_len,
+            }))
+    }
+
+    /// Remove a document's chunk manifest and the document's
+    /// contribution to every referenced chunk's owners list.
+    ///
+    /// The embedding entries themselves are left in place so the cache
+    /// stays warm for future indexes that re-derive the same chunk
+    /// content. Returns `true` when a manifest was present.
+    pub fn remove_doc_chunks(&self, doc_num_id: u64) -> Result<bool> {
+        let mut wtxn = self.env.write_txn()?;
+        let Some(bytes) = self.doc_chunks.get(&wtxn, &doc_num_id)? else {
+            return Ok(false);
+        };
+        let entries: Vec<DocChunkEntry> = decode_aligned(bytes)?;
+        for chunk_doc_id in unique_chunk_ids(&entries) {
+            remove_owner_in_txn(
+                &self.chunk_owners,
+                &mut wtxn,
+                chunk_doc_id,
+                doc_num_id,
+            )?;
+        }
+        self.doc_chunks.delete(&mut wtxn, &doc_num_id)?;
+        wtxn.commit()?;
+        Ok(true)
+    }
+
+    /// Remove many document manifests in one write transaction.
+    pub fn batch_remove_doc_chunks(&self, doc_num_ids: &[u64]) -> Result<()> {
+        if doc_num_ids.is_empty() {
+            return Ok(());
+        }
+        let mut wtxn = self.env.write_txn()?;
+        for &doc_num_id in doc_num_ids {
+            let Some(bytes) = self.doc_chunks.get(&wtxn, &doc_num_id)? else {
+                continue;
+            };
+            let entries: Vec<DocChunkEntry> = decode_aligned(bytes)?;
+            for chunk_doc_id in unique_chunk_ids(&entries) {
+                remove_owner_in_txn(
+                    &self.chunk_owners,
+                    &mut wtxn,
+                    chunk_doc_id,
+                    doc_num_id,
+                )?;
+            }
+            self.doc_chunks.delete(&mut wtxn, &doc_num_id)?;
         }
         wtxn.commit()?;
         Ok(())
     }
+
+    /// Sorted, deduplicated list of documents that contain
+    /// `chunk_doc_id`. Empty when no document references it.
+    pub fn get_chunk_owners(&self, chunk_doc_id: u64) -> Result<Vec<u64>> {
+        let rtxn = self.env.read_txn()?;
+        let Some(bytes) = self.chunk_owners.get(&rtxn, &chunk_doc_id)? else {
+            return Ok(Vec::new());
+        };
+        decode_aligned(bytes)
+    }
+}
+
+/// Distinct chunk ids referenced by a manifest, preserving first-seen
+/// order so deterministic ordering survives any iteration.
+fn unique_chunk_ids(manifest: &[DocChunkEntry]) -> Vec<u64> {
+    let mut seen = std::collections::HashSet::with_capacity(manifest.len());
+    let mut out = Vec::with_capacity(manifest.len());
+    for entry in manifest {
+        if seen.insert(entry.chunk_doc_id) {
+            out.push(entry.chunk_doc_id);
+        }
+    }
+    out
+}
+
+fn add_owner_in_txn(
+    owners: &Database<U64<BigEndian>, Bytes>,
+    wtxn: &mut heed::RwTxn<'_>,
+    chunk_doc_id: u64,
+    doc_num_id: u64,
+) -> Result<()> {
+    let mut current: Vec<u64> = match owners.get(wtxn, &chunk_doc_id)? {
+        Some(bytes) => decode_aligned(bytes)?,
+        None => Vec::new(),
+    };
+    if let Err(insert_at) = current.binary_search(&doc_num_id) {
+        current.insert(insert_at, doc_num_id);
+        let bytes = encode_bytes(&current)?;
+        owners.put(wtxn, &chunk_doc_id, bytes.as_slice())?;
+    }
+    Ok(())
+}
+
+fn remove_owner_in_txn(
+    owners: &Database<U64<BigEndian>, Bytes>,
+    wtxn: &mut heed::RwTxn<'_>,
+    chunk_doc_id: u64,
+    doc_num_id: u64,
+) -> Result<()> {
+    let Some(bytes) = owners.get(wtxn, &chunk_doc_id)? else {
+        return Ok(());
+    };
+    let mut current: Vec<u64> = decode_aligned(bytes)?;
+    if let Ok(pos) = current.binary_search(&doc_num_id) {
+        current.remove(pos);
+        if current.is_empty() {
+            owners.delete(wtxn, &chunk_doc_id)?;
+        } else {
+            let bytes = encode_bytes(&current)?;
+            owners.put(wtxn, &chunk_doc_id, bytes.as_slice())?;
+        }
+    }
+    Ok(())
 }
 
 /// Where a stored chunk lives in its source document.
@@ -999,25 +1132,39 @@ impl ChunkByteOffset {
     }
 }
 
-fn encode_chunk_offset(
-    offset: ChunkByteOffset,
-) -> [u8; CHUNK_OFFSET_ENTRY_LEN] {
-    let mut bytes = [0u8; CHUNK_OFFSET_ENTRY_LEN];
-    bytes[0..8].copy_from_slice(&offset.start_byte.to_le_bytes());
-    bytes[8..16].copy_from_slice(&offset.byte_len.to_le_bytes());
-    bytes
+/// One entry in a document's chunk manifest.
+///
+/// Pairs a content-derived `chunk_doc_id` with the byte range the chunk
+/// occupies in the source document. Same chunk text appearing twice in
+/// one document produces two entries with the same id but different
+/// byte ranges.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+pub struct DocChunkEntry {
+    /// Content-derived chunk identifier.
+    pub chunk_doc_id: u64,
+    /// Byte offset where the chunk begins in the source document.
+    pub start_byte: u64,
+    /// Byte length of the chunk in the source document.
+    pub byte_len: u64,
 }
 
-fn decode_chunk_offset(bytes: &[u8]) -> Option<ChunkByteOffset> {
-    if bytes.len() != CHUNK_OFFSET_ENTRY_LEN {
-        return None;
+impl DocChunkEntry {
+    /// Convert a chunk entry into its byte range.
+    pub fn byte_offset(&self) -> ChunkByteOffset {
+        ChunkByteOffset {
+            start_byte: self.start_byte,
+            byte_len: self.byte_len,
+        }
     }
-    let start_byte = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
-    let byte_len = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    Some(ChunkByteOffset {
-        start_byte,
-        byte_len,
-    })
 }
 
 impl std::fmt::Debug for ConfigDb {
@@ -1426,19 +1573,12 @@ mod tests {
     }
 
     #[test]
-    fn chunk_offset_roundtrips_and_inclusive_end_handles_empty_chunks() {
-        let (_tmp, db) = test_db();
-
+    fn chunk_byte_offset_inclusive_end_handles_empty_chunks() {
         let offset = ChunkByteOffset {
             start_byte: 1024,
             byte_len: 256,
         };
-        db.set_chunk_offset(7, offset).unwrap();
-
-        let loaded = db.get_chunk_offset(7).unwrap().unwrap();
-        assert_eq!(loaded, offset);
-        assert_eq!(loaded.inclusive_end(), Some(1024 + 256 - 1));
-        assert!(db.get_chunk_offset(8).unwrap().is_none());
+        assert_eq!(offset.inclusive_end(), Some(1024 + 256 - 1));
 
         let empty = ChunkByteOffset {
             start_byte: 0,
@@ -1447,53 +1587,101 @@ mod tests {
         assert_eq!(empty.inclusive_end(), None);
     }
 
+    fn entry(chunk_doc_id: u64, start: u64, len: u64) -> DocChunkEntry {
+        DocChunkEntry {
+            chunk_doc_id,
+            start_byte: start,
+            byte_len: len,
+        }
+    }
+
     #[test]
-    fn batch_remove_chunk_offsets_only_clears_requested_families() {
-        // The chunk-offset table is keyed by chunk_doc_id, but the
-        // ingestion path only knows the *base* doc_id of the document
-        // being replaced. The remover must walk the table and match by
-        // family (low 48 bits), mirroring how
-        // `EmbeddingDb::batch_remove_document_families` cleans
-        // embeddings — otherwise replacement would leak stale offsets
-        // for the higher chunk indexes.
-        use crate::{DocumentId, chunking};
-
+    fn doc_chunks_roundtrip_preserves_order_and_repeats() {
         let (_tmp, db) = test_db();
-        let target = DocumentId::new("notes", "target.md").numeric;
-        let unrelated = DocumentId::new("notes", "unrelated.md").numeric;
-        let target_chunk_2 = chunking::chunk_doc_id(target, 2);
-        let unrelated_chunk_1 = chunking::chunk_doc_id(unrelated, 1);
+        let manifest = vec![entry(1, 0, 10), entry(2, 10, 20), entry(1, 30, 5)];
 
-        db.batch_set_chunk_offsets(&[
-            (
-                target,
-                ChunkByteOffset {
-                    start_byte: 0,
-                    byte_len: 100,
-                },
-            ),
-            (
-                target_chunk_2,
-                ChunkByteOffset {
-                    start_byte: 200,
-                    byte_len: 50,
-                },
-            ),
-            (
-                unrelated_chunk_1,
-                ChunkByteOffset {
-                    start_byte: 300,
-                    byte_len: 25,
-                },
-            ),
-        ])
-        .unwrap();
+        db.set_doc_chunks(42, &manifest).unwrap();
 
-        db.batch_remove_chunk_offsets_for_document_families(&[target])
+        let loaded = db.get_doc_chunks(42).unwrap().unwrap();
+        assert_eq!(loaded, manifest);
+    }
+
+    #[test]
+    fn doc_chunks_offset_lookup_returns_first_occurrence() {
+        let (_tmp, db) = test_db();
+        let manifest = vec![entry(7, 0, 10), entry(7, 100, 10)];
+
+        db.set_doc_chunks(1, &manifest).unwrap();
+
+        let offset = db.get_chunk_offset_for_doc(1, 7).unwrap().unwrap();
+        assert_eq!(offset.start_byte, 0);
+        assert_eq!(offset.byte_len, 10);
+
+        assert!(db.get_chunk_offset_for_doc(1, 99).unwrap().is_none());
+        assert!(db.get_chunk_offset_for_doc(2, 7).unwrap().is_none());
+    }
+
+    #[test]
+    fn chunk_owners_track_documents_and_dedup() {
+        let (_tmp, db) = test_db();
+
+        // doc 1 owns chunk 7 once even when it appears twice in the
+        // manifest.
+        db.set_doc_chunks(1, &[entry(7, 0, 10), entry(7, 100, 10)])
             .unwrap();
+        assert_eq!(db.get_chunk_owners(7).unwrap(), vec![1u64]);
 
-        assert!(db.get_chunk_offset(target).unwrap().is_none());
-        assert!(db.get_chunk_offset(target_chunk_2).unwrap().is_none());
-        assert!(db.get_chunk_offset(unrelated_chunk_1).unwrap().is_some());
+        // Adding doc 2 grows the owners list.
+        db.set_doc_chunks(2, &[entry(7, 50, 5)]).unwrap();
+        assert_eq!(db.get_chunk_owners(7).unwrap(), vec![1u64, 2]);
+    }
+
+    #[test]
+    fn doc_chunks_replace_drops_orphans_from_owners_index() {
+        let (_tmp, db) = test_db();
+        // Initial: doc 1 owns chunks {7, 8}.
+        db.set_doc_chunks(1, &[entry(7, 0, 10), entry(8, 10, 5)])
+            .unwrap();
+        assert_eq!(db.get_chunk_owners(7).unwrap(), vec![1u64]);
+        assert_eq!(db.get_chunk_owners(8).unwrap(), vec![1u64]);
+
+        // Replacement: doc 1 only references chunk 7 now. Chunk 8's
+        // owners list must drop doc 1, leaving the entry empty.
+        db.set_doc_chunks(1, &[entry(7, 0, 10)]).unwrap();
+        assert_eq!(db.get_chunk_owners(7).unwrap(), vec![1u64]);
+        assert!(db.get_chunk_owners(8).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_doc_chunks_clears_manifest_and_owner_entries() {
+        let (_tmp, db) = test_db();
+        db.set_doc_chunks(1, &[entry(7, 0, 10), entry(8, 20, 5)])
+            .unwrap();
+        db.set_doc_chunks(2, &[entry(7, 50, 5)]).unwrap();
+
+        assert!(db.remove_doc_chunks(1).unwrap());
+        assert!(db.get_doc_chunks(1).unwrap().is_none());
+        // Chunk 7 remains because doc 2 still owns it; chunk 8 is gone.
+        assert_eq!(db.get_chunk_owners(7).unwrap(), vec![2u64]);
+        assert!(db.get_chunk_owners(8).unwrap().is_empty());
+
+        // Removing again is a no-op.
+        assert!(!db.remove_doc_chunks(1).unwrap());
+    }
+
+    #[test]
+    fn batch_remove_doc_chunks_clears_many() {
+        let (_tmp, db) = test_db();
+        db.set_doc_chunks(1, &[entry(7, 0, 10)]).unwrap();
+        db.set_doc_chunks(2, &[entry(7, 5, 10)]).unwrap();
+        db.set_doc_chunks(3, &[entry(8, 0, 10)]).unwrap();
+
+        db.batch_remove_doc_chunks(&[1, 2]).unwrap();
+
+        assert!(db.get_doc_chunks(1).unwrap().is_none());
+        assert!(db.get_doc_chunks(2).unwrap().is_none());
+        assert!(db.get_doc_chunks(3).unwrap().is_some());
+        assert!(db.get_chunk_owners(7).unwrap().is_empty());
+        assert_eq!(db.get_chunk_owners(8).unwrap(), vec![3u64]);
     }
 }

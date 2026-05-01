@@ -192,8 +192,12 @@ fn build_search_result_item(
         None => (result.title.clone(), Vec::new(), None, None),
     };
 
-    let match_chunk =
-        load_match_chunk(config_db, result.best_chunk_doc_id, byte_count);
+    let match_chunk = load_match_chunk(
+        config_db,
+        result.doc_num_id,
+        result.best_chunk_doc_id,
+        byte_count,
+    );
 
     SearchResultItem {
         rank: result.rank,
@@ -213,19 +217,26 @@ fn build_search_result_item(
 /// Look up the byte range of the winning chunk for a search hit.
 ///
 /// Returns `None` when the hit didn't expose a chunk (BM25-only path),
-/// when the chunk's offset isn't in the table (corpus indexed before
-/// chunk offsets were tracked), or when the offset would land past the
-/// document's current end (for instance because the file shrank after
-/// indexing without a re-sync). The on-disk byte count is the
-/// authoritative upper bound — clamping here keeps the returned range
-/// safe for `apply_byte_range`.
+/// when the chunk's offset isn't in the document's manifest, or when
+/// the offset would land past the document's current end (for instance
+/// because the file shrank after indexing without a re-sync). The
+/// on-disk byte count is the authoritative upper bound — clamping
+/// here keeps the returned range safe for `apply_byte_range`.
+///
+/// The lookup is keyed by `(doc_num_id, chunk_doc_id)` because chunk
+/// ids are content-derived and the same chunk text can occupy
+/// different byte ranges in different documents.
 fn load_match_chunk(
     config_db: &docbert_core::ConfigDb,
+    doc_num_id: u64,
     best_chunk_doc_id: Option<u64>,
     document_byte_count: Option<u64>,
 ) -> Option<ChunkMatch> {
     let chunk_doc_id = best_chunk_doc_id?;
-    let offset = config_db.get_chunk_offset(chunk_doc_id).ok().flatten()?;
+    let offset = config_db
+        .get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)
+        .ok()
+        .flatten()?;
     let end_byte = offset.inclusive_end()?;
 
     if let Some(total_bytes) = document_byte_count
@@ -293,6 +304,7 @@ mod tests {
                 data_dir,
                 search_index: SearchIndex::open_in_ram().unwrap(),
                 model: Mutex::new(ModelManager::new()),
+                model_id: "test-model".to_string(),
             }),
         )
     }
@@ -397,8 +409,8 @@ mod tests {
     #[test]
     fn web_search_result_item_returns_match_chunk_when_offset_recorded() {
         // The semantic leg now hands `build_search_result_item` the
-        // winning chunk's `chunk_doc_id`. When the corresponding byte
-        // offset is in the table, the result should expose it as a
+        // winning chunk's id. When the corresponding entry is in the
+        // document's manifest, the result should expose it as a
         // `match_chunk` so the chat agent can read just that range.
         let (_tmp, state) = test_state();
         let did = seed_filesystem_document(
@@ -409,15 +421,16 @@ mod tests {
             "alpha\nbeta\ngamma\ndelta\nepsilon",
             None,
         );
-        let chunk_id = docbert_core::chunking::chunk_doc_id(did.numeric, 1);
+        let chunk_id: u64 = 0xC0FFEE;
         let config_db = state.open_config_db().unwrap();
         config_db
-            .set_chunk_offset(
-                chunk_id,
-                docbert_core::ChunkByteOffset {
+            .set_doc_chunks(
+                did.numeric,
+                &[docbert_core::DocChunkEntry {
+                    chunk_doc_id: chunk_id,
                     start_byte: 6,
                     byte_len: 8,
-                },
+                }],
             )
             .unwrap();
 
@@ -449,15 +462,16 @@ mod tests {
             "now only ten",
             None,
         );
-        let chunk_id = docbert_core::chunking::chunk_doc_id(did.numeric, 1);
+        let chunk_id: u64 = 0xDEADBEEF;
         let config_db = state.open_config_db().unwrap();
         config_db
-            .set_chunk_offset(
-                chunk_id,
-                docbert_core::ChunkByteOffset {
+            .set_doc_chunks(
+                did.numeric,
+                &[docbert_core::DocChunkEntry {
+                    chunk_doc_id: chunk_id,
                     start_byte: 0,
                     byte_len: 100,
-                },
+                }],
             )
             .unwrap();
 

@@ -114,7 +114,12 @@ pub mod walker;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-pub use config_db::{ChunkByteOffset, ConfigDb, PersistedLlmSettings};
+pub use config_db::{
+    ChunkByteOffset,
+    ConfigDb,
+    DocChunkEntry,
+    PersistedLlmSettings,
+};
 pub use conversation::{ChatMessage, Conversation};
 pub use data_dir::DataDir;
 pub use doc_id::DocumentId;

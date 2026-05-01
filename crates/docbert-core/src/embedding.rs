@@ -293,28 +293,14 @@ pub fn batch_load_embedding_tensors(
         .collect()
 }
 
-/// Load all embeddings for the requested document families as tensors.
+/// Convert an [`EmbeddingMatrix`] to a Tensor.
 ///
-/// The returned `(doc_id, Tensor)` rows preserve the ordering contract of
-/// [`EmbeddingDb::batch_load_document_families`]: families appear in request
-/// order and embeddings within each family are sorted by stored `doc_id`.
-pub fn batch_load_document_family_tensors(
-    db: &EmbeddingDb,
-    base_doc_ids: &[u64],
-) -> Result<Vec<(u64, Tensor)>> {
-    db.batch_load_document_families(base_doc_ids)?
-        .into_iter()
-        .map(|(doc_id, matrix)| Ok((doc_id, matrix_to_tensor(matrix)?)))
-        .collect()
-}
-
-/// Convert an EmbeddingMatrix to a Tensor.
+/// [`EmbeddingMatrix`]: crate::embedding_db::EmbeddingMatrix
 fn matrix_to_tensor(
     matrix: crate::embedding_db::EmbeddingMatrix,
 ) -> Result<Tensor> {
     let num_tokens = matrix.num_tokens as usize;
     let dimension = matrix.dimension as usize;
-
     Tensor::from_vec(
         matrix.data,
         (num_tokens, dimension),
@@ -373,7 +359,6 @@ pub fn load_embedding_tensor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DocumentId, chunking::chunk_doc_id};
 
     struct RecordingEncoder {
         call_sizes: Vec<usize>,
@@ -634,90 +619,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
         assert!(load_embedding_tensor(&db, 999).unwrap().is_none());
-    }
-
-    #[test]
-    fn batch_load_document_family_tensors_converts_family_embeddings_to_expected_shapes()
-     {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
-        let first_chunk_id = chunk_doc_id(base_doc_id, 1);
-        let second_chunk_id = chunk_doc_id(base_doc_id, 2);
-
-        db.store(base_doc_id, 2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-            .unwrap();
-        db.store(first_chunk_id, 1, 2, &[7.0, 8.0]).unwrap();
-        db.store(second_chunk_id, 3, 1, &[9.0, 10.0, 11.0]).unwrap();
-
-        let loaded =
-            batch_load_document_family_tensors(&db, &[base_doc_id]).unwrap();
-        let loaded_dims: Vec<(u64, (usize, usize))> = loaded
-            .iter()
-            .map(|(doc_id, tensor)| (*doc_id, tensor.dims2().unwrap()))
-            .collect();
-
-        let mut expected = vec![
-            (base_doc_id, (2, 3)),
-            (first_chunk_id, (1, 2)),
-            (second_chunk_id, (3, 1)),
-        ];
-        expected.sort_by_key(|(doc_id, _)| *doc_id);
-        assert_eq!(loaded_dims, expected);
-    }
-
-    #[test]
-    fn batch_load_document_family_tensors_supports_base_only_documents() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let base_doc_id = DocumentId::new("notes", "hello.md").numeric;
-
-        db.store(base_doc_id, 2, 2, &[1.0, 2.0, 3.0, 4.0]).unwrap();
-
-        let loaded =
-            batch_load_document_family_tensors(&db, &[base_doc_id]).unwrap();
-
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].0, base_doc_id);
-        assert_eq!(loaded[0].1.dims2().unwrap(), (2, 2));
-        let flat: Vec<f32> =
-            loaded[0].1.flatten_all().unwrap().to_vec1().unwrap();
-        assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn batch_load_document_family_tensors_preserves_family_loader_order() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = EmbeddingDb::open(&tmp.path().join("emb.db")).unwrap();
-        let first_base_doc_id = DocumentId::new("notes", "a.md").numeric;
-        let second_base_doc_id = DocumentId::new("notes", "b.md").numeric;
-        let first_chunk_id = chunk_doc_id(first_base_doc_id, 1);
-        let second_chunk_id = chunk_doc_id(second_base_doc_id, 1);
-
-        db.store(first_chunk_id, 1, 1, &[1.0]).unwrap();
-        db.store(second_chunk_id, 1, 1, &[2.0]).unwrap();
-        db.store(first_base_doc_id, 1, 1, &[3.0]).unwrap();
-        db.store(second_base_doc_id, 1, 1, &[4.0]).unwrap();
-
-        let loaded = batch_load_document_family_tensors(
-            &db,
-            &[second_base_doc_id, first_base_doc_id],
-        )
-        .unwrap();
-        let loaded_ids: Vec<u64> =
-            loaded.iter().map(|(doc_id, _)| *doc_id).collect();
-
-        let mut second_family_expected =
-            vec![second_base_doc_id, second_chunk_id];
-        second_family_expected.sort_unstable();
-        let mut first_family_expected = vec![first_base_doc_id, first_chunk_id];
-        first_family_expected.sort_unstable();
-        let expected_ids: Vec<u64> = second_family_expected
-            .into_iter()
-            .chain(first_family_expected)
-            .collect();
-
-        assert_eq!(loaded_ids, expected_ids);
     }
 
     #[test]

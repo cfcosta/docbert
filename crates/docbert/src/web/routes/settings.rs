@@ -649,6 +649,7 @@ mod tests {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
+            model_id: "test-model".to_string(),
         });
 
         (tmp, state)

@@ -10,7 +10,7 @@ use base64::{
     engine::general_purpose::STANDARD as BASE64_STANDARD,
 };
 use docbert_core::{
-    ChunkByteOffset,
+    DocChunkEntry,
     DocumentId,
     chunking,
     embedding,
@@ -167,11 +167,12 @@ fn title_from_disk(relative_path: &str, content: &str) -> String {
     ingestion::extract_title(content, Path::new(relative_path))
 }
 
-fn upload_chunking_config() -> chunking::Config {
+fn upload_chunking_config(model_id: &str) -> chunking::Config {
     chunking::Config {
         chunk_size: chunking::DEFAULT_CHUNK_SIZE,
         overlap: chunking::DEFAULT_CHUNK_OVERLAP,
         document_length: None,
+        model_id: model_id.to_string(),
     }
 }
 
@@ -185,30 +186,32 @@ fn document_mtime(full_path: &Path) -> std::io::Result<u64> {
 }
 
 /// What `compute_embedding_entries` produces: the embedding rows the
-/// model crunched, plus the byte-offset metadata for each chunk so the
+/// model crunched, plus the chunk manifest for the document so the
 /// search consumer can later surface a matching range.
-type EmbeddingResult = (Vec<EmbeddingEntry>, Vec<(u64, ChunkByteOffset)>);
+type EmbeddingResult = (Vec<EmbeddingEntry>, Vec<DocChunkEntry>);
 
 /// Plan a document's chunks once, returning both the embedding-ready
-/// `(chunk_doc_id, num_tokens, dim, data)` entries and the byte offsets
-/// the search consumer surfaces alongside the result.
+/// `(chunk_doc_id, num_tokens, dim, data)` entries and the manifest
+/// rows the search consumer surfaces alongside the result.
 ///
-/// We re-use a single `chunk_plan` call so the offsets we persist always
-/// match the chunks we embed — drifting between the two would mean
-/// search returns offsets for chunks that were never indexed.
+/// A single `chunk_plan` call drives both lists so the manifest we
+/// persist always matches the chunks we embed — drifting between the
+/// two would mean search returns offsets for chunks that were never
+/// embedded.
 fn compute_embedding_entries(
     state: &AppState,
     document: &SearchDocument,
 ) -> Result<EmbeddingResult, StatusCode> {
-    let plans = preparation::chunk_plan(document, upload_chunking_config());
+    let plans = preparation::chunk_plan(
+        document,
+        &upload_chunking_config(&state.model_id),
+    );
     if plans.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let chunk_offsets: Vec<(u64, ChunkByteOffset)> = plans
-        .iter()
-        .map(|plan| (plan.chunk_doc_id, plan.offset))
-        .collect();
+    let manifest: Vec<DocChunkEntry> =
+        plans.iter().map(|plan| plan.manifest_entry).collect();
     let docs_to_embed: Vec<(u64, String)> = plans
         .into_iter()
         .map(|plan| (plan.chunk_doc_id, plan.text))
@@ -219,7 +222,7 @@ fn compute_embedding_entries(
             .into_iter()
             .map(|(doc_id, _)| (doc_id, 1, 2, vec![1.0, 0.0]))
             .collect();
-        return Ok((entries, chunk_offsets));
+        return Ok((entries, manifest));
     }
 
     // Recover from a poisoned mutex — a prior panic left the lock in
@@ -230,7 +233,7 @@ fn compute_embedding_entries(
     });
     let entries = embedding::embed_documents(&mut model, docs_to_embed)
         .map_err(|err| log_internal_error(err, "documents::ingest embed"))?;
-    Ok((entries, chunk_offsets))
+    Ok((entries, manifest))
 }
 
 pub(crate) async fn ingest(
@@ -314,14 +317,14 @@ pub(crate) async fn ingest(
                     mtime,
                 )
                 .map_err(map_error)?;
-                let (embedding_entries, chunk_offsets) =
+                let (embedding_entries, manifest) =
                     compute_embedding_entries(&state, &document)?;
                 let result = ingest::ingest_prepared_document(
                     &state,
                     &body.collection,
                     &document,
                     &embedding_entries,
-                    &chunk_offsets,
+                    &manifest,
                 )
                 .map_err(map_error)?;
                 Ok(IngestedDoc {
@@ -524,6 +527,7 @@ mod tests {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             search_index: SearchIndex::open_in_ram().unwrap(),
             model: StdMutex::new(ModelManager::new()),
+            model_id: "test-model".to_string(),
         });
 
         (tmp, state)

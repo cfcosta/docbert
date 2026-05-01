@@ -3,9 +3,8 @@
 use std::path::Path;
 
 use docbert_core::{
-    ChunkByteOffset,
+    DocChunkEntry,
     DocumentId,
-    chunking::document_family_key,
     error,
     incremental,
     preparation::{self, SearchDocument},
@@ -47,27 +46,16 @@ pub(crate) fn ingest_prepared_document(
     collection: &str,
     document: &SearchDocument,
     embedding_entries: &[EmbeddingEntry],
-    chunk_offsets: &[(u64, ChunkByteOffset)],
+    manifest: &[DocChunkEntry],
 ) -> error::Result<IngestedDocument> {
     let config_db = state.open_config_db_blocking()?;
     let embedding_db = state.open_embedding_db_blocking()?;
     let collection_root = collection_root(&config_db, collection)?;
     let previous_snapshot =
         snapshots::load_collection_snapshot(&config_db, collection)?;
-    let existing_embeddings =
-        load_document_family_embeddings(&embedding_db, document.did.numeric)?;
-    let existing_embedding_ids: Vec<u64> = existing_embeddings
-        .iter()
-        .map(|(doc_id, _, _, _)| *doc_id)
-        .collect();
-    let current_embedding_ids: Vec<u64> = embedding_entries
-        .iter()
-        .map(|(doc_id, _, _, _)| *doc_id)
-        .collect();
-    let existing_chunk_offsets = load_document_family_chunk_offsets(
-        &config_db,
-        &existing_embedding_ids,
-    )?;
+    let previous_manifest = config_db
+        .get_doc_chunks(document.did.numeric)?
+        .unwrap_or_default();
 
     let previous_metadata =
         config_db.get_document_metadata_typed(document.did.numeric)?;
@@ -87,44 +75,33 @@ pub(crate) fn ingest_prepared_document(
         document.mtime,
     )?;
 
+    // The embedding store is treated as a content-addressed cache: we
+    // freely overwrite any chunk_doc_id with the freshly-computed
+    // matrix (the value is content-derived so the new bytes match the
+    // old ones bit-for-bit). Past embeddings are never deleted so the
+    // cache stays warm for future documents that re-derive the same
+    // chunk text.
     if let Err(err) = embedding_db.batch_store(embedding_entries) {
         let _ = writer.rollback();
         return Err(err);
     }
 
-    // Persist chunk byte offsets in lockstep with the embedding store. We
-    // wipe any prior family entries first so a replacement that produces
-    // fewer chunks doesn't leak offsets for chunk indexes that no longer
-    // exist; then write the new offsets.
-    if let Err(err) =
-        persist_chunk_offsets(&config_db, document.did.numeric, chunk_offsets)
-    {
+    if let Err(err) = config_db.set_doc_chunks(document.did.numeric, manifest) {
         let _ = writer.rollback();
-        let _ = embedding_db.batch_remove(&current_embedding_ids);
-        restore_previous_embeddings(
-            &embedding_db,
-            &existing_embeddings,
-            &current_embedding_ids,
-        )?;
-        restore_previous_chunk_offsets(
+        restore_previous_manifest(
             &config_db,
             document.did.numeric,
-            &existing_chunk_offsets,
+            &previous_manifest,
         )?;
         return Err(err);
     }
 
     if let Err(err) = persist_metadata(&config_db, collection, document) {
         let _ = writer.rollback();
-        restore_previous_embeddings(
-            &embedding_db,
-            &existing_embeddings,
-            &current_embedding_ids,
-        )?;
-        restore_previous_chunk_offsets(
+        restore_previous_manifest(
             &config_db,
             document.did.numeric,
-            &existing_chunk_offsets,
+            &previous_manifest,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -136,15 +113,10 @@ pub(crate) fn ingest_prepared_document(
     }
 
     if let Err(err) = writer.commit() {
-        restore_previous_embeddings(
-            &embedding_db,
-            &existing_embeddings,
-            &current_embedding_ids,
-        )?;
-        restore_previous_chunk_offsets(
+        restore_previous_manifest(
             &config_db,
             document.did.numeric,
-            &existing_chunk_offsets,
+            &previous_manifest,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -163,15 +135,10 @@ pub(crate) fn ingest_prepared_document(
         &collection_root,
         previous_snapshot.as_ref(),
     ) {
-        restore_previous_embeddings(
-            &embedding_db,
-            &existing_embeddings,
-            &current_embedding_ids,
-        )?;
-        restore_previous_chunk_offsets(
+        restore_previous_manifest(
             &config_db,
             document.did.numeric,
-            &existing_chunk_offsets,
+            &previous_manifest,
         )?;
         restore_previous_metadata(
             &config_db,
@@ -182,11 +149,11 @@ pub(crate) fn ingest_prepared_document(
         return Err(err);
     }
 
-    remove_stale_previous_embeddings(
-        &embedding_db,
-        &existing_embedding_ids,
-        &current_embedding_ids,
-    )?;
+    // Embedding entries themselves are never removed on overwrite
+    // (the cache is immortal). Suppress the unused variable warning
+    // without dropping the field, since callers still rely on the
+    // signature.
+    let _ = &embedding_db;
 
     Ok(IngestedDocument {
         doc_id: document.did.to_string(),
@@ -198,16 +165,18 @@ pub(crate) fn ingest_prepared_document(
 
 /// Saved state of a document before a batch ingest overwrote it.
 ///
-/// Collected per-document so that a batch-level rollback can restore the
-/// previous metadata, embeddings, and Tantivy entry instead of
-/// destructively deleting everything.
+/// Collected per-document so that a batch-level rollback can restore
+/// the previous metadata, chunk manifest, and Tantivy entry. Note that
+/// embeddings themselves are intentionally not captured: they live in
+/// a content-addressed cache that is never destructively cleared on
+/// overwrite, so there is nothing to "restore" beyond what is already
+/// on disk.
 #[derive(Debug)]
 pub(crate) struct PreviousDocumentState {
     pub(crate) did: DocumentId,
     pub(crate) metadata: Option<incremental::DocumentMetadata>,
     pub(crate) user_metadata: Option<serde_json::Value>,
-    pub(crate) embeddings: Vec<EmbeddingEntry>,
-    pub(crate) chunk_offsets: Vec<(u64, ChunkByteOffset)>,
+    pub(crate) manifest: Vec<DocChunkEntry>,
 }
 
 /// Capture the full pre-existing state of a document before overwriting it.
@@ -227,20 +196,13 @@ pub(crate) fn capture_previous_state(
     }
 
     let user_metadata = config_db.get_document_user_metadata(did.numeric)?;
-    let embedding_db = state.open_embedding_db_blocking()?;
-    let embeddings =
-        load_document_family_embeddings(&embedding_db, did.numeric)?;
-    let embedding_ids: Vec<u64> =
-        embeddings.iter().map(|(doc_id, _, _, _)| *doc_id).collect();
-    let chunk_offsets =
-        load_document_family_chunk_offsets(&config_db, &embedding_ids)?;
+    let manifest = config_db.get_doc_chunks(did.numeric)?.unwrap_or_default();
 
     Ok(Some(PreviousDocumentState {
         did,
         metadata,
         user_metadata,
-        embeddings,
-        chunk_offsets,
+        manifest,
     }))
 }
 
@@ -259,28 +221,18 @@ pub(crate) fn rollback_document(
         None => delete_document(state, collection, relative_path),
         Some(prev) => {
             let config_db = state.open_config_db_blocking()?;
-            let embedding_db = state.open_embedding_db_blocking()?;
             let collection_root = collection_root(&config_db, collection)?;
             let previous_snapshot =
                 snapshots::load_collection_snapshot(&config_db, collection)?;
 
-            // Remove the current (bad) embeddings for this document family.
-            embedding_db.remove_document_family(prev.did.numeric)?;
-
-            // Restore previous embeddings.
-            if !prev.embeddings.is_empty() {
-                embedding_db.batch_store(&prev.embeddings)?;
-            }
-
-            // Wipe and restore the chunk byte offsets the same way: the
-            // overwrite that just failed already wrote new offsets, so we
-            // clear the family and replay the captured pre-overwrite set.
-            config_db.batch_remove_chunk_offsets_for_document_families(&[
+            // Embeddings are an immortal content-addressed cache. On
+            // rollback we only need to restore the manifest — no
+            // embedding side effects to undo.
+            restore_previous_manifest(
+                &config_db,
                 prev.did.numeric,
-            ])?;
-            if !prev.chunk_offsets.is_empty() {
-                config_db.batch_set_chunk_offsets(&prev.chunk_offsets)?;
-            }
+                &prev.manifest,
+            )?;
 
             // Restore previous metadata.
             restore_previous_metadata(
@@ -364,18 +316,19 @@ pub(crate) fn delete_document(
         snapshots::load_collection_snapshot(&config_db, collection)?;
     let did = DocumentId::new(collection, relative_path);
 
-    // Remove embeddings and metadata first (cheap, idempotent).
-    // If this fails the document is still intact and can be retried.
-    let embedding_db = state.open_embedding_db_blocking()?;
-    embedding_db.remove_document_family(did.numeric)?;
+    // Drop the manifest and metadata first (cheap, idempotent). The
+    // manifest removal also takes the document out of every chunk's
+    // owners list inside the same LMDB write transaction, leaving the
+    // embedding cache untouched. Subsequent searches will simply skip
+    // any chunk whose owners list goes empty — it's harmless to leave
+    // the embedding bytes around for a future re-indexer to reuse.
+    config_db.remove_doc_chunks(did.numeric)?;
     config_db.remove_document_metadata(did.numeric)?;
     config_db.remove_document_user_metadata(did.numeric)?;
-    config_db
-        .batch_remove_chunk_offsets_for_document_families(&[did.numeric])?;
 
     // Commit the Tantivy deletion last — it's the visible "point of no
-    // return".  All metadata/embeddings are already gone, so no orphan
-    // state is possible on Tantivy failure.
+    // return". All metadata is already gone, so no orphan state is
+    // possible on Tantivy failure.
     let mut writer = state.open_index_writer_blocking(50_000_000)?;
     state
         .search_index
@@ -466,53 +419,12 @@ fn restore_previous_collection_snapshot(
     }
 }
 
-fn load_document_family_embeddings(
-    embedding_db: &docbert_core::EmbeddingDb,
-    base_doc_id: u64,
-) -> error::Result<Vec<EmbeddingEntry>> {
-    let family_key = document_family_key(base_doc_id);
-    let doc_ids: Vec<u64> = embedding_db
-        .list_ids()?
-        .into_iter()
-        .filter(|doc_id| document_family_key(*doc_id) == family_key)
-        .collect();
-
-    let loaded = embedding_db.batch_load(&doc_ids)?;
-    let mut entries = Vec::with_capacity(loaded.len());
-    for (doc_id, matrix) in loaded {
-        let Some(matrix) = matrix else {
-            continue;
-        };
-        entries.push((
-            doc_id,
-            matrix.num_tokens,
-            matrix.dimension,
-            matrix.data,
-        ));
-    }
-    Ok(entries)
-}
-
-fn restore_previous_embeddings(
-    embedding_db: &docbert_core::EmbeddingDb,
-    previous_embeddings: &[EmbeddingEntry],
-    current_embedding_ids: &[u64],
+fn restore_previous_manifest(
+    config_db: &docbert_core::ConfigDb,
+    doc_num_id: u64,
+    previous_manifest: &[DocChunkEntry],
 ) -> error::Result<()> {
-    let previous_ids: std::collections::HashSet<u64> = previous_embeddings
-        .iter()
-        .map(|(doc_id, _, _, _)| *doc_id)
-        .collect();
-    let stale_new_ids: Vec<u64> = current_embedding_ids
-        .iter()
-        .copied()
-        .filter(|doc_id| !previous_ids.contains(doc_id))
-        .collect();
-    if !stale_new_ids.is_empty() {
-        embedding_db.batch_remove(&stale_new_ids)?;
-    }
-    if !previous_embeddings.is_empty() {
-        embedding_db.batch_store(previous_embeddings)?;
-    }
+    config_db.set_doc_chunks(doc_num_id, previous_manifest)?;
     Ok(())
 }
 
@@ -541,67 +453,6 @@ fn restore_previous_metadata(
     Ok(())
 }
 
-fn persist_chunk_offsets(
-    config_db: &docbert_core::ConfigDb,
-    base_doc_id: u64,
-    chunk_offsets: &[(u64, ChunkByteOffset)],
-) -> error::Result<()> {
-    // Wipe the family before writing. A re-ingest that produces fewer
-    // chunks (e.g. the document shrank) would otherwise leave offsets
-    // behind for chunk indexes that no longer exist, and search would
-    // happily surface those stale ranges.
-    config_db
-        .batch_remove_chunk_offsets_for_document_families(&[base_doc_id])?;
-    config_db.batch_set_chunk_offsets(chunk_offsets)?;
-    Ok(())
-}
-
-fn restore_previous_chunk_offsets(
-    config_db: &docbert_core::ConfigDb,
-    base_doc_id: u64,
-    previous_chunk_offsets: &[(u64, ChunkByteOffset)],
-) -> error::Result<()> {
-    // The just-failed ingest already wrote (and may have wiped) the
-    // family's offsets — clear what is there now and replay the pre-ingest
-    // set so the table matches the embeddings + metadata we are
-    // restoring.
-    config_db
-        .batch_remove_chunk_offsets_for_document_families(&[base_doc_id])?;
-    config_db.batch_set_chunk_offsets(previous_chunk_offsets)?;
-    Ok(())
-}
-
-fn load_document_family_chunk_offsets(
-    config_db: &docbert_core::ConfigDb,
-    chunk_doc_ids: &[u64],
-) -> error::Result<Vec<(u64, ChunkByteOffset)>> {
-    let mut entries = Vec::with_capacity(chunk_doc_ids.len());
-    for &chunk_doc_id in chunk_doc_ids {
-        if let Some(offset) = config_db.get_chunk_offset(chunk_doc_id)? {
-            entries.push((chunk_doc_id, offset));
-        }
-    }
-    Ok(entries)
-}
-
-fn remove_stale_previous_embeddings(
-    embedding_db: &docbert_core::EmbeddingDb,
-    previous_embedding_ids: &[u64],
-    current_embedding_ids: &[u64],
-) -> error::Result<()> {
-    let current_ids: std::collections::HashSet<u64> =
-        current_embedding_ids.iter().copied().collect();
-    let stale_previous_ids: Vec<u64> = previous_embedding_ids
-        .iter()
-        .copied()
-        .filter(|doc_id| !current_ids.contains(doc_id))
-        .collect();
-    if !stale_previous_ids.is_empty() {
-        embedding_db.batch_remove(&stale_previous_ids)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -609,12 +460,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use docbert_core::{
-        ConfigDb,
-        ModelManager,
-        SearchIndex,
-        chunking::chunk_doc_id,
-    };
+    use docbert_core::{ConfigDb, ModelManager, SearchIndex};
 
     use super::*;
     use crate::web::state::Inner;
@@ -625,6 +471,7 @@ mod tests {
             data_dir: docbert_core::DataDir::new(tmp.path()),
             search_index: SearchIndex::open_in_ram().unwrap(),
             model: Mutex::new(ModelManager::new()),
+            model_id: "test-model".to_string(),
         });
         (tmp, state)
     }
@@ -664,49 +511,40 @@ mod tests {
         full_path
     }
 
+    /// Synthesize a stable per-document chunk id. Tests don't go through
+    /// the real chunker, so we just shift the document id by the chunk
+    /// index — the actual scheme is irrelevant for these tests as long
+    /// as ids stay distinct within and across documents.
+    fn synthetic_chunk_id(doc_id: u64, chunk_index: usize) -> u64 {
+        doc_id.wrapping_add(chunk_index as u64).wrapping_add(0xC0DE)
+    }
+
     fn fake_embedding_entries(
         doc_id: u64,
         chunk_count: usize,
     ) -> Vec<EmbeddingEntry> {
-        let mut entries = Vec::new();
-        for chunk_index in 0..chunk_count {
-            let embedding_id = if chunk_index == 0 {
-                doc_id
-            } else {
-                chunk_doc_id(doc_id, chunk_index)
-            };
-            entries.push((
-                embedding_id,
-                1,
-                2,
-                vec![chunk_index as f32 + 1.0, 9.0],
-            ));
-        }
-        entries
-    }
-
-    /// Build a synthetic chunk-offset table that mirrors the embedding
-    /// IDs `fake_embedding_entries` would produce. Each chunk gets a
-    /// distinct, monotonically increasing byte range so tests can assert
-    /// that the right entry survives roundtripping without colliding.
-    fn fake_chunk_offsets(
-        doc_id: u64,
-        chunk_count: usize,
-    ) -> Vec<(u64, ChunkByteOffset)> {
         (0..chunk_count)
             .map(|chunk_index| {
-                let id = if chunk_index == 0 {
-                    doc_id
-                } else {
-                    chunk_doc_id(doc_id, chunk_index)
-                };
                 (
-                    id,
-                    ChunkByteOffset {
-                        start_byte: (chunk_index as u64) * 100,
-                        byte_len: 50,
-                    },
+                    synthetic_chunk_id(doc_id, chunk_index),
+                    1,
+                    2,
+                    vec![chunk_index as f32 + 1.0, 9.0],
                 )
+            })
+            .collect()
+    }
+
+    /// Build a synthetic chunk manifest that mirrors the embedding ids
+    /// `fake_embedding_entries` produces. Each chunk gets a distinct,
+    /// monotonically increasing byte range so tests can assert which
+    /// entry survives a round-trip without ambiguity.
+    fn fake_manifest(doc_id: u64, chunk_count: usize) -> Vec<DocChunkEntry> {
+        (0..chunk_count)
+            .map(|chunk_index| DocChunkEntry {
+                chunk_doc_id: synthetic_chunk_id(doc_id, chunk_index),
+                start_byte: (chunk_index as u64) * 100,
+                byte_len: 50,
             })
             .collect()
     }
@@ -730,7 +568,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
-            &fake_chunk_offsets(document.did.numeric, 2),
+            &fake_manifest(document.did.numeric, 2),
         )
         .unwrap();
 
@@ -757,13 +595,13 @@ mod tests {
         );
         assert!(
             test_embedding_db(&state)
-                .load(document.did.numeric)
+                .load(synthetic_chunk_id(document.did.numeric, 0))
                 .unwrap()
                 .is_some()
         );
         assert!(
             test_embedding_db(&state)
-                .load(chunk_doc_id(document.did.numeric, 1))
+                .load(synthetic_chunk_id(document.did.numeric, 1))
                 .unwrap()
                 .is_some()
         );
@@ -789,7 +627,7 @@ mod tests {
             "notes",
             &first,
             &fake_embedding_entries(first.did.numeric, 2),
-            &fake_chunk_offsets(first.did.numeric, 2),
+            &fake_manifest(first.did.numeric, 2),
         )
         .unwrap();
         let first_snapshot = test_config_db(&state)
@@ -811,7 +649,7 @@ mod tests {
             "notes",
             &second,
             &fake_embedding_entries(second.did.numeric, 2),
-            &fake_chunk_offsets(second.did.numeric, 2),
+            &fake_manifest(second.did.numeric, 2),
         )
         .unwrap();
 
@@ -841,7 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn web_ingest_replacement_removes_stale_chunk_embeddings() {
+    fn web_ingest_replacement_drops_stale_chunks_from_manifest_but_keeps_cache()
+    {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Hello\n\nBody");
@@ -852,7 +691,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 3),
-            &fake_chunk_offsets(document.did.numeric, 3),
+            &fake_manifest(document.did.numeric, 3),
         )
         .unwrap();
 
@@ -861,27 +700,34 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
-            &fake_chunk_offsets(document.did.numeric, 2),
+            &fake_manifest(document.did.numeric, 2),
         )
         .unwrap();
 
+        // The manifest no longer references the removed chunk, and the
+        // chunk_owners reverse index drops the document from that
+        // chunk's owner list.
+        let manifest = test_config_db(&state)
+            .get_doc_chunks(document.did.numeric)
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest.len(), 2);
+        let stale_chunk = synthetic_chunk_id(document.did.numeric, 2);
+        assert!(
+            test_config_db(&state)
+                .get_chunk_owners(stale_chunk)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Embedding entries themselves stick around — the cache is
+        // intentionally immortal so a future re-indexer can reuse the
+        // same content without recomputing.
         assert!(
             test_embedding_db(&state)
-                .load(document.did.numeric)
+                .load(stale_chunk)
                 .unwrap()
                 .is_some()
-        );
-        assert!(
-            test_embedding_db(&state)
-                .load(chunk_doc_id(document.did.numeric, 1))
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            test_embedding_db(&state)
-                .load(chunk_doc_id(document.did.numeric, 2))
-                .unwrap()
-                .is_none()
         );
     }
 
@@ -897,7 +743,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
-            &fake_chunk_offsets(document.did.numeric, 1),
+            &fake_manifest(document.did.numeric, 1),
         )
         .unwrap();
         let original_snapshot = test_config_db(&state)
@@ -916,7 +762,7 @@ mod tests {
                 "notes",
                 &updated,
                 &fake_embedding_entries(updated.did.numeric, 1),
-                &fake_chunk_offsets(updated.did.numeric, 1),
+                &fake_manifest(updated.did.numeric, 1),
             )
             .is_err()
         );
@@ -940,7 +786,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
-            &fake_chunk_offsets(document.did.numeric, 1),
+            &fake_manifest(document.did.numeric, 1),
         )
         .unwrap();
         let original_snapshot = test_config_db(&state)
@@ -989,7 +835,7 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 2),
-            &fake_chunk_offsets(document.did.numeric, 2),
+            &fake_manifest(document.did.numeric, 2),
         )
         .unwrap();
 
@@ -1000,14 +846,15 @@ mod tests {
             prev.user_metadata,
             Some(serde_json::json!({"tag": "important"}))
         );
-        assert!(
-            !prev.embeddings.is_empty(),
-            "should capture existing embeddings"
+        assert_eq!(
+            prev.manifest.len(),
+            2,
+            "should capture the existing chunk manifest"
         );
     }
 
     #[test]
-    fn rollback_document_restores_metadata_and_embeddings_for_overwrite() {
+    fn rollback_document_restores_metadata_and_manifest_for_overwrite() {
         let (tmp, state) = test_state();
         let root = seed_collection_root(&tmp, &state, "notes");
         let full_path = write_markdown(&root, "hello.md", "# Original\n\nBody");
@@ -1022,21 +869,18 @@ mod tests {
         .unwrap();
         let original_embeddings =
             fake_embedding_entries(original.did.numeric, 2);
-        let original_chunk_offsets =
-            fake_chunk_offsets(original.did.numeric, 2);
+        let original_manifest = fake_manifest(original.did.numeric, 2);
         ingest_prepared_document(
             &state,
             "notes",
             &original,
             &original_embeddings,
-            &original_chunk_offsets,
+            &original_manifest,
         )
         .unwrap();
 
-        // Capture state before overwrite
         let prev = capture_previous_state(&state, "notes", "hello.md").unwrap();
 
-        // Overwrite
         write_markdown(&root, "hello.md", "# Updated\n\nNew body");
         let updated = load_document(
             "notes",
@@ -1051,11 +895,10 @@ mod tests {
             "notes",
             &updated,
             &fake_embedding_entries(updated.did.numeric, 3),
-            &fake_chunk_offsets(updated.did.numeric, 3),
+            &fake_manifest(updated.did.numeric, 3),
         )
         .unwrap();
 
-        // Verify updated state
         assert_eq!(
             test_config_db(&state)
                 .get_document_user_metadata(original.did.numeric)
@@ -1063,13 +906,9 @@ mod tests {
             Some(serde_json::json!({"version": 2}))
         );
 
-        // Restore original file bytes
         std::fs::write(&full_path, "# Original\n\nBody").unwrap();
-
-        // Rollback
         rollback_document(&state, "notes", "hello.md", prev.as_ref()).unwrap();
 
-        // Metadata should be restored
         let restored_meta = test_config_db(&state)
             .get_document_metadata_typed(original.did.numeric)
             .unwrap()
@@ -1082,28 +921,25 @@ mod tests {
             Some(serde_json::json!({"version": 1}))
         );
 
-        // Embeddings should be restored (original had 2 chunks)
+        let restored_manifest = test_config_db(&state)
+            .get_doc_chunks(original.did.numeric)
+            .unwrap()
+            .expect("manifest should be restored");
+        assert_eq!(restored_manifest, original_manifest);
+
+        // Embedding cache is immortal — both the original and the
+        // overwrite chunks remain on disk, ready to be reused.
         assert!(
             test_embedding_db(&state)
-                .load(original.did.numeric)
+                .load(synthetic_chunk_id(original.did.numeric, 0))
                 .unwrap()
                 .is_some(),
-            "base embedding should be restored"
         );
         assert!(
             test_embedding_db(&state)
-                .load(chunk_doc_id(original.did.numeric, 1))
+                .load(synthetic_chunk_id(original.did.numeric, 2))
                 .unwrap()
                 .is_some(),
-            "chunk embedding should be restored"
-        );
-        // Third chunk from the overwrite should be gone
-        assert!(
-            test_embedding_db(&state)
-                .load(chunk_doc_id(original.did.numeric, 2))
-                .unwrap()
-                .is_none(),
-            "overwrite chunk should be removed"
         );
     }
 
@@ -1120,14 +956,15 @@ mod tests {
             "notes",
             &document,
             &fake_embedding_entries(document.did.numeric, 1),
-            &fake_chunk_offsets(document.did.numeric, 1),
+            &fake_manifest(document.did.numeric, 1),
         )
         .unwrap();
 
         // Rollback with no previous state (new document)
         rollback_document(&state, "notes", "new.md", None).unwrap();
 
-        // Document should be fully deleted
+        // Document metadata + manifest are gone, but the embedding
+        // cache stays warm. The chunk's owners list collapses to empty.
         assert!(
             test_config_db(&state)
                 .get_document_metadata_typed(document.did.numeric)
@@ -1136,11 +973,26 @@ mod tests {
             "metadata should be deleted"
         );
         assert!(
-            test_embedding_db(&state)
-                .load(document.did.numeric)
+            test_config_db(&state)
+                .get_doc_chunks(document.did.numeric)
                 .unwrap()
                 .is_none(),
-            "embeddings should be deleted"
+            "manifest should be gone"
+        );
+        let only_chunk = synthetic_chunk_id(document.did.numeric, 0);
+        assert!(
+            test_config_db(&state)
+                .get_chunk_owners(only_chunk)
+                .unwrap()
+                .is_empty(),
+            "chunk owners list should be empty after deletion"
+        );
+        assert!(
+            test_embedding_db(&state)
+                .load(only_chunk)
+                .unwrap()
+                .is_some(),
+            "embedding cache stays warm — no destructive cleanup",
         );
     }
 

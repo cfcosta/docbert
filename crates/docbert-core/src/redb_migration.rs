@@ -52,6 +52,12 @@ const MIGRATION_EMBEDDING_MAP_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GiB
 /// Keep in sync with [`crate::config_db`].
 pub(crate) const CONFIG_MAX_DBS: u32 = 8;
 
+// NOTE: the legacy `chunk_offsets` redb table is intentionally not
+// migrated. The current schema uses content-derived chunk ids and a
+// per-document manifest (see `config_db::DOC_CHUNKS_DB`), so any rows
+// in the old table would key under ids that no longer match anything.
+// Operators upgrading from the redb era are expected to re-index.
+
 /// Number of named heed databases the embeddings env can hold.
 pub(crate) const EMBEDDINGS_MAX_DBS: u32 = 2;
 
@@ -90,10 +96,6 @@ const CONFIG_TABLES: &[RedbTable] = &[
     RedbTable {
         name: "settings",
         key: RedbKey::Str,
-    },
-    RedbTable {
-        name: "chunk_offsets",
-        key: RedbKey::U64,
     },
 ];
 
@@ -416,12 +418,6 @@ mod tests {
                 redb::TableDefinition::new(name);
             txn.open_table(def).unwrap();
         }
-        // chunk_offsets is u64-keyed, like document_metadata — keep
-        // the schema honest in the fixture so the migration doesn't
-        // refuse to open it for a TableTypeMismatch reason.
-        let chunk_offsets_def: redb::TableDefinition<u64, &[u8]> =
-            redb::TableDefinition::new("chunk_offsets");
-        txn.open_table(chunk_offsets_def).unwrap();
         txn.commit().unwrap();
     }
 

@@ -175,7 +175,8 @@ impl Indexer {
         let mut chunks: Vec<(u64, String)> = Vec::new();
         for item in items {
             let doc = lowering::lower(collection, item);
-            chunks.extend(preparation::embedding_chunks(&doc, chunking_config));
+            chunks
+                .extend(preparation::embedding_chunks(&doc, &chunking_config));
         }
 
         if chunks.is_empty() {

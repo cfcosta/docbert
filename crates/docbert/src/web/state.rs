@@ -16,6 +16,7 @@ pub(crate) struct Inner {
     pub(crate) data_dir: DataDir,
     pub(crate) search_index: SearchIndex,
     pub(crate) model: Mutex<ModelManager>,
+    pub(crate) model_id: String,
 }
 
 pub(crate) type AppState = Arc<Inner>;
@@ -49,11 +50,12 @@ pub(crate) fn init(
     model_id: String,
 ) -> error::Result<AppState> {
     let search_index = SearchIndex::open(&data_dir.tantivy_dir()?)?;
-    let model = ModelManager::with_model_id(model_id);
+    let model = ModelManager::with_model_id(model_id.clone());
 
     Ok(Arc::new(Inner {
         data_dir,
         search_index,
         model: Mutex::new(model),
+        model_id,
     }))
 }

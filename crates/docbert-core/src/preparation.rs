@@ -4,7 +4,7 @@ use pdf_oxide::{converters::ConversionOptions, document::PdfDocument};
 
 use crate::{
     chunking::{self, Config},
-    config_db::ChunkByteOffset,
+    config_db::DocChunkEntry,
     doc_id::DocumentId,
     ingestion,
     text,
@@ -170,28 +170,27 @@ fn is_pdf(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
-/// One chunk staged for embedding: the chunk's stable ID, its text, and
-/// the byte range it occupies in the document's `searchable_body`.
+/// One chunk staged for embedding: the chunk's content-derived id, its
+/// text, and the byte range it occupies in the document's
+/// `searchable_body`.
 ///
-/// The byte range is what lets a search consumer surface "the matching
-/// chunk lives at bytes X-Y" without re-running the chunker. It's stored
-/// alongside the embedding via [`crate::ConfigDb::set_chunk_offset`].
+/// `chunk_doc_id` comes from [`chunking::chunk_doc_id`], so the same
+/// chunk text under the same model collapses to the same id even when
+/// it lives in different documents — that's what lets the embedding
+/// store dedupe across files and migrate between machines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkPlan {
     pub chunk_doc_id: u64,
     pub text: String,
-    pub offset: ChunkByteOffset,
+    pub manifest_entry: DocChunkEntry,
 }
 
 /// Plan every chunk for one document — emitting both the embedding-ready
 /// `(chunk_doc_id, text)` and the byte offset of each chunk in the
 /// document's `searchable_body`.
-///
-/// Replaces the older `(u64, String)`-only return so the indexer can
-/// persist offsets in the same pass it builds the embedding batch.
 pub fn chunk_plan(
     document: &SearchDocument,
-    chunking_config: Config,
+    chunking_config: &Config,
 ) -> Vec<ChunkPlan> {
     chunking::chunk_text(
         &document.searchable_body,
@@ -201,16 +200,16 @@ pub fn chunk_plan(
     .into_iter()
     .map(|chunk| {
         let byte_len = chunk.text.len() as u64;
+        let chunk_doc_id =
+            chunking::chunk_doc_id(&chunking_config.model_id, &chunk.text);
         ChunkPlan {
-            chunk_doc_id: chunking::chunk_doc_id(
-                document.did.numeric,
-                chunk.index,
-            ),
-            text: chunk.text,
-            offset: ChunkByteOffset {
+            chunk_doc_id,
+            manifest_entry: DocChunkEntry {
+                chunk_doc_id,
                 start_byte: chunk.start_offset as u64,
                 byte_len,
             },
+            text: chunk.text,
         }
     })
     .collect()
@@ -221,7 +220,7 @@ pub fn chunk_plan(
 /// use [`chunk_plan`] directly.
 pub fn embedding_chunks(
     document: &SearchDocument,
-    chunking_config: Config,
+    chunking_config: &Config,
 ) -> Vec<(u64, String)> {
     chunk_plan(document, chunking_config)
         .into_iter()
@@ -231,7 +230,7 @@ pub fn embedding_chunks(
 
 pub fn collect_chunks<F>(
     documents: &[SearchDocument],
-    chunking_config: Config,
+    chunking_config: &Config,
     mut on_document_processed: F,
 ) -> Vec<(u64, String)>
 where
@@ -336,21 +335,33 @@ mod tests {
     }
 
     #[test]
-    fn embedding_chunks_uses_chunk_doc_ids() {
-        let document = filesystem(
-            "notes",
-            Path::new("note.md"),
-            &"a".repeat(DEFAULT_TEST_CHUNK_SIZE * 3),
-            1,
-        );
-        let chunks = embedding_chunks(&document, test_chunking_config());
+    fn chunk_plan_dedups_by_content_across_documents() {
+        let config = test_chunking_config();
+        let shared = "Apache License 2.0 — shared boilerplate.";
+        let alpha = filesystem("notes", Path::new("a.md"), shared, 1);
+        let beta = filesystem("notes", Path::new("b.md"), shared, 2);
+
+        let alpha_plans = chunk_plan(&alpha, &config);
+        let beta_plans = chunk_plan(&beta, &config);
+
+        assert_eq!(alpha_plans.len(), 1);
+        assert_eq!(beta_plans.len(), 1);
+        assert_eq!(alpha_plans[0].chunk_doc_id, beta_plans[0].chunk_doc_id);
+    }
+
+    #[test]
+    fn embedding_chunks_emits_one_pair_per_chunk() {
+        // Use varied text so adjacent chunks land on distinct content
+        // (the chunker hands back distinct windows of varied prose,
+        // and content-derived ids make those windows distinguishable).
+        let body = (0..DEFAULT_TEST_CHUNK_SIZE * 3)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect::<String>();
+        let document = filesystem("notes", Path::new("note.md"), &body, 1);
+        let chunks = embedding_chunks(&document, &test_chunking_config());
 
         assert!(chunks.len() >= 2);
-        assert_eq!(chunks[0].0, document.did.numeric);
-        assert_eq!(
-            chunks[1].0,
-            chunking::chunk_doc_id(document.did.numeric, 1)
-        );
+        assert_ne!(chunks[0].0, chunks[1].0);
     }
 
     #[test]
@@ -361,7 +372,7 @@ mod tests {
             "---\ntitle: ignored\n---\n",
             1,
         );
-        let chunks = embedding_chunks(&document, test_chunking_config());
+        let chunks = embedding_chunks(&document, &test_chunking_config());
 
         assert!(chunks.is_empty());
     }
@@ -374,14 +385,15 @@ mod tests {
 
         let chunks = collect_chunks(
             &[first.clone(), second.clone()],
-            test_chunking_config(),
+            &test_chunking_config(),
             |count| processed.push(count),
         );
 
         assert_eq!(processed, vec![1, 2]);
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].0, first.did.numeric);
-        assert_eq!(chunks[1].0, second.did.numeric);
+        // Different content → different chunk ids (no model-level
+        // collisions on tiny payloads).
+        assert_ne!(chunks[0].0, chunks[1].0);
     }
 
     const DEFAULT_TEST_CHUNK_SIZE: usize = 100;
@@ -391,6 +403,7 @@ mod tests {
             chunk_size: DEFAULT_TEST_CHUNK_SIZE,
             overlap: 0,
             document_length: None,
+            model_id: "test-model".to_string(),
         }
     }
 
