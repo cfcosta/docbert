@@ -1,18 +1,11 @@
-import {
-  isValidElement,
-  useEffect,
-  useMemo,
-  useState,
-  type ComponentProps,
-  type ReactNode,
-} from "react";
+import { isValidElement, useEffect, useMemo, type ComponentProps, type ReactNode } from "react";
 import { Link } from "react-router";
 import Markdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { PrismAsyncLight as SyntaxHighlighter } from "react-syntax-highlighter";
 
+import MarkdownCodeBlock from "../components/MarkdownCodeBlock";
 import { buildDocumentTabHref, type DocumentListItem } from "../lib/api";
 import { resolveObsidianLink, type ResolvedObsidianLinkTarget } from "../lib/obsidian-links";
 import {
@@ -21,7 +14,6 @@ import {
   extractTrailingBlockReference,
   previewTargetIdFromFragment,
 } from "../lib/document-preview-targets";
-import { darkPrismTheme, lightPrismTheme } from "../lib/prism-theme";
 import { parseDocumentFrontmatter } from "./document-frontmatter";
 import type { SelectedDocumentSummary } from "./documents-tree";
 
@@ -139,7 +131,7 @@ function LoadedDocumentPreview({
   };
 
   const components = {
-    code: CodeBlock,
+    code: MarkdownCodeBlock,
     a: ({ href, children, ...props }: ComponentProps<"a">) => {
       const resolvedTarget = href ? parseResolvedDocumentHref(href) : null;
       const targetId = href?.startsWith("#") ? previewTargetIdFromFragment(href) : null;
@@ -410,58 +402,6 @@ function escapeMarkdownLabel(text: string) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function CodeBlock({ className, children, ...props }: ComponentProps<"code">) {
-  const prefersDark = usePrefersDarkMode();
-  const match = /language-(\w+)/.exec(className ?? "");
-  const code = String(children).replace(/\n$/, "");
-
-  if (!match) {
-    return (
-      <code className={className} {...props}>
-        {children}
-      </code>
-    );
-  }
-
-  return (
-    <SyntaxHighlighter
-      style={prefersDark ? darkPrismTheme : lightPrismTheme}
-      language={match[1]}
-      PreTag="div"
-      customStyle={{ margin: 0, borderRadius: "6px", fontSize: "0.85em" }}
-    >
-      {code}
-    </SyntaxHighlighter>
-  );
-}
-
-function usePrefersDarkMode() {
-  const [prefersDark, setPrefersDark] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return false;
-    }
-
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return undefined;
-    }
-
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const updatePreference = (event?: MediaQueryListEvent) => {
-      setPrefersDark(event?.matches ?? mediaQuery.matches);
-    };
-
-    updatePreference();
-    mediaQuery.addEventListener("change", updatePreference);
-    return () => mediaQuery.removeEventListener("change", updatePreference);
-  }, []);
-
-  return prefersDark;
 }
 
 function FileIcon({ size = 16 }: { size?: number }) {

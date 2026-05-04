@@ -4,6 +4,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
+import MarkdownCodeBlock from "../components/MarkdownCodeBlock";
 import SearchResults from "../components/SearchResults";
 import { api, type DocumentListItem, type SearchExcerpt, type SearchResult } from "../lib/api";
 import DocumentPreview, { type ResolvedDocumentTarget } from "./document-preview";
@@ -14,6 +15,7 @@ import { buildTranscriptRenderItems } from "./chat-transcript-model";
 
 const CHAT_MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
 const CHAT_MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
+const CHAT_MARKDOWN_COMPONENTS = { code: MarkdownCodeBlock };
 
 type ChatTranscriptProps = {
   displayMessageGroups: DisplayMessageGroup[];
@@ -235,6 +237,7 @@ function ThinkingInline({ text }: { text: string }) {
       <Markdown
         remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
         rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+        components={CHAT_MARKDOWN_COMPONENTS}
       >
         {text}
       </Markdown>
@@ -329,6 +332,7 @@ function renderMessageContent(message: Message, nestedSubagents: SubagentMessage
               <Markdown
                 remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
                 rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+                components={CHAT_MARKDOWN_COMPONENTS}
               >
                 {item.text}
               </Markdown>
