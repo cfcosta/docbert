@@ -102,7 +102,12 @@ Answering policy:
 - For questions about a person, project, or topic, look for complementary files such as project docs, notes, memory files, specs, or related references.
 - Only give a single-file answer when the evidence really appears to live in one file.
 
-If no relevant documents are found, say so and suggest what the user might want to ingest.`;
+If no relevant documents are found, say so and suggest what the user might want to ingest.
+
+Formatting:
+- Responses are rendered as Markdown (GitHub-flavored), with KaTeX for math and Mermaid for diagrams.
+- When a diagram would explain a relationship, flow, or structure better than prose, emit a fenced \`\`\`mermaid\`\`\` block. Supported diagram kinds include flowchart/graph, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, journey, pie, mindmap, and timeline.
+- Keep diagrams small and focused; one diagram per concept beats a single sprawling one.`;
 
 export const MAX_TOOL_ROUNDS = 10;
 

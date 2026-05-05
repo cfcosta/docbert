@@ -16,9 +16,7 @@ describe("MarkdownCodeBlock", () => {
 
   test("routes language-mermaid to the MermaidDiagram component", () => {
     const view = render(
-      <MarkdownCodeBlock className="language-mermaid">
-        {"graph TD;\nA-->B;\n"}
-      </MarkdownCodeBlock>,
+      <MarkdownCodeBlock className="language-mermaid">{"graph TD;\nA-->B;\n"}</MarkdownCodeBlock>,
     );
 
     const mermaidContainer = view.container.querySelector(".mermaid-diagram");
