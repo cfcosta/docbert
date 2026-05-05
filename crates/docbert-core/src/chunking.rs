@@ -16,7 +16,8 @@ use crate::model_manager::FALLBACK_DOCUMENT_LENGTH;
 const CHARS_PER_TOKEN: usize = 4;
 
 /// Default chunk size in characters (roughly ~300 tokens / ~1.2K chars).
-pub const DEFAULT_CHUNK_SIZE: usize = FALLBACK_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
+pub const DEFAULT_CHUNK_SIZE: usize =
+    FALLBACK_DOCUMENT_LENGTH * CHARS_PER_TOKEN;
 
 /// Default overlap between chunks in characters (0 to minimize chunk count).
 pub const DEFAULT_CHUNK_OVERLAP: usize = 0;
@@ -438,7 +439,10 @@ mod tests {
     fn resolve_config_remote_model_uses_defaults() {
         // Remote model IDs (not local directories) use defaults
         let config = resolve_config("lightonai/ColBERT-Zero");
-        assert_eq!(DEFAULT_CHUNK_SIZE, FALLBACK_DOCUMENT_LENGTH * CHARS_PER_TOKEN);
+        assert_eq!(
+            DEFAULT_CHUNK_SIZE,
+            FALLBACK_DOCUMENT_LENGTH * CHARS_PER_TOKEN
+        );
         assert_eq!(config.document_length, None);
         assert_eq!(config.chunk_size, DEFAULT_CHUNK_SIZE);
         assert_eq!(config.overlap, DEFAULT_CHUNK_OVERLAP);

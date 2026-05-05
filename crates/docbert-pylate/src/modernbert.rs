@@ -4,18 +4,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use candle_core::{D, DType, Device, IndexOp, Result, Tensor};
+use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{
-    Embedding,
-    LayerNorm,
-    Linear,
-    Module,
-    VarBuilder,
     embedding,
     layer_norm_no_bias,
     linear,
     linear_no_bias,
     ops::{softmax, softmax_last_dim},
+    Embedding,
+    LayerNorm,
+    Linear,
+    Module,
+    VarBuilder,
 };
 use serde::Deserialize;
 
