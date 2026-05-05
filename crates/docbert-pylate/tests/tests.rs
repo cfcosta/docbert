@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use candle_core::Device;
-use docbert_pylate::{ColBERT, hierarchical_pooling};
+use docbert_pylate::{hierarchical_pooling, ColBERT};
 
 /// Serialises hf-hub downloads across the integration tests.
 ///

@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     let manifest_dir =
@@ -36,7 +38,12 @@ fn main() {
         return;
     }
 
-    if try_build_ui("bun", &["install", "--frozen-lockfile"], &["run", "build"], &ui_dir) {
+    if try_build_ui(
+        "bun",
+        &["install", "--frozen-lockfile"],
+        &["run", "build"],
+        &ui_dir,
+    ) {
         return;
     }
 
@@ -54,11 +61,18 @@ fn main() {
 
 fn ensure_dist_dir(dist_dir: &Path) {
     if let Err(e) = std::fs::create_dir_all(dist_dir) {
-        println!("cargo:warning=Failed to create ui/dist fallback directory: {e}");
+        println!(
+            "cargo:warning=Failed to create ui/dist fallback directory: {e}"
+        );
     }
 }
 
-fn try_build_ui(cmd: &str, install_args: &[&str], build_args: &[&str], ui_dir: &Path) -> bool {
+fn try_build_ui(
+    cmd: &str,
+    install_args: &[&str],
+    build_args: &[&str],
+    ui_dir: &Path,
+) -> bool {
     let Ok(status) = Command::new(cmd)
         .args(install_args)
         .current_dir(ui_dir)
