@@ -336,7 +336,7 @@ pub struct ColBERT {
     pub(crate) do_query_expansion: bool,
     pub(crate) attend_to_expansion_tokens: bool,
     pub(crate) query_length: usize,
-    pub(crate) document_length: usize,
+    pub document_length: usize,
     pub(crate) batch_size: usize,
     /// The device (CPU or GPU) on which the model is loaded.
     pub device: Device,
