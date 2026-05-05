@@ -1,3 +1,5 @@
+ccode --dangerously-skip-permissions --resume 16eb88c4-7632-41bc-9eb3-cf319664776f
+
 # docbert
 
 docbert is a local document retrieval tool with three main entrypoints:

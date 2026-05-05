@@ -203,7 +203,7 @@ Embedding uses ColBERT-style document chunks derived from the prepared searchabl
 Current chunking behavior:
 
 - chunking operates on characters, not tokens
-- default chunk size is based on docbert's default document length budget (`519` tokens approximated as `519 * 4` characters)
+- default chunk size is based on the model's `document_length` from `config_sentence_transformers.json` (approximated as `document_length * 4` characters), falling back to `300` tokens when unavailable
 - overlap defaults to `0`
 - if the selected model path is local and has `config_sentence_transformers.json`, docbert reads `document_length` and derives the chunk size from it
 

@@ -103,7 +103,7 @@ use kodama::{Method, linkage};
 /// (skips the O(num_tokens² · dim) scalar inner-product scan that
 /// would otherwise dominate), `O(num_tokens²)` memory for the
 /// condensed form, and `O(num_tokens²)` time for Ward's linkage via
-/// `kodama`. At the `LateOn` default `document_length = 519` this is
+/// `kodama`. At the default `document_length = 300` this is
 /// under a millisecond per document — see the `embedding_compression`
 /// bench for the exact number.
 pub fn pool_document_tokens(

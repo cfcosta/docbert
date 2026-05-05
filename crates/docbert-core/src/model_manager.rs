@@ -4,16 +4,17 @@ use docbert_pylate::{ColBERT, Similarities};
 use crate::error::{Error, Result};
 
 /// The default ColBERT model loaded when no override is provided.
-pub const DEFAULT_MODEL_ID: &str = "lightonai/LateOn";
+pub const DEFAULT_MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
 
 /// Environment variable checked for a model ID override (`DOCBERT_MODEL`).
 pub const MODEL_ENV_VAR: &str = "DOCBERT_MODEL";
 
-/// Default document length, in tokens, when encoding documents.
+/// Fallback document length when the model config does not specify one.
 ///
-/// ColBERT-Zero was trained at 519 tokens, so docbert uses that unless you
-/// override it explicitly.
-pub const DEFAULT_DOCUMENT_LENGTH: usize = 519;
+/// Only used as a last resort. The model's own
+/// `config_sentence_transformers.json` `document_length` field takes
+/// precedence when no explicit override is given.
+pub const FALLBACK_DOCUMENT_LENGTH: usize = 300;
 
 /// Environment variable checked for a docbert-pylate internal batch size override.
 pub const EMBEDDING_BATCH_SIZE_ENV_VAR: &str = "DOCBERT_EMBEDDING_BATCH_SIZE";
@@ -25,8 +26,8 @@ pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
 ///
 /// This number is **not** a document count; pylate's GPU document path
 /// treats it as a token budget ceiling via
-/// `batch_size * document_length` — at `document_length = 519` and
-/// `batch_size = 64` the ceiling is ~33 k tokens per forward pass.
+/// `batch_size * document_length` — at `document_length = 300` and
+/// `batch_size = 64` the ceiling is ~19 k tokens per forward pass.
 ///
 /// Tuning target is a 3060-class GPU with ~8 GB of _usable_ VRAM (12 GB
 /// card minus the desktop compositor, CUDA runtime, and model weights).
@@ -314,7 +315,7 @@ fn resolve_embedding_batch_size(
 pub struct ModelManager {
     model: Option<ColBERT>,
     model_id: String,
-    document_length: usize,
+    document_length: Option<usize>,
     embedding_batch_size: Option<usize>,
     runtime_config: Option<ModelRuntimeConfig>,
 }
@@ -330,7 +331,7 @@ impl ModelManager {
         Self {
             model: None,
             model_id,
-            document_length: DEFAULT_DOCUMENT_LENGTH,
+            document_length: None,
             embedding_batch_size: None,
             runtime_config: None,
         }
@@ -339,13 +340,13 @@ impl ModelManager {
     /// Create a new `ModelManager`.
     ///
     /// The model ID comes from `DOCBERT_MODEL` if that variable is set.
-    /// Otherwise docbert uses `lightonai/LateOn`.
+    /// Otherwise docbert uses the built-in default.
     ///
     /// The model itself is not loaded until you call `encode_documents`,
     /// `encode_query`, or `similarity`.
     ///
-    /// Document encoding defaults to 519 tokens unless you override it with
-    /// [`with_document_length`](Self::with_document_length).
+    /// Document encoding length is read from the model's own config unless
+    /// overridden with [`with_document_length`](Self::with_document_length).
     pub fn new() -> Self {
         let model_id = std::env::var(MODEL_ENV_VAR)
             .unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
@@ -360,10 +361,10 @@ impl ModelManager {
 
     /// Sets the document length for encoding.
     ///
-    /// This overrides the model's default document length from its config file.
+    /// This overrides the model's own document length from its config file.
     /// Must be called before the model is loaded (before first encode call).
     pub fn with_document_length(mut self, length: usize) -> Self {
-        self.document_length = length;
+        self.document_length = Some(length);
         self
     }
 
@@ -418,17 +419,20 @@ impl ModelManager {
                 env_batch_size.as_deref(),
                 selected_device.kind,
             )?;
-            let colbert: ColBERT = ColBERT::from(&self.model_id)
+            let mut builder = ColBERT::from(&self.model_id)
                 .with_device(selected_device.device)
-                .with_document_length(self.document_length)
                 .with_batch_size(embedding_batch_size)
-                .with_query_prompt(String::new())
-                .try_into()?;
+                .with_query_prompt(String::new());
+            if let Some(doc_len) = self.document_length {
+                builder = builder.with_document_length(doc_len);
+            }
+            let colbert: ColBERT = builder.try_into()?;
+            let resolved_document_length = colbert.document_length;
             self.embedding_batch_size = Some(embedding_batch_size);
             self.runtime_config = Some(ModelRuntimeConfig {
                 device: selected_device.kind.as_str().to_string(),
                 embedding_batch_size,
-                document_length: self.document_length,
+                document_length: resolved_document_length,
                 fallback_note: selected_device.fallback_note,
             });
             self.model = Some(colbert);
@@ -550,7 +554,7 @@ pub enum ModelSource {
     Env,
     /// Stored in `config.db` as the `model_name` setting.
     Config,
-    /// Hardcoded default (`lightonai/LateOn`).
+    /// Hardcoded default (`lightonai/GTE-ModernColBERT-v1`).
     Default,
 }
 
@@ -653,7 +657,7 @@ mod tests {
     #[test]
     fn with_document_length_is_stored() {
         let manager = ModelManager::new().with_document_length(512);
-        assert_eq!(manager.document_length, 512);
+        assert_eq!(manager.document_length, Some(512));
     }
 
     #[test]
@@ -671,10 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn default_document_length() {
+    fn default_document_length_is_none() {
         let manager = ModelManager::new();
-        assert_eq!(DEFAULT_DOCUMENT_LENGTH, 519);
-        assert_eq!(manager.document_length, DEFAULT_DOCUMENT_LENGTH);
+        assert_eq!(manager.document_length, None);
     }
 
     #[test]
