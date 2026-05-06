@@ -46,8 +46,8 @@ fn init_tracing(verbose: u8) {
         EnvFilter::new(env)
     } else {
         match verbose {
-            1 => EnvFilter::new("info"),
-            2 => EnvFilter::new("debug"),
+            0 => EnvFilter::new("info"),
+            1 => EnvFilter::new("debug"),
             _ => EnvFilter::new("trace"),
         }
     };
@@ -62,9 +62,7 @@ fn init_tracing(verbose: u8) {
 fn main() -> error::Result<()> {
     let cli = Cli::parse();
 
-    if cli.verbose > 0 {
-        init_tracing(cli.verbose);
-    }
+    init_tracing(cli.verbose);
 
     // Handle commands that don't need data_dir or config_db early.
     if let Command::Completions(args) = &cli.command {
