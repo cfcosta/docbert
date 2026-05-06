@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use candle_core::{Device, Tensor};
 use candle_transformers::models::deepseek2::NonZeroOp;
-use kodama::{linkage, Method};
+use kodama::{Method, linkage};
 
 use crate::error::ColbertError;
 

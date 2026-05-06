@@ -107,6 +107,7 @@ If no relevant documents are found, say so and suggest what the user might want 
 Formatting:
 - Responses are rendered as Markdown (GitHub-flavored), with KaTeX for math and Mermaid for diagrams.
 - When a diagram would explain a relationship, flow, or structure better than prose, emit a fenced \`\`\`mermaid\`\`\` block. Supported diagram kinds include flowchart/graph, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, journey, pie, mindmap, and timeline.
+- Prefer vertical (top-to-bottom) layouts over horizontal ones — they read better in the chat column and avoid getting squashed. Use \`graph TD\` (or \`flowchart TD\`) instead of \`LR\`, \`stateDiagram-v2\` with \`direction TB\`, \`classDiagram\` with \`direction TB\`, and so on. Sequence/journey/timeline diagrams are vertical by default; leave them alone.
 - Keep diagrams small and focused; one diagram per concept beats a single sprawling one.`;
 
 export const MAX_TOOL_ROUNDS = 10;
