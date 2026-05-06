@@ -639,7 +639,7 @@ mod tests {
             State(state),
             Json(SearchRequest {
                 query: "rust".to_string(),
-                mode: "bm25".to_string(),
+                mode: "fuzzy".to_string(),
                 collection: None,
                 count: 10,
                 min_score: 0.0,
@@ -649,6 +649,31 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn web_search_accepts_bm25_mode() {
+        // BM25 mode skips the PLAID/semantic leg, so an empty index
+        // should still answer 200 with an empty result list — proving
+        // the new mode reaches the BM25-only path instead of being
+        // rejected as an unknown value.
+        let (_tmp, state) = test_state();
+
+        let response = search(
+            State(state),
+            Json(SearchRequest {
+                query: "rust".to_string(),
+                mode: "bm25".to_string(),
+                collection: None,
+                count: 10,
+                min_score: 0.0,
+            }),
+        )
+        .await
+        .expect("bm25 mode should be accepted");
+
+        assert_eq!(response.0.mode, "bm25");
+        assert_eq!(response.0.result_count, 0);
     }
 
     #[tokio::test]

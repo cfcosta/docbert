@@ -28,6 +28,7 @@ pub const RRF_CANDIDATE_LIMIT: usize = 100;
 pub enum SearchMode {
     Semantic,
     Hybrid,
+    Bm25,
 }
 
 impl SearchMode {
@@ -35,6 +36,7 @@ impl SearchMode {
         match self {
             SearchMode::Semantic => "semantic",
             SearchMode::Hybrid => "hybrid",
+            SearchMode::Bm25 => "bm25",
         }
     }
 
@@ -42,6 +44,7 @@ impl SearchMode {
         match value {
             "semantic" => Some(SearchMode::Semantic),
             "hybrid" => Some(SearchMode::Hybrid),
+            "bm25" => Some(SearchMode::Bm25),
             _ => None,
         }
     }
@@ -635,6 +638,21 @@ pub fn by_mode(
                 collection: request.collection.clone(),
                 min_score: request.min_score,
                 bm25_only: false,
+                no_fuzzy: false,
+                all: false,
+            },
+            search_index,
+            config_db,
+            data_dir,
+            model,
+        ),
+        SearchMode::Bm25 => run(
+            &SearchParams {
+                query: request.query.clone(),
+                count: request.count,
+                collection: request.collection.clone(),
+                min_score: request.min_score,
+                bm25_only: true,
                 no_fuzzy: false,
                 all: false,
             },
@@ -1854,8 +1872,14 @@ mod tests {
     }
 
     #[test]
+    fn search_mode_parse_roundtrips_bm25() {
+        assert_eq!(SearchMode::parse("bm25"), Some(SearchMode::Bm25));
+        assert_eq!(SearchMode::Bm25.as_str(), "bm25");
+    }
+
+    #[test]
     fn search_mode_parse_rejects_unknown_value() {
-        assert_eq!(SearchMode::parse("bm25"), None);
+        assert_eq!(SearchMode::parse("fuzzy"), None);
     }
 
     #[test]

@@ -47,7 +47,7 @@ export interface IngestResponse {
   documents: IngestedDoc[];
 }
 
-export type SearchMode = "semantic" | "hybrid";
+export type SearchMode = "semantic" | "hybrid" | "bm25";
 
 export interface SearchExcerpt {
   text: string;

@@ -54,8 +54,12 @@ function isSearchResult(value: unknown): value is SearchResult {
   );
 }
 
+function isSearchToolName(name: string): boolean {
+  return name === "search_hybrid" || name === "search_semantic" || name === "search_bm25";
+}
+
 function parseToolSearchResults(call: ToolCallInfo): SearchResult[] | null {
-  if (call.name !== "search_hybrid" && call.name !== "search_semantic") {
+  if (!isSearchToolName(call.name)) {
     return null;
   }
 
@@ -257,7 +261,7 @@ function ToolCallInline({
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
     .join(", ");
   const searchResults = parseToolSearchResults(call);
-  const isSearchTool = call.name === "search_hybrid" || call.name === "search_semantic";
+  const isSearchTool = isSearchToolName(call.name);
   const query = typeof call.args.query === "string" ? call.args.query.trim() : "";
   const searchSummary = query || argsStr || call.name;
   const searchStatus = call.result == null ? "running" : call.isError ? "error" : "done";

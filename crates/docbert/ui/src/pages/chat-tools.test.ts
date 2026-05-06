@@ -132,10 +132,15 @@ describe("chat-tools", () => {
   test("searchModeForTool_maps_search_tools", () => {
     expect(searchModeForTool("search_semantic")).toBe("semantic");
     expect(searchModeForTool("search_hybrid")).toBe("hybrid");
+    expect(searchModeForTool("search_bm25")).toBe("bm25");
     expect(searchModeForTool("unknown")).toBeNull();
   });
 
   test("searchChatTools_keeps_only_search_tool_definitions", () => {
-    expect(searchChatTools.map((tool) => tool.name)).toEqual(["search_semantic", "search_hybrid"]);
+    expect(searchChatTools.map((tool) => tool.name)).toEqual([
+      "search_bm25",
+      "search_semantic",
+      "search_hybrid",
+    ]);
   });
 });

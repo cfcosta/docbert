@@ -9,9 +9,23 @@ import { mergeCurrentTurnSearchResults, type ChatToolRuntimeState } from "./chat
 
 export const searchChatTools: Tool[] = [
   {
+    name: "search_bm25",
+    description:
+      "Search the document store using BM25 keyword search only (no semantic / ColBERT leg). Best for exact terms, identifiers, symbols, file names, error strings, or any query where the user's wording is expected to appear verbatim in the target documents.",
+    parameters: Type.Object({
+      query: Type.String({ description: "The search query" }),
+      collection: Type.Optional(
+        Type.String({
+          description: "Restrict search to this collection. Omit to search all collections.",
+        }),
+      ),
+      count: Type.Optional(Type.Number({ description: "Number of results to return (default 5)" })),
+    }),
+  },
+  {
     name: "search_semantic",
     description:
-      "Search the document store using semantic (ColBERT) search. Best for meaning-based queries where wording may differ from the target documents. Searches all collections by default.",
+      "Search the document store using semantic (ColBERT) search only. Best for general concepts, meaning-based queries, or topics where the user's wording is unlikely to match the documents verbatim. Searches all collections by default.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
       collection: Type.Optional(
@@ -25,7 +39,7 @@ export const searchChatTools: Tool[] = [
   {
     name: "search_hybrid",
     description:
-      "Search the document store using hybrid BM25 + semantic search. Best when the query shares keywords with the target documents. Faster on large collections.",
+      "Search the document store using hybrid BM25 + semantic search fused with RRF. Best when the query mixes specific keywords and a general concept, or when you are unsure which signal matters more. Use search_bm25 or search_semantic when one signal is clearly the right one.",
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
       collection: Type.Optional(Type.String({ description: "Restrict search to this collection" })),
@@ -43,6 +57,8 @@ export function searchModeForTool(name: string): SearchMode | null {
       return "semantic";
     case "search_hybrid":
       return "hybrid";
+    case "search_bm25":
+      return "bm25";
     default:
       return null;
   }
