@@ -206,7 +206,7 @@ impl DocbertMcpServer {
     /// Search indexed documents with BM25 + optional ColBERT reranking.
     #[tool(
         name = "docbert_search",
-        description = "Search indexed documents. Supports collection filtering, score thresholds, and BM25-only mode."
+        description = "Hybrid search: BM25 keyword matching fused with ColBERT semantic reranking via RRF. Use this when the query mixes specific keywords with a general concept, or when you genuinely cannot tell which signal matters more. For pure exact-term lookups prefer bm25_search; for pure concept queries prefer semantic_search."
     )]
     pub async fn docbert_search(
         &self,
@@ -251,7 +251,7 @@ impl DocbertMcpServer {
     /// Semantic-only search across all indexed documents.
     #[tool(
         name = "semantic_search",
-        description = "Semantic-only search across all documents using ColBERT (no BM25 or fuzzy matching)."
+        description = "Semantic search only (ColBERT, no BM25 or fuzzy matching). Use this when the user is asking about a general concept, idea, or topic where their wording is unlikely to match the documents word-for-word. For exact terms / identifiers / verbatim strings prefer bm25_search; when both signals matter prefer docbert_search."
     )]
     pub async fn semantic_search(
         &self,
@@ -278,6 +278,51 @@ impl DocbertMcpServer {
 
         let mut results = search::semantic(
             &args,
+            &config_db,
+            &self.state.data_dir,
+            &mut model,
+        )
+        .map_err(search_error)?;
+
+        search::disambiguate_doc_ids(&mut results, &config_db);
+
+        let include_snippet = params.include_snippet.unwrap_or(true);
+        build_search_tool_result(&config_db, results, query, include_snippet)
+    }
+
+    /// BM25-only keyword search across indexed documents.
+    #[tool(
+        name = "bm25_search",
+        description = "Keyword search only (BM25, no ColBERT semantic reranking). Use this for exact terms, identifiers, symbols, file names, error strings, version numbers, or any query where the user's wording is expected to appear verbatim in the documents. For general concepts prefer semantic_search; when both signals matter prefer docbert_search."
+    )]
+    pub async fn bm25_search(
+        &self,
+        params: Parameters<Bm25SearchParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let params = params.0;
+        let query = params.query.clone();
+
+        let args = search::SearchParams {
+            query: params.query,
+            count: params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
+            collection: params.collection.clone(),
+            all: params.all.unwrap_or(false),
+            min_score: params.min_score.unwrap_or(0.0),
+            bm25_only: true,
+            no_fuzzy: params.no_fuzzy.unwrap_or(false),
+        };
+
+        let config_db = self
+            .state
+            .open_config_db()
+            .map_err(|e| mcp_error("failed to open config db", e))?;
+        let mut model = self.state.model.lock().map_err(|_| {
+            rmcp::ErrorData::internal_error("model lock poisoned", None)
+        })?;
+
+        let mut results = search::run(
+            &args,
+            &self.state.search_index,
             &config_db,
             &self.state.data_dir,
             &mut model,
@@ -547,16 +592,18 @@ docbert indexes local document collections and provides MCP tools for search and
 
 ## Tools
 
-- docbert_search: keyword + semantic search (use collection filters when possible)
-- semantic_search: ColBERT-only search across all documents
+- bm25_search: BM25 keyword search only. Use for exact terms / identifiers / verbatim strings.
+- semantic_search: ColBERT semantic search only. Use for general concepts where wording diverges.
+- docbert_search: hybrid (BM25 + semantic, fused via RRF). Use when the query mixes both signals.
 - docbert_get: fetch a single document by path or #doc_id
 - docbert_multi_get: fetch multiple documents by glob pattern
 - docbert_status: index health and collection summary
 
 ## Tips
 
+- Pick the narrowest tool that fits the query: bm25_search or semantic_search if one signal clearly dominates, docbert_search only when you genuinely need both.
 - Use min_score to filter low-confidence results
-- Use bm25_only for fast keyword-only search
+- docbert_search still accepts a bm25_only flag for legacy callers, but new callers should prefer the dedicated bm25_search tool.
 - docbert_get supports startLine/endLine or startByte/endByte (inclusive) and optional line numbers
 "#,
         )]
@@ -580,7 +627,7 @@ impl ServerHandler for DocbertMcpServer {
         ServerInfo::new(capabilities)
             .with_server_info(server_info)
             .with_instructions(
-                "Start with docbert_search or semantic_search. Once you find the right document, use docbert_get or docbert_multi_get to read it. docbert_status shows overall index health.",
+                "Pick a search tool by signal: bm25_search for exact terms / identifiers / verbatim strings, semantic_search for general concepts, docbert_search (hybrid) when the query mixes both. Once you find the right document, use docbert_get or docbert_multi_get to read it. docbert_status shows overall index health.",
             )
     }
 
@@ -653,6 +700,25 @@ pub struct SemanticSearchParams {
     pub limit: Option<usize>,
     /// Minimum score threshold.
     pub min_score: Option<f32>,
+    /// Return all results above the score threshold.
+    pub all: Option<bool>,
+    /// Include a snippet preview (default: true).
+    pub include_snippet: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Bm25SearchParams {
+    /// Search query string.
+    pub query: String,
+    /// Maximum number of results (default: 10).
+    pub limit: Option<usize>,
+    /// Minimum score threshold.
+    pub min_score: Option<f32>,
+    /// Restrict to a specific collection name.
+    pub collection: Option<String>,
+    /// Disable fuzzy matching in the BM25 leg.
+    pub no_fuzzy: Option<bool>,
     /// Return all results above the score threshold.
     pub all: Option<bool>,
     /// Include a snippet preview (default: true).
@@ -1140,6 +1206,40 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap_or_default();
         assert!(summary.contains("Found 1 result"));
+    }
+
+    #[tokio::test]
+    async fn bm25_search_tool_returns_structured_results() {
+        // Mirrors search_tool_returns_structured_results but exercises
+        // the dedicated bm25_search surface — proves the new tool runs
+        // BM25 without the caller having to flip a flag, and that it
+        // skips the semantic leg cleanly even with no PLAID index.
+        let (server, _tmp, _doc_ids) = build_server(&[(
+            "rust.md",
+            "Rust is fast.\nOwnership keeps memory safe.\n",
+        )]);
+
+        let params = Bm25SearchParams {
+            query: "Rust".to_string(),
+            limit: Some(5),
+            min_score: Some(0.0),
+            collection: Some("notes".to_string()),
+            no_fuzzy: Some(true),
+            all: Some(false),
+            include_snippet: Some(true),
+        };
+
+        let result = server.bm25_search(Parameters(params)).await.unwrap();
+
+        let structured = result.structured_content.expect("structured");
+        let results = structured
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+
+        assert_eq!(results.len(), 1);
+        let first = &results[0];
+        assert_eq!(first.get("path").and_then(|v| v.as_str()), Some("rust.md"));
     }
 
     #[tokio::test]
