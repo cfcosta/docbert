@@ -10,7 +10,7 @@ name = "rustbert"
 path = "src/main.rs"
 
 [dependencies]
-cargo-lock = "10"
+cargo-lock = "11"
 clap = { version = "4.6", features = ["derive", "env"] }
 docbert-core = { path = "../docbert-core" }
 flate2 = "1"
@@ -34,7 +34,7 @@ sha2 = "0.11"
 syn = { version = "2", features = ["full"] }
 tantivy = "0.26.0"
 tar = "0.4"
-toml = "0.8"
+toml = "1"
 thiserror = "2"
 tokio = { version = "1", features = [
   "rt",
@@ -48,7 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 flate2 = "1"
-hegeltest = "0.8"
+hegeltest = "0.10"
 sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"

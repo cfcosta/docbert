@@ -39,7 +39,7 @@ cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-hegeltest = "0.8"
+hegeltest = "0.10"
 proptest = "1"
 rand = "0.10"
 tempfile = "3"
