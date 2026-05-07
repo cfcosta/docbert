@@ -803,7 +803,7 @@ fn prop_train_quantizer_cutoffs_monotonic(tc: TestCase) {
     let residuals = tc.draw(finite_floats(n));
     let (cutoffs, _) = train_quantizer(residuals, nbits);
     for pair in cutoffs.windows(2) {
-        assert!(pair[0] <= pair[1], "cutoffs not monotone: {:?}", &cutoffs,);
+        assert!(pair[0] <= pair[1], "cutoffs not monotone: {:?}", cutoffs);
     }
 }
 

@@ -102,7 +102,7 @@ pub fn supported_filesystem(
 }
 
 pub fn extract_pdf_markdown(pdf_bytes: &[u8]) -> crate::Result<String> {
-    let mut doc = PdfDocument::from_bytes(pdf_bytes.to_vec())?;
+    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())?;
     let page_count = doc.page_count()?;
     let options = ConversionOptions::default();
     let mut pages = Vec::with_capacity(page_count);
