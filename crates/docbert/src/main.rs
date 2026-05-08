@@ -163,6 +163,14 @@ fn main() -> error::Result<()> {
                 &model_resolution.model_id,
             )?;
         }
+        Command::Clean(args) => {
+            commands::clean::run(
+                &config_db,
+                &data_dir,
+                &args,
+                &model_resolution.model_id,
+            )?;
+        }
         Command::Status(args) => {
             commands::model::status(
                 &config_db,

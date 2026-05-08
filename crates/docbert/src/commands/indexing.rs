@@ -323,7 +323,7 @@ fn sync_plaid_index(
     Ok(())
 }
 
-fn rebuild_plaid_index(
+pub(super) fn rebuild_plaid_index(
     data_dir: &DataDir,
     embedding_db: &EmbeddingDb,
 ) -> error::Result<()> {

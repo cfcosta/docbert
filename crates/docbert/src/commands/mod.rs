@@ -1,3 +1,4 @@
+pub(crate) mod clean;
 pub(crate) mod collections;
 pub(crate) mod contexts;
 pub(crate) mod indexing;

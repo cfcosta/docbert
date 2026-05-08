@@ -52,6 +52,8 @@ pub enum Command {
     Reindex,
     /// Sync collections with source files (incremental)
     Sync(SyncArgs),
+    /// Remove orphan embeddings and embeddings from a different model
+    Clean(CleanArgs),
     /// Show system status and statistics
     Status(StatusArgs),
     /// Diagnose runtime environment and accelerator availability
@@ -274,6 +276,19 @@ pub struct SyncArgs {
     /// Sync only this collection
     #[arg(short = 'c', long)]
     pub collection: Option<String>,
+}
+
+// -- Clean --
+
+#[derive(Debug, Parser)]
+pub struct CleanArgs {
+    /// Show what would be removed without actually removing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 // -- Status --
@@ -651,6 +666,30 @@ mod tests {
                 assert_eq!(args.collection.as_deref(), Some("notes"));
             }
             _ => panic!("expected sync command"),
+        }
+    }
+
+    #[test]
+    fn parse_clean_defaults() {
+        let cli = Cli::parse_from(["docbert", "clean"]);
+        match cli.command {
+            Command::Clean(args) => {
+                assert!(!args.dry_run);
+                assert!(!args.json);
+            }
+            _ => panic!("expected clean command"),
+        }
+    }
+
+    #[test]
+    fn parse_clean_with_flags() {
+        let cli = Cli::parse_from(["docbert", "clean", "--dry-run", "--json"]);
+        match cli.command {
+            Command::Clean(args) => {
+                assert!(args.dry_run);
+                assert!(args.json);
+            }
+            _ => panic!("expected clean command"),
         }
     }
 
