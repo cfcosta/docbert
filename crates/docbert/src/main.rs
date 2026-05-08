@@ -46,9 +46,9 @@ fn init_tracing(verbose: u8) {
         EnvFilter::new(env)
     } else {
         match verbose {
-            0 => EnvFilter::new("info,tantivy=warn"),
-            1 => EnvFilter::new("debug,tantivy=info"),
-            _ => EnvFilter::new("trace,tantivy=debug"),
+            0 => EnvFilter::new("info,tantivy=warn,pdf_oxide=warn"),
+            1 => EnvFilter::new("debug,tantivy=info,pdf_oxide=info"),
+            _ => EnvFilter::new("trace,tantivy=debug,pdf_oxide=debug"),
         }
     };
 
