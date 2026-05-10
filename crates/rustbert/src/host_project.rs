@@ -52,9 +52,8 @@ pub fn read_project_info(project_root: &Path) -> Result<ProjectInfo> {
         ))
     })?;
 
-    let value: toml::Value = text.parse().map_err(|e: toml::de::Error| {
-        Error::Cache(format!("Cargo.toml parse: {e}"))
-    })?;
+    let value: toml::Value = toml::from_str(&text)
+        .map_err(|e| Error::Cache(format!("Cargo.toml parse: {e}")))?;
 
     let package = value
         .get("package")
@@ -111,10 +110,9 @@ fn resolve_field(
     {
         let ws = find_workspace_root(project_root)?;
         let ws_text = fs::read_to_string(ws.join("Cargo.toml"))?;
-        let ws_value: toml::Value =
-            ws_text.parse().map_err(|e: toml::de::Error| {
-                Error::Cache(format!("workspace Cargo.toml parse: {e}"))
-            })?;
+        let ws_value: toml::Value = toml::from_str(&ws_text).map_err(|e| {
+            Error::Cache(format!("workspace Cargo.toml parse: {e}"))
+        })?;
         return Ok(ws_value
             .get("workspace")
             .and_then(|w| w.get("package"))
@@ -135,7 +133,7 @@ fn find_workspace_root(start: &Path) -> Result<PathBuf> {
         let manifest = current.join("Cargo.toml");
         if manifest.is_file()
             && let Ok(text) = fs::read_to_string(&manifest)
-            && let Ok(value) = text.parse::<toml::Value>()
+            && let Ok(value) = toml::from_str::<toml::Value>(&text)
             && value.get("workspace").is_some()
         {
             return Ok(current);
@@ -200,7 +198,7 @@ pub fn is_workspace_root(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(&manifest) else {
         return false;
     };
-    text.parse::<toml::Value>()
+    toml::from_str::<toml::Value>(&text)
         .map(|v| v.get("workspace").is_some())
         .unwrap_or(false)
 }
@@ -215,7 +213,7 @@ pub fn workspace_members(workspace_root: &Path) -> Result<Vec<PathBuf>> {
             manifest.display()
         ))
     })?;
-    let value: toml::Value = text.parse().map_err(|e: toml::de::Error| {
+    let value: toml::Value = toml::from_str(&text).map_err(|e| {
         Error::Cache(format!("workspace Cargo.toml parse: {e}"))
     })?;
 

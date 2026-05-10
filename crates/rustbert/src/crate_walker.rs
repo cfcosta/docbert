@@ -104,7 +104,7 @@ fn locate_entry_point(crate_root: &Path) -> Result<PathBuf> {
 
 fn read_manifest(crate_root: &Path) -> Option<toml::Value> {
     let text = std::fs::read_to_string(crate_root.join("Cargo.toml")).ok()?;
-    text.parse().ok()
+    toml::from_str(&text).ok()
 }
 
 fn lib_path(manifest: &toml::Value) -> Option<PathBuf> {
