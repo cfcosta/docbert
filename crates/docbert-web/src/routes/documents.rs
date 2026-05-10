@@ -20,7 +20,7 @@ use docbert_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::web::{
+use crate::{
     ingest::{self, EmbeddingEntry},
     paths,
     routes::log_internal_error,
@@ -519,7 +519,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();

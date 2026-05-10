@@ -7,7 +7,7 @@ use docbert_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::web::{paths, routes::log_internal_error, state::AppState};
+use crate::{paths, routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct SearchRequest {
@@ -293,7 +293,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();

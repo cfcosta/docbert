@@ -10,7 +10,7 @@ use docbert_core::{
     preparation::{self, SearchDocument},
 };
 
-use crate::{snapshots, web::state::AppState};
+use crate::{snapshots, state::AppState};
 
 pub(crate) type EmbeddingEntry = (u64, u32, u32, Vec<f32>);
 
@@ -463,7 +463,7 @@ mod tests {
     use docbert_core::{ConfigDb, ModelManager, SearchIndex};
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();

@@ -7,25 +7,17 @@ description = "A powerful semantic search CLI for your documents"
 
 [dependencies]
 docbert-core = { path = "../docbert-core" }
-axum = "0.8"
+docbert-web = { path = "../docbert-web" }
 clap = { version = "4.6.1", features = ["derive"] }
-include_dir = "0.7"
 clap_complete = "4.6"
 globset = "0.4"
-base64 = "0.22"
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
 rand = "0.10"
-reqwest = { version = "0.13.2", default-features = false, features = [
-  "json",
-  "form",
-  "rustls",
-] }
 rmcp = { version = "1.5.0", features = ["transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
 tantivy = "0.26.0"
 tokio = { version = "1", features = [
   "io-std",
@@ -40,10 +32,10 @@ xdg = "3.0.0"
 
 [features]
 default = []
-mkl = ["docbert-core/mkl"]
-accelerate = ["docbert-core/accelerate"]
-metal = ["docbert-core/metal"]
-cuda = ["docbert-core/cuda"]
+mkl = ["docbert-core/mkl", "docbert-web/mkl"]
+accelerate = ["docbert-core/accelerate", "docbert-web/accelerate"]
+metal = ["docbert-core/metal", "docbert-web/metal"]
+cuda = ["docbert-core/cuda", "docbert-web/cuda"]
 
 [dev-dependencies]
 hegeltest = "0.10"

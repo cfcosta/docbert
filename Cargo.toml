@@ -2,6 +2,7 @@
 members = [
   "crates/docbert",
   "crates/docbert-core",
+  "crates/docbert-web",
   "crates/docbert-plaid",
   "crates/docbert-pylate",
   "crates/rustbert",

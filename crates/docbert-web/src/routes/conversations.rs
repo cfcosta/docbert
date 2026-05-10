@@ -9,7 +9,7 @@ use axum::{
 use docbert_core::Conversation;
 use serde::{Deserialize, Serialize};
 
-use crate::web::{routes::log_internal_error, state::AppState};
+use crate::{routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ConversationSummary {
@@ -156,7 +156,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();

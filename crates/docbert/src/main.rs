@@ -10,7 +10,6 @@ mod indexing;
 mod mcp;
 mod runtime;
 mod snapshots;
-mod web;
 
 use cli::{Cli, CollectionAction, Command, ContextAction};
 
@@ -90,7 +89,14 @@ fn main() -> error::Result<()> {
             let config_db = ConfigDb::open(&data_dir.config_db())?;
             resolve_model(&config_db, cli.model.as_deref())?.model_id
         };
-        web::run(args, data_dir, model_id)?;
+        docbert_web::run(
+            &docbert_web::WebArgs {
+                host: args.host.clone(),
+                port: args.port,
+            },
+            data_dir,
+            model_id,
+        )?;
         return Ok(());
     }
 

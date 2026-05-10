@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
-use crate::web::{routes::log_internal_error, state::AppState};
+use crate::{routes::log_internal_error, state::AppState};
 
 const KEY_OPENAI_CODEX_OAUTH: &str = "llm_oauth:openai-codex";
 const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -636,7 +636,7 @@ mod tests {
     use docbert_core::{ModelManager, SearchIndex};
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

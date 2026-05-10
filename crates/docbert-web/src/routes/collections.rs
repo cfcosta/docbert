@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::web::{routes::log_internal_error, state::AppState};
+use crate::{routes::log_internal_error, state::AppState};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct CollectionItem {
@@ -38,7 +38,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     use super::*;
-    use crate::web::state::Inner;
+    use crate::state::Inner;
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().unwrap();

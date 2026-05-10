@@ -1,15 +1,21 @@
 use docbert_core::{ConfigDb, DataDir, error};
 
-use crate::cli::WebArgs;
-
 mod ingest;
 mod paths;
 mod routes;
+mod runtime;
 mod server;
+mod snapshots;
 mod state;
 mod ui;
 
-pub(crate) fn run(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebArgs {
+    pub host: String,
+    pub port: u16,
+}
+
+pub fn run(
     args: &WebArgs,
     data_dir: DataDir,
     model_id: String,
