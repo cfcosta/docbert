@@ -1,6 +1,6 @@
 # React/Vite UI bundled into the docbert binary at compile time.
 #
-# Built once via bun2nix and copied into `crates/docbert-web/ui/dist` by
+# Built once via bun2nix and copied into `crates/docbert-webui/ui/dist` by
 # the docbert package's `preBuild`. Keeping the source filter here
 # (instead of in flake.nix) means the list of files that participate
 # in the build hash lives next to the files themselves.

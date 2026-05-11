@@ -3,13 +3,13 @@ name = "docbert-web"
 version = "0.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Web API and UI server for docbert"
+description = "Web API server for docbert"
 
 [dependencies]
 docbert-core = { path = "../docbert-core" }
+docbert-webui = { path = "../docbert-webui", optional = true }
 axum = "0.8"
 base64 = "0.22"
-include_dir = "0.7"
 percent-encoding = "2"
 rand = "0.10"
 reqwest = { version = "0.13.2", default-features = false, features = [
@@ -30,7 +30,8 @@ tokio = { version = "1", features = [
 tracing = "0.1"
 
 [features]
-default = []
+default = ["webui"]
+webui = ["dep:docbert-webui"]
 mkl = ["docbert-core/mkl"]
 accelerate = ["docbert-core/accelerate"]
 metal = ["docbert-core/metal"]

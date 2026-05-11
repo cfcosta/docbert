@@ -1,0 +1,10 @@
+[package]
+name = "docbert-webui"
+version = "0.9.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Embedded web UI assets and routing for docbert"
+
+[dependencies]
+axum = "0.8"
+include_dir = "0.7"

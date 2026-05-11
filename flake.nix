@@ -95,7 +95,7 @@
               # Each crate's build logic lives in its own default.nix.
               # `callPackage` autoloads the rest of the args from `pkgs`
               # plus the extended scope below.
-              uiPath = pkgs.callPackage ./crates/docbert-web/ui { };
+              uiPath = pkgs.callPackage ./crates/docbert-webui/ui { };
 
               # Build inputs for every rust derivation in the workspace.
               # Same rationale as `uiSrc` above, on a bigger scale: the
@@ -104,11 +104,11 @@
               # hash — including `target/` (mutated by every local
               # `cargo build`), `.jj/` and `.git/` (every commit /
               # snapshot), `output/` / `pkg/` / `db/` (data dirs), and
-              # the unfiltered `crates/docbert-web/ui/` tree. Any of those
+              # the unfiltered `crates/docbert-webui/ui/` tree. Any of those
               # drifting between two `nix build` runs forced every
               # crate to recompile from scratch.
               #
-              # We deliberately exclude `crates/docbert-web/ui/` from the
+              # We deliberately exclude `crates/docbert-webui/ui/` from the
               # rust src — `mkPackage` populates the prebuilt `dist/`
               # via `preBuild` from the cached `uiPath` derivation when
               # `bundleUi` is set, and Cargo never touches the rest of
@@ -123,7 +123,7 @@
                   ./rust-toolchain.toml
                   ./rustfmt.toml
                   ./deny.toml
-                  (pkgs.lib.fileset.difference ./crates ./crates/docbert-web/ui)
+                  (pkgs.lib.fileset.difference ./crates ./crates/docbert-webui/ui)
                   ./tests
                 ];
               };
@@ -160,9 +160,9 @@
                 }:
                 let
                   uiPreBuild = pkgs.lib.optionalString bundleUi ''
-                    rm -rf crates/docbert-web/ui/dist
-                    mkdir -p crates/docbert-web/ui
-                    cp -r ${uiPath} crates/docbert-web/ui/dist
+                    rm -rf crates/docbert-webui/ui/dist
+                    mkdir -p crates/docbert-webui/ui
+                    cp -r ${uiPath} crates/docbert-webui/ui/dist
                   '';
                   completionsPostInstall = pkgs.lib.optionalString shellCompletions ''
                     mkdir -p $out/share/bash-completion/completions

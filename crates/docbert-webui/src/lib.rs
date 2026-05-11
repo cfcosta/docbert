@@ -9,7 +9,7 @@ use include_dir::{Dir, include_dir};
 
 static UI_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
-pub(crate) async fn serve(req: Request) -> Response {
+pub async fn serve(req: Request) -> Response {
     let path = req.uri().path().trim_start_matches('/');
 
     if path.starts_with("v1/") {

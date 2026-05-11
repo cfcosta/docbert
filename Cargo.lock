@@ -1426,7 +1426,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "docbert-core",
- "include_dir",
+ "docbert-webui",
  "pdf_oxide",
  "percent-encoding",
  "rand 0.10.1",
@@ -1439,6 +1439,14 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "docbert-webui"
+version = "0.9.0"
+dependencies = [
+ "axum",
+ "include_dir",
 ]
 
 [[package]]

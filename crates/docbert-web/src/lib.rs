@@ -7,7 +7,6 @@ mod runtime;
 mod server;
 mod snapshots;
 mod state;
-mod ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebArgs {

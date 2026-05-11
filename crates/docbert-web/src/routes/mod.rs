@@ -1,6 +1,8 @@
-use axum::{Router, http::StatusCode, routing};
+#[cfg(not(feature = "webui"))]
+use axum::response::IntoResponse;
+use axum::{Router, http::StatusCode, response::Response, routing};
 
-use super::{state::AppState, ui};
+use super::state::AppState;
 
 pub(crate) mod collections;
 pub(crate) mod conversations;
@@ -67,5 +69,18 @@ pub(crate) fn router() -> Router<AppState> {
             "/v1/settings/llm/oauth/openai-codex/logout",
             routing::post(settings::logout_openai_codex_oauth),
         )
-        .fallback(ui::serve)
+        .fallback(fallback)
+}
+
+async fn fallback(req: axum::extract::Request) -> Response {
+    #[cfg(feature = "webui")]
+    {
+        docbert_webui::serve(req).await
+    }
+
+    #[cfg(not(feature = "webui"))]
+    {
+        let _ = req;
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
