@@ -3,17 +3,9 @@ use std::path::Path;
 use docbert_core::{
     ConfigDb,
     error,
-    incremental::{MerkleDiffResult, diff_snapshots},
     merkle::{Snapshot, build_snapshot},
-    walker::{self, DiscoveredFile},
+    walker,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CollectionSnapshotChange {
-    pub(crate) previous_snapshot: Option<Snapshot>,
-    pub(crate) current_snapshot: Snapshot,
-    pub(crate) diff: MerkleDiffResult,
-}
 
 pub(crate) fn load_collection_snapshot(
     config_db: &ConfigDb,
@@ -28,36 +20,6 @@ pub(crate) fn compute_collection_snapshot(
 ) -> error::Result<Snapshot> {
     let discovered = walker::discover_files(root)?;
     build_snapshot(collection, &discovered)
-}
-
-pub(crate) fn compute_collection_snapshot_change_for_discovered(
-    config_db: &ConfigDb,
-    collection: &str,
-    discovered: &[DiscoveredFile],
-) -> error::Result<CollectionSnapshotChange> {
-    let previous_snapshot = load_collection_snapshot(config_db, collection)?;
-    let current_snapshot = build_snapshot(collection, discovered)?;
-    let diff = diff_snapshots(previous_snapshot.as_ref(), &current_snapshot);
-
-    Ok(CollectionSnapshotChange {
-        previous_snapshot,
-        current_snapshot,
-        diff,
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn compute_collection_snapshot_change(
-    config_db: &ConfigDb,
-    collection: &str,
-    root: &Path,
-) -> error::Result<CollectionSnapshotChange> {
-    let discovered = walker::discover_files(root)?;
-    compute_collection_snapshot_change_for_discovered(
-        config_db,
-        collection,
-        &discovered,
-    )
 }
 
 pub(crate) fn replace_collection_snapshot(
@@ -77,30 +39,6 @@ mod tests {
         let root = tmp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
         (tmp, config_db, root)
-    }
-
-    #[test]
-    fn compute_collection_snapshot_change_is_read_only_until_replace() {
-        let (_tmp, config_db, root) = setup_collection();
-        std::fs::write(root.join("a.md"), "alpha").unwrap();
-
-        let original = compute_collection_snapshot("notes", &root).unwrap();
-        config_db
-            .set_collection_merkle_snapshot("notes", &original)
-            .unwrap();
-
-        std::fs::write(root.join("a.md"), "beta").unwrap();
-
-        let change =
-            compute_collection_snapshot_change(&config_db, "notes", &root)
-                .unwrap();
-
-        assert_eq!(
-            config_db.get_collection_merkle_snapshot("notes").unwrap(),
-            Some(original.clone())
-        );
-        assert_eq!(change.previous_snapshot, Some(original));
-        assert_eq!(change.diff.changed_paths, vec!["a.md".to_string()]);
     }
 
     #[test]
