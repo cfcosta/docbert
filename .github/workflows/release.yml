@@ -57,6 +57,8 @@ jobs:
               ("docbert-core",   pathlib.Path("crates/docbert-core/Cargo.toml")),
               ("docbert-plaid",  pathlib.Path("crates/docbert-plaid/Cargo.toml")),
               ("docbert-pylate", pathlib.Path("crates/docbert-pylate/Cargo.toml")),
+              ("docbert-web",    pathlib.Path("crates/docbert-web/Cargo.toml")),
+              ("docbert-webui",  pathlib.Path("crates/docbert-webui/Cargo.toml")),
           ]
           cargo_lock_path = pathlib.Path("Cargo.lock")
 
@@ -145,7 +147,9 @@ jobs:
                   crates/docbert/Cargo.toml \
                   crates/docbert-core/Cargo.toml \
                   crates/docbert-plaid/Cargo.toml \
-                  crates/docbert-pylate/Cargo.toml
+                  crates/docbert-pylate/Cargo.toml \
+                  crates/docbert-web/Cargo.toml \
+                  crates/docbert-webui/Cargo.toml
           git commit -m "release: v${{ steps.version.outputs.new_version }}"
 
       - name: Push release commit
@@ -202,7 +206,7 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun run build
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
 
       - name: Build binary
         run: |

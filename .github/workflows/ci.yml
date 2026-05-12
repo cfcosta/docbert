@@ -33,9 +33,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: bun run build
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: cargo clippy --all --all-targets
 
   test:
@@ -53,9 +53,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: bun run build
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: cargo test --all
 
   build:
@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: bun run build
-        working-directory: crates/docbert/ui
+        working-directory: crates/docbert-webui/ui
       - run: cargo build --release
