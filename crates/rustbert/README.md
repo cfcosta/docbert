@@ -80,10 +80,10 @@ Concrete versions (`serde@1.0.219`) are immutable — never re-fetched without `
 
 The `rustbert mcp` server speaks JSON-RPC 2.0 on stdio and exposes four tools:
 
-- `rustdocs_search(crate, version?, query, kind?, module_prefix?, limit?)` — search a crate's public API by query.
-- `rustdocs_get(crate, version?, path)` — full rustdoc for one item by qualified path.
-- `rustdocs_list(crate, version?, kind?, module_prefix?, limit?)` — browse items in a crate.
-- `rustdocs_status(crate?)` — report which crates/versions are cached locally.
+- `search(crate, version?, query, kind?, module_prefix?, limit?)` — search a crate's public API by query.
+- `get(crate, version?, path)` — full rustdoc for one item by qualified path.
+- `list(crate, version?, kind?, module_prefix?, limit?)` — browse items in a crate.
+- `status(crate?)` — report which crates/versions are cached locally.
 
 Plus the standard `initialize` / `tools/list` / `tools/call` lifecycle. `sync` is intentionally CLI-only — lockfile walks can run for minutes, which is the wrong shape for an MCP request.
 

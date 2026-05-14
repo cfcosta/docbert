@@ -1,7 +1,7 @@
 //! Minimal MCP server over JSON-RPC stdio.
 //!
-//! Implements the four tools described in the design (`rustdocs_search`,
-//! `rustdocs_get`, `rustdocs_list`, `rustdocs_status`) plus the standard
+//! Implements the four tools described in the design (`search`,
+//! `get`, `list`, `status`) plus the standard
 //! MCP `initialize` / `tools/list` / `tools/call` lifecycle.
 //!
 //! Hand-rolled rather than going through rmcp because the surface is
@@ -14,7 +14,7 @@
 //! ```jsonc
 //! { "jsonrpc": "2.0", "id": 1, "method": "tools/list" }
 //! { "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-//!   "params": { "name": "rustdocs_search", "arguments": {"crate":"serde", "query":"Serializer"}}}
+//!   "params": { "name": "search", "arguments": {"crate":"serde", "query":"Serializer"}}}
 //! ```
 
 use std::io::{BufRead, Write};
@@ -158,7 +158,7 @@ fn tools_list_result() -> Value {
 fn tool_definitions() -> Vec<Value> {
     vec![
         tool_def(
-            "rustdocs_search",
+            "search",
             "Look up Rust crate documentation: search the public API of a \
              published crate from crates.io for items (functions, structs, \
              enums, traits, modules, macros, ...) matching a query. Use this \
@@ -166,7 +166,7 @@ fn tool_definitions() -> Vec<Value> {
              need to discover what a crate exposes — including unfamiliar \
              dependencies, APIs you half-remember, or items whose exact path \
              you don't know. Returns ranked qualified paths you can pass to \
-             `rustdocs_get` for full signatures and doc comments. Pin \
+             `get` for full signatures and doc comments. Pin \
              `version` to the one in your Cargo.lock when accuracy matters; \
              otherwise `latest` is fine.",
             json!({
@@ -199,12 +199,12 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool_def(
-            "rustdocs_get",
+            "get",
             "Read the full documentation entry for a single item in a \
              published Rust crate — signature, doc comment, attributes, \
              visibility, and source location — given its fully qualified path \
              (e.g. `serde::Serializer::serialize_struct`). Use this after \
-             `rustdocs_search` finds a candidate, or whenever you already \
+             `search` finds a candidate, or whenever you already \
              know the exact path and need its actual rustdoc rather than \
              guessing from training data.",
             json!({
@@ -221,7 +221,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool_def(
-            "rustdocs_list",
+            "list",
             "Browse the public API of a published Rust crate by listing its \
              items, optionally filtered by kind or module prefix. Use this \
              when you want to see what a crate exposes without a specific \
@@ -247,7 +247,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool_def(
-            "rustdocs_status",
+            "status",
             "Report which Rust crates and versions are currently cached \
              locally for documentation lookup, with item counts and fetch \
              timestamps. Useful for confirming that a crate has been indexed \
@@ -289,10 +289,10 @@ async fn tools_call(
         .unwrap_or(Value::Null);
 
     let text = match name {
-        "rustdocs_search" => tool_search(&args, cache).await,
-        "rustdocs_get" => tool_get(&args, cache).await,
-        "rustdocs_list" => tool_list(&args, cache).await,
-        "rustdocs_status" => tool_status(&args, cache),
+        "search" => tool_search(&args, cache).await,
+        "get" => tool_get(&args, cache).await,
+        "list" => tool_list(&args, cache).await,
+        "status" => tool_status(&args, cache),
         other => Err((-32601, format!("unknown tool: {other}"))),
     }?;
 
@@ -614,10 +614,10 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names.len(), 4);
-        assert!(names.contains(&"rustdocs_search".to_string()));
-        assert!(names.contains(&"rustdocs_get".to_string()));
-        assert!(names.contains(&"rustdocs_list".to_string()));
-        assert!(names.contains(&"rustdocs_status".to_string()));
+        assert!(names.contains(&"search".to_string()));
+        assert!(names.contains(&"get".to_string()));
+        assert!(names.contains(&"list".to_string()));
+        assert!(names.contains(&"status".to_string()));
     }
 
     #[tokio::test]
@@ -651,7 +651,7 @@ mod tests {
     async fn status_tool_reports_empty_cache() {
         let tmp = TempDir::new().unwrap();
         let cache = CrateCache::new(tmp.path()).unwrap();
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rustdocs_status","arguments":{}}}"#;
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}"#;
         let response = handle_line(line, &cache).await.unwrap();
         let result = response.result.unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();

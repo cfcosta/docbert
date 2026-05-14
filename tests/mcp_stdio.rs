@@ -170,7 +170,7 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
     let result = client
         .peer()
         .call_tool(
-            CallToolRequestParams::new("docbert_search")
+            CallToolRequestParams::new("search")
                 .with_arguments(args.as_object().unwrap().clone()),
         )
         .await?;
@@ -198,7 +198,7 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
         let get_result = client
             .peer()
             .call_tool(
-                CallToolRequestParams::new("docbert_get")
+                CallToolRequestParams::new("get")
                     .with_arguments(get_args.as_object().unwrap().clone()),
             )
             .await?;
@@ -206,7 +206,7 @@ async fn mcp_stdio_search_roundtrip() -> Result<(), Box<dyn std::error::Error>>
             .content
             .iter()
             .find_map(|c| c.as_resource())
-            .expect("docbert_get resource");
+            .expect("get resource");
         match &get_resource.resource {
             ResourceContents::TextResourceContents { text, .. } => {
                 assert!(text.contains("<!-- Context: Test notes -->"));

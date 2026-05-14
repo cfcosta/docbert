@@ -15,7 +15,7 @@ It is intentionally narrower than a UI walkthrough. The source of truth here is 
 - `crates/docbert-core/src/conversation.rs`
 - `crates/docbert/ui/src/pages/chat-agent-runtime.ts`
 
-The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`docbert_search`, `semantic_search`, `docbert_get`, `docbert_multi_get`, `docbert_status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend — the only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
+The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend — the only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
 
 ## What is persisted
 
@@ -161,7 +161,7 @@ Example:
         { "type": "text", "text": "Here is what I found..." },
         {
           "type": "tool_call",
-          "name": "docbert_search",
+          "name": "search",
           "args": { "query": "project changes" },
           "result": "...",
           "is_error": false
@@ -328,14 +328,14 @@ Examples:
 ```json
 {
   "type": "tool_call",
-  "name": "docbert_search",
+  "name": "search",
   "args": { "query": "rust" },
   "result": "...",
   "is_error": false
 }
 ```
 
-The `name` field is free-form (any string the chat runtime chose to label the call); in current usage the values match docbert's MCP tool names — `docbert_search`, `semantic_search`, `docbert_get`, `docbert_multi_get`, or `docbert_status`.
+The `name` field is free-form (any string the chat runtime chose to label the call); in current usage the values match docbert's MCP tool names — `search`, `semantic_search`, `get`, `multi_get`, or `status`.
 
 #### `sources`
 

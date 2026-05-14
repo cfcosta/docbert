@@ -56,7 +56,7 @@ pub(crate) struct DocumentResponse {
 
 /// Optional range parameters accepted on `GET /v1/documents/{collection}/{*path}`.
 ///
-/// Mirrors the MCP `docbert_get` tool: line and byte ranges are mutually
+/// Mirrors the MCP `get` tool: line and byte ranges are mutually
 /// exclusive, both endpoints are inclusive, and omitting all four returns the
 /// full document.
 #[derive(Debug, Default, Deserialize)]
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_documents_get_slices_by_line_range() {
-        // Mirrors the MCP `docbert_get` partial-read contract: passing
+        // Mirrors the MCP `get` partial-read contract: passing
         // startLine/endLine slices the on-disk content before returning it,
         // and the response keeps the un-sliced size hints so the agent can
         // pick the next range without a second round-trip.

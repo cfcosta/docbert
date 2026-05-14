@@ -109,9 +109,9 @@ rustbert mcp                          # stdio MCP server
 All four tools are framed for an LLM caller as **Rust documentation lookup** — the agent should reach for them whenever it is writing, reviewing, or debugging Rust code and needs ground-truth API information from a published crate rather than relying on training data.
 
 ```jsonc
-// rustdocs_search
+// search
 {
-  "name": "rustdocs_search",
+  "name": "search",
   "description": "Look up Rust crate documentation: search a published crate's public API for items matching a query.",
   "input": {
     "crate": "serde",
@@ -123,9 +123,9 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   }
 }
 
-// rustdocs_get
+// get
 {
-  "name": "rustdocs_get",
+  "name": "get",
   "description": "Read the full rustdoc entry — signature, doc comment, source location — for one item by qualified path.",
   "input": {
     "crate": "serde",
@@ -134,9 +134,9 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   }
 }
 
-// rustdocs_list
+// list
 {
-  "name": "rustdocs_list",
+  "name": "list",
   "description": "Browse a published crate's public API by listing items, optionally filtered by kind or module prefix.",
   "input": {
     "crate": "serde",
@@ -147,9 +147,9 @@ All four tools are framed for an LLM caller as **Rust documentation lookup** —
   }
 }
 
-// rustdocs_status
+// status
 {
-  "name": "rustdocs_status",
+  "name": "status",
   "description": "Report which Rust crates and versions are cached locally for documentation lookup.",
   "input": { "crate": "serde" }     // optional; filters to one crate
 }
@@ -510,7 +510,7 @@ rustbert reuses `docbert-core` as a library and contributes nothing back into co
 
 - The `rustbert` binary in this workspace, with the manifest in §7.5.
 - CLI: `search`, `get`, `list`, `status`, `evict`, `fetch`, `sync`, `refresh`, `index`, `mcp`. Global `--data-dir` flag (with `RUSTBERT_DATA_DIR` env fallback).
-- MCP tools: `rustdocs_search`, `rustdocs_get`, `rustdocs_list`, `rustdocs_status`. JSON-RPC over stdio, hand-rolled — no `rmcp` runtime.
+- MCP tools: `search`, `get`, `list`, `status`. JSON-RPC over stdio, hand-rolled — no `rmcp` runtime.
 - crates.io tarball ingestion via `reqwest` + `flate2` + `tar`, with checksum verification against the crates.io index.
 - `Cargo.lock` walking via `cargo-lock`.
 - Synthetic-collection storage in rustbert's own data dir.

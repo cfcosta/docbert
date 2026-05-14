@@ -205,10 +205,10 @@ fn build_search_tool_result(
 impl DocbertMcpServer {
     /// Search indexed documents with BM25 + optional ColBERT reranking.
     #[tool(
-        name = "docbert_search",
+        name = "search",
         description = "Hybrid search: BM25 keyword matching fused with ColBERT semantic reranking via RRF. Use this when the query mixes specific keywords with a general concept, or when you genuinely cannot tell which signal matters more. For pure exact-term lookups prefer bm25_search; for pure concept queries prefer semantic_search."
     )]
-    pub async fn docbert_search(
+    pub async fn search(
         &self,
         params: Parameters<SearchParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -251,7 +251,7 @@ impl DocbertMcpServer {
     /// Semantic-only search across all indexed documents.
     #[tool(
         name = "semantic_search",
-        description = "Semantic search only (ColBERT, no BM25 or fuzzy matching). Use this when the user is asking about a general concept, idea, or topic where their wording is unlikely to match the documents word-for-word. For exact terms / identifiers / verbatim strings prefer bm25_search; when both signals matter prefer docbert_search."
+        description = "Semantic search only (ColBERT, no BM25 or fuzzy matching). Use this when the user is asking about a general concept, idea, or topic where their wording is unlikely to match the documents word-for-word. For exact terms / identifiers / verbatim strings prefer bm25_search; when both signals matter prefer search."
     )]
     pub async fn semantic_search(
         &self,
@@ -293,7 +293,7 @@ impl DocbertMcpServer {
     /// BM25-only keyword search across indexed documents.
     #[tool(
         name = "bm25_search",
-        description = "Keyword search only (BM25, no ColBERT semantic reranking). Use this for exact terms, identifiers, symbols, file names, error strings, version numbers, or any query where the user's wording is expected to appear verbatim in the documents. For general concepts prefer semantic_search; when both signals matter prefer docbert_search."
+        description = "Keyword search only (BM25, no ColBERT semantic reranking). Use this for exact terms, identifiers, symbols, file names, error strings, version numbers, or any query where the user's wording is expected to appear verbatim in the documents. For general concepts prefer semantic_search; when both signals matter prefer search."
     )]
     pub async fn bm25_search(
         &self,
@@ -337,10 +337,10 @@ impl DocbertMcpServer {
 
     /// Retrieve a document by reference (collection:path, #doc_id, or path).
     #[tool(
-        name = "docbert_get",
+        name = "get",
         description = "Retrieve a document by reference (collection:path, #doc_id, or path). Supports optional line or byte ranges."
     )]
-    pub async fn docbert_get(
+    pub async fn get(
         &self,
         params: Parameters<GetParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -412,10 +412,10 @@ impl DocbertMcpServer {
 
     /// Retrieve multiple documents by glob pattern.
     #[tool(
-        name = "docbert_multi_get",
+        name = "multi_get",
         description = "Retrieve multiple documents by glob pattern. Supports collection filters and per-file line/byte ranges."
     )]
-    pub async fn docbert_multi_get(
+    pub async fn multi_get(
         &self,
         params: Parameters<MultiGetParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -517,12 +517,10 @@ impl DocbertMcpServer {
 
     /// Show index status and collection summary.
     #[tool(
-        name = "docbert_status",
+        name = "status",
         description = "Show index status, collections, and document counts."
     )]
-    pub async fn docbert_status(
-        &self,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let config_db = self
             .state
             .open_config_db()
@@ -579,7 +577,7 @@ impl DocbertMcpServer {
 impl DocbertMcpServer {
     /// Docbert MCP query guide.
     #[prompt(
-        name = "docbert_query",
+        name = "query",
         title = "Docbert Query Guide",
         description = "How to search and retrieve documents with docbert MCP"
     )]
@@ -594,17 +592,17 @@ docbert indexes local document collections and provides MCP tools for search and
 
 - bm25_search: BM25 keyword search only. Use for exact terms / identifiers / verbatim strings.
 - semantic_search: ColBERT semantic search only. Use for general concepts where wording diverges.
-- docbert_search: hybrid (BM25 + semantic, fused via RRF). Use when the query mixes both signals.
-- docbert_get: fetch a single document by path or #doc_id
-- docbert_multi_get: fetch multiple documents by glob pattern
-- docbert_status: index health and collection summary
+- search: hybrid (BM25 + semantic, fused via RRF). Use when the query mixes both signals.
+- get: fetch a single document by path or #doc_id
+- multi_get: fetch multiple documents by glob pattern
+- status: index health and collection summary
 
 ## Tips
 
-- Pick the narrowest tool that fits the query: bm25_search or semantic_search if one signal clearly dominates, docbert_search only when you genuinely need both.
+- Pick the narrowest tool that fits the query: bm25_search or semantic_search if one signal clearly dominates, search only when you genuinely need both.
 - Use min_score to filter low-confidence results
-- docbert_search still accepts a bm25_only flag for legacy callers, but new callers should prefer the dedicated bm25_search tool.
-- docbert_get supports startLine/endLine or startByte/endByte (inclusive) and optional line numbers
+- search still accepts a bm25_only flag for legacy callers, but new callers should prefer the dedicated bm25_search tool.
+- get supports startLine/endLine or startByte/endByte (inclusive) and optional line numbers
 "#,
         )]
     }
@@ -627,7 +625,7 @@ impl ServerHandler for DocbertMcpServer {
         ServerInfo::new(capabilities)
             .with_server_info(server_info)
             .with_instructions(
-                "Pick a search tool by signal: bm25_search for exact terms / identifiers / verbatim strings, semantic_search for general concepts, docbert_search (hybrid) when the query mixes both. Once you find the right document, use docbert_get or docbert_multi_get to read it. docbert_status shows overall index health.",
+                "Pick a search tool by signal: bm25_search for exact terms / identifiers / verbatim strings, semantic_search for general concepts, search (hybrid) when the query mixes both. Once you find the right document, use get or multi_get to read it. status shows overall index health.",
             )
     }
 
@@ -1175,7 +1173,7 @@ mod tests {
             include_snippet: Some(true),
         };
 
-        let result = server.docbert_search(Parameters(params)).await.unwrap();
+        let result = server.search(Parameters(params)).await.unwrap();
 
         let structured = result.structured_content.expect("structured");
         let results = structured
@@ -1333,7 +1331,7 @@ mod tests {
     fn search_result_exposes_size_metadata_without_snippet() {
         // Even when include_snippet=false, callers need lineCount/byteCount so
         // they can pick a sensible startLine/endLine or startByte/endByte for
-        // a follow-up docbert_get.
+        // a follow-up get.
         let (server, _tmp, doc_ids) = build_server(&[(
             "rust.md",
             "Rust is fast.\nOwnership keeps memory safe.\n",
@@ -1428,7 +1426,7 @@ mod tests {
             line_numbers: Some(true),
         };
 
-        let result = server.docbert_get(Parameters(params)).await.unwrap();
+        let result = server.get(Parameters(params)).await.unwrap();
         let resource = result
             .content
             .first()
@@ -1463,7 +1461,7 @@ mod tests {
             line_numbers: None,
         };
 
-        let result = server.docbert_get(Parameters(params)).await.unwrap();
+        let result = server.get(Parameters(params)).await.unwrap();
         let resource = result
             .content
             .first()
@@ -1495,7 +1493,7 @@ mod tests {
         };
 
         let err = server
-            .docbert_get(Parameters(params))
+            .get(Parameters(params))
             .await
             .expect_err("expected invalid_params error");
         assert!(
@@ -1522,8 +1520,7 @@ mod tests {
             line_numbers: None,
         };
 
-        let result =
-            server.docbert_multi_get(Parameters(params)).await.unwrap();
+        let result = server.multi_get(Parameters(params)).await.unwrap();
 
         let resource_count = result
             .content
@@ -1548,8 +1545,7 @@ mod tests {
             line_numbers: Some(true),
         };
 
-        let result =
-            server.docbert_multi_get(Parameters(params)).await.unwrap();
+        let result = server.multi_get(Parameters(params)).await.unwrap();
 
         assert_eq!(result.content.len(), 1);
         let resource = result
@@ -1592,7 +1588,7 @@ mod tests {
     async fn status_tool_returns_structured_content() {
         let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust\n")]);
 
-        let result = server.docbert_status().await.unwrap();
+        let result = server.status().await.unwrap();
         let structured = result.structured_content.expect("structured");
 
         assert_eq!(
@@ -1610,7 +1606,7 @@ mod tests {
     fn prompt_router_includes_query_guide() {
         let (server, _tmp, _doc_ids) = build_server(&[("rust.md", "Rust\n")]);
         let prompts = server.prompt_router.list_all();
-        assert!(prompts.iter().any(|p| p.name == "docbert_query"));
+        assert!(prompts.iter().any(|p| p.name == "query"));
     }
 
     // -- Unit tests for helper functions --

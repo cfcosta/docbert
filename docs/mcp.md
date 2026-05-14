@@ -28,19 +28,19 @@ For each tool call or resource read, it reopens the config and embedding databas
 
 ### Tools
 
-| Name                | Purpose                                                                                       | Returns                                                                  |
-| ------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `docbert_search`    | Hybrid/BM25-oriented search with optional collection filtering and optional snippet previews. | Plain text summary + structured JSON content.                            |
-| `semantic_search`   | Semantic-only ColBERT search across all documents.                                            | Plain text summary + structured JSON content.                            |
-| `docbert_get`       | Read one document by reference, optionally slicing by line range.                             | Resource content (`text/markdown`).                                      |
-| `docbert_multi_get` | Read multiple documents by glob pattern with per-file size/line limits.                       | One or more resource contents, plus plain text skip notices when needed. |
-| `docbert_status`    | Show index/data-dir/model/collection/document summary.                                        | Plain text summary + structured JSON content.                            |
+| Name              | Purpose                                                                                       | Returns                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `search`          | Hybrid/BM25-oriented search with optional collection filtering and optional snippet previews. | Plain text summary + structured JSON content.                            |
+| `semantic_search` | Semantic-only ColBERT search across all documents.                                            | Plain text summary + structured JSON content.                            |
+| `get`             | Read one document by reference, optionally slicing by line range.                             | Resource content (`text/markdown`).                                      |
+| `multi_get`       | Read multiple documents by glob pattern with per-file size/line limits.                       | One or more resource contents, plus plain text skip notices when needed. |
+| `status`          | Show index/data-dir/model/collection/document summary.                                        | Plain text summary + structured JSON content.                            |
 
 ### Prompt
 
-| Name            | Purpose                                                                                             |
-| --------------- | --------------------------------------------------------------------------------------------------- |
-| `docbert_query` | A short usage guide telling clients to start with search, then fetch documents or status as needed. |
+| Name    | Purpose                                                                                             |
+| ------- | --------------------------------------------------------------------------------------------------- |
+| `query` | A short usage guide telling clients to start with search, then fetch documents or status as needed. |
 
 ### Resource template
 
@@ -52,15 +52,15 @@ For each tool call or resource read, it reopens the config and embedding databas
 
 The MCP server reports these high-level instructions to clients:
 
-- start with `docbert_search` or `semantic_search`
-- use `docbert_get` or `docbert_multi_get` once you know what to read
-- use `docbert_status` for index health and collection summary
+- start with `search` or `semantic_search`
+- use `get` or `multi_get` once you know what to read
+- use `status` for index health and collection summary
 
 Those instructions are advisory metadata, not separate executable behavior.
 
 ## Tool details
 
-## `docbert_search`
+## `search`
 
 Search indexed documents using the normal search stack.
 
@@ -141,7 +141,7 @@ Structured example:
 - `docId` is normalized through `format_document_ref(...)`, so it has a single leading `#`.
 - The structured JSON uses camelCase field names like `resultCount` and `docId`.
 - No snippet is included when `includeSnippet` is false or when the file cannot be read.
-- `lineCount` and `byteCount` describe the preview content the document returns through `docbert_get`, so callers can pick a `startLine`/`endLine` or `startByte`/`endByte` without a second round-trip. Both are `null` when the file cannot be read.
+- `lineCount` and `byteCount` describe the preview content the document returns through `get`, so callers can pick a `startLine`/`endLine` or `startByte`/`endByte` without a second round-trip. Both are `null` when the file cannot be read.
 
 ## `semantic_search`
 
@@ -172,18 +172,18 @@ Fields:
 - Uses `search::semantic(...)`, which loads the prebuilt PLAID index and ranks documents against it.
 - Fails with an MCP error if the PLAID index has not been built yet (see `Error::PlaidIndexMissing`).
 - Does **not** accept a collection parameter in the MCP schema.
-- Shares the same result formatting path as `docbert_search`.
+- Shares the same result formatting path as `search`.
 
 ### Tool output
 
-Like `docbert_search`, this returns:
+Like `search`, this returns:
 
 - a plain text summary
 - structured JSON with `query`, `resultCount`, and `results`
 
 If the index is effectively empty or nothing matches, the structured `results` array is empty.
 
-## `docbert_get`
+## `get`
 
 Fetch one document by reference.
 
@@ -234,7 +234,7 @@ For example:
 
 ### Tool output
 
-Unlike the search and status tools, `docbert_get` returns a **resource**, not plain text JSON.
+Unlike the search and status tools, `get` returns a **resource**, not plain text JSON.
 
 Example resource shape conceptually:
 
@@ -249,7 +249,7 @@ Example resource shape conceptually:
 ### Important difference from search tools
 
 - search/status tools return plain text summary plus structured JSON
-- `docbert_get` returns a `Content::resource(...)` payload
+- `get` returns a `Content::resource(...)` payload
 
 ### Failure behavior
 
@@ -258,7 +258,7 @@ Example resource shape conceptually:
 - read failure → internal error
 - line range and byte range both supplied → `invalid_params` error
 
-## `docbert_multi_get`
+## `multi_get`
 
 Fetch multiple documents by glob pattern.
 
@@ -284,7 +284,7 @@ Fields:
 - `endByte` — optional inclusive per-file last byte
 - `lineNumbers` — optional boolean
 
-Line and byte ranges are mutually exclusive, as in `docbert_get`.
+Line and byte ranges are mutually exclusive, as in `get`.
 
 ### Behavior
 
@@ -318,12 +318,12 @@ If nothing matches, the tool returns an error-style text result (`CallToolResult
 No documents match '*.md'
 ```
 
-### Important difference from `docbert_get`
+### Important difference from `get`
 
-- `docbert_get` returns one resource or an error-like text result
-- `docbert_multi_get` can return several resources plus skip notices in the same tool result
+- `get` returns one resource or an error-like text result
+- `multi_get` can return several resources plus skip notices in the same tool result
 
-## `docbert_status`
+## `status`
 
 Return index and collection summary information.
 
@@ -374,9 +374,9 @@ Structured example:
 }
 ```
 
-## Prompt: `docbert_query`
+## Prompt: `query`
 
-The server publishes one prompt named `docbert_query`.
+The server publishes one prompt named `query`.
 
 Purpose:
 
@@ -447,8 +447,8 @@ Lookup order:
 Where it appears:
 
 - search results: as the structured `context` field
-- `docbert_get`: prepended as `<!-- Context: ... -->`
-- `docbert_multi_get`: prepended the same way for each returned resource
+- `get`: prepended as `<!-- Context: ... -->`
+- `multi_get`: prepended the same way for each returned resource
 - direct resource reads via `bert://...`: prepended the same way
 
 ## Defaults and limits
@@ -457,7 +457,7 @@ Important defaults from the implementation:
 
 - default search limit: `10`
 - search snippets are included by default
-- neither `docbert_get` nor `docbert_multi_get` impose a size cap — callers slice explicitly with `startLine`/`endLine` or `startByte`/`endByte`
+- neither `get` nor `multi_get` impose a size cap — callers slice explicitly with `startLine`/`endLine` or `startByte`/`endByte`
 
 ## Error-handling notes
 
@@ -478,7 +478,7 @@ Typical examples:
 
 Typical examples:
 
-- `docbert_multi_get` skip notices for unreadable files or missing collections (mixed in among the resource entries of an otherwise successful tool result)
+- `multi_get` skip notices for unreadable files or missing collections (mixed in among the resource entries of an otherwise successful tool result)
 
 This distinction matters when building clients:
 
@@ -487,8 +487,8 @@ This distinction matters when building clients:
 
 ## Integration tips
 
-- Start with `docbert_search` or `semantic_search`, then use `docbert_get` or `docbert_multi_get` for full text.
-- Prefer `docbert_search` when you want BM25 controls like `bm25Only` or `noFuzzy`.
+- Start with `search` or `semantic_search`, then use `get` or `multi_get` for full text.
+- Prefer `search` when you want BM25 controls like `bm25Only` or `noFuzzy`.
 - Use `semantic_search` when you want semantic-only retrieval and do not need a collection parameter.
 - Handle both plain text and resource content in retrieval tools.
 - If you store or compare identifiers, note that search results return normalized `#...` document references, while direct resource reads use `bert://...` URIs.

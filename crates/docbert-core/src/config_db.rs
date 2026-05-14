@@ -1527,7 +1527,7 @@ mod tests {
                 role: crate::conversation::ChatRole::Assistant,
                 actor: Some(crate::conversation::ChatActor::Parent),
                 parts: vec![crate::conversation::ChatPart::ToolCall {
-                    name: "docbert_search".to_string(),
+                    name: "search".to_string(),
                     args: serde_json::json!({
                         "query": "rust",
                         "top_k": 5,

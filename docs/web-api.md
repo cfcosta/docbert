@@ -97,7 +97,7 @@ The conversations API persists complete conversation objects in `config.db`.
         { "type": "thinking", "text": "Reasoning text" },
         {
           "type": "tool_call",
-          "name": "docbert_search",
+          "name": "search",
           "args": { "query": "rust" },
           "result": "...",
           "is_error": false
