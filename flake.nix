@@ -176,12 +176,13 @@
                 in
                 rustPlatform.buildRustPackage (
                   {
-                    inherit
-                      name
-                      buildFeatures
-                      buildInputs
-                      nativeBuildInputs
-                      ;
+                    inherit name buildFeatures buildInputs;
+                    # `remove-references-to` (used in postInstall) strips the
+                    # rust toolchain path that rustc bakes into binary debug
+                    # info via `rust-src`. Without it the runtime closure drags
+                    # in the entire nightly toolchain (rustc/cargo/rust-src/
+                    # rust-docs/…), ~2 GiB per `*-cuda` output.
+                    nativeBuildInputs = nativeBuildInputs ++ [ pkgs.removeReferencesTo ];
                     src = rustSrc;
                     cargoBuildFlags = [
                       "-p"
@@ -196,7 +197,14 @@
                     RUSTFLAGS = "-C target-cpu=native";
                     meta.mainProgram = mainProgram;
                     preBuild = uiPreBuild + extraPreBuild;
-                    postInstall = completionsPostInstall;
+                    postInstall = completionsPostInstall + ''
+                      for bin in "$out"/bin/*; do
+                        remove-references-to -t ${rust} "$bin"
+                      done
+                    '';
+                    # Guard: fail the build if a rust toolchain reference
+                    # survives, so this closure leak can't silently return.
+                    disallowedReferences = [ rust ];
                   }
                   // extraEnv
                 );
@@ -341,7 +349,7 @@
               CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
 
               shellHook = ''
-                export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LD_LIBRARY_PATH"
+                # export LD_LIBRARY_PATH="/run/opengl-driver/lib:$LD_LIBRARY_PATH"
               '';
             }
           );

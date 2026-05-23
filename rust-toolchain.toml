@@ -1,5 +1,9 @@
 [toolchain]
 channel = "nightly"
+# `minimal` keeps the `default` profile's `rust-docs` (~0.7 GiB) and other
+# doc artifacts out of the toolchain. The components we actually use for
+# building and IDE support are listed back explicitly below.
+profile = "minimal"
 components = [
   "clippy",
   "llvm-tools-preview",
