@@ -2125,9 +2125,9 @@
     url = "https://registry.npmjs.org/react-markdown/-/react-markdown-10.1.0.tgz";
     hash = "sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ==";
   };
-  "react-router@7.14.2" = fetchurl {
-    url = "https://registry.npmjs.org/react-router/-/react-router-7.14.2.tgz";
-    hash = "sha512-yCqNne6I8IB6rVCH7XUvlBK7/QKyqypBFGv+8dj4QBFJiiRX+FG7/nkdAvGElyvVZ/HQP5N19wzteuTARXi5Gw==";
+  "react-router@7.15.0" = fetchurl {
+    url = "https://registry.npmjs.org/react-router/-/react-router-7.15.0.tgz";
+    hash = "sha512-HW9vYwuM8f4yx66Izy8xfrzCM+SBJluoZcCbww9A1TySax11S5Vgw6fi3ZjMONw9J4gQwngL7PzkyIpJJpJ7RQ==";
   };
   "react-syntax-highlighter@16.1.1" = fetchurl {
     url = "https://registry.npmjs.org/react-syntax-highlighter/-/react-syntax-highlighter-16.1.1.tgz";
