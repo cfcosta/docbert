@@ -497,6 +497,29 @@ impl Module for ModernBertMLP {
     }
 }
 
+/// Loads one of ModernBERT's bias-free LayerNorms, pairing it with a
+/// persistent zero bias on CUDA.
+///
+/// `candle_nn::LayerNorm` only dispatches its fused CUDA kernel when a
+/// bias tensor is present; without one every norm takes a composed
+/// multi-kernel path that round-trips half-precision inputs through
+/// F32. `x * w + 0` is exact and the fused kernel accumulates in F32
+/// internally, so the zero bias changes nothing numerically. On CPU
+/// there is no fused path to unlock and the extra bias add is pure
+/// waste, so the plain no-bias constructor stays.
+fn layer_norm_no_bias_fused(
+    size: usize,
+    eps: f64,
+    vb: VarBuilder,
+) -> Result<LayerNorm> {
+    if !vb.device().is_cuda() {
+        return layer_norm_no_bias(size, eps, vb);
+    }
+    let weight = vb.get(size, "weight")?;
+    let bias = Tensor::zeros(size, weight.dtype(), weight.device())?;
+    Ok(LayerNorm::new(weight, bias, eps))
+}
+
 #[derive(Clone)]
 pub struct ModernBertLayer {
     attn: ModernBertAttention,
@@ -516,13 +539,13 @@ impl ModernBertLayer {
         let attn =
             ModernBertAttention::load(vb.pp("attn"), config, rotary_emb)?;
         let mlp = ModernBertMLP::load(vb.pp("mlp"), config)?;
-        let attn_norm = layer_norm_no_bias(
+        let attn_norm = layer_norm_no_bias_fused(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("attn_norm"),
         )
         .ok();
-        let mlp_norm = layer_norm_no_bias(
+        let mlp_norm = layer_norm_no_bias_fused(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("mlp_norm"),
@@ -622,7 +645,7 @@ impl ModernBertHead {
             config.hidden_size,
             vb.pp("dense"),
         )?;
-        let norm = layer_norm_no_bias(
+        let norm = layer_norm_no_bias_fused(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("norm"),
@@ -813,7 +836,7 @@ impl ModernBert {
             config.hidden_size,
             vb.pp("embeddings.tok_embeddings"),
         )?;
-        let norm = layer_norm_no_bias(
+        let norm = layer_norm_no_bias_fused(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("embeddings.norm"),
@@ -847,7 +870,7 @@ impl ModernBert {
             )?);
         }
 
-        let final_norm = layer_norm_no_bias(
+        let final_norm = layer_norm_no_bias_fused(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("final_norm"),
