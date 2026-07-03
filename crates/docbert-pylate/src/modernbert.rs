@@ -180,6 +180,13 @@ impl RotaryEmbedding {
         Ok((q_embed, k_embed))
     }
 
+    /// Applies rope to `(total_tokens, heads, head_dim)` packed q/k.
+    ///
+    /// `rope_thd` applies cos/sin row `i` to token row `i`, so the
+    /// fused kernel works on a packed layout as long as the tables are
+    /// gathered into the same packed order first — that gather is what
+    /// `positions` encodes, and the gathered tables are cached because
+    /// every layer of a forward pass shares them.
     #[cfg(feature = "cuda")]
     fn apply_rotary_emb_packed(
         &self,
@@ -192,26 +199,26 @@ impl RotaryEmbedding {
             self.packed_cos_sin.get_or_try_insert(valid_lens, || {
                 let cos = self.cos.index_select(positions, 0)?;
                 let sin = self.sin.index_select(positions, 0)?;
-                let cos =
-                    Tensor::cat(&[&cos, &cos], D::Minus1)?.unsqueeze(1)?;
-                let sin =
-                    Tensor::cat(&[&sin, &sin], D::Minus1)?.unsqueeze(1)?;
                 Ok((cos, sin))
             })?;
-        let q_embed = (q.broadcast_mul(&cos)?
-            + rotate_half_packed(q)?.broadcast_mul(&sin)?)?;
-        let k_embed = (k.broadcast_mul(&cos)?
-            + rotate_half_packed(k)?.broadcast_mul(&sin)?)?;
+        let q = q.unsqueeze(0)?;
+        let k = k.unsqueeze(0)?;
+        let q = if q.is_contiguous() {
+            q
+        } else {
+            q.contiguous()?
+        };
+        let k = if k.is_contiguous() {
+            k
+        } else {
+            k.contiguous()?
+        };
+        let q_embed =
+            candle_nn::rotary_emb::rope_thd(&q, &cos, &sin)?.squeeze(0)?;
+        let k_embed =
+            candle_nn::rotary_emb::rope_thd(&k, &cos, &sin)?.squeeze(0)?;
         Ok((q_embed, k_embed))
     }
-}
-
-#[cfg(feature = "cuda")]
-fn rotate_half_packed(xs: &Tensor) -> Result<Tensor> {
-    let last_dim = xs.dim(D::Minus1)?;
-    let xs1 = xs.narrow(D::Minus1, 0, last_dim / 2)?;
-    let xs2 = xs.narrow(D::Minus1, last_dim / 2, last_dim - last_dim / 2)?;
-    Tensor::cat(&[&xs2.neg()?, &xs1], D::Minus1)
 }
 
 /// FlashAttention kernels only ship for F16/BF16, so a half-precision
@@ -376,84 +383,22 @@ impl ModernBertAttention {
         Ok(xs)
     }
 
+    /// Varlen flash attention on `(total_tokens, hidden)` packed input.
+    ///
+    /// Both global and local (sliding-window) layers run directly on
+    /// the packed layout: rope goes through the gathered-table
+    /// `rope_thd` fast path and the window, when present, is handled
+    /// inside the flash kernel. Nothing is unpacked or repacked per
+    /// layer.
     #[cfg(feature = "cuda")]
-    fn forward_varlen_packed(
-        &self,
-        hidden_states: &Tensor,
-        valid_lens: &[usize],
-        seqlens: &Tensor,
-        max_seq_len: usize,
-        local_window: Option<usize>,
-    ) -> Result<Tensor> {
-        let xs = hidden_states.clone();
-        let (b, seq_len, d) = xs.dims3()?;
-        let qkv = xs.apply(&self.qkv)?;
-
-        let q = qkv.narrow(2, 0, d)?.reshape((
-            b,
-            seq_len,
-            self.num_attention_heads,
-            self.attention_head_size,
-        ))?;
-        let k = qkv.narrow(2, d, d)?.reshape((
-            b,
-            seq_len,
-            self.num_attention_heads,
-            self.attention_head_size,
-        ))?;
-        let v = qkv.narrow(2, d * 2, d)?.reshape((
-            b,
-            seq_len,
-            self.num_attention_heads,
-            self.attention_head_size,
-        ))?;
-
-        let (q, k) = self.rotary_emb.apply_rotary_emb_thd(&q, &k)?;
-        let orig_dtype = q.dtype();
-        let flash_dtype = flash_compat_dtype(orig_dtype);
-        let q = pack_varlen_thd(&q, valid_lens)?.to_dtype(flash_dtype)?;
-        let k = pack_varlen_thd(&k, valid_lens)?.to_dtype(flash_dtype)?;
-        let v = pack_varlen_thd(&v, valid_lens)?.to_dtype(flash_dtype)?;
-        let xs = match local_window {
-            Some(window) => candle_flash_attn::flash_attn_varlen_windowed(
-                &q,
-                &k,
-                &v,
-                seqlens,
-                seqlens,
-                max_seq_len,
-                max_seq_len,
-                1.0,
-                Some(window),
-                Some(window),
-            )?,
-            None => candle_flash_attn::flash_attn_varlen(
-                &q,
-                &k,
-                &v,
-                seqlens,
-                seqlens,
-                max_seq_len,
-                max_seq_len,
-                1.0,
-                false,
-            )?,
-        };
-        let xs = xs.to_dtype(orig_dtype)?;
-
-        let total_tokens = xs.dim(0)?;
-        let xs = xs.reshape((total_tokens, d))?;
-        xs.apply(&self.proj)
-    }
-
-    #[cfg(feature = "cuda")]
-    fn forward_varlen_fully_packed_global(
+    fn forward_varlen_fully_packed(
         &self,
         packed_hidden_states: &Tensor,
         positions: &Tensor,
         valid_lens: &[usize],
         seqlens: &Tensor,
         max_seq_len: usize,
+        local_window: Option<usize>,
     ) -> Result<Tensor> {
         let (total_tokens, d) = packed_hidden_states.dims2()?;
         let qkv = packed_hidden_states.apply(&self.qkv)?;
@@ -482,17 +427,31 @@ impl ModernBertAttention {
         let q = q.to_dtype(flash_dtype)?;
         let k = k.to_dtype(flash_dtype)?;
         let v = v.to_dtype(flash_dtype)?;
-        let xs = candle_flash_attn::flash_attn_varlen(
-            &q,
-            &k,
-            &v,
-            seqlens,
-            seqlens,
-            max_seq_len,
-            max_seq_len,
-            1.0,
-            false,
-        )?;
+        let xs = match local_window {
+            Some(window) => candle_flash_attn::flash_attn_varlen_windowed(
+                &q,
+                &k,
+                &v,
+                seqlens,
+                seqlens,
+                max_seq_len,
+                max_seq_len,
+                1.0,
+                Some(window),
+                Some(window),
+            )?,
+            None => candle_flash_attn::flash_attn_varlen(
+                &q,
+                &k,
+                &v,
+                seqlens,
+                seqlens,
+                max_seq_len,
+                max_seq_len,
+                1.0,
+                false,
+            )?,
+        };
         let xs = xs.to_dtype(orig_dtype)?;
 
         let xs = xs.reshape((total_tokens, d))?;
@@ -641,25 +600,14 @@ impl ModernBertLayer {
         if let Some(norm) = &self.attn_norm {
             xs = xs.apply(norm)?;
         }
-        let attn_out = if local_window.is_none() {
-            self.attn.forward_varlen_fully_packed_global(
-                &xs,
-                positions,
-                valid_lens,
-                seqlens,
-                max_seq_len,
-            )?
-        } else {
-            let padded_xs =
-                unpack_varlen_bsd(&xs, valid_lens, max_seq_len, xs.device())?;
-            self.attn.forward_varlen_packed(
-                &padded_xs,
-                valid_lens,
-                seqlens,
-                max_seq_len,
-                local_window,
-            )?
-        };
+        let attn_out = self.attn.forward_varlen_fully_packed(
+            &xs,
+            positions,
+            valid_lens,
+            seqlens,
+            max_seq_len,
+            local_window,
+        )?;
         let xs = (attn_out + packed_xs)?;
         let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
         xs + mlp_out
@@ -786,15 +734,6 @@ fn packed_position_ids(
         positions.extend(0..len as u32);
     }
     Tensor::from_vec(positions, total_tokens, device)
-}
-
-#[cfg(feature = "cuda")]
-fn pack_varlen_thd(xs: &Tensor, valid_lens: &[usize]) -> Result<Tensor> {
-    let mut packed = Vec::with_capacity(valid_lens.len());
-    for (batch_idx, &len) in valid_lens.iter().enumerate() {
-        packed.push(xs.i(batch_idx)?.narrow(0, 0, len.max(1))?);
-    }
-    Tensor::cat(&packed, 0)
 }
 
 #[cfg(feature = "cuda")]
