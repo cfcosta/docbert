@@ -1,4 +1,4 @@
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use docbert_pylate::{ColBERT, Similarities};
 
 use crate::error::{Error, Result};
@@ -38,6 +38,16 @@ pub const DEFAULT_CPU_EMBEDDING_BATCH_SIZE: usize = 32;
 /// anything but eat more VRAM. Users on fatter cards can raise the
 /// ceiling through `DOCBERT_EMBEDDING_BATCH_SIZE`.
 pub const DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE: usize = 64;
+
+/// Environment variable checked for an embedding dtype override
+/// (`f32` | `f16` | `bf16`).
+///
+/// When unset, docbert-pylate picks the dtype itself: `bf16` for
+/// ModernBERT models on CUDA (tensor-core GEMMs, ~1.6× encode
+/// throughput, retrieval-equivalent output — see PROPOSAL.md), `f32`
+/// everywhere else. `f16` overflows ModernBERT activations to NaN and
+/// exists only for experimentation.
+pub const EMBEDDING_DTYPE_ENV_VAR: &str = "DOCBERT_EMBEDDING_DTYPE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComputeDeviceKind {
@@ -93,6 +103,9 @@ pub struct ModelRuntimeConfig {
     pub device: String,
     pub embedding_batch_size: usize,
     pub document_length: usize,
+    /// Dtype the transformer trunk runs in (`"f32"`, `"bf16"`, ...),
+    /// as resolved by docbert-pylate after architecture detection.
+    pub embedding_dtype: String,
     pub fallback_note: Option<String>,
 }
 
@@ -291,6 +304,23 @@ fn resolve_embedding_batch_size(
     Ok(default_embedding_batch_size(device_kind))
 }
 
+/// Parses `DOCBERT_EMBEDDING_DTYPE`. `None` (unset) defers the choice
+/// to docbert-pylate's architecture-aware default.
+fn resolve_embedding_dtype(env_dtype: Option<&str>) -> Result<Option<DType>> {
+    let Some(raw) = env_dtype else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "f32" | "float32" => Ok(Some(DType::F32)),
+        "f16" | "float16" => Ok(Some(DType::F16)),
+        "bf16" | "bfloat16" => Ok(Some(DType::BF16)),
+        other => Err(Error::Config(format!(
+            "{EMBEDDING_DTYPE_ENV_VAR} must be one of f32, f16, bf16 \
+             (got '{other}')"
+        ))),
+    }
+}
+
 /// Lazy loader and cache for the ColBERT model.
 ///
 /// The model is downloaded from HuggingFace Hub on first use, then loaded from
@@ -419,10 +449,16 @@ impl ModelManager {
                 env_batch_size.as_deref(),
                 selected_device.kind,
             )?;
+            let env_dtype = std::env::var(EMBEDDING_DTYPE_ENV_VAR).ok();
+            let embedding_dtype =
+                resolve_embedding_dtype(env_dtype.as_deref())?;
             let mut builder = ColBERT::from(&self.model_id)
                 .with_device(selected_device.device)
                 .with_batch_size(embedding_batch_size)
                 .with_query_prompt(String::new());
+            if let Some(dtype) = embedding_dtype {
+                builder = builder.with_dtype(dtype);
+            }
             if let Some(doc_len) = self.document_length {
                 builder = builder.with_document_length(doc_len);
             }
@@ -433,6 +469,8 @@ impl ModelManager {
                 device: selected_device.kind.as_str().to_string(),
                 embedding_batch_size,
                 document_length: resolved_document_length,
+                embedding_dtype: format!("{:?}", colbert.dtype)
+                    .to_ascii_lowercase(),
                 fallback_note: selected_device.fallback_note,
             });
             self.model = Some(colbert);
@@ -829,6 +867,36 @@ mod tests {
             resolve_embedding_batch_size(None, None, ComputeDeviceKind::Cuda)
                 .unwrap();
         assert_eq!(resolved, DEFAULT_ACCELERATED_EMBEDDING_BATCH_SIZE);
+    }
+
+    #[test]
+    fn resolve_embedding_dtype_defers_when_unset() {
+        assert_eq!(resolve_embedding_dtype(None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_embedding_dtype_parses_known_names() {
+        assert_eq!(
+            resolve_embedding_dtype(Some("f32")).unwrap(),
+            Some(DType::F32)
+        );
+        assert_eq!(
+            resolve_embedding_dtype(Some("BF16")).unwrap(),
+            Some(DType::BF16)
+        );
+        assert_eq!(
+            resolve_embedding_dtype(Some("float16")).unwrap(),
+            Some(DType::F16)
+        );
+    }
+
+    #[test]
+    fn resolve_embedding_dtype_rejects_unknown_names() {
+        let err = resolve_embedding_dtype(Some("f64")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("DOCBERT_EMBEDDING_DTYPE must be one of")
+        );
     }
 
     #[test]

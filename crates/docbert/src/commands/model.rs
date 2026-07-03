@@ -15,8 +15,11 @@ pub(super) const EMBEDDING_MODEL_KEY: &str = "embedding_model";
 pub(super) fn log_model_runtime(model: &mut ModelManager) -> error::Result<()> {
     let runtime = model.runtime_config()?;
     eprintln!(
-        "Embedding runtime: device={}, document_length={}, pylate_batch_size={}",
-        runtime.device, runtime.document_length, runtime.embedding_batch_size
+        "Embedding runtime: device={}, dtype={}, document_length={}, pylate_batch_size={}",
+        runtime.device,
+        runtime.embedding_dtype,
+        runtime.document_length,
+        runtime.embedding_batch_size
     );
     if let Some(note) = runtime.fallback_note {
         eprintln!("Warning: {note}");

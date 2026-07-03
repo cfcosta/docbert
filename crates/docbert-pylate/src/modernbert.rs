@@ -82,16 +82,19 @@ impl RotaryEmbedding {
             .map(|i| 1f32 / rope_theta.powf(i as f64 / dim as f64) as f32)
             .collect();
         let inv_freq_len = inv_freq.len();
-        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?
-            .to_dtype(dtype)?;
+        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?;
         let max_seq_len = config.max_position_embeddings;
+        // Angles are always computed in F32: a half-precision position
+        // index quantizes badly (position 300 in BF16 has a ULP of 2),
+        // while the resulting sin/cos values live in [-1, 1] and cast to
+        // the trunk dtype without meaningful loss.
         let t = Tensor::arange(0u32, max_seq_len as u32, dev)?
-            .to_dtype(dtype)?
+            .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
         Ok(Self {
-            sin: freqs.sin()?,
-            cos: freqs.cos()?,
+            sin: freqs.sin()?.to_dtype(dtype)?,
+            cos: freqs.cos()?.to_dtype(dtype)?,
             #[cfg(feature = "cuda")]
             packed_cos_sin: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -175,6 +178,19 @@ fn rotate_half_packed(xs: &Tensor) -> Result<Tensor> {
     let xs1 = xs.narrow(D::Minus1, 0, last_dim / 2)?;
     let xs2 = xs.narrow(D::Minus1, last_dim / 2, last_dim - last_dim / 2)?;
     Tensor::cat(&[&xs2.neg()?, &xs1], D::Minus1)
+}
+
+/// FlashAttention kernels only ship for F16/BF16, so a half-precision
+/// trunk passes through unchanged while an F32 trunk round-trips via
+/// F16. The F16 round-trip is safe even though a full F16 *trunk*
+/// overflows: attention inputs are post-LayerNorm and its outputs are
+/// convex combinations of V rows, so values stay far from ±65504.
+#[cfg(feature = "cuda")]
+fn flash_compat_dtype(dtype: DType) -> DType {
+    match dtype {
+        DType::F16 | DType::BF16 => dtype,
+        _ => DType::F16,
+    }
 }
 
 #[derive(Clone)]
@@ -302,9 +318,10 @@ impl ModernBertAttention {
 
         let (q, k) = self.rotary_emb.apply_rotary_emb_thd(&q, &k)?;
         let orig_dtype = q.dtype();
-        let q = q.to_dtype(DType::F16)?;
-        let k = k.to_dtype(DType::F16)?;
-        let v = v.to_dtype(DType::F16)?;
+        let flash_dtype = flash_compat_dtype(orig_dtype);
+        let q = q.to_dtype(flash_dtype)?;
+        let k = k.to_dtype(flash_dtype)?;
+        let v = v.to_dtype(flash_dtype)?;
         let xs = match local_window {
             Some(window) => candle_flash_attn::flash_attn_windowed(
                 &q,
@@ -359,9 +376,10 @@ impl ModernBertAttention {
 
         let (q, k) = self.rotary_emb.apply_rotary_emb_thd(&q, &k)?;
         let orig_dtype = q.dtype();
-        let q = pack_varlen_thd(&q, valid_lens)?.to_dtype(DType::F16)?;
-        let k = pack_varlen_thd(&k, valid_lens)?.to_dtype(DType::F16)?;
-        let v = pack_varlen_thd(&v, valid_lens)?.to_dtype(DType::F16)?;
+        let flash_dtype = flash_compat_dtype(orig_dtype);
+        let q = pack_varlen_thd(&q, valid_lens)?.to_dtype(flash_dtype)?;
+        let k = pack_varlen_thd(&k, valid_lens)?.to_dtype(flash_dtype)?;
+        let v = pack_varlen_thd(&v, valid_lens)?.to_dtype(flash_dtype)?;
         let xs = match local_window {
             Some(window) => candle_flash_attn::flash_attn_varlen_windowed(
                 &q,
@@ -426,9 +444,10 @@ impl ModernBertAttention {
             .rotary_emb
             .apply_rotary_emb_packed(&q, &k, positions, valid_lens)?;
         let orig_dtype = q.dtype();
-        let q = q.to_dtype(DType::F16)?;
-        let k = k.to_dtype(DType::F16)?;
-        let v = v.to_dtype(DType::F16)?;
+        let flash_dtype = flash_compat_dtype(orig_dtype);
+        let q = q.to_dtype(flash_dtype)?;
+        let k = k.to_dtype(flash_dtype)?;
+        let v = v.to_dtype(flash_dtype)?;
         let xs = candle_flash_attn::flash_attn_varlen(
             &q,
             &k,
@@ -662,7 +681,21 @@ fn prepare_4d_attention_mask(
 
     let inverted_mask = (1.0 - expanded_mask)?;
 
-    (inverted_mask * f32::MIN as f64)?.to_dtype(dtype)
+    // The additive mask must stay FINITE in the target dtype. Padding
+    // rows in sliding-window layers can have every in-window column
+    // masked, and an all–minus-infinity row softmaxes to NaN, which then
+    // contaminates the whole batch through K/V in the next layer. With a
+    // large-but-finite value those rows degrade to uniform attention over
+    // masked columns instead — harmless, their outputs are discarded —
+    // while exp(min - rowmax) still underflows to exactly 0 in valid
+    // rows. f32::MIN overflows to -inf when cast to F16/BF16, so those
+    // dtypes need their own constants.
+    let min_value = match dtype {
+        DType::F16 => -65504.0,
+        DType::BF16 => -1e38,
+        _ => f32::MIN as f64,
+    };
+    (inverted_mask * min_value)?.to_dtype(dtype)
 }
 
 #[cfg(feature = "cuda")]

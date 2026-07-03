@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use candle_core::Device;
+use candle_core::{DType, Device};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use serde::Deserialize;
 
@@ -49,6 +49,7 @@ pub struct ColbertBuilder {
     document_length: Option<usize>,
     batch_size: Option<usize>,
     device: Option<Device>,
+    dtype: Option<DType>,
 }
 
 impl ColbertBuilder {
@@ -67,6 +68,7 @@ impl ColbertBuilder {
             document_length: None,
             batch_size: None,
             device: None,
+            dtype: None,
         }
     }
 
@@ -135,6 +137,18 @@ impl ColbertBuilder {
     /// Sets the device to run the model on.
     pub fn with_device(mut self, device: Device) -> Self {
         self.device = Some(device);
+        self
+    }
+
+    /// Sets the dtype the transformer trunk and Dense projection run in.
+    ///
+    /// When unset, ModernBERT models on CUDA default to `BF16` (tensor-core
+    /// GEMMs, ~1.6× encode throughput, retrieval-equivalent output) and
+    /// everything else defaults to `F32`. Public embedding tensors are
+    /// always returned in `F32` regardless of this setting. `F16` overflows
+    /// to NaN on ModernBERT activations — prefer `BF16`.
+    pub fn with_dtype(mut self, dtype: DType) -> Self {
+        self.dtype = Some(dtype);
         self
     }
 }
@@ -259,6 +273,7 @@ impl TryFrom<ColbertBuilder> for ColBERT {
             final_document_length,
             builder.batch_size,
             &device,
+            builder.dtype,
         )
     }
 }

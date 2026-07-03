@@ -232,6 +232,7 @@ pub(crate) fn compute_raw_similarity(
 /// fail-fast in the loader rather than a silently-wrong projection.
 pub(crate) fn build_dense_layers(
     dense_modules: Vec<DenseModuleData>,
+    dtype: DType,
     device: &Device,
 ) -> Result<Vec<DenseLayer>, ColbertError> {
     const SUPPORTED_ACTIVATION: &str = "torch.nn.modules.linear.Identity";
@@ -268,7 +269,7 @@ pub(crate) fn build_dense_layers(
 
         let vb = VarBuilder::from_buffered_safetensors(
             module.weights_bytes,
-            DType::F32,
+            dtype,
             device,
         )?;
         let linear = candle_nn::linear_no_bias(
@@ -340,6 +341,9 @@ pub struct ColBERT {
     pub(crate) batch_size: usize,
     /// The device (CPU or GPU) on which the model is loaded.
     pub device: Device,
+    /// The dtype the transformer trunk and Dense projection run in.
+    /// Public embedding tensors are always F32 regardless of this value.
+    pub dtype: DType,
 }
 
 impl ColBERT {
@@ -366,15 +370,13 @@ impl ColBERT {
         document_length: Option<usize>,
         batch_size: Option<usize>,
         device: &Device,
+        dtype: Option<DType>,
     ) -> Result<Self, ColbertError> {
         if dense_modules.is_empty() {
             return Err(ColbertError::Operation(
                 "ColBERT requires at least one Dense projection layer".into(),
             ));
         }
-
-        let vb =
-            VarBuilder::from_buffered_safetensors(weights, DType::F32, device)?;
 
         let config_value: serde_json::Value =
             serde_json::from_slice(&config_bytes)?;
@@ -387,6 +389,22 @@ impl ColBERT {
                     "Missing or invalid 'architectures' in config.json".into(),
                 )
             })?;
+
+        // BF16 halves GEMM traffic and runs on tensor cores (~1.6× encode
+        // throughput, retrieval-equivalent output — see PROPOSAL.md §3).
+        // Only ModernBERT is validated in half precision; other
+        // architectures keep F32 unless the caller opts in explicitly.
+        // F16 is not a usable default: ModernBERT activations overflow
+        // its ±65504 range and produce NaN embeddings.
+        let dtype = dtype.unwrap_or({
+            if architectures == "ModernBertModel" && device.is_cuda() {
+                DType::BF16
+            } else {
+                DType::F32
+            }
+        });
+
+        let vb = VarBuilder::from_buffered_safetensors(weights, dtype, device)?;
 
         let model = match architectures {
             "ModernBertModel" => {
@@ -418,7 +436,7 @@ impl ColBERT {
                 ))
             })?;
 
-        let dense_layers = build_dense_layers(dense_modules, device)?;
+        let dense_layers = build_dense_layers(dense_modules, dtype, device)?;
 
         // If do_query_expansion is false, attend_to_expansion_tokens should also be false
         let final_attend_to_expansion_tokens = if !do_query_expansion {
@@ -443,6 +461,7 @@ impl ColBERT {
             document_length: document_length.unwrap_or(180),
             batch_size: batch_size.unwrap_or(32),
             device: device.clone(),
+            dtype,
         })
     }
 
@@ -489,7 +508,10 @@ impl ColBERT {
         for layer in iter {
             out = layer.forward(&out)?;
         }
-        Ok(out)
+        // Everything downstream (normalization, MaxSim, storage) contracts
+        // on F32 embeddings; a half-precision trunk ends here. No-op clone
+        // when the trunk already runs in F32.
+        out.to_dtype(DType::F32)
     }
 
     /// Compute the post-truncation token count for each document sentence.

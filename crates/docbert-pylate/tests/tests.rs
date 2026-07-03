@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use anyhow::Result;
-use candle_core::Device;
+use candle_core::{DType, Device};
 use docbert_pylate::{ColBERT, hierarchical_pooling};
 
 /// Serialises hf-hub downloads across the integration tests.
@@ -54,6 +54,19 @@ fn assert_close(actual: f32, expected: f32, tolerance: f32, context: &str) {
     );
 }
 
+/// Widens an F32-calibrated tolerance when the model trunk runs in half
+/// precision (ModernBERT models default to BF16 on CUDA). Measured
+/// BF16-vs-F32 MaxSim drift on GTE-ModernColBERT is ≤ 0.02 on scores
+/// around 9.5; 5× the F32 tolerance absorbs that drift while still
+/// catching real regressions, which move scores by whole units.
+fn dtype_tolerance(model: &ColBERT, f32_tolerance: f32) -> f32 {
+    if model.dtype == DType::F32 {
+        f32_tolerance
+    } else {
+        f32_tolerance * 5.0
+    }
+}
+
 fn argmax(values: &[f32]) -> usize {
     values
         .iter()
@@ -85,7 +98,7 @@ fn gte_modern_colbert_test() -> Result<()> {
     assert_close(
         score,
         9.50805,
-        1e-2,
+        dtype_tolerance(&model, 1e-2),
         "GTE-ModernColBERT-v1 score regression",
     );
 
@@ -153,10 +166,19 @@ fn gte_modern_colbert_semantics_regression_test() -> Result<()> {
             let single_score =
                 model.similarity(&single_query, &single_document)?.data[0][0];
 
+            // Half-precision GEMMs pick different kernel tilings for
+            // different padded batch shapes, so bit-level batch
+            // invariance only holds in F32; BF16 needs headroom for
+            // reduction-order drift.
+            let tolerance = if model.dtype == DType::F32 {
+                1e-4
+            } else {
+                2e-2
+            };
             assert_close(
                 similarities.data[query_index][doc_index],
                 single_score,
-                1e-4,
+                tolerance,
                 &format!(
                     "batch invariance regression for query {query_index} and document {doc_index}"
                 ),

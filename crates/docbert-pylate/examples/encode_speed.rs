@@ -10,14 +10,14 @@
 //!
 //! Usage:
 //!   encode_speed [--batch-size N] [--docs N] [--repeats N]
-//!                [--uniform] [--queries]
+//!                [--dtype f32|f16|bf16] [--uniform] [--queries]
 //!                [--dump PATH | --compare PATH]
 //!
 //! Prints a single JSON object to stdout.
 
 use std::{env, fs, time::Instant};
 
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use docbert_pylate::ColBERT;
 
 const MODEL_ID: &str = "lightonai/GTE-ModernColBERT-v1";
@@ -229,6 +229,10 @@ fn compare_with_dump(
         .data;
     let mut max_score_delta = 0f32;
     let mut top1_changes = 0usize;
+    // For every flipped query, how far apart the two contenders were in
+    // the *reference* scores. Flips with margins below max_maxsim_delta
+    // are ties the reference itself can't rank reliably.
+    let mut top1_flip_margins = Vec::new();
     for (rq, cq) in ref_scores.iter().zip(&cur_scores) {
         for (r, c) in rq.iter().zip(cq) {
             max_score_delta = max_score_delta.max((r - c).abs());
@@ -240,8 +244,10 @@ fn compare_with_dump(
                 .map(|(i, _)| i)
                 .unwrap()
         };
-        if top(rq) != top(cq) {
+        let (ref_top, cur_top) = (top(rq), top(cq));
+        if ref_top != cur_top {
             top1_changes += 1;
+            top1_flip_margins.push(rq[ref_top] - rq[cur_top]);
         }
     }
 
@@ -252,6 +258,7 @@ fn compare_with_dump(
         "max_abs_diff": max_abs,
         "max_maxsim_delta": max_score_delta,
         "top1_changes": top1_changes,
+        "top1_flip_margins": top1_flip_margins,
         "n_queries": ref_scores.len(),
     })
 }
@@ -276,11 +283,21 @@ fn main() {
     let bench_queries = has("--queries");
     let dump_path = flag("--dump");
     let compare_path = flag("--compare");
+    let dtype = flag("--dtype").map(|v| match v.as_str() {
+        "f32" => DType::F32,
+        "f16" => DType::F16,
+        "bf16" => DType::BF16,
+        other => panic!("--dtype must be f32, f16, or bf16 (got {other})"),
+    });
 
     let device = Device::new_cuda(0).expect("CUDA device 0 required");
-    let mut model: ColBERT = ColBERT::from(MODEL_ID)
+    let mut builder = ColBERT::from(MODEL_ID)
         .with_device(device.clone())
-        .with_batch_size(batch_size)
+        .with_batch_size(batch_size);
+    if let Some(dtype) = dtype {
+        builder = builder.with_dtype(dtype);
+    }
+    let mut model: ColBERT = builder
         .try_into()
         .expect("load model (needs GTE-ModernColBERT-v1 in HF cache)");
 
@@ -309,6 +326,7 @@ fn main() {
 
     let mut result = serde_json::json!({
         "model": MODEL_ID,
+        "dtype": format!("{:?}", model.dtype).to_ascii_lowercase(),
         "batch_size": batch_size,
         "docs": n_docs,
         "uniform": uniform,
