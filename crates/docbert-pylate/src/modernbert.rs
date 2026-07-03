@@ -55,11 +55,50 @@ pub struct ClassifierConfig {
     pub classifier_pooling: ClassifierPooling,
 }
 
-/// Cache of per-shape packed cos/sin tables keyed by the list of valid
-/// sequence lengths. Extracted into a type alias because the full
-/// `Arc<Mutex<HashMap<_, _>>>` combination trips `clippy::type_complexity`.
+/// Single-slot last-used cache for per-batch GPU tensors.
+///
+/// The tensors cached during a forward pass (packed rope tables, packed
+/// position ids, local attention masks) are reused heavily *within* one
+/// pass — up to all 22 layers share the same key — but a long indexing
+/// run sees a near-unique key per batch, so a grow-only map slowly
+/// leaks VRAM (the reason `release_cached_device_memory` exists). One
+/// slot keeps the intra-forward reuse and caps the footprint at a
+/// single entry.
+#[derive(Debug)]
+struct LastUsedCache<K, V>(Mutex<Option<(K, V)>>);
+
+impl<K, V: Clone> LastUsedCache<K, V> {
+    fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    /// Returns the value cached under `key`, or builds, caches, and
+    /// returns it, evicting whatever was cached before.
+    fn get_or_try_insert<Q>(
+        &self,
+        key: &Q,
+        build: impl FnOnce() -> Result<V>,
+    ) -> Result<V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ToOwned<Owned = K> + ?Sized,
+    {
+        let mut slot = self.0.lock().unwrap();
+        if let Some((cached_key, value)) = slot.as_ref() {
+            if cached_key.borrow() == key {
+                return Ok(value.clone());
+            }
+        }
+        let value = build()?;
+        *slot = Some((key.to_owned(), value.clone()));
+        Ok(value)
+    }
+}
+
+/// Cache of the last-used packed cos/sin tables keyed by the list of
+/// valid sequence lengths.
 #[cfg(feature = "cuda")]
-type PackedCosSinCache = Arc<Mutex<HashMap<Vec<usize>, (Tensor, Tensor)>>>;
+type PackedCosSinCache = Arc<LastUsedCache<Vec<usize>, (Tensor, Tensor)>>;
 
 #[derive(Debug, Clone)]
 struct RotaryEmbedding {
@@ -96,7 +135,7 @@ impl RotaryEmbedding {
             sin: freqs.sin()?.to_dtype(dtype)?,
             cos: freqs.cos()?.to_dtype(dtype)?,
             #[cfg(feature = "cuda")]
-            packed_cos_sin: Arc::new(Mutex::new(HashMap::new())),
+            packed_cos_sin: Arc::new(LastUsedCache::new()),
         })
     }
 
@@ -149,21 +188,16 @@ impl RotaryEmbedding {
         positions: &Tensor,
         valid_lens: &[usize],
     ) -> Result<(Tensor, Tensor)> {
-        let (cos, sin) = {
-            let mut cache = self.packed_cos_sin.lock().unwrap();
-            if let Some((cos, sin)) = cache.get(valid_lens) {
-                (cos.clone(), sin.clone())
-            } else {
+        let (cos, sin) =
+            self.packed_cos_sin.get_or_try_insert(valid_lens, || {
                 let cos = self.cos.index_select(positions, 0)?;
                 let sin = self.sin.index_select(positions, 0)?;
                 let cos =
                     Tensor::cat(&[&cos, &cos], D::Minus1)?.unsqueeze(1)?;
                 let sin =
                     Tensor::cat(&[&sin, &sin], D::Minus1)?.unsqueeze(1)?;
-                cache.insert(valid_lens.to_vec(), (cos.clone(), sin.clone()));
-                (cos, sin)
-            }
-        };
+                Ok((cos, sin))
+            })?;
         let q_embed = (q.broadcast_mul(&cos)?
             + rotate_half_packed(q)?.broadcast_mul(&sin)?)?;
         let k_embed = (k.broadcast_mul(&cos)?
@@ -824,9 +858,9 @@ pub struct ModernBert {
     layers: Vec<ModernBertLayer>,
     final_norm: LayerNorm,
     local_attention_size: usize,
-    local_attention_masks: Arc<Mutex<HashMap<usize, Tensor>>>,
+    local_attention_masks: Arc<LastUsedCache<usize, Tensor>>,
     #[cfg(feature = "cuda")]
-    varlen_positions: Arc<Mutex<HashMap<Vec<usize>, Tensor>>>,
+    varlen_positions: Arc<LastUsedCache<Vec<usize>, Tensor>>,
 }
 
 impl ModernBert {
@@ -882,9 +916,9 @@ impl ModernBert {
             layers,
             final_norm,
             local_attention_size: config.local_attention,
-            local_attention_masks: Arc::new(Mutex::new(HashMap::new())),
+            local_attention_masks: Arc::new(LastUsedCache::new()),
             #[cfg(feature = "cuda")]
-            varlen_positions: Arc::new(Mutex::new(HashMap::new())),
+            varlen_positions: Arc::new(LastUsedCache::new()),
         })
     }
 
@@ -894,21 +928,15 @@ impl ModernBert {
         let attention_dtype = xs.dtype();
         let global_attention_mask =
             prepare_4d_attention_mask(mask, attention_dtype, None)?;
-        let local_attention_mask = {
-            let mut cache = self.local_attention_masks.lock().unwrap();
-            if let Some(mask) = cache.get(&seq_len) {
-                mask.clone()
-            } else {
-                let mask = get_local_attention_mask(
+        let local_attention_mask =
+            self.local_attention_masks.get_or_try_insert(&seq_len, || {
+                get_local_attention_mask(
                     seq_len,
                     self.local_attention_size / 2,
                     xs.device(),
                 )?
-                .to_dtype(attention_dtype)?;
-                cache.insert(seq_len, mask.clone());
-                mask
-            }
-        };
+                .to_dtype(attention_dtype)
+            })?;
         let combined_local_attention_mask =
             global_attention_mask.broadcast_add(&local_attention_mask)?;
         for layer in self.layers.iter() {
@@ -948,14 +976,9 @@ impl ModernBert {
         valid_lens: &[usize],
         device: &Device,
     ) -> Result<Tensor> {
-        let mut cache = self.varlen_positions.lock().unwrap();
-        if let Some(positions) = cache.get(valid_lens) {
-            return Ok(positions.clone());
-        }
-        let key = valid_lens.to_vec();
-        let positions = packed_position_ids(valid_lens, device)?;
-        cache.insert(key, positions.clone());
-        Ok(positions)
+        self.varlen_positions.get_or_try_insert(valid_lens, || {
+            packed_position_ids(valid_lens, device)
+        })
     }
 
     #[cfg(feature = "cuda")]

@@ -475,16 +475,15 @@ pub(crate) fn rebuild(
 /// Drop the encoder model and trim CUDA's async mempool before the
 /// PLAID build kicks off.
 ///
-/// ModernBert's per-batch `packed_cos_sin` and `varlen_positions`
-/// caches accumulate on the order of 1–2 GB of VRAM over a full
-/// embedding pass (one entry per unique combination of sequence
-/// lengths seen in a batch). The caches live on the model, and the
-/// `ModelManager` stays alive until `rebuild`/`sync` returns —
-/// exactly when the PLAID builder wants to allocate a ~3.47 GB
-/// contiguous points tensor. Without releasing the encoder first,
-/// CUDA's async mempool stays committed to the old allocations and
-/// `cuMemAllocAsync` returns `CUDA_ERROR_OUT_OF_MEMORY` on a 12 GB
-/// card.
+/// The encoder's weights plus activation allocations keep CUDA's async
+/// mempool committed for as long as the `ModelManager` lives, and it
+/// stays alive until `rebuild`/`sync` returns — exactly when the PLAID
+/// builder wants to allocate a ~3.47 GB contiguous points tensor.
+/// Without releasing the encoder first, `cuMemAllocAsync` returns
+/// `CUDA_ERROR_OUT_OF_MEMORY` on a 12 GB card. (ModernBert's per-batch
+/// `packed_cos_sin`/`varlen_positions` caches used to add 1–2 GB of
+/// their own over a full embedding pass; they are single-slot
+/// last-used now, but the weights alone still justify the release.)
 ///
 /// Returns the retained `EmbeddingDb` handle so callers can continue
 /// with the PLAID build; every other field of the runtime is dropped
