@@ -11,9 +11,17 @@
 //! Usage:
 //!   encode_speed [--batch-size N] [--docs N] [--repeats N]
 //!                [--dtype f32|f16|bf16] [--uniform] [--queries]
-//!                [--dump PATH | --compare PATH]
+//!                [--cpu] [--dump PATH | --compare PATH]
 //!
 //! Prints a single JSON object to stdout.
+//!
+//! The parity corpus is 64 fixed documents, so which encode path a
+//! `--dump`/`--compare` run exercises depends on `--batch-size`: at
+//! the default 64 it takes the generic eager path, while smaller
+//! values (e.g. 16) route through the sorted varlen/flash path used
+//! by production indexing. Dump a ground-truth reference with
+//! `--cpu --dtype f32 --dump`, then compare GPU runs at several batch
+//! sizes against it.
 
 use std::{env, fs, time::Instant};
 
@@ -290,7 +298,11 @@ fn main() {
         other => panic!("--dtype must be f32, f16, or bf16 (got {other})"),
     });
 
-    let device = Device::new_cuda(0).expect("CUDA device 0 required");
+    let device = if has("--cpu") {
+        Device::Cpu
+    } else {
+        Device::new_cuda(0).expect("CUDA device 0 required")
+    };
     let mut builder = ColBERT::from(MODEL_ID)
         .with_device(device.clone())
         .with_batch_size(batch_size);

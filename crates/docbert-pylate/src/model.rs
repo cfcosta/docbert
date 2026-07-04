@@ -711,6 +711,20 @@ impl ColBERT {
                     .last()
                     .map_or(0, |encoding| encoding.get_ids().len());
                 let has_padding = first_len != last_len;
+                // Lengths must be read before pad_encodings extends
+                // every row's ids to the padded width; flash varlen
+                // would otherwise attend [PAD] keys.
+                #[cfg(feature = "cuda")]
+                let valid_lens = if has_padding {
+                    Some(
+                        batch_encodings
+                            .iter()
+                            .map(|encoding| encoding.get_ids().len())
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    None
+                };
                 if has_padding {
                     pad_encodings(batch_encodings, &padding)?;
                 }
@@ -720,17 +734,6 @@ impl ColBERT {
                 let token_embeddings = {
                     #[cfg(feature = "cuda")]
                     {
-                        let valid_lens = if has_padding {
-                            Some(
-                                batch_encodings
-                                    .iter()
-                                    .map(|encoding| encoding.get_ids().len())
-                                    .collect::<Vec<_>>(),
-                            )
-                        } else {
-                            None
-                        };
-
                         if !has_padding {
                             if let BaseModel::ModernBert(model) = &self.model {
                                 model.forward_unmasked(&token_ids)?
