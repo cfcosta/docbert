@@ -17,6 +17,56 @@ from activation overflow) and a fully-packed local-attention rewrite
 (bit-exact but 15% _slower_; root cause identified, viable v2 noted as
 follow-up).
 
+## Implementation status (2026-07-03): fully landed
+
+Phase A and all six follow-ups from §5 are implemented, each verified
+and committed separately. Every step ran the full gates (fmt, clippy
+with and without `--features cuda`, the test suites, the parity
+protocol below) plus a same-session ABAB benchmark against its parent
+commit — absolute docs/s move between sessions on the shared desktop
+GPU, so only those paired ratios are meaningful.
+
+| commit                                             | measured effect (same-session ABAB)                        |
+| -------------------------------------------------- | ---------------------------------------------------------- |
+| BF16 trunk on CUDA (Phase A)                       | 1.64× document indexing, −19% query p50                    |
+| fused LayerNorm via persistent zero bias (§5.1)    | 1.46× indexing, query p50 8.08 → 5.46 ms                   |
+| one-slot GPU caches (§5.3)                         | fixes 1–2 GB VRAM leak; −0.7% on a warm-repeat synthetic   |
+| packed-local v2, fused `rope_thd` (§5.4)           | 1.50× indexing (549 → 825 docs/s), bit-identical numerics  |
+| **fix: [PAD] keys attended in sorted varlen path** | correctness — see below                                    |
+| flash routing for queries + small batches (§5.2)   | 32-doc batches 2.51× (310 → 778 docs/s), queries 1.07× p50 |
+| tokenize once + pooling/store overlap (§5.5)       | 1.11× end-to-end embed→pool→store pipeline                 |
+| PLAID index cache across queries (§5.6)            | ~790 ms fixed cost per semantic query → ~0 ms warm         |
+
+Chained, the encode stage measured roughly 3.6× over the F32
+baseline (1.64 × 1.46 × 1.50 across consecutive same-session pairs),
+with the pipeline overlap's 1.11× on top of that end to end, small
+incremental syncs a further 2.51×, and searches on the production
+corpus (155k documents, 761 MB index) no longer paying ~790 ms of
+per-query index deserialization. Model-weight reload per CLI
+invocation (the other half of §5.6) remains open — the MCP server
+path, which keeps the process alive, gets the full benefit today.
+
+**What implementation found that the original harness could not see.**
+The sorted document path collected per-row valid lengths _after_
+`pad_encodings` had extended every row in place, so flash varlen
+treated every padded width as real: [PAD] positions served as
+attention keys in every padded batch on the whole GPU indexing path.
+No existing gate could catch it — the integration tests encode 1–3
+documents (generic eager path), and this proposal's original parity
+protocol compared against a GPU reference dump that took the same
+code path as the run under test, so the varlen path was never measured
+against independent ground truth. Lessons folded back into the
+protocol (§7): ground truth is now an **eager CPU F32 dump**; compares
+run at `--batch-size 16` to force the multi-batch sorted varlen path;
+and a new `attention_parity` example is the semantic gate — it feeds
+identical token ids through the eager masked reference and each CUDA
+fast path at F32 and requires min token cosine ≥ 0.999 (two BF16
+trunks cannot gate each other: rounding differences amplify
+chaotically over 22 layers). With true lengths, the fix moved
+batch-16 parity vs CPU ground truth from 0.9347 min token cosine /
+8 top-1 flips to 0.9699 / ≤5, and the residual delta is attention-
+kernel rounding amplified by the 768→128 projection, not semantics.
+
 ## 1. Where the time goes today
 
 The production encoder is ModernBERT-base: 22 layers, hidden 768, GeGLU MLPs
@@ -167,6 +217,9 @@ Not proposed, and why:
 
 ## 5. Follow-ups (ranked, separate changes)
 
+_All six are now implemented; see the implementation-status section at
+the top for measured results. The list below is preserved as written._
+
 1. **Fused no-bias LayerNorm.** ModernBERT sets `norm_bias=false`, and
    `candle_nn::LayerNorm` only uses its fused CUDA kernel when a bias
    exists — all ~45 LNs per forward take a ~10-kernel F32-upcast fallback.
@@ -216,18 +269,44 @@ Not proposed, and why:
 ## 7. Reproducing
 
 ```sh
-nix develop -c cargo build --release -p docbert-pylate --features cuda \
-  --example encode_speed
+CUDA_COMPUTE_CAP=80 nix develop -c cargo build --release \
+  -p docbert-pylate --features cuda \
+  --example encode_speed --example attention_parity
 
 # NixOS: the real driver must shadow the toolkit's stub libcuda
 export LD_LIBRARY_PATH=/run/opengl-driver/lib
 
 target/release/examples/encode_speed --docs 256 --repeats 5      # throughput
 target/release/examples/encode_speed --docs 32 --queries         # query p50
-target/release/examples/encode_speed --dump    /tmp/ref_f32.bin  # on main
-target/release/examples/encode_speed --compare /tmp/ref_f32.bin  # on branch
+
+# Parity protocol (post-[PAD]-fix). Ground truth is an eager CPU F32
+# dump — independent of every GPU code path:
+target/release/examples/encode_speed --cpu --dump /tmp/ref_f32_cpu.bin
+# batch 16 forces the multi-batch sorted varlen path; batch 64 covers
+# the single-batch varlen path:
+target/release/examples/encode_speed --compare /tmp/ref_f32_cpu.bin \
+  --batch-size 16
+target/release/examples/encode_speed --compare /tmp/ref_f32_cpu.bin \
+  --batch-size 64
+
+# Semantic gate: eager masked reference vs each CUDA fast path on
+# identical token ids, at F32 (expect min token cosine >= 0.999 on
+# every case, including query_expansion):
+target/release/examples/attention_parity
+
+# End-to-end embed→pool→store pipeline (docbert-core):
+CUDA_COMPUTE_CAP=80 nix develop -c cargo build --release \
+  -p docbert-core --features cuda --example index_speed
+target/release/examples/index_speed --docs 512 --repeats 3
 ```
 
 One JSON object per run: wall best/mean, docs/s, tokens/s, optional query
 p50, and the parity block (`min/mean_token_cosine`, `max_abs_diff`,
 `max_maxsim_delta`, `top1_changes`).
+
+Caveat when comparing BF16 runs against `/tmp/ref_f32_cpu.bin`: the
+expected values are ≈0.0736 max MaxSim delta / 0.9699 min token cosine
+at batch 16 and ≈0.0192 / 0.9958 at batch 64 — BF16-vs-F32 trunk drift
+amplified by the projection, stable across all landed commits. Gating
+semantics on those numbers alone is exactly the blindspot that hid the
+[PAD]-key bug; `attention_parity` at F32 is the gate that binds.
