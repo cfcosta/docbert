@@ -2,15 +2,14 @@
 //!
 //! The on-disk format is a single little-endian binary file with a small
 //! header followed by a sequence of plain f32/u32/u64 blobs. The layout
-//! is deliberately boring — there's no compression, no extra framing,
-//! and no schema evolution today; we can layer any of that on top later
-//! without changing the semantic API.
+//! is deliberately boring — no compression, no extra framing — so that
+//! every section can be read or written as one bulk copy.
 //!
-//! Layout, every field little-endian:
+//! Layout (version 3), every field little-endian:
 //!
 //! ```text
 //! magic           : 8 bytes, b"PLAIDIDX"
-//! version         : u32     (currently 1)
+//! version         : u32     (currently 3)
 //! dim             : u32
 //! nbits           : u32
 //! k_centroids    : u32
@@ -21,7 +20,8 @@
 //! bucket_weights  : 2^nbits                f32
 //! doc_ids         : n_documents            u64
 //! token_counts    : n_documents            u32  (tokens per document)
-//! encoded_tokens  : for each token, u32 centroid_id then `dim` u8 codes
+//! centroid_ids    : total_tokens           u32
+//! residuals       : total_tokens * (dim * nbits / 8) u8
 //! ```
 //!
 //! The inverted file is *not* persisted — it's derivable from the
@@ -45,9 +45,20 @@ const MAGIC: &[u8; 8] = b"PLAIDIDX";
 /// Format versions in the wild:
 ///
 /// - `1`: unpacked residual codes, one byte per residual dimension.
+///   No longer readable; rebuild the index.
 /// - `2`: LSB-first bit-packed codes at `nbits ∈ {1, 2, 4, 8}`;
-///   `(dim * nbits) / 8` bytes per token.
-const FORMAT_VERSION: u32 = 2;
+///   `(dim * nbits) / 8` bytes per token, stored as per-token
+///   interleaved `(centroid_id, residual)` records. Still readable.
+/// - `3`: same codes, but centroid ids and residuals are two
+///   contiguous sections so loading a multi-GB index is a pair of
+///   bulk copies instead of a per-token de-interleave.
+const FORMAT_VERSION: u32 = 3;
+const OLDEST_READABLE_VERSION: u32 = 2;
+
+/// Tokens per I/O chunk when de-interleaving a legacy v2 token
+/// section through a staging buffer (at dim 128 / nbits 2 a token
+/// record is 36 bytes, so this stays a few tens of MB).
+const V2_TOKEN_CHUNK: usize = 1 << 20;
 
 /// Write `index` to `path`, creating or truncating the file as needed.
 ///
@@ -115,12 +126,9 @@ fn write_index<W: Write>(index: &Index, w: &mut W) -> Result<()> {
             index.num_tokens(),
         )));
     }
-    for i in 0..index.num_tokens() {
-        write_u32(w, index.doc_centroid_ids[i])?;
-        w.write_all(
-            &index.doc_residual_bytes[i * packed_bytes..(i + 1) * packed_bytes],
-        )?;
-    }
+
+    write_u32_slice(w, &index.doc_centroid_ids)?;
+    w.write_all(&index.doc_residual_bytes)?;
 
     Ok(())
 }
@@ -135,9 +143,10 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
     }
 
     let version = read_u32(r)?;
-    if version != FORMAT_VERSION {
+    if !(OLDEST_READABLE_VERSION..=FORMAT_VERSION).contains(&version) {
         return Err(PlaidError::InvalidIndex(format!(
-            "unsupported plaid index version {version}, expected {FORMAT_VERSION}",
+            "unsupported plaid index version {version}, expected \
+             {OLDEST_READABLE_VERSION}..={FORMAT_VERSION}",
         )));
     }
 
@@ -170,27 +179,35 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
     let packed_bytes = packed_bytes_per_vector(dim, nbits);
 
     let total_tokens: usize = token_counts.iter().map(|&c| c as usize).sum();
-    let mut doc_centroid_ids: Vec<u32> = Vec::with_capacity(total_tokens);
-    let mut doc_residual_bytes: Vec<u8> =
-        Vec::with_capacity(total_tokens * packed_bytes);
+
+    let (doc_centroid_ids, doc_residual_bytes) = if version >= 3 {
+        // Contiguous sections: each is one bulk copy into place.
+        let ids = read_u32_vec(r, total_tokens)?;
+        let residuals = read_u8_vec(r, total_tokens * packed_bytes)?;
+        (ids, residuals)
+    } else {
+        read_v2_interleaved_tokens(r, total_tokens, packed_bytes)?
+    };
+
+    // Validate ids after the copy loops: a whole-slice scan
+    // vectorizes, a branch per token does not.
+    if let Some(&bad) = doc_centroid_ids
+        .iter()
+        .find(|&&id| (id as usize) >= k_centroids)
+    {
+        return Err(PlaidError::InvalidIndex(format!(
+            "centroid_id {bad} out of range 0..{k_centroids}",
+        )));
+    }
+
     let mut doc_offsets: Vec<usize> = Vec::with_capacity(n_documents + 1);
     doc_offsets.push(0);
-
-    for count in token_counts.iter() {
-        for _ in 0..*count {
-            let centroid_id = read_u32(r)?;
-            if (centroid_id as usize) >= k_centroids {
-                return Err(PlaidError::InvalidIndex(format!(
-                    "centroid_id {centroid_id} out of range 0..{k_centroids}",
-                )));
-            }
-            doc_centroid_ids.push(centroid_id);
-            let start = doc_residual_bytes.len();
-            doc_residual_bytes.resize(start + packed_bytes, 0);
-            r.read_exact(&mut doc_residual_bytes[start..start + packed_bytes])?;
-        }
-        doc_offsets.push(doc_centroid_ids.len());
+    let mut acc = 0usize;
+    for &count in &token_counts {
+        acc += count as usize;
+        doc_offsets.push(acc);
     }
+
     let ivf = build_inverted_file_from_flat(
         &doc_centroid_ids,
         &doc_offsets,
@@ -215,6 +232,38 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
         doc_offsets,
         ivf,
     })
+}
+
+/// Read a legacy v2 token section: per-token interleaved
+/// `(u32 centroid_id, [u8; packed] residual)` records, bulk-read in
+/// chunks and de-interleaved into the two flat vectors.
+fn read_v2_interleaved_tokens<R: Read>(
+    r: &mut R,
+    total_tokens: usize,
+    packed_bytes: usize,
+) -> Result<(Vec<u32>, Vec<u8>)> {
+    let stride = 4 + packed_bytes;
+    let mut ids: Vec<u32> = vec![0u32; total_tokens];
+    let mut residuals: Vec<u8> = vec![0u8; total_tokens * packed_bytes];
+    let mut buf = vec![0u8; V2_TOKEN_CHUNK.min(total_tokens.max(1)) * stride];
+    let mut read = 0;
+    while read < total_tokens {
+        let n = (total_tokens - read).min(V2_TOKEN_CHUNK);
+        r.read_exact(&mut buf[..n * stride])?;
+        for ((rec, id), out) in buf[..n * stride]
+            .chunks_exact(stride)
+            .zip(ids[read..read + n].iter_mut())
+            .zip(
+                residuals[read * packed_bytes..(read + n) * packed_bytes]
+                    .chunks_exact_mut(packed_bytes),
+            )
+        {
+            *id = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            out.copy_from_slice(&rec[4..]);
+        }
+        read += n;
+    }
+    Ok((ids, residuals))
 }
 
 fn write_u32<W: Write>(w: &mut W, v: u32) -> Result<()> {
@@ -257,6 +306,12 @@ fn read_u64<R: Read>(r: &mut R) -> Result<u64> {
 fn read_f32_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; n];
     r.read_exact(bytemuck::cast_slice_mut(&mut out))?;
+    Ok(out)
+}
+
+fn read_u8_vec<R: Read>(r: &mut R, n: usize) -> Result<Vec<u8>> {
+    let mut out = vec![0u8; n];
+    r.read_exact(&mut out)?;
     Ok(out)
 }
 
@@ -413,6 +468,60 @@ mod tests {
 
         assert_eq!(loaded.doc_ids, index.doc_ids);
         assert_eq!(loaded.doc_token_count(loaded.num_documents() - 1), 0);
+    }
+
+    /// Serialize `index` in the legacy v2 layout: per-token interleaved
+    /// `(centroid_id, residual)` records instead of contiguous sections.
+    fn write_index_v2(index: &Index) -> Vec<u8> {
+        let mut w = Vec::new();
+        w.extend_from_slice(MAGIC);
+        w.extend_from_slice(&2u32.to_le_bytes());
+        w.extend_from_slice(&(index.params.dim as u32).to_le_bytes());
+        w.extend_from_slice(&index.params.nbits.to_le_bytes());
+        w.extend_from_slice(&(index.params.k_centroids as u32).to_le_bytes());
+        w.extend_from_slice(
+            &(index.params.max_kmeans_iters as u32).to_le_bytes(),
+        );
+        w.extend_from_slice(&(index.doc_ids.len() as u64).to_le_bytes());
+        w.extend_from_slice(bytemuck::cast_slice(&index.codec.centroids));
+        w.extend_from_slice(bytemuck::cast_slice(&index.codec.bucket_cutoffs));
+        w.extend_from_slice(bytemuck::cast_slice(&index.codec.bucket_weights));
+        w.extend_from_slice(bytemuck::cast_slice(&index.doc_ids));
+        for i in 0..index.num_documents() {
+            w.extend_from_slice(
+                &(index.doc_token_count(i) as u32).to_le_bytes(),
+            );
+        }
+        let packed =
+            packed_bytes_per_vector(index.params.dim, index.params.nbits);
+        for (i, &cid) in index.doc_centroid_ids.iter().enumerate() {
+            w.extend_from_slice(&cid.to_le_bytes());
+            w.extend_from_slice(
+                &index.doc_residual_bytes[i * packed..(i + 1) * packed],
+            );
+        }
+        w
+    }
+
+    #[test]
+    fn load_reads_legacy_v2_interleaved_indexes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("legacy_v2.plaid");
+        let index = build_index(&small_corpus(), default_params()).unwrap();
+        std::fs::write(&path, write_index_v2(&index)).unwrap();
+
+        let loaded = load(&path).unwrap();
+
+        assert_eq!(loaded.doc_ids, index.doc_ids);
+        assert_eq!(loaded.doc_centroid_ids, index.doc_centroid_ids);
+        assert_eq!(loaded.doc_residual_bytes, index.doc_residual_bytes);
+        assert_eq!(loaded.doc_offsets, index.doc_offsets);
+        for c in 0..index.ivf.num_centroids() {
+            assert_eq!(
+                loaded.ivf.docs_for_centroid(c),
+                index.ivf.docs_for_centroid(c),
+            );
+        }
     }
 
     #[test]

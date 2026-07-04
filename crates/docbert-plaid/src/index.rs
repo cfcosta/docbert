@@ -511,14 +511,20 @@ pub(crate) fn build_inverted_file_from_flat(
 ) -> InvertedFile {
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); k_centroids];
     let n_docs = doc_offsets.len().saturating_sub(1);
+    // Per-centroid stamp of the last doc that touched it, so each doc
+    // contributes one entry per distinct centroid without the per-doc
+    // sort + dedup + allocation of the naive version — that tripled
+    // index load time on a 20M-token corpus. Pushing in doc order
+    // keeps every list sorted ascending, same as before.
+    let mut last_doc: Vec<u32> = vec![u32::MAX; k_centroids];
     for doc_idx in 0..n_docs {
         let doc_codes =
             &doc_centroid_ids[doc_offsets[doc_idx]..doc_offsets[doc_idx + 1]];
-        let mut touched: Vec<u32> = doc_codes.to_vec();
-        touched.sort_unstable();
-        touched.dedup();
-        for cid in touched {
-            lists[cid as usize].push(doc_idx as u32);
+        for &cid in doc_codes {
+            if last_doc[cid as usize] != doc_idx as u32 {
+                last_doc[cid as usize] = doc_idx as u32;
+                lists[cid as usize].push(doc_idx as u32);
+            }
         }
     }
     InvertedFile { lists }
