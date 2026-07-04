@@ -21,6 +21,8 @@
 //! one is present is a separate, follow-up change; today this module
 //! only exposes the pieces that change needs.
 
+use std::sync::{Arc, Mutex, OnceLock};
+
 use candle_core::Tensor;
 use docbert_plaid::{
     index::{
@@ -282,6 +284,11 @@ pub fn update_index_with_chunks(
 /// Write `index` to the canonical PLAID index path under `data_dir`.
 pub fn save_index(index: &PlaidIndex, data_dir: &DataDir) -> Result<()> {
     persistence::save(index, &data_dir.plaid_index())?;
+    // Drop any cached copy: mtime alone can miss a same-second,
+    // same-length rewrite on coarse-timestamp filesystems.
+    *plaid_index_cache()
+        .lock()
+        .expect("plaid index cache poisoned") = None;
     Ok(())
 }
 
@@ -289,12 +296,73 @@ pub fn save_index(index: &PlaidIndex, data_dir: &DataDir) -> Result<()> {
 ///
 /// Returns `Ok(None)` when the file does not exist — callers typically
 /// treat that as "fall back to the linear-scan semantic leg".
+///
+/// Always deserializes from disk and hands back an owned index; the
+/// index-update path needs that ownership. Read-only per-query callers
+/// should prefer [`load_index_cached`].
 pub fn load_index(data_dir: &DataDir) -> Result<Option<PlaidIndex>> {
     let path = data_dir.plaid_index();
     if !path.exists() {
         return Ok(None);
     }
     Ok(Some(persistence::load(&path)?))
+}
+
+/// `(path, mtime, len)` identity of the index file a cached
+/// deserialization came from.
+type PlaidIndexCacheKey = (std::path::PathBuf, std::time::SystemTime, u64);
+
+/// Cache slot: the on-disk identity a deserialization came from, plus
+/// the shared index it produced.
+type PlaidIndexCacheEntry = (PlaidIndexCacheKey, Arc<PlaidIndex>);
+
+/// One-entry cache of the last deserialized PLAID index.
+///
+/// Long-lived processes (the MCP server) run many queries against the
+/// same on-disk index, and deserializing it per query dwarfs the
+/// actual search. One entry suffices: a process serves one data dir in
+/// practice, and the path in the key keeps multi-dir users (tests)
+/// correct — they just miss.
+fn plaid_index_cache() -> &'static Mutex<Option<PlaidIndexCacheEntry>> {
+    static CACHE: OnceLock<Mutex<Option<PlaidIndexCacheEntry>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// [`load_index`], but shared and cached across calls.
+///
+/// Stats the index file on every call and reuses the previously
+/// deserialized index only while `(path, mtime, len)` are unchanged;
+/// any rewrite (e.g. `docbert sync` from another process) is picked up
+/// on the next query. [`save_index`] in this process additionally
+/// clears the cache outright.
+pub fn load_index_cached(
+    data_dir: &DataDir,
+) -> Result<Option<Arc<PlaidIndex>>> {
+    let path = data_dir.plaid_index();
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let key = (path.clone(), metadata.modified()?, metadata.len());
+
+    let cache = plaid_index_cache();
+    if let Some((cached_key, index)) =
+        cache.lock().expect("plaid index cache poisoned").as_ref()
+        && *cached_key == key
+    {
+        return Ok(Some(Arc::clone(index)));
+    }
+
+    // Deserialize outside the lock; a racing query at worst loads the
+    // same index twice and the last one in wins.
+    let index = Arc::new(persistence::load(&path)?);
+    *cache.lock().expect("plaid index cache poisoned") =
+        Some((key, Arc::clone(&index)));
+    Ok(Some(index))
 }
 
 /// Release CUDA's async memory pool back to the driver.
@@ -453,6 +521,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = DataDir::new(tmp.path());
         assert!(load_index(&data_dir).unwrap().is_none());
+    }
+
+    #[test]
+    fn cached_load_reuses_until_index_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(tmp.path());
+        assert!(load_index_cached(&data_dir).unwrap().is_none());
+
+        let db = EmbeddingDb::open(&data_dir.embeddings_db()).unwrap();
+        seed_small_db(&db);
+        let index =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+        save_index(&index, &data_dir).unwrap();
+
+        // The cache is one process-wide entry, so a concurrently
+        // running test hitting its own data dir can evict ours between
+        // the two loads; retry a few times instead of flaking.
+        let reused = (0..3).any(|_| {
+            let first = load_index_cached(&data_dir).unwrap().expect("built");
+            let second = load_index_cached(&data_dir).unwrap().expect("built");
+            Arc::ptr_eq(&first, &second)
+        });
+        assert!(reused, "unchanged index file should be served from cache");
+
+        // A rewrite must be picked up on the next load. Interference
+        // can only cause extra reloads, never a stale hit, so these
+        // assertions are race-free.
+        let stale = load_index_cached(&data_dir).unwrap().expect("built");
+        db.store(4, 1, 2, &[5.0, 5.0]).unwrap();
+        let bigger =
+            build_index_from_embedding_db(&db, small_build_params()).unwrap();
+        save_index(&bigger, &data_dir).unwrap();
+        let fresh = load_index_cached(&data_dir).unwrap().expect("rebuilt");
+        assert!(!Arc::ptr_eq(&stale, &fresh));
+        assert_eq!(fresh.num_documents(), 4);
     }
 
     #[test]

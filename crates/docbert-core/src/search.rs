@@ -378,7 +378,7 @@ fn run_semantic_leg(
     // Require a prebuilt PLAID index. The caller surfaces the error as
     // an actionable "run `docbert sync`" message.
     let plaid_index =
-        plaid::load_index(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
+        plaid::load_index_cached(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
 
     // Collect metadata up front so we can (a) filter results by
     // collection and (b) hand a HashMap to the fusion caller for
@@ -561,7 +561,7 @@ pub fn semantic(
     model: &mut ModelManager,
 ) -> Result<Vec<FinalResult>> {
     let plaid_index =
-        plaid::load_index(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
+        plaid::load_index_cached(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
 
     let metadata_entries = config_db.list_all_document_metadata_typed()?;
     if metadata_entries.is_empty() {
