@@ -457,6 +457,86 @@ impl ModernBertAttention {
         let xs = xs.reshape((total_tokens, d))?;
         xs.apply(&self.proj)
     }
+
+    /// Flash attention for fixed-length query batches: every padded
+    /// row stays a query (ColBERT expansion rows' outputs feed
+    /// MaxSim), but only each sequence's valid prefix serves as
+    /// keys/values — mirroring the eager path's additive mask, which
+    /// only masks key columns.
+    #[cfg(feature = "cuda")]
+    fn forward_query_varlen(
+        &self,
+        hidden_states: &Tensor,
+        valid_lens: &[usize],
+        seqlens_q: &Tensor,
+        seqlens_k: &Tensor,
+        max_seqlen_k: usize,
+        local_window: Option<usize>,
+    ) -> Result<Tensor> {
+        let (b, seq_len, d) = hidden_states.dims3()?;
+        let qkv = hidden_states.apply(&self.qkv)?;
+
+        let q = qkv.narrow(2, 0, d)?.reshape((
+            b,
+            seq_len,
+            self.num_attention_heads,
+            self.attention_head_size,
+        ))?;
+        let k = qkv.narrow(2, d, d)?.reshape((
+            b,
+            seq_len,
+            self.num_attention_heads,
+            self.attention_head_size,
+        ))?;
+        let v = qkv.narrow(2, d * 2, d)?.reshape((
+            b,
+            seq_len,
+            self.num_attention_heads,
+            self.attention_head_size,
+        ))?;
+
+        let (q, k) = self.rotary_emb.apply_rotary_emb_thd(&q, &k)?;
+        let orig_dtype = q.dtype();
+        let flash_dtype = flash_compat_dtype(orig_dtype);
+        let q = q
+            .reshape((
+                b * seq_len,
+                self.num_attention_heads,
+                self.attention_head_size,
+            ))?
+            .to_dtype(flash_dtype)?;
+        let k = pack_varlen_thd(&k, valid_lens)?.to_dtype(flash_dtype)?;
+        let v = pack_varlen_thd(&v, valid_lens)?.to_dtype(flash_dtype)?;
+        let xs = match local_window {
+            Some(window) => candle_flash_attn::flash_attn_varlen_windowed(
+                &q,
+                &k,
+                &v,
+                seqlens_q,
+                seqlens_k,
+                seq_len,
+                max_seqlen_k,
+                1.0,
+                Some(window),
+                Some(window),
+            )?,
+            None => candle_flash_attn::flash_attn_varlen(
+                &q,
+                &k,
+                &v,
+                seqlens_q,
+                seqlens_k,
+                seq_len,
+                max_seqlen_k,
+                1.0,
+                false,
+            )?,
+        };
+        let xs = xs.to_dtype(orig_dtype)?;
+
+        let xs = xs.reshape((b, seq_len, d))?;
+        xs.apply(&self.proj)
+    }
 }
 
 #[derive(Clone)]
@@ -612,6 +692,36 @@ impl ModernBertLayer {
         let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
         xs + mlp_out
     }
+
+    #[cfg(feature = "cuda")]
+    fn forward_query_varlen(
+        &self,
+        xs: &Tensor,
+        valid_lens: &[usize],
+        seqlens_q: &Tensor,
+        seqlens_k: &Tensor,
+        max_seqlen_k: usize,
+        local_window: Option<usize>,
+    ) -> Result<Tensor> {
+        let residual = xs.clone();
+        let mut xs = xs.clone();
+        if let Some(norm) = &self.attn_norm {
+            xs = xs.apply(norm)?;
+        }
+
+        let xs = self.attn.forward_query_varlen(
+            &xs,
+            valid_lens,
+            seqlens_q,
+            seqlens_k,
+            max_seqlen_k,
+            local_window,
+        )?;
+        let xs = (xs + residual)?;
+        let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
+        let xs = (xs + mlp_out)?;
+        Ok(xs)
+    }
 }
 
 #[derive(Clone)]
@@ -738,6 +848,18 @@ fn packed_position_ids(
 
 #[cfg(feature = "cuda")]
 fn pack_varlen_bsd(xs: &Tensor, valid_lens: &[usize]) -> Result<Tensor> {
+    let mut packed = Vec::with_capacity(valid_lens.len());
+    for (batch_idx, &len) in valid_lens.iter().enumerate() {
+        packed.push(xs.i(batch_idx)?.narrow(0, 0, len.max(1))?);
+    }
+    Tensor::cat(&packed, 0)
+}
+
+/// Packs `(batch, seq, heads, head_dim)` rows into flash varlen's
+/// `(total_tokens, heads, head_dim)` layout, keeping each sequence's
+/// valid prefix only.
+#[cfg(feature = "cuda")]
+fn pack_varlen_thd(xs: &Tensor, valid_lens: &[usize]) -> Result<Tensor> {
     let mut packed = Vec::with_capacity(valid_lens.len());
     for (batch_idx, &len) in valid_lens.iter().enumerate() {
         packed.push(xs.i(batch_idx)?.narrow(0, 0, len.max(1))?);
@@ -958,6 +1080,58 @@ impl ModernBert {
             max_seq_len,
             xs.device(),
         )?;
+        xs.apply(&self.final_norm)
+    }
+
+    /// Forward pass for fixed-length query batches where padding rows
+    /// must produce outputs (ColBERT query expansion feeds [MASK]
+    /// expansion rows into MaxSim) without serving as attention keys.
+    /// Rows keep the padded layout end to end; only k/v are packed to
+    /// each sequence's valid prefix per layer.
+    #[cfg(feature = "cuda")]
+    pub fn forward_query_varlen(
+        &self,
+        xs: &Tensor,
+        valid_lens: &[usize],
+    ) -> Result<Tensor> {
+        let (batch, seq_len) = xs.dims2()?;
+        let local_window = self.local_attention_size / 2;
+        let full_attention_threshold = local_window * 2 + 1;
+        // Flash varlen aligns sliding windows to the bottom-right
+        // diagonal when a sequence's key prefix is shorter than its
+        // query rows, which diverges from ModernBERT's centered band.
+        // No known ColBERT config pads queries past the threshold, so
+        // refuse rather than silently mis-attend.
+        if seq_len > full_attention_threshold
+            && valid_lens.iter().any(|&len| len < seq_len)
+        {
+            candle_core::bail!(
+                "queries longer than {full_attention_threshold} tokens \
+                 with expansion padding must use the masked path"
+            );
+        }
+        let mut xs = xs.apply(&self.word_embeddings)?.apply(&self.norm)?;
+        let uniform_q = vec![seq_len; batch];
+        let (seqlens_q, _) = cumulative_seqlens(&uniform_q, xs.device())?;
+        let (seqlens_k, max_seqlen_k) =
+            cumulative_seqlens(valid_lens, xs.device())?;
+        for layer in self.layers.iter() {
+            let effective_window = if layer.uses_local_attention
+                && seq_len > full_attention_threshold
+            {
+                Some(local_window)
+            } else {
+                None
+            };
+            xs = layer.forward_query_varlen(
+                &xs,
+                valid_lens,
+                &seqlens_q,
+                &seqlens_k,
+                max_seqlen_k,
+                effective_window,
+            )?;
+        }
         xs.apply(&self.final_norm)
     }
 }

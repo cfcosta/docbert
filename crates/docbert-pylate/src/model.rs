@@ -346,6 +346,22 @@ pub struct ColBERT {
     pub dtype: DType,
 }
 
+/// One tokenized batch, ready for a model forward pass.
+///
+/// `valid_lens` are the per-row attention-mask sums in caller order —
+/// the true token counts regardless of how the rows were padded. The
+/// CUDA varlen paths key their packing and flash `cu_seqlens` on them,
+/// so they must never be read from padded encoding widths.
+pub(crate) struct TokenizedBatch {
+    pub(crate) token_ids: Tensor,
+    pub(crate) attention_mask: Tensor,
+    pub(crate) token_type_ids: Tensor,
+    /// Longest valid row in the batch (never zero).
+    pub(crate) max_valid_len: usize,
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    pub(crate) valid_lens: Vec<usize>,
+}
+
 impl ColBERT {
     /// Creates a new instance of the `ColBERT` model from byte buffers.
     ///
@@ -615,37 +631,28 @@ impl ColBERT {
 
             let all_embeddings = tokenized_batches
                 .into_par_iter()
-                .map(
-                    |(
-                        token_ids,
-                        attention_mask,
-                        token_type_ids,
-                        max_valid_len,
-                    )|
-                     -> Result<Tensor, ColbertError> {
-                        let token_embeddings = self.model.forward(
-                            &token_ids,
-                            &attention_mask,
-                            &token_type_ids,
-                        )?;
-                        let token_embeddings =
-                            if token_embeddings.is_contiguous() {
-                                token_embeddings
-                            } else {
-                                token_embeddings.contiguous()?
-                            };
-                        let projected_embeddings =
-                            self.project(&token_embeddings)?;
+                .map(|batch: TokenizedBatch| -> Result<Tensor, ColbertError> {
+                    let token_embeddings = self.model.forward(
+                        &batch.token_ids,
+                        &batch.attention_mask,
+                        &batch.token_type_ids,
+                    )?;
+                    let token_embeddings = if token_embeddings.is_contiguous() {
+                        token_embeddings
+                    } else {
+                        token_embeddings.contiguous()?
+                    };
+                    let projected_embeddings =
+                        self.project(&token_embeddings)?;
 
-                        self.finalize_embeddings(
-                            &projected_embeddings,
-                            &attention_mask,
-                            max_valid_len,
-                            is_query,
-                        )
-                        .map_err(ColbertError::from)
-                    },
-                )
+                    self.finalize_embeddings(
+                        &projected_embeddings,
+                        &batch.attention_mask,
+                        batch.max_valid_len,
+                        is_query,
+                    )
+                    .map_err(ColbertError::from)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
             return concatenate_embedding_batches(all_embeddings)
@@ -653,7 +660,14 @@ impl ColBERT {
         }
 
         // Fallback to sequential processing for GPU, WASM, or other devices.
-        if !is_query && sentences.len() > self.batch_size {
+        // ModernBERT documents on CUDA always take the sorted path: its
+        // flash varlen/unmasked kernels beat the eager masked forward at
+        // any batch size, and small batches just skip the batching loop.
+        let use_sorted_document_path = !is_query
+            && (sentences.len() > self.batch_size
+                || (self.device.is_cuda()
+                    && matches!(&self.model, BaseModel::ModernBert(_))));
+        if use_sorted_document_path {
             let texts_with_prefix: Vec<_> = sentences
                 .iter()
                 .map(|text| format!("{}{}", self.document_prefix, text))
@@ -711,60 +725,48 @@ impl ColBERT {
                     .last()
                     .map_or(0, |encoding| encoding.get_ids().len());
                 let has_padding = first_len != last_len;
-                // Lengths must be read before pad_encodings extends
-                // every row's ids to the padded width; flash varlen
-                // would otherwise attend [PAD] keys.
-                #[cfg(feature = "cuda")]
-                let valid_lens = if has_padding {
-                    Some(
-                        batch_encodings
-                            .iter()
-                            .map(|encoding| encoding.get_ids().len())
-                            .collect::<Vec<_>>(),
-                    )
-                } else {
-                    None
-                };
                 if has_padding {
                     pad_encodings(batch_encodings, &padding)?;
                 }
-                let (token_ids, attention_mask, token_type_ids, max_valid_len) =
-                    self.tensorize_encodings(batch_encodings, false)?;
+                // The batch's valid_lens come from attention-mask sums,
+                // which keep zeros on padding — never from the padded
+                // encoding widths, or flash varlen would attend [PAD]
+                // keys.
+                let batch = self.tensorize_encodings(batch_encodings, false)?;
 
                 let token_embeddings = {
                     #[cfg(feature = "cuda")]
                     {
                         if !has_padding {
                             if let BaseModel::ModernBert(model) = &self.model {
-                                model.forward_unmasked(&token_ids)?
+                                model.forward_unmasked(&batch.token_ids)?
                             } else {
                                 self.model.forward(
-                                    &token_ids,
-                                    &attention_mask,
-                                    &token_type_ids,
+                                    &batch.token_ids,
+                                    &batch.attention_mask,
+                                    &batch.token_type_ids,
                                 )?
                             }
-                        } else if let (
-                            BaseModel::ModernBert(model),
-                            Some(valid_lens),
-                        ) = (&self.model, valid_lens.as_ref())
+                        } else if let BaseModel::ModernBert(model) = &self.model
                         {
-                            model
-                                .forward_varlen_padded(&token_ids, valid_lens)?
+                            model.forward_varlen_padded(
+                                &batch.token_ids,
+                                &batch.valid_lens,
+                            )?
                         } else {
                             self.model.forward(
-                                &token_ids,
-                                &attention_mask,
-                                &token_type_ids,
+                                &batch.token_ids,
+                                &batch.attention_mask,
+                                &batch.token_type_ids,
                             )?
                         }
                     }
                     #[cfg(not(feature = "cuda"))]
                     {
                         self.model.forward(
-                            &token_ids,
-                            &attention_mask,
-                            &token_type_ids,
+                            &batch.token_ids,
+                            &batch.attention_mask,
+                            &batch.token_type_ids,
                         )?
                     }
                 };
@@ -776,8 +778,8 @@ impl ColBERT {
                 let projected_embeddings = self.project(&token_embeddings)?;
                 let final_embeddings = self.finalize_embeddings(
                     &projected_embeddings,
-                    &attention_mask,
-                    max_valid_len,
+                    &batch.attention_mask,
+                    batch.max_valid_len,
                     false,
                 )?;
                 all_embeddings.push(final_embeddings);
@@ -796,14 +798,40 @@ impl ColBERT {
         let mut all_embeddings =
             Vec::with_capacity(sentences.len().div_ceil(self.batch_size));
         for batch_sentences in sentences.chunks(self.batch_size) {
-            let (token_ids, attention_mask, token_type_ids, max_valid_len) =
-                self.tokenize(batch_sentences, is_query)?;
+            let batch = self.tokenize(batch_sentences, is_query)?;
 
+            // ModernBERT queries on CUDA skip the eager masked forward:
+            // fully valid batches attend everything (unmasked flash),
+            // expansion-padded batches keep every row as a query but
+            // only valid prefixes as keys (flash varlen), matching the
+            // eager mask, which only masks key columns.
+            #[cfg(feature = "cuda")]
+            let token_embeddings = if let (true, BaseModel::ModernBert(model)) =
+                (is_query && self.device.is_cuda(), &self.model)
+            {
+                let seq_len = batch.token_ids.dim(1)?;
+                if batch.valid_lens.iter().all(|&len| len == seq_len) {
+                    model.forward_unmasked(&batch.token_ids)?
+                } else {
+                    model.forward_query_varlen(
+                        &batch.token_ids,
+                        &batch.valid_lens,
+                    )?
+                }
+            } else {
+                self.model.forward(
+                    &batch.token_ids,
+                    &batch.attention_mask,
+                    &batch.token_type_ids,
+                )?
+            };
+            #[cfg(not(feature = "cuda"))]
             let token_embeddings = self.model.forward(
-                &token_ids,
-                &attention_mask,
-                &token_type_ids,
+                &batch.token_ids,
+                &batch.attention_mask,
+                &batch.token_type_ids,
             )?;
+
             let token_embeddings = if token_embeddings.is_contiguous() {
                 token_embeddings
             } else {
@@ -814,8 +842,8 @@ impl ColBERT {
 
             let final_embeddings = self.finalize_embeddings(
                 &projected_embeddings,
-                &attention_mask,
-                max_valid_len,
+                &batch.attention_mask,
+                batch.max_valid_len,
                 is_query,
             )?;
 
@@ -848,7 +876,7 @@ impl ColBERT {
         &self,
         encodings: &[Encoding],
         is_query: bool,
-    ) -> Result<(Tensor, Tensor, Tensor, usize), ColbertError> {
+    ) -> Result<TokenizedBatch, ColbertError> {
         let device = &self.device;
         let batch_size = encodings.len();
         if batch_size == 0 {
@@ -857,42 +885,37 @@ impl ColBERT {
             ));
         }
 
-        // Collect tokenization outputs into flat vectors. For documents, the padded sequence
-        // length already equals the batch max valid length. For non-expansion queries, compute the
-        // max valid length while we are already walking the CPU-side attention masks so the CUDA
-        // path can skip its own mask-length readback.
+        // Collect tokenization outputs into flat vectors, summing each
+        // row's attention mask along the way: the mask keeps zeros on
+        // padding even after `pad_encodings` mutates the ids, so these
+        // sums are the true per-row lengths the CUDA varlen paths key
+        // on.
         let seq_len = encodings.first().map_or(0, |e| e.get_ids().len());
-        let needs_query_valid_len = is_query
-            && !self.do_query_expansion
-            && !self.attend_to_expansion_tokens;
+        let attend_to_all = is_query && self.attend_to_expansion_tokens;
         let needs_token_type_ids = matches!(&self.model, BaseModel::Bert(_));
-        let mut max_valid_len = if needs_query_valid_len {
-            1
-        } else {
-            seq_len.max(1)
-        };
         let flat_len = batch_size * seq_len;
         let mut ids_vec = Vec::<u32>::with_capacity(flat_len);
         let mut mask_vec = Vec::<u32>::with_capacity(flat_len);
+        let mut valid_lens = Vec::with_capacity(batch_size);
         let mut type_ids_vec =
             needs_token_type_ids.then(|| Vec::<u32>::with_capacity(flat_len));
         for enc in encodings {
             ids_vec.extend(enc.get_ids());
-            let attention = enc.get_attention_mask();
-            if needs_query_valid_len {
-                let mut valid_len = 0usize;
-                for &mask in attention {
-                    valid_len += mask as usize;
-                    mask_vec.push(mask);
-                }
-                max_valid_len = max_valid_len.max(valid_len.max(1));
-            } else {
-                mask_vec.extend(attention);
+            let mut valid_len = 0usize;
+            for &mask in enc.get_attention_mask() {
+                valid_len += mask as usize;
+                mask_vec.push(mask);
             }
+            valid_lens.push(if attend_to_all {
+                seq_len.max(1)
+            } else {
+                valid_len.max(1)
+            });
             if let Some(type_ids_vec) = type_ids_vec.as_mut() {
                 type_ids_vec.extend(enc.get_type_ids());
             }
         }
+        let max_valid_len = valid_lens.iter().copied().max().unwrap_or(1);
 
         let token_ids =
             Tensor::from_vec(ids_vec, (batch_size, seq_len), device)?;
@@ -905,11 +928,17 @@ impl ColBERT {
             None => Tensor::zeros((1, 1), DType::U32, device)?,
         };
 
-        if is_query && self.attend_to_expansion_tokens {
+        if attend_to_all {
             attention_mask = attention_mask.ones_like()?;
         }
 
-        Ok((token_ids, attention_mask, token_type_ids, max_valid_len))
+        Ok(TokenizedBatch {
+            token_ids,
+            attention_mask,
+            token_type_ids,
+            max_valid_len,
+            valid_lens,
+        })
     }
 
     /// Tokenizes a batch of texts, applying specific logic for queries and documents.
@@ -917,7 +946,7 @@ impl ColBERT {
         &mut self,
         texts: &[String],
         is_query: bool,
-    ) -> Result<(Tensor, Tensor, Tensor, usize), ColbertError> {
+    ) -> Result<TokenizedBatch, ColbertError> {
         let (prefix, max_length) = if is_query {
             (self.query_prefix.as_str(), self.query_length)
         } else {

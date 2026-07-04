@@ -15,13 +15,12 @@
 //!
 //! Prints a single JSON object to stdout.
 //!
-//! The parity corpus is 64 fixed documents, so which encode path a
-//! `--dump`/`--compare` run exercises depends on `--batch-size`: at
-//! the default 64 it takes the generic eager path, while smaller
-//! values (e.g. 16) route through the sorted varlen/flash path used
-//! by production indexing. Dump a ground-truth reference with
-//! `--cpu --dtype f32 --dump`, then compare GPU runs at several batch
-//! sizes against it.
+//! The parity corpus is 64 fixed documents. On CUDA, ModernBERT
+//! documents always route through the sorted varlen/flash path;
+//! `--batch-size` still controls how the corpus splits into token
+//! budget batches (64 = one batch, 16 = four), so compare at several
+//! sizes. Dump a ground-truth reference with `--cpu --dtype f32
+//! --dump`, then compare GPU runs against it.
 
 use std::{env, fs, time::Instant};
 

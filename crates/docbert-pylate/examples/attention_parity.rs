@@ -171,6 +171,45 @@ fn main() {
             }),
         );
     }
+
+    // ColBERT query expansion: rows padded to a fixed 48 tokens where
+    // padding rows still produce outputs (they feed MaxSim) but must
+    // not act as keys. The eager mask only masks key columns, so it is
+    // the exact semantic reference; compare ALL rows, padded included.
+    let query_valid_lens = vec![9, 14, 21, 30, 39, 48, 5, 17];
+    let query_seq_len = 48;
+    let (ids, mask) = token_batch(
+        &mut rng,
+        &vec![query_seq_len; query_valid_lens.len()],
+        &device,
+    );
+    let mut mask_rows = mask.to_vec2::<u32>().expect("mask rows");
+    for (row, &len) in mask_rows.iter_mut().zip(&query_valid_lens) {
+        for (pos, slot) in row.iter_mut().enumerate() {
+            *slot = u32::from(pos < len);
+        }
+    }
+    let mask = Tensor::from_vec(
+        mask_rows.concat(),
+        (query_valid_lens.len(), query_seq_len),
+        &device,
+    )
+    .expect("query mask");
+    let reference = model.forward(&ids, &mask).expect("eager query");
+    let fast = model
+        .forward_query_varlen(&ids, &query_valid_lens)
+        .expect("query varlen");
+    let all_rows = vec![query_seq_len; query_valid_lens.len()];
+    let (max_abs, min_cos, row_min_cos) = compare(&reference, &fast, &all_rows);
+    results.insert(
+        "query_expansion".to_string(),
+        serde_json::json!({
+            "path": "query_varlen",
+            "max_abs_diff": max_abs,
+            "min_token_cosine": min_cos,
+            "row_min_cosine": row_min_cos,
+        }),
+    );
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::Value::Object(results))
