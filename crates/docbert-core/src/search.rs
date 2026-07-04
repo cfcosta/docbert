@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::Path,
+};
 
 use crate::{
     config_db::ConfigDb,
@@ -380,24 +383,6 @@ fn run_semantic_leg(
     let plaid_index =
         plaid::load_index_cached(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
 
-    // Collect metadata up front so we can (a) filter results by
-    // collection and (b) hand a HashMap to the fusion caller for
-    // final-result enrichment.
-    let metadata_entries = config_db.list_all_document_metadata_typed()?;
-    if metadata_entries.is_empty() {
-        return Ok((HashMap::new(), Vec::new()));
-    }
-
-    let metadata: HashMap<u64, DocumentMetadata> = metadata_entries
-        .into_iter()
-        .filter(|(_, meta)| {
-            collection.is_none_or(|c| c == meta.collection.as_str())
-        })
-        .collect();
-    if metadata.is_empty() {
-        return Ok((metadata, Vec::new()));
-    }
-
     let query_embedding = model.encode_query(query)?;
 
     // Oversample PLAID so a collection filter + chunk-family collapse
@@ -406,9 +391,9 @@ fn run_semantic_leg(
     let raw_results =
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
-    let mut ranked = collapse_chunks_to_documents(
+    let (metadata, mut ranked) = collapse_chunks_to_documents(
         config_db,
-        &metadata,
+        collection,
         &raw_results,
         limit,
     )?;
@@ -427,20 +412,38 @@ fn run_semantic_leg(
 ///
 /// Each chunk id is content-derived, so it can belong to multiple
 /// documents; the lookup against `chunk_owners` returns every document
-/// that contains the chunk. Owners absent from `metadata` (typically
-/// filtered out by a collection scope) are dropped silently.
+/// that contains the chunk. Document metadata is point-read and
+/// memoized per candidate owner — a query touches at most a few
+/// hundred candidates while the metadata table holds the whole corpus,
+/// so scanning it up front cost more than the PLAID search itself.
+/// Owners without metadata (stale chunks) or outside `collection` are
+/// dropped silently; the returned map carries the metadata of every
+/// surviving candidate for final-result enrichment.
 fn collapse_chunks_to_documents(
     config_db: &ConfigDb,
-    metadata: &HashMap<u64, DocumentMetadata>,
+    collection: Option<&str>,
     raw_results: &[plaid::PlaidResult],
     limit: usize,
-) -> Result<Vec<RankedDocument>> {
+) -> Result<(HashMap<u64, DocumentMetadata>, Vec<RankedDocument>)> {
+    let mut candidates: HashMap<u64, Option<DocumentMetadata>> = HashMap::new();
     let mut best_per_doc: HashMap<u64, (f32, u64)> =
         HashMap::with_capacity(limit);
     for result in raw_results {
         let owners = config_db.get_chunk_owners(result.doc_id)?;
         for owner in owners {
-            if !metadata.contains_key(&owner) {
+            let kept = match candidates.entry(owner) {
+                Entry::Occupied(entry) => entry.get().is_some(),
+                Entry::Vacant(entry) => {
+                    let meta = config_db
+                        .get_document_metadata_typed(owner)?
+                        .filter(|meta| {
+                            collection
+                                .is_none_or(|c| c == meta.collection.as_str())
+                        });
+                    entry.insert(meta).is_some()
+                }
+            };
+            if !kept {
                 continue;
             }
             best_per_doc
@@ -455,14 +458,19 @@ fn collapse_chunks_to_documents(
         }
     }
 
-    Ok(best_per_doc
+    let ranked = best_per_doc
         .into_iter()
         .map(|(doc_num_id, (score, best_chunk_doc_id))| RankedDocument {
             doc_num_id,
             score,
             best_chunk_doc_id: Some(best_chunk_doc_id),
         })
-        .collect())
+        .collect();
+    let metadata = candidates
+        .into_iter()
+        .filter_map(|(doc_id, meta)| Some((doc_id, meta?)))
+        .collect();
+    Ok((metadata, ranked))
 }
 
 /// Fuse any number of ranked document-id lists using Reciprocal Rank Fusion.
@@ -563,31 +571,15 @@ pub fn semantic(
     let plaid_index =
         plaid::load_index_cached(data_dir)?.ok_or(Error::PlaidIndexMissing)?;
 
-    let metadata_entries = config_db.list_all_document_metadata_typed()?;
-    if metadata_entries.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let metadata: HashMap<u64, DocumentMetadata> = metadata_entries
-        .into_iter()
-        .filter(|(_, meta)| {
-            args.collection.is_none()
-                || args.collection.as_deref() == Some(meta.collection.as_str())
-        })
-        .collect();
-    if metadata.is_empty() {
-        return Ok(vec![]);
-    }
-
     let query_embedding = model.encode_query(&args.query)?;
 
     let oversample = args.count.saturating_mul(8).max(args.count).max(64);
     let raw_results =
         plaid::search(&plaid_index, &query_embedding, oversample)?;
 
-    let mut ranked = collapse_chunks_to_documents(
+    let (metadata, mut ranked) = collapse_chunks_to_documents(
         config_db,
-        &metadata,
+        args.collection.as_deref(),
         &raw_results,
         args.count,
     )?;
@@ -1048,6 +1040,78 @@ mod tests {
             resolve_by_path(&db, "hello.md"),
             Some(("notes".to_string(), "hello.md".to_string()))
         );
+    }
+
+    #[test]
+    fn collapse_point_reads_metadata_filters_collection_and_stale_owners() {
+        use crate::config_db::DocChunkEntry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
+
+        let chunk = |chunk_doc_id: u64| DocChunkEntry {
+            chunk_doc_id,
+            start_byte: 0,
+            byte_len: 10,
+        };
+        let meta = |collection: &str, path: &str| DocumentMetadata {
+            collection: collection.to_string(),
+            relative_path: path.to_string(),
+            mtime: 1,
+        };
+
+        // Docs 1 ("notes") and 2 ("papers") share chunk 100; doc 1
+        // also owns chunk 101; doc 3 owns chunk 200 but has no
+        // metadata (stale index entry).
+        db.set_document_metadata_typed(1, &meta("notes", "a.md"))
+            .unwrap();
+        db.set_document_metadata_typed(2, &meta("papers", "b.md"))
+            .unwrap();
+        db.set_doc_chunks(1, &[chunk(100), chunk(101)]).unwrap();
+        db.set_doc_chunks(2, &[chunk(100)]).unwrap();
+        db.set_doc_chunks(3, &[chunk(200)]).unwrap();
+
+        let raw = vec![
+            plaid::PlaidResult {
+                doc_id: 200,
+                score: 9.0,
+            },
+            plaid::PlaidResult {
+                doc_id: 101,
+                score: 7.0,
+            },
+            plaid::PlaidResult {
+                doc_id: 100,
+                score: 5.0,
+            },
+        ];
+
+        // Unfiltered: stale doc 3 is dropped, docs 1 and 2 survive,
+        // and doc 1's best chunk is the higher-scoring 101.
+        let (metadata, ranked) =
+            collapse_chunks_to_documents(&db, None, &raw, 10).unwrap();
+        assert_eq!(
+            metadata
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [1u64, 2].into_iter().collect()
+        );
+        let by_doc: HashMap<u64, &RankedDocument> =
+            ranked.iter().map(|r| (r.doc_num_id, r)).collect();
+        assert_eq!(by_doc.len(), 2);
+        assert_eq!(by_doc[&1].score, 7.0);
+        assert_eq!(by_doc[&1].best_chunk_doc_id, Some(101));
+        assert_eq!(by_doc[&2].score, 5.0);
+        assert_eq!(by_doc[&2].best_chunk_doc_id, Some(100));
+
+        // Collection filter: only the "notes" doc survives, and the
+        // enrichment map shrinks with it.
+        let (metadata, ranked) =
+            collapse_chunks_to_documents(&db, Some("notes"), &raw, 10).unwrap();
+        assert_eq!(metadata.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].doc_num_id, 1);
     }
 
     #[test]
