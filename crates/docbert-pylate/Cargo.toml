@@ -46,3 +46,9 @@ hegeltest = "0.10"
 [[bench]]
 name = "encode_batch_size"
 harness = false
+
+# Compares the eager masked forward against the CUDA-only flash
+# paths, so it cannot build without them.
+[[example]]
+name = "attention_parity"
+required-features = ["cuda"]

@@ -358,7 +358,6 @@ pub(crate) struct TokenizedBatch {
     pub(crate) token_type_ids: Tensor,
     /// Longest valid row in the batch (never zero).
     pub(crate) max_valid_len: usize,
-    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     pub(crate) valid_lens: Vec<usize>,
 }
 
@@ -588,9 +587,7 @@ impl ColBERT {
         &mut self,
         sentences: &[String],
     ) -> Result<(Tensor, Vec<u32>), ColbertError> {
-        let lengths = self.document_token_lengths(sentences)?;
-        let embeddings = self.encode(sentences, false)?;
-        Ok((embeddings, lengths))
+        self.encode_with_lengths(sentences, false)
     }
 
     /// Encodes a batch of sentences (queries or documents) into embeddings.
@@ -602,6 +599,18 @@ impl ColBERT {
         sentences: &[String],
         is_query: bool,
     ) -> Result<Tensor, ColbertError> {
+        Ok(self.encode_with_lengths(sentences, is_query)?.0)
+    }
+
+    /// [`encode`] plus per-sentence valid-token counts, read off the
+    /// tokenization each encode path performs anyway — no second
+    /// tokenizer pass. For queries the counts are the pre-expansion
+    /// token counts (mask sums), which callers currently ignore.
+    fn encode_with_lengths(
+        &mut self,
+        sentences: &[String],
+        is_query: bool,
+    ) -> Result<(Tensor, Vec<u32>), ColbertError> {
         if sentences.is_empty() {
             return Err(ColbertError::Operation(
                 "Input sentences cannot be empty.".into(),
@@ -628,6 +637,12 @@ impl ColBERT {
                 tokenized_batches
                     .push(self.tokenize(batch_sentences, is_query)?);
             }
+            let lengths: Vec<u32> = tokenized_batches
+                .iter()
+                .flat_map(|batch| {
+                    batch.valid_lens.iter().map(|&len| len as u32)
+                })
+                .collect();
 
             let all_embeddings = tokenized_batches
                 .into_par_iter()
@@ -655,8 +670,9 @@ impl ColBERT {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            return concatenate_embedding_batches(all_embeddings)
-                .map_err(ColbertError::from);
+            let embeddings = concatenate_embedding_batches(all_embeddings)
+                .map_err(ColbertError::from)?;
+            return Ok((embeddings, lengths));
         }
 
         // Fallback to sequential processing for GPU, WASM, or other devices.
@@ -682,6 +698,12 @@ impl ColBERT {
 
             let encodings =
                 self.tokenizer.encode_batch_fast(texts_with_prefix, true)?;
+            // Pre-padding widths are the true post-truncation token
+            // counts; grab them in caller order before the sort.
+            let lengths: Vec<u32> = encodings
+                .iter()
+                .map(|encoding| encoding.get_ids().len() as u32)
+                .collect();
             let mut indexed_encodings: Vec<(usize, Encoding)> =
                 encodings.into_iter().enumerate().collect();
             indexed_encodings.sort_unstable_by_key(|(_, encoding)| {
@@ -790,15 +812,16 @@ impl ColBERT {
                 .map_err(ColbertError::from)?;
             let restore_indices =
                 Tensor::from_vec(inverse, inverse_len, &self.device)?;
-            return embeddings
-                .index_select(&restore_indices, 0)
-                .map_err(ColbertError::from);
+            let embeddings = embeddings.index_select(&restore_indices, 0)?;
+            return Ok((embeddings, lengths));
         }
 
         let mut all_embeddings =
             Vec::with_capacity(sentences.len().div_ceil(self.batch_size));
+        let mut lengths: Vec<u32> = Vec::with_capacity(sentences.len());
         for batch_sentences in sentences.chunks(self.batch_size) {
             let batch = self.tokenize(batch_sentences, is_query)?;
+            lengths.extend(batch.valid_lens.iter().map(|&len| len as u32));
 
             // ModernBERT queries on CUDA skip the eager masked forward:
             // fully valid batches attend everything (unmasked flash),
@@ -850,8 +873,9 @@ impl ColBERT {
             all_embeddings.push(final_embeddings);
         }
 
-        concatenate_embedding_batches(all_embeddings)
-            .map_err(ColbertError::from)
+        let embeddings = concatenate_embedding_batches(all_embeddings)
+            .map_err(ColbertError::from)?;
+        Ok((embeddings, lengths))
     }
 
     /// Calculates the similarity scores between query and document embeddings.

@@ -99,6 +99,11 @@ pub fn embed_and_store(
 /// 32-document batch size so CPU work can spread across multiple inner batches.
 /// `on_progress` receives the cumulative document count after each batch is stored.
 ///
+/// Encoding and pooling/storage run pipelined: while the GPU encodes
+/// one submission batch, a worker thread Ward-pools the previous batch
+/// and writes it to the database. `on_progress` therefore fires from
+/// that worker thread, hence the `Send` bound.
+///
 /// Every document is pooled before storage — see [`embed_documents`] for
 /// the compression scheme.
 pub fn embed_and_store_in_batches<F>(
@@ -109,7 +114,7 @@ pub fn embed_and_store_in_batches<F>(
     on_progress: F,
 ) -> Result<usize>
 where
-    F: FnMut(usize),
+    F: FnMut(usize) + Send,
 {
     embed_and_store_in_batches_with(
         model,
@@ -120,14 +125,22 @@ where
     )
 }
 
-fn embed_documents_with<E: DocumentEncoder>(
+/// GPU-side product of one submission batch: everything CPU pooling
+/// needs, already copied to host memory. Plain `Vec`s so a batch can
+/// cross the channel to the pooling/store worker thread.
+struct EncodedBatch {
+    doc_ids: Vec<u64>,
+    lengths: Vec<u32>,
+    flat_embeddings: Vec<f32>,
+    flat_dots: Vec<f32>,
+    padded_tokens: usize,
+    dimension: usize,
+}
+
+fn encode_batch<E: DocumentEncoder>(
     model: &mut E,
     documents: Vec<(u64, String)>,
-) -> Result<Vec<EncodedEmbeddingEntry>> {
-    if documents.is_empty() {
-        return Ok(vec![]);
-    }
-
+) -> Result<EncodedBatch> {
     // Unzip to avoid cloning - we take ownership of the strings
     let (doc_ids, texts): (Vec<u64>, Vec<String>) =
         documents.into_iter().unzip();
@@ -159,13 +172,30 @@ fn embed_documents_with<E: DocumentEncoder>(
     let embeddings_t = embeddings.transpose(1, 2)?.contiguous()?;
     let dots_tensor = embeddings.matmul(&embeddings_t)?;
 
-    let flat_embeddings = tensor_to_flat_f32(&embeddings)?;
-    let flat_dots = tensor_to_flat_f32(&dots_tensor)?;
+    Ok(EncodedBatch {
+        doc_ids,
+        lengths,
+        flat_embeddings: tensor_to_flat_f32(&embeddings)?,
+        flat_dots: tensor_to_flat_f32(&dots_tensor)?,
+        padded_tokens,
+        dimension,
+    })
+}
+
+fn pool_batch(batch: EncodedBatch) -> Result<Vec<EncodedEmbeddingEntry>> {
+    let EncodedBatch {
+        doc_ids,
+        lengths,
+        flat_embeddings,
+        flat_dots,
+        padded_tokens,
+        dimension,
+    } = batch;
     let doc_token_stride = padded_tokens * dimension;
     let doc_dots_stride = padded_tokens * padded_tokens;
 
-    let mut entries = Vec::with_capacity(batch_size);
-    for (i, doc_id) in doc_ids.into_iter().enumerate().take(batch_size) {
+    let mut entries = Vec::with_capacity(doc_ids.len());
+    for (i, doc_id) in doc_ids.into_iter().enumerate() {
         let num_tokens = usize::min(lengths[i] as usize, padded_tokens);
         let token_start = i * doc_token_stride;
         // Take only the first `num_tokens` rows; the tail of the doc's
@@ -210,6 +240,16 @@ fn embed_documents_with<E: DocumentEncoder>(
     Ok(entries)
 }
 
+fn embed_documents_with<E: DocumentEncoder>(
+    model: &mut E,
+    documents: Vec<(u64, String)>,
+) -> Result<Vec<EncodedEmbeddingEntry>> {
+    if documents.is_empty() {
+        return Ok(vec![]);
+    }
+    pool_batch(encode_batch(model, documents)?)
+}
+
 fn embed_and_store_with<E: DocumentEncoder>(
     model: &mut E,
     db: &EmbeddingDb,
@@ -230,7 +270,7 @@ fn embed_and_store_in_batches_with<E, F>(
 ) -> Result<usize>
 where
     E: DocumentEncoder,
-    F: FnMut(usize),
+    F: FnMut(usize) + Send,
 {
     if submission_batch_size == 0 {
         return Err(Error::Config(
@@ -239,21 +279,43 @@ where
         ));
     }
 
-    let mut embedded_total = 0;
-    let mut documents = documents.into_iter();
+    // Double-buffer: the producer keeps the GPU busy encoding batch
+    // N+1 while a worker thread Ward-pools and stores batch N. The
+    // channel bound of one caps host memory at two decoded batches
+    // (~65 MB each) and keeps the two stages in lockstep.
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<EncodedBatch>(1);
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(move || -> Result<usize> {
+            let mut stored_total = 0;
+            while let Ok(encoded) = receiver.recv() {
+                let entries = pool_batch(encoded)?;
+                db.batch_store(&entries)?;
+                stored_total += entries.len();
+                on_progress(stored_total);
+            }
+            Ok(stored_total)
+        });
 
-    loop {
-        let batch: Vec<(u64, String)> =
-            documents.by_ref().take(submission_batch_size).collect();
-        if batch.is_empty() {
-            break;
+        let mut documents = documents.into_iter();
+        loop {
+            let batch: Vec<(u64, String)> =
+                documents.by_ref().take(submission_batch_size).collect();
+            if batch.is_empty() {
+                break;
+            }
+            let encoded = encode_batch(model, batch)?;
+            // A closed channel means the worker bailed; fall through
+            // to its join to surface the underlying store error.
+            if sender.send(encoded).is_err() {
+                break;
+            }
         }
+        drop(sender);
 
-        embedded_total += embed_and_store_with(model, db, batch)?;
-        on_progress(embedded_total);
-    }
-
-    Ok(embedded_total)
+        worker.join().map_err(|_| {
+            Error::Config("embedding pooling worker panicked".to_string())
+        })?
+    })
 }
 
 /// Convert a 2D Tensor [tokens, dimension] into a flat Vec<f32>.
