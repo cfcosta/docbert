@@ -233,8 +233,8 @@ impl Index {
     ///
     /// Allocation-heavy — prefer [`Index::doc_centroid_ids`] /
     /// [`Index::doc_residual_bytes`] on the hot path. Provided as a
-    /// compatibility shim for [`crate::update::apply_update`] and
-    /// legacy callers that still work in `EncodedVector` terms.
+    /// convenience for [`crate::update::apply_update`] and other
+    /// callers that work in `EncodedVector` terms.
     pub fn doc_tokens_vec(&self, idx: usize) -> Vec<EncodedVector> {
         let pb = self.codec.packed_bytes();
         let cids = self.doc_centroid_ids(idx);

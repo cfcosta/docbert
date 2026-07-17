@@ -601,7 +601,7 @@ docbert indexes local document collections and provides MCP tools for search and
 
 - Pick the narrowest tool that fits the query: bm25_search or semantic_search if one signal clearly dominates, search only when you genuinely need both.
 - Use min_score to filter low-confidence results
-- search still accepts a bm25_only flag for legacy callers, but new callers should prefer the dedicated bm25_search tool.
+- search also accepts a bm25_only flag that behaves exactly like bm25_search; the dedicated tool is the clearer choice.
 - get supports startLine/endLine or startByte/endByte (inclusive) and optional line numbers
 "#,
         )]

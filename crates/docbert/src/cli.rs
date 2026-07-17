@@ -52,7 +52,7 @@ pub enum Command {
     Reindex,
     /// Sync collections with source files (incremental)
     Sync(SyncArgs),
-    /// Remove orphan embeddings and embeddings from a different model
+    /// Remove orphan and wrong-model embeddings; reset pre-1.0 legacy data
     Clean(CleanArgs),
     /// Show system status and statistics
     Status(StatusArgs),
