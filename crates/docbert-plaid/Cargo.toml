@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "PLAID-style multi-vector index for docbert (ColBERT late-interaction)"
 
 [dependencies]
-bytemuck = { version = "1.25.0", features = ["derive"] }
+bytemuck = { version = "1.25.1", features = ["derive"] }
 candle-core = "0.10.2"
 rand = "0.10"
 thiserror = "2"

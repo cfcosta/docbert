@@ -11,7 +11,7 @@ candle-nn = "0.10.2"
 candle-transformers = "0.10.2"
 candle-flash-attn = { version = "0.10.2", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 hf-hub = { version = "0.5.0", default-features = false, features = [
@@ -39,7 +39,7 @@ accelerate = [
 ]
 
 [dev-dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 criterion = { version = "0.8", features = ["html_reports"] }
 hegeltest = "0.10"
 

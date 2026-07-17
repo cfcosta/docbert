@@ -23,7 +23,7 @@ globset = "0.4"
 # through syn/quote) resolves without `span-locations`.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
-reqwest = { version = "0.13.2", default-features = false, features = [
+reqwest = { version = "0.13.4", default-features = false, features = [
   "rustls",
   "stream",
 ] }
@@ -32,7 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 syn = { version = "2", features = ["full"] }
-tantivy = "0.26.0"
+tantivy = "0.26.1"
 tar = "0.4"
 toml = "1"
 thiserror = "2"

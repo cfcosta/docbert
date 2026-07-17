@@ -11,7 +11,7 @@ docbert-webui = { path = "../docbert-webui", optional = true }
 axum = "0.8"
 base64 = "0.22"
 rand = "0.10"
-reqwest = { version = "0.13.2", default-features = false, features = [
+reqwest = { version = "0.13.4", default-features = false, features = [
   "json",
   "form",
   "rustls",
@@ -19,7 +19,7 @@ reqwest = { version = "0.13.2", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-tantivy = "0.26.0"
+tantivy = "0.26.1"
 tokio = { version = "1", features = [
   "macros",
   "net",
@@ -37,6 +37,6 @@ metal = ["docbert-core/metal"]
 cuda = ["docbert-core/cuda"]
 
 [dev-dependencies]
-pdf_oxide = "0.3.35"
+pdf_oxide = "0.3.74"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
