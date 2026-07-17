@@ -8,7 +8,7 @@ description = "Core library for docbert semantic document search"
 [dependencies]
 blake3 = "1.8.5"
 bytemuck = { version = "1.25.1", features = ["derive"] }
-candle-core = "0.10.2"
+candle-core = "0.11.0"
 docbert-plaid = { path = "../docbert-plaid" }
 half = "2.7"
 heed = "0.22"
