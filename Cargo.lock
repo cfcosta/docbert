@@ -1344,7 +1344,6 @@ dependencies = [
  "kdam",
  "pdf_oxide",
  "percent-encoding",
- "rand 0.10.1",
  "rmcp",
  "schemars",
  "serde",

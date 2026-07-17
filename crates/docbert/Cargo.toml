@@ -13,7 +13,6 @@ clap_complete = "4.6"
 globset = "0.4"
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
-rand = "0.10"
 rmcp = { version = "1.5.0", features = ["transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
