@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     error::Result,
@@ -15,15 +15,15 @@ pub struct Conversation {
     pub messages: Vec<ChatMessage>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
     pub role: ChatRole,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ChatActor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<ChatPart>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<ChatSource>>,
 }
 
@@ -79,41 +79,6 @@ pub struct ChatSource {
     pub collection: String,
     pub path: String,
     pub title: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacyChatToolCall {
-    name: String,
-    args: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<String>,
-    #[serde(default)]
-    is_error: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum LegacyChatContentPart {
-    Text { text: String },
-    Thinking { text: String },
-}
-
-#[derive(Debug, Deserialize)]
-struct RawChatMessage {
-    id: String,
-    role: ChatRole,
-    #[serde(default)]
-    actor: Option<ChatActor>,
-    #[serde(default)]
-    parts: Option<Vec<ChatPart>>,
-    #[serde(default)]
-    content: String,
-    #[serde(default)]
-    sources: Option<Vec<ChatSource>>,
-    #[serde(default)]
-    tool_calls: Option<Vec<LegacyChatToolCall>>,
-    #[serde(default)]
-    content_parts: Option<Vec<LegacyChatContentPart>>,
 }
 
 #[derive(
@@ -220,69 +185,16 @@ struct StoredChatSource {
     title: String,
 }
 
-impl<'de> Deserialize<'de> for ChatMessage {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = RawChatMessage::deserialize(deserializer)?;
-        Ok(Self {
-            id: raw.id,
-            role: raw.role,
-            actor: Some(raw.actor.unwrap_or(ChatActor::Parent)),
-            parts: raw.parts.unwrap_or_else(|| {
-                legacy_parts(
-                    &raw.content,
-                    raw.content_parts.unwrap_or_default(),
-                    raw.tool_calls.unwrap_or_default(),
-                )
-            }),
-            sources: raw.sources,
-        })
-    }
-}
-
-fn legacy_parts(
-    content: &str,
-    content_parts: Vec<LegacyChatContentPart>,
-    tool_calls: Vec<LegacyChatToolCall>,
-) -> Vec<ChatPart> {
-    let mut parts = Vec::new();
-
-    if !content_parts.is_empty() {
-        parts.extend(content_parts.into_iter().map(|part| match part {
-            LegacyChatContentPart::Text { text } => ChatPart::Text { text },
-            LegacyChatContentPart::Thinking { text } => {
-                ChatPart::Thinking { text }
-            }
-        }));
-    } else if !content.is_empty() {
-        parts.push(ChatPart::Text {
-            text: content.to_string(),
-        });
-    }
-
-    parts.extend(tool_calls.into_iter().map(|call| ChatPart::ToolCall {
-        name: call.name,
-        args: call.args,
-        result: call.result,
-        is_error: call.is_error,
-    }));
-
-    parts
-}
-
 impl Conversation {
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let stored = StoredConversation::from(self);
         encode_bytes(&stored)
     }
 
+    /// Decode a stored conversation record. Records are rkyv-encoded;
+    /// bytes in any other format fail to decode.
     pub fn deserialize(data: &[u8]) -> Result<Self> {
-        match decode_bytes::<StoredConversation>(data) {
-            Ok(stored) => Ok(Self::from(stored)),
-            Err(_) => Ok(serde_json::from_slice(data)?),
-        }
+        Ok(Self::from(decode_bytes::<StoredConversation>(data)?))
     }
 }
 
@@ -564,72 +476,31 @@ mod tests {
     }
 
     #[test]
-    fn legacy_payload_migrates_to_parts_and_parent_actor() {
-        let data = serde_json::json!({
+    fn deserialize_rejects_non_rkyv_bytes() {
+        let json = serde_json::json!({
             "id": "conv-1",
-            "title": "Legacy",
+            "title": "Chat",
             "created_at": 1,
             "updated_at": 2,
-            "messages": [
-                {
-                    "id": "msg-1",
-                    "role": "assistant",
-                    "content": "",
-                    "content_parts": [
-                        { "type": "thinking", "text": "Planning" },
-                        { "type": "text", "text": "Answer" }
-                    ],
-                    "tool_calls": [
-                        {
-                            "name": "search_hybrid",
-                            "args": { "query": "rust" },
-                            "result": "[]",
-                            "is_error": false
-                        }
-                    ],
-                    "sources": [
-                        {
-                            "collection": "notes",
-                            "path": "rust.md",
-                            "title": "Rust"
-                        }
-                    ]
-                }
-            ]
+            "messages": []
         });
 
-        let decoded = Conversation::deserialize(
-            serde_json::to_string(&data).unwrap().as_bytes(),
-        )
-        .unwrap();
-        let message = &decoded.messages[0];
+        let bytes = serde_json::to_vec(&json).unwrap();
+        assert!(Conversation::deserialize(&bytes).is_err());
+    }
 
-        assert_eq!(message.actor, Some(ChatActor::Parent));
-        assert_eq!(
-            message.parts,
-            vec![
-                ChatPart::Thinking {
-                    text: "Planning".to_string(),
-                },
-                ChatPart::Text {
-                    text: "Answer".to_string(),
-                },
-                ChatPart::ToolCall {
-                    name: "search_hybrid".to_string(),
-                    args: serde_json::json!({ "query": "rust" }),
-                    result: Some("[]".to_string()),
-                    is_error: false,
-                },
-            ]
-        );
-        assert_eq!(
-            message.sources,
-            Some(vec![ChatSource {
-                collection: "notes".to_string(),
-                path: "rust.md".to_string(),
-                title: "Rust".to_string(),
-            }])
-        );
+    #[test]
+    fn message_json_accepts_omitted_optional_fields() {
+        let json = serde_json::json!({
+            "id": "msg-1",
+            "role": "user",
+        });
+
+        let message: ChatMessage = serde_json::from_value(json).unwrap();
+
+        assert_eq!(message.actor, None);
+        assert!(message.parts.is_empty());
+        assert!(message.sources.is_none());
     }
 
     #[test]
@@ -669,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_conversation_json_omits_legacy_message_fields() {
+    fn message_json_wire_format_is_id_role_actor_parts_sources() {
         let conv = Conversation {
             id: "conv-1".to_string(),
             title: "Chat".to_string(),
@@ -692,10 +563,10 @@ mod tests {
         };
 
         let json = serde_json::to_value(&conv).unwrap();
-        let message = &json["messages"][0];
+        let message = json["messages"][0].as_object().unwrap();
 
-        assert!(message.get("parts").is_some());
-        assert!(message.get("tool_calls").is_none());
-        assert!(message.get("content_parts").is_none());
+        let mut keys: Vec<&str> = message.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["actor", "id", "parts", "role"]);
     }
 }

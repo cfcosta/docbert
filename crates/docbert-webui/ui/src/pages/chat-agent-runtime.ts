@@ -161,19 +161,23 @@ export function createQueuedSubagentMessage(
 }
 
 export function createMissingConfigMessage(id: string): Message {
+  const text =
+    "No LLM provider configured. Go to **Settings** to select a provider, model, and API key or complete the required OAuth sign-in.";
   return {
     id,
     role: "assistant",
-    content:
-      "No LLM provider configured. Go to **Settings** to select a provider, model, and API key or complete the required OAuth sign-in.",
+    content: text,
+    parts: [{ type: "text", text }],
   };
 }
 
 export function createRuntimeErrorMessage(id: string, error: unknown): Message {
+  const text = `Something went wrong: ${error instanceof Error ? error.message : "unknown error"}`;
   return {
     id,
     role: "assistant",
-    content: `Something went wrong: ${error instanceof Error ? error.message : "unknown error"}`,
+    content: text,
+    parts: [{ type: "text", text }],
   };
 }
 

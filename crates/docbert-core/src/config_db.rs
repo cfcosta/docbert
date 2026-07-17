@@ -365,7 +365,10 @@ impl ConfigDb {
         Ok(())
     }
 
-    /// Retrieve a typed conversation by ID. Returns `None` if not found.
+    /// Retrieve a typed conversation by ID.
+    ///
+    /// Returns `None` if the ID is unknown or if the stored bytes do
+    /// not decode as a current-format conversation record.
     pub fn get_conversation_typed(
         &self,
         id: &str,
@@ -376,7 +379,15 @@ impl ConfigDb {
         };
         let mut aligned = rkyv::util::AlignedVec::<16>::new();
         aligned.extend_from_slice(bytes);
-        Conversation::deserialize(&aligned).map(Some)
+        let conversation = Conversation::deserialize(&aligned).ok();
+        if conversation.is_none() {
+            tracing::warn!(
+                id,
+                "ignoring conversation record that does not decode as the \
+                 current format"
+            );
+        }
+        Ok(conversation)
     }
 
     /// Remove a conversation by ID. Returns `true` if it existed.
@@ -388,14 +399,24 @@ impl ConfigDb {
     }
 
     /// List all conversations as typed records.
+    ///
+    /// Records that do not decode as current-format conversations are
+    /// skipped.
     pub fn list_conversations_typed(&self) -> Result<Vec<Conversation>> {
         let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
         for entry in self.conversations.iter(&rtxn)? {
-            let (_id, bytes) = entry?;
+            let (id, bytes) = entry?;
             let mut aligned = rkyv::util::AlignedVec::<16>::new();
             aligned.extend_from_slice(bytes);
-            result.push(Conversation::deserialize(&aligned)?);
+            match Conversation::deserialize(&aligned) {
+                Ok(conversation) => result.push(conversation),
+                Err(_) => tracing::warn!(
+                    id,
+                    "ignoring conversation record that does not decode as \
+                     the current format"
+                ),
+            }
         }
         Ok(result)
     }
@@ -1569,6 +1590,46 @@ mod tests {
 
         assert!(db.remove_conversation("conv-1").unwrap());
         assert!(db.get_conversation_typed("conv-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn undecodable_conversation_records_read_as_absent() {
+        let (_tmp, db) = test_db();
+        let conversation = Conversation {
+            id: "conv-1".to_string(),
+            title: "Chat".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            messages: vec![],
+        };
+        db.set_conversation_typed(&conversation).unwrap();
+
+        // A pre-1.0 JSON record is not rkyv and must not decode.
+        let legacy = serde_json::json!({
+            "id": "conv-legacy",
+            "title": "Old",
+            "created_at": 1,
+            "updated_at": 2,
+            "messages": [{ "id": "m", "role": "user", "content": "hi" }]
+        });
+        let mut wtxn = db.env.write_txn().unwrap();
+        db.conversations
+            .put(
+                &mut wtxn,
+                "conv-legacy",
+                &serde_json::to_vec(&legacy).unwrap(),
+            )
+            .unwrap();
+        wtxn.commit().unwrap();
+
+        assert!(db.get_conversation_typed("conv-legacy").unwrap().is_none());
+
+        let listed = db.list_conversations_typed().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "conv-1");
+
+        // The dead record is still deletable so users can clear it.
+        assert!(db.remove_conversation("conv-legacy").unwrap());
     }
 
     #[test]

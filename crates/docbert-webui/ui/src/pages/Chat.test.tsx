@@ -96,6 +96,10 @@ function summaryFromConversation(conversation: ConversationFull): ConversationSu
   };
 }
 
+function textOf(message: ConversationFull["messages"][number]): string {
+  return (message.parts ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
 function makeConversation(
   id: string,
   messages: ConversationFull["messages"],
@@ -259,7 +263,6 @@ describe("Chat page", () => {
       {
         id: "assistant-1",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -281,7 +284,6 @@ describe("Chat page", () => {
       {
         id: "assistant-default",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -305,7 +307,6 @@ describe("Chat page", () => {
       {
         id: "assistant-reduced",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -330,7 +331,6 @@ describe("Chat page", () => {
       {
         id: "user-1",
         role: "user",
-        content: "Earlier question",
         parts: [{ type: "text", text: "Earlier question" }],
       },
     ]);
@@ -386,7 +386,6 @@ describe("Chat page", () => {
       {
         id: "assistant-1",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -435,7 +434,6 @@ describe("Chat page", () => {
       {
         id: "assistant-1",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -488,7 +486,7 @@ describe("Chat page", () => {
     );
 
     const persisted = trackers.updatedConversations.at(-1)!;
-    expect(persisted.messages.map((message) => message.content)).toEqual([
+    expect(persisted.messages.map(textOf)).toEqual([
       "Loaded answer",
       "Summarize the notes",
       "Assistant reply",
@@ -549,7 +547,7 @@ describe("Chat page", () => {
       { type: "thinking", text: "Plan first" },
       { type: "text", text: "Docbert is a local-first document retrieval system." },
     ]);
-    expect(persisted.messages.at(-1)?.content).toBe(
+    expect(textOf(persisted.messages.at(-1)!)).toBe(
       "Docbert is a local-first document retrieval system.",
     );
   });
@@ -650,7 +648,7 @@ describe("Chat page", () => {
 
     expect(callOrder.findIndex((entry) => entry.startsWith("create:"))).toBeGreaterThanOrEqual(0);
     expect(callOrder.findIndex((entry) => entry.startsWith("update:"))).toBeGreaterThanOrEqual(0);
-    expect(storedConversation?.messages.map((message) => message.content)).toEqual([
+    expect(storedConversation?.messages.map(textOf)).toEqual([
       "What is docbert?",
       "Docbert is a local document assistant.",
     ]);
@@ -747,7 +745,7 @@ describe("Chat page", () => {
       () => `conversation was never persisted: ${JSON.stringify(storedConversation)}`,
     );
 
-    expect(storedConversation?.messages.map((message) => message.content)).toEqual([
+    expect(storedConversation?.messages.map(textOf)).toEqual([
       "What is docbert?",
       "Docbert answers survive route sync.",
     ]);
@@ -758,7 +756,6 @@ describe("Chat page", () => {
       {
         id: "assistant-1",
         role: "assistant",
-        content: "Loaded answer",
         actor: { type: "parent" },
         parts: [{ type: "text", text: "Loaded answer" }],
       },
@@ -807,8 +804,9 @@ describe("Chat page", () => {
     const persisted = trackers.updatedConversations.at(-1)!;
     const assistantMessages = persisted.messages.filter((message) => message.role === "assistant");
     const finalAssistant = assistantMessages.at(-1)!;
-    expect(finalAssistant.content).toBe(interruptionNote);
-    expect(finalAssistant.content.split(interruptionNote)).toHaveLength(2);
+    const finalText = textOf(finalAssistant);
+    expect(finalText).toBe(interruptionNote);
+    expect(finalText.split(interruptionNote)).toHaveLength(2);
     expect(streamCallCount).toBe(1);
   });
 });

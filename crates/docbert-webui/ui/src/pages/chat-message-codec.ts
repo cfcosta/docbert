@@ -72,7 +72,6 @@ export function messagesToApi(messages: Message[]): ConversationFull["messages"]
       role: message.role,
       actor: message.actor ?? { type: "parent" },
       parts,
-      content: contentFromParts(message.parts ?? []) || message.content,
       sources: message.sources?.map((source) => ({
         collection: source.collection,
         path: source.path,

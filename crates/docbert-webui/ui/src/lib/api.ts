@@ -164,7 +164,6 @@ export interface ChatMessage {
   role: "user" | "assistant";
   parts?: ChatPart[];
   actor?: ChatActor;
-  content: string;
   sources?: ChatSource[];
 }
 

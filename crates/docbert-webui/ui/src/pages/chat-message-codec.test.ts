@@ -21,29 +21,27 @@ describe("chat-message-codec", () => {
     ).toBe("AB");
   });
 
-  test("messagesToApi_uses_parts_text_or_content_fallback", () => {
+  test("messagesToApi_sends_parts_and_defaults_actor_to_parent", () => {
     const messages: Message[] = [
       {
         id: "assistant-with-parts",
         role: "assistant",
-        content: "legacy fallback",
+        content: "answer from parts",
         parts: [
           { type: "thinking", text: "plan" },
           { type: "text", text: "answer from parts" },
         ],
       },
-      {
-        id: "user-without-parts",
-        role: "user",
-        content: "content only",
-      },
     ];
 
     const apiMessages = messagesToApi(messages);
 
-    expect(apiMessages[0].content).toBe("answer from parts");
-    expect(apiMessages[1].content).toBe("content only");
-    expect(apiMessages[1].actor).toEqual({ type: "parent" });
+    expect(apiMessages[0].parts).toEqual([
+      { type: "thinking", text: "plan" },
+      { type: "text", text: "answer from parts" },
+    ]);
+    expect(apiMessages[0].actor).toEqual({ type: "parent" });
+    expect(apiMessages[0]).not.toHaveProperty("content");
   });
 
   test("apiToMessages_consumes_normalized_message_parts", () => {
@@ -51,7 +49,6 @@ describe("chat-message-codec", () => {
       {
         id: "assistant-normalized",
         role: "assistant",
-        content: "Answer",
         parts: [
           { type: "thinking", text: "Planning" },
           { type: "text", text: "Answer" },
