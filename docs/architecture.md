@@ -328,7 +328,7 @@ docbert is designed around local-process concurrency rather than distributed coo
 Important patterns in the current implementation:
 
 - Tantivy supplies read/write index primitives
-- redb-backed stores are opened per operation where appropriate
+- LMDB-backed stores are opened per operation where appropriate
 - long-lived runtimes keep search/model state alive, but do not hold every storage handle permanently open
 - mutation-heavy operations open writers around the work that needs them
 - lock/contention retry behavior is part of runtime resource handling for long-lived web/MCP processes

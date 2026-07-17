@@ -10,9 +10,9 @@ use heed::{
 use crate::{
     Conversation,
     error::Result,
+    heed_env::{self, CONFIG_MAX_DBS},
     incremental::DocumentMetadata,
     merkle::Snapshot,
-    redb_migration::{self, CONFIG_MAX_DBS},
     storage_codec::{decode_bytes, encode_bytes},
     stored_json::StoredJsonValue,
 };
@@ -68,8 +68,8 @@ const KEY_LLM_API_KEY: &str = "llm_api_key";
 ///
 /// LMDB gives us proper cross-process readers and writers, so several
 /// `docbert mcp` / `docbert web` / CLI processes can share the same
-/// data dir. Legacy redb-formatted files are migrated on first open;
-/// see [`crate::redb_migration`].
+/// data dir. Files still in the redb format used before 1.0 are
+/// refused with [`crate::Error::LegacyDatabase`].
 ///
 /// # Examples
 ///
@@ -140,10 +140,10 @@ fn document_user_metadata_key(doc_id: u64) -> String {
 impl ConfigDb {
     /// Open or create a config database at the given path.
     ///
-    /// Creates all required named databases on first open. If the file
-    /// at `path` is still in the legacy redb format, this transparently
-    /// migrates it to the heed/LMDB format before returning. The
-    /// original is preserved as `<path>.redb-bak`.
+    /// Creates all required named databases on first open. Fails with
+    /// [`crate::Error::LegacyDatabase`] if the file at `path` is still
+    /// in the redb format written by docbert releases before 1.0;
+    /// `docbert clean` resets such files.
     ///
     /// # Examples
     ///
@@ -153,9 +153,8 @@ impl ConfigDb {
     /// let db = ConfigDb::open(&tmp.path().join("config.db")).unwrap();
     /// ```
     pub fn open(path: &Path) -> Result<Self> {
-        redb_migration::ensure_config_db_migrated(path)?;
-        let env =
-            redb_migration::open_heed_env(path, MAP_SIZE, CONFIG_MAX_DBS)?;
+        heed_env::ensure_not_redb(path)?;
+        let env = heed_env::open_heed_env(path, MAP_SIZE, CONFIG_MAX_DBS)?;
         let mut wtxn = env.write_txn()?;
         let collections =
             env.create_database(&mut wtxn, Some(COLLECTIONS_DB))?;

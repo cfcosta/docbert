@@ -300,7 +300,7 @@ That state includes:
 - `plaid.idx`
 - `tantivy/`
 
-`config.db` and `embeddings.db` are LMDB-backed via [`heed`](https://docs.rs/heed), so multiple `docbert mcp` / `docbert web` / CLI processes can share one data dir. Legacy redb-format files from earlier docbert versions are migrated to LMDB transparently on first open; the original is preserved as `<file>.redb-bak`. The collection roots themselves can live anywhere on disk.
+`config.db` and `embeddings.db` are LMDB-backed via [`heed`](https://docs.rs/heed), so multiple `docbert mcp` / `docbert web` / CLI processes can share one data dir. Data written by docbert releases before 1.0 (redb-format files, `f32`-layout embeddings) is refused with an error; run `docbert clean` to reset it, then `docbert sync` to re-index. The collection roots themselves can live anywhere on disk.
 
 See:
 

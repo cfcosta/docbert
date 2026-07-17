@@ -73,4 +73,18 @@ pub enum Error {
         "PLAID semantic index is not built yet; run `docbert sync` or `docbert rebuild` to build it"
     )]
     PlaidIndexMissing,
+
+    #[error(
+        "{path} is in the legacy redb format written by docbert releases \
+         before 1.0, which this version no longer reads; run `docbert \
+         clean` to reset the legacy data, then `docbert sync` to re-index"
+    )]
+    LegacyDatabase { path: PathBuf },
+
+    #[error(
+        "the embedding database contains entries in the legacy pre-1.0 \
+         f32 layout; run `docbert clean` to remove them, then `docbert \
+         sync` to re-embed"
+    )]
+    LegacyEmbeddings,
 }

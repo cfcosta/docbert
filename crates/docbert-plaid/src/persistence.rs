@@ -45,20 +45,16 @@ const MAGIC: &[u8; 8] = b"PLAIDIDX";
 /// Format versions in the wild:
 ///
 /// - `1`: unpacked residual codes, one byte per residual dimension.
-///   No longer readable; rebuild the index.
 /// - `2`: LSB-first bit-packed codes at `nbits ∈ {1, 2, 4, 8}`;
 ///   `(dim * nbits) / 8` bytes per token, stored as per-token
-///   interleaved `(centroid_id, residual)` records. Still readable.
+///   interleaved `(centroid_id, residual)` records.
 /// - `3`: same codes, but centroid ids and residuals are two
 ///   contiguous sections so loading a multi-GB index is a pair of
 ///   bulk copies instead of a per-token de-interleave.
+///
+/// Only version 3 is readable; older files must be regenerated from
+/// the stored embeddings (`docbert rebuild`).
 const FORMAT_VERSION: u32 = 3;
-const OLDEST_READABLE_VERSION: u32 = 2;
-
-/// Tokens per I/O chunk when de-interleaving a legacy v2 token
-/// section through a staging buffer (at dim 128 / nbits 2 a token
-/// record is 36 bytes, so this stays a few tens of MB).
-const V2_TOKEN_CHUNK: usize = 1 << 20;
 
 /// Write `index` to `path`, creating or truncating the file as needed.
 ///
@@ -143,10 +139,11 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
     }
 
     let version = read_u32(r)?;
-    if !(OLDEST_READABLE_VERSION..=FORMAT_VERSION).contains(&version) {
+    if version != FORMAT_VERSION {
         return Err(PlaidError::InvalidIndex(format!(
             "unsupported plaid index version {version}, expected \
-             {OLDEST_READABLE_VERSION}..={FORMAT_VERSION}",
+             {FORMAT_VERSION}; run `docbert rebuild` to regenerate the \
+             index from the stored embeddings",
         )));
     }
 
@@ -180,14 +177,9 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
 
     let total_tokens: usize = token_counts.iter().map(|&c| c as usize).sum();
 
-    let (doc_centroid_ids, doc_residual_bytes) = if version >= 3 {
-        // Contiguous sections: each is one bulk copy into place.
-        let ids = read_u32_vec(r, total_tokens)?;
-        let residuals = read_u8_vec(r, total_tokens * packed_bytes)?;
-        (ids, residuals)
-    } else {
-        read_v2_interleaved_tokens(r, total_tokens, packed_bytes)?
-    };
+    // Contiguous sections: each is one bulk copy into place.
+    let doc_centroid_ids = read_u32_vec(r, total_tokens)?;
+    let doc_residual_bytes = read_u8_vec(r, total_tokens * packed_bytes)?;
 
     // Validate ids after the copy loops: a whole-slice scan
     // vectorizes, a branch per token does not.
@@ -232,38 +224,6 @@ fn read_index<R: Read>(r: &mut R) -> Result<Index> {
         doc_offsets,
         ivf,
     })
-}
-
-/// Read a legacy v2 token section: per-token interleaved
-/// `(u32 centroid_id, [u8; packed] residual)` records, bulk-read in
-/// chunks and de-interleaved into the two flat vectors.
-fn read_v2_interleaved_tokens<R: Read>(
-    r: &mut R,
-    total_tokens: usize,
-    packed_bytes: usize,
-) -> Result<(Vec<u32>, Vec<u8>)> {
-    let stride = 4 + packed_bytes;
-    let mut ids: Vec<u32> = vec![0u32; total_tokens];
-    let mut residuals: Vec<u8> = vec![0u8; total_tokens * packed_bytes];
-    let mut buf = vec![0u8; V2_TOKEN_CHUNK.min(total_tokens.max(1)) * stride];
-    let mut read = 0;
-    while read < total_tokens {
-        let n = (total_tokens - read).min(V2_TOKEN_CHUNK);
-        r.read_exact(&mut buf[..n * stride])?;
-        for ((rec, id), out) in buf[..n * stride]
-            .chunks_exact(stride)
-            .zip(ids[read..read + n].iter_mut())
-            .zip(
-                residuals[read * packed_bytes..(read + n) * packed_bytes]
-                    .chunks_exact_mut(packed_bytes),
-            )
-        {
-            *id = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
-            out.copy_from_slice(&rec[4..]);
-        }
-        read += n;
-    }
-    Ok((ids, residuals))
 }
 
 fn write_u32<W: Write>(w: &mut W, v: u32) -> Result<()> {
@@ -470,60 +430,6 @@ mod tests {
         assert_eq!(loaded.doc_token_count(loaded.num_documents() - 1), 0);
     }
 
-    /// Serialize `index` in the legacy v2 layout: per-token interleaved
-    /// `(centroid_id, residual)` records instead of contiguous sections.
-    fn write_index_v2(index: &Index) -> Vec<u8> {
-        let mut w = Vec::new();
-        w.extend_from_slice(MAGIC);
-        w.extend_from_slice(&2u32.to_le_bytes());
-        w.extend_from_slice(&(index.params.dim as u32).to_le_bytes());
-        w.extend_from_slice(&index.params.nbits.to_le_bytes());
-        w.extend_from_slice(&(index.params.k_centroids as u32).to_le_bytes());
-        w.extend_from_slice(
-            &(index.params.max_kmeans_iters as u32).to_le_bytes(),
-        );
-        w.extend_from_slice(&(index.doc_ids.len() as u64).to_le_bytes());
-        w.extend_from_slice(bytemuck::cast_slice(&index.codec.centroids));
-        w.extend_from_slice(bytemuck::cast_slice(&index.codec.bucket_cutoffs));
-        w.extend_from_slice(bytemuck::cast_slice(&index.codec.bucket_weights));
-        w.extend_from_slice(bytemuck::cast_slice(&index.doc_ids));
-        for i in 0..index.num_documents() {
-            w.extend_from_slice(
-                &(index.doc_token_count(i) as u32).to_le_bytes(),
-            );
-        }
-        let packed =
-            packed_bytes_per_vector(index.params.dim, index.params.nbits);
-        for (i, &cid) in index.doc_centroid_ids.iter().enumerate() {
-            w.extend_from_slice(&cid.to_le_bytes());
-            w.extend_from_slice(
-                &index.doc_residual_bytes[i * packed..(i + 1) * packed],
-            );
-        }
-        w
-    }
-
-    #[test]
-    fn load_reads_legacy_v2_interleaved_indexes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("legacy_v2.plaid");
-        let index = build_index(&small_corpus(), default_params()).unwrap();
-        std::fs::write(&path, write_index_v2(&index)).unwrap();
-
-        let loaded = load(&path).unwrap();
-
-        assert_eq!(loaded.doc_ids, index.doc_ids);
-        assert_eq!(loaded.doc_centroid_ids, index.doc_centroid_ids);
-        assert_eq!(loaded.doc_residual_bytes, index.doc_residual_bytes);
-        assert_eq!(loaded.doc_offsets, index.doc_offsets);
-        for c in 0..index.ivf.num_centroids() {
-            assert_eq!(
-                loaded.ivf.docs_for_centroid(c),
-                index.ivf.docs_for_centroid(c),
-            );
-        }
-    }
-
     #[test]
     fn load_rejects_files_with_wrong_magic() {
         let tmp = tempfile::tempdir().unwrap();
@@ -554,20 +460,23 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_legacy_unpacked_format_version_one() {
-        // Version 1 (pre-packing) indexes must be rebuilt. The loader
-        // should reject them with a clear version mismatch.
+    fn load_rejects_legacy_versions_with_rebuild_instructions() {
+        // Pre-1.0 formats (v1 unpacked, v2 interleaved) must be
+        // regenerated; the loader rejects them and says how.
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("legacy.plaid");
-        let mut buf = Vec::new();
-        buf.extend_from_slice(MAGIC);
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        std::fs::write(&path, &buf).unwrap();
+        for version in [1u32, 2] {
+            let path = tmp.path().join(format!("legacy_v{version}.plaid"));
+            let mut buf = Vec::new();
+            buf.extend_from_slice(MAGIC);
+            buf.extend_from_slice(&version.to_le_bytes());
+            std::fs::write(&path, &buf).unwrap();
 
-        let err = load(&path).unwrap_err();
-        assert!(
-            matches!(err, PlaidError::InvalidIndex(ref m) if m.contains("version")),
-            "expected InvalidIndex with version message, got {err:?}",
-        );
+            let err = load(&path).unwrap_err();
+            let PlaidError::InvalidIndex(msg) = &err else {
+                panic!("expected InvalidIndex for v{version}, got {err:?}");
+            };
+            assert!(msg.contains("version"), "v{version}: {msg}");
+            assert!(msg.contains("docbert rebuild"), "v{version}: {msg}");
+        }
     }
 }

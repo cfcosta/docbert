@@ -26,7 +26,7 @@ Within that root, docbert currently uses five storage layers:
 | `plaid.idx`                      | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim                 |
 | collection roots on disk         | source document content used for indexing, document reads, titles, and excerpts                            |
 
-The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`); the `*-lock` siblings are LMDB's inter-process lock files. After a redb-to-LMDB migration the former data file is also kept on disk as `*.db.redb-bak` (see [Migrating from older redb-format databases](#migrating-from-older-redb-format-databases)).
+The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`); the `*-lock` siblings are LMDB's inter-process lock files. Files still in the redb format used before 1.0 are refused on open (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
 
 A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
 
@@ -359,7 +359,7 @@ The binary layout is implementation-specific, but conceptually each entry stores
 
 Components are stored at `bf16` precision: the encoder trunk computes in bf16 on CUDA, so the extra mantissa bits of an `f32` representation are noise below the model's own precision floor, and the PLAID index re-quantizes every token to 2 bits per dimension downstream. Halving the per-component width halves what is by far the largest file in the data directory.
 
-Entries written by older docbert versions carry row-major `f32` data instead; reads accept both layouts transparently, and any rewrite of an entry (re-ingest, `rebuild`, `reindex`) converts it to the bf16 layout. Note that LMDB reuses freed pages rather than shrinking its file, so converting an existing corpus only reclaims disk space if the file is recreated — the simplest path is deleting `embeddings.db` and running `rebuild`, which re-embeds every chunk into a fresh, all-bf16 file at roughly half the previous size.
+Entries written by docbert releases before 1.0 carried row-major `f32` data instead. That layout is no longer decoded: reads fail with an error pointing at `docbert clean`, which drops the undecodable rows and clears the per-document state so the next `sync` re-embeds the affected documents (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
 
 Because embeddings are the largest stored artifact, `embeddings.db` is usually the main consumer of disk space in docbert.
 
@@ -498,15 +498,15 @@ If you switch to a different embedding model and then run `sync`, docbert refuse
 
 On open, `ConfigDb` ensures the expected named LMDB databases exist.
 
-### Migrating from older redb-format databases
+### Legacy formats from releases before 1.0
 
-docbert v0.8 and earlier stored `config.db` / `embeddings.db` as [redb](https://github.com/cberner/redb) files. Recent versions read those legacy files transparently:
+docbert 1.0 dropped every migration path for data written by older releases. `docbert clean` is the single recovery command; it detects each legacy artifact and resets exactly as much as necessary (use `--dry-run` to preview):
 
-- on `ConfigDb::open` / `EmbeddingDb::open` we sniff the first nine bytes and check for the redb magic
-- if the file is redb, we copy every table into a fresh LMDB env at `<path>.heed-tmp`, then atomically rename the legacy file to `<path>.redb-bak` and the new env into place
-- the migration is logged via `tracing` (info-level for start/completion, debug-level per table)
+- **redb-format `config.db` / `embeddings.db`** (docbert ≤ 0.8): `ConfigDb::open` / `EmbeddingDb::open` sniff the first nine bytes and refuse redb files. `clean` handles them below the open layer: a legacy `embeddings.db` is deleted along with `plaid.idx` and the per-document state (collections stay registered; the next `sync` re-embeds everything); a legacy `config.db` resets the whole data dir, after which collections must be re-added.
+- **`f32`-layout embedding rows** (pre-bf16 releases): reads refuse them; `clean` drops the rows and clears document state so `sync` re-embeds the affected documents. Rows already in the bf16 layout are kept and reused.
+- **`plaid.idx` versions 1–2**: the loader rejects them; `docbert rebuild` regenerates the index from the stored embeddings (or `clean` rebuilds it as part of its pass).
 
-The `.redb-bak` files are intentionally kept on disk after migration so you can recover if the new env later proves broken; you can delete them manually once you're confident the new format is healthy.
+`.redb-bak` files left behind by the pre-1.0 transparent migration are not touched; delete them manually once you no longer need the backups.
 
 ### Hard schema breaks
 

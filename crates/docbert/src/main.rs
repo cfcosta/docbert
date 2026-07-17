@@ -100,6 +100,14 @@ fn main() -> error::Result<()> {
         return Ok(());
     }
 
+    // Clean must dispatch before any database opens: it's the
+    // documented recovery path for stores still in the pre-1.0 redb
+    // format, which `ConfigDb::open` below refuses.
+    if let Command::Clean(args) = &cli.command {
+        commands::clean::run_standalone(&data_dir, args, cli.model.as_deref())?;
+        return Ok(());
+    }
+
     let config_db = ConfigDb::open(&data_dir.config_db())?;
     let model_resolution = resolve_model(&config_db, cli.model.as_deref())?;
 
@@ -169,14 +177,7 @@ fn main() -> error::Result<()> {
                 &model_resolution.model_id,
             )?;
         }
-        Command::Clean(args) => {
-            commands::clean::run(
-                &config_db,
-                &data_dir,
-                &args,
-                &model_resolution.model_id,
-            )?;
-        }
+        Command::Clean(_) => unreachable!(), // Handled above
         Command::Status(args) => {
             commands::model::status(
                 &config_db,

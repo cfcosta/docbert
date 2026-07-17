@@ -9,8 +9,8 @@ use heed::{
 };
 
 use crate::{
-    error::Result,
-    redb_migration::{self, EMBEDDINGS_MAX_DBS},
+    error::{Error, Result},
+    heed_env::{self, EMBEDDINGS_MAX_DBS},
 };
 
 /// Generous map size for the embeddings env. LMDB allocates a sparse
@@ -45,43 +45,55 @@ fn parse_header(bytes: &[u8]) -> Option<(u32, u32, usize)> {
     Some((num_tokens, dimension, components))
 }
 
-fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
-    let (num_tokens, dimension, components) = parse_header(bytes)?;
+fn parse_embedding_matrix(bytes: &[u8]) -> Result<Option<EmbeddingMatrix>> {
+    let Some((num_tokens, dimension, components)) = parse_header(bytes) else {
+        return Ok(None);
+    };
     let body = &bytes[HEADER_SIZE..];
 
-    // The two layouts are told apart purely by body length, which is
-    // unambiguous for any `components > 0` (and identical — empty —
-    // for zero). Byte-wise reads keep this independent of the mmap'd
-    // slice's alignment.
-    let data: Vec<f32> = if body.len() == components * BF16_BYTES {
-        body.as_chunks::<BF16_BYTES>()
+    // Byte-wise reads keep decoding independent of the mmap'd slice's
+    // alignment.
+    if body.len() == components * BF16_BYTES {
+        let data = body
+            .as_chunks::<BF16_BYTES>()
             .0
             .iter()
             .map(|c| bf16::from_bits(u16::from_le_bytes(*c)).to_f32())
-            .collect()
+            .collect();
+        Ok(Some(EmbeddingMatrix {
+            num_tokens,
+            dimension,
+            data,
+        }))
     } else if body.len() == components * F32_BYTES {
-        body.as_chunks::<F32_BYTES>()
-            .0
-            .iter()
-            .map(|c| f32::from_le_bytes(*c))
-            .collect()
+        // Pre-1.0 layout: little-endian f32 components. Decoding it
+        // was dropped for 1.0; `docbert clean` removes such rows.
+        Err(Error::LegacyEmbeddings)
     } else {
-        return None;
-    };
-
-    Some(EmbeddingMatrix {
-        num_tokens,
-        dimension,
-        data,
-    })
+        Ok(None)
+    }
 }
 
 /// Validate a stored value's shape without decoding its payload.
-fn parse_shape(bytes: &[u8]) -> Option<(u32, u32)> {
-    let (num_tokens, dimension, components) = parse_header(bytes)?;
+fn parse_shape(bytes: &[u8]) -> Result<Option<(u32, u32)>> {
+    let Some((num_tokens, dimension, components)) = parse_header(bytes) else {
+        return Ok(None);
+    };
     let body_len = bytes.len() - HEADER_SIZE;
-    (body_len == components * BF16_BYTES || body_len == components * F32_BYTES)
-        .then_some((num_tokens, dimension))
+    if body_len == components * BF16_BYTES {
+        Ok(Some((num_tokens, dimension)))
+    } else if body_len == components * F32_BYTES {
+        Err(Error::LegacyEmbeddings)
+    } else {
+        Ok(None)
+    }
+}
+
+/// `true` when a stored value uses the legacy pre-1.0 f32 layout.
+fn is_legacy_f32_value(bytes: &[u8]) -> bool {
+    parse_header(bytes).is_some_and(|(_, _, components)| {
+        components > 0 && bytes.len() - HEADER_SIZE == components * F32_BYTES
+    })
 }
 
 fn serialize_embedding_matrix(
@@ -113,18 +125,18 @@ fn serialize_embedding_matrix(
 /// 2 bits per dimension anyway. Dropping them halves docbert's
 /// dominant on-disk artifact.
 ///
-/// Entries written before the bf16 switch carry `T * D * 4` bytes of
-/// little-endian `f32` data instead. Reads accept both layouts,
-/// distinguished by body length (unambiguous whenever `T * D > 0`, and
-/// semantically identical when it is zero); writes always produce the
-/// bf16 layout, so legacy entries convert on their next overwrite.
+/// Entries written by docbert releases before 1.0 carried `T * D * 4`
+/// bytes of little-endian `f32` data instead. That layout is no longer
+/// decoded: reads fail with [`Error::LegacyEmbeddings`], and `docbert
+/// clean` drops such rows so the affected documents re-embed on the
+/// next `docbert sync`.
 ///
 /// Backed by an [LMDB](https://www.symas.com/lmdb) environment via the
 /// [`heed`](https://docs.rs/heed) crate, which gives us multi-process
 /// readers and writers on the same data dir — useful when several
 /// `docbert mcp` / `docbert web` processes share a data dir. The
-/// open path transparently migrates legacy redb-format files via
-/// [`crate::redb_migration`].
+/// open path refuses files still in the redb format used before 1.0
+/// with [`Error::LegacyDatabase`].
 pub struct EmbeddingDb {
     env: Env,
     db: Database<U64<BigEndian>, Bytes>,
@@ -133,9 +145,9 @@ pub struct EmbeddingDb {
 impl EmbeddingDb {
     /// Open or create an embeddings database at the given path.
     ///
-    /// If the file at `path` is still in the legacy redb format, this
-    /// transparently migrates it to the heed/LMDB format before
-    /// returning. The original is preserved as `<path>.redb-bak`.
+    /// Fails with [`Error::LegacyDatabase`] if the file at `path` is
+    /// still in the redb format written by docbert releases before
+    /// 1.0; `docbert clean` resets such files.
     ///
     /// # Examples
     ///
@@ -147,9 +159,8 @@ impl EmbeddingDb {
     /// assert!(db.list_ids().unwrap().is_empty());
     /// ```
     pub fn open(path: &Path) -> Result<Self> {
-        redb_migration::ensure_embedding_db_migrated(path)?;
-        let env =
-            redb_migration::open_heed_env(path, MAP_SIZE, EMBEDDINGS_MAX_DBS)?;
+        heed_env::ensure_not_redb(path)?;
+        let env = heed_env::open_heed_env(path, MAP_SIZE, EMBEDDINGS_MAX_DBS)?;
         let mut wtxn = env.write_txn()?;
         let db: Database<U64<BigEndian>, Bytes> =
             env.create_database(&mut wtxn, Some(EMBEDDINGS_DB_NAME))?;
@@ -203,7 +214,9 @@ impl EmbeddingDb {
     /// Retrieve an embedding matrix for a document.
     ///
     /// Returns `None` if the document has no stored embedding or if
-    /// the stored data is malformed.
+    /// the stored data is malformed. Fails with
+    /// [`Error::LegacyEmbeddings`] if the entry is still in the
+    /// pre-1.0 f32 layout.
     ///
     /// # Examples
     ///
@@ -225,7 +238,7 @@ impl EmbeddingDb {
         let Some(bytes) = self.db.get(&rtxn, &doc_id)? else {
             return Ok(None);
         };
-        Ok(parse_embedding_matrix(bytes))
+        parse_embedding_matrix(bytes)
     }
 
     /// Remove an embedding entry. Returns `true` if it existed.
@@ -355,10 +368,10 @@ impl EmbeddingDb {
         let rtxn = self.env.read_txn()?;
         let mut results = Vec::with_capacity(doc_ids.len());
         for &doc_id in doc_ids {
-            let matrix = self
-                .db
-                .get(&rtxn, &doc_id)?
-                .and_then(parse_embedding_matrix);
+            let matrix = match self.db.get(&rtxn, &doc_id)? {
+                Some(bytes) => parse_embedding_matrix(bytes)?,
+                None => None,
+            };
             results.push((doc_id, matrix));
         }
         Ok(results)
@@ -400,26 +413,44 @@ impl EmbeddingDb {
     /// instead of two.
     ///
     /// Malformed entries (header disagrees with the stored blob's
-    /// length under both the bf16 and legacy f32 layouts) are skipped
-    /// silently, matching [`Self::load`]'s "return `None` on garbage"
-    /// behaviour.
+    /// length) are skipped silently, matching [`Self::load`]'s
+    /// "return `None` on garbage" behaviour; entries still in the
+    /// pre-1.0 f32 layout fail with [`Error::LegacyEmbeddings`].
     pub fn list_shapes(&self) -> Result<Vec<(u64, u32, u32)>> {
         let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
         for entry in self.db.iter(&rtxn)? {
             let (doc_id, bytes) = entry?;
-            if let Some((num_tokens, dimension)) = parse_shape(bytes) {
+            if let Some((num_tokens, dimension)) = parse_shape(bytes)? {
                 result.push((doc_id, num_tokens, dimension));
             }
         }
         Ok(result)
     }
 
-    /// Test-only escape hatch: write raw bytes for a `doc_id` so unit
-    /// tests can exercise [`Self::load`]'s parser against malformed
+    /// List the IDs of entries still stored in the pre-1.0 f32 layout.
+    ///
+    /// Reads only headers and value lengths, so it stays cheap even on
+    /// large stores. `docbert clean` uses this to find and drop the
+    /// rows this version no longer decodes.
+    pub fn list_legacy_ids(&self) -> Result<Vec<u64>> {
+        let rtxn = self.env.read_txn()?;
+        let mut result = Vec::new();
+        for entry in self.db.iter(&rtxn)? {
+            let (doc_id, bytes) = entry?;
+            if is_legacy_f32_value(bytes) {
+                result.push(doc_id);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Test-only escape hatch: write raw bytes for a `doc_id` so tests
+    /// can exercise the read paths against malformed or legacy
     /// payloads without going through the public store/serialize path.
-    #[cfg(test)]
-    pub(crate) fn insert_raw(&self, doc_id: u64, bytes: &[u8]) -> Result<()> {
+    /// Hidden from docs; not part of the supported API.
+    #[doc(hidden)]
+    pub fn insert_raw(&self, doc_id: u64, bytes: &[u8]) -> Result<()> {
         let mut wtxn = self.env.write_txn()?;
         self.db.put(&mut wtxn, &doc_id, bytes)?;
         wtxn.commit()?;
@@ -437,9 +468,7 @@ impl std::fmt::Debug for EmbeddingDb {
 ///
 /// The data lives in a flat `Vec<f32>` in row-major order. Use
 /// [`token_embedding`](Self::token_embedding) when you want one token vector.
-/// Components carry bf16 precision for entries written by current
-/// docbert (see [`EmbeddingDb::store`]); legacy entries decode at full
-/// f32 precision.
+/// Components carry bf16 precision (see [`EmbeddingDb::store`]).
 ///
 /// # Examples
 ///
@@ -524,7 +553,7 @@ mod tests {
         assert_ne!(loaded.data[0], 0.1);
     }
 
-    /// Serialize a matrix in the pre-bf16 layout: same 8-byte header,
+    /// Serialize a matrix in the pre-1.0 layout: same 8-byte header,
     /// body of little-endian f32s.
     fn legacy_f32_bytes(
         num_tokens: u32,
@@ -541,37 +570,50 @@ mod tests {
     }
 
     #[test]
-    fn load_reads_legacy_f32_entries_at_full_precision() {
+    fn legacy_f32_entries_error_with_clean_instructions() {
         let (_tmp, db) = test_db();
 
-        // Values deliberately not bf16-representable: a legacy entry
-        // must decode to the exact f32s it was written with.
-        let data = [0.1f32, 0.2, 0.3, 0.4];
-        db.insert_raw(7, &legacy_f32_bytes(2, 2, &data)).unwrap();
+        db.store(1, 1, 2, &[1.0, 2.0]).unwrap();
+        db.insert_raw(7, &legacy_f32_bytes(2, 2, &[0.1, 0.2, 0.3, 0.4]))
+            .unwrap();
 
-        let matrix = db.load(7).unwrap().unwrap();
-        assert_eq!(matrix.num_tokens, 2);
-        assert_eq!(matrix.dimension, 2);
-        assert_eq!(matrix.data, data);
+        let msg = db.load(7).unwrap_err().to_string();
+        assert!(msg.contains("docbert clean"), "unhelpful error: {msg}");
+        assert!(db.batch_load(&[1, 7]).is_err());
+        assert!(db.list_shapes().is_err());
 
-        let batch = db.batch_load(&[7]).unwrap();
-        assert_eq!(batch[0].1.as_ref().unwrap().data, data);
+        // Healthy rows stay readable.
+        assert!(db.load(1).unwrap().is_some());
     }
 
     #[test]
-    fn list_shapes_sees_both_layouts_and_skips_garbage() {
+    fn list_legacy_ids_finds_only_f32_rows() {
+        let (_tmp, db) = test_db();
+
+        db.store(1, 1, 2, &[1.0, 2.0]).unwrap(); // current layout
+        db.insert_raw(2, &legacy_f32_bytes(2, 3, &[0.0; 6]))
+            .unwrap();
+        db.insert_raw(3, &[1, 2, 3, 4]).unwrap(); // garbage, not legacy
+
+        assert_eq!(db.list_legacy_ids().unwrap(), vec![2]);
+
+        // Dropping the legacy rows makes the full-scan reads work again.
+        db.batch_remove(&[2]).unwrap();
+        assert!(db.list_legacy_ids().unwrap().is_empty());
+        assert_eq!(db.list_shapes().unwrap(), vec![(1, 1, 2)]);
+    }
+
+    #[test]
+    fn list_shapes_skips_garbage() {
         let (_tmp, db) = test_db();
 
         db.store(1, 1, 2, &[1.0, 2.0]).unwrap(); // bf16 layout
-        db.insert_raw(2, &legacy_f32_bytes(2, 3, &[0.0; 6]))
-            .unwrap();
         db.insert_raw(3, &[1, 2, 3, 4]).unwrap(); // short header
         db.insert_raw(4, &legacy_f32_bytes(5, 5, &[0.0; 3]))
-            .unwrap(); // bad len
+            .unwrap(); // matches neither layout's length
 
-        let mut shapes = db.list_shapes().unwrap();
-        shapes.sort();
-        assert_eq!(shapes, vec![(1, 1, 2), (2, 2, 3)]);
+        let shapes = db.list_shapes().unwrap();
+        assert_eq!(shapes, vec![(1, 1, 2)]);
     }
 
     #[test]
