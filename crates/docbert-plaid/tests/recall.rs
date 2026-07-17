@@ -292,9 +292,11 @@ fn plaid_search_score_matches_recomputed_maxsim_on_decoded_tokens() {
         }
         let recomputed = {
             let mut score = 0.0f32;
-            for q in query.chunks_exact(DIM) {
+            for q in query.as_chunks::<DIM>().0 {
                 let best = decoded_tokens
-                    .chunks_exact(DIM)
+                    .as_chunks::<DIM>()
+                    .0
+                    .iter()
                     .map(|d| dot(q, d))
                     .fold(f32::NEG_INFINITY, f32::max);
                 if best.is_finite() {

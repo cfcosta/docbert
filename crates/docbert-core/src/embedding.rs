@@ -560,7 +560,7 @@ mod tests {
         );
         assert_eq!(*dim, 2);
         assert_eq!(data.len(), (*num_tokens as usize) * 2);
-        for row in data.chunks_exact(2) {
+        for row in data.as_chunks::<2>().0 {
             assert!((row[0] - 0.6).abs() < 1e-5);
             assert!((row[1] - 0.8).abs() < 1e-5);
         }

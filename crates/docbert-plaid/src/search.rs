@@ -1067,7 +1067,7 @@ mod tests {
 
         // Standard MaxSim: Σ max_j q_i · d_j.
         let mut expected = 0.0f32;
-        for q in query.chunks_exact(2) {
+        for q in query.as_chunks::<2>().0 {
             let best = decoded
                 .iter()
                 .map(|d| dot(q, d))
@@ -1497,7 +1497,9 @@ mod tests {
             })
             .collect();
         let expected: f32 = query
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|q| {
                 decoded
                     .iter()

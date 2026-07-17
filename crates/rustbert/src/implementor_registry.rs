@@ -190,7 +190,7 @@ mod tests {
             trait_path: trait_path.to_string(),
             self_type: self_type.to_string(),
             impl_signature: format!("impl {trait_path} for {self_type}"),
-            method_signatures: vec![format!("fn fmt(&self)")],
+            method_signatures: vec!["fn fmt(&self)".to_string()],
             source_file: PathBuf::from("src/lib.rs"),
             line_start: 1,
             line_end: 5,

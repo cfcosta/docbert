@@ -397,7 +397,7 @@ mod tests {
         assert!(n <= 4, "cluster count should respect the paper ceiling");
         assert!(n >= 1);
 
-        for chunk in pooled.chunks_exact(2) {
+        for chunk in pooled.as_chunks::<2>().0 {
             let matched = base.iter().any(|b| {
                 (chunk[0] - b[0]).abs() < 1e-5 && (chunk[1] - b[1]).abs() < 1e-5
             });
