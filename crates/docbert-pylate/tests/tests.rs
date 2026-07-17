@@ -268,7 +268,14 @@ fn lateon_outputs_128_dim_through_full_dense_chain() -> Result<()> {
 }
 
 /// Tests the `answerai-colbert-small-v1` model from the Hugging Face Hub.
+///
+/// Local-only: this repo id is a separate download from the
+/// `GTE-ModernColBERT-v1` most other tests share, and fetching it cold in
+/// CI trips Hugging Face Hub's rate limiter (HTTP 429). It is skipped by
+/// default; run it with
+/// `cargo test -p docbert-pylate answerai_colbert_small_v1_test -- --ignored`.
 #[test]
+#[ignore = "downloads a separate HF Hub repo; hits 429 rate limits in CI, run locally with --ignored"]
 fn answerai_colbert_small_v1_test() -> Result<()> {
     let device = test_device();
     println!("Testing with lightonai/answerai-colbert-small-v1...");
