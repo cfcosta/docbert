@@ -17,7 +17,6 @@ rmcp = { version = "1.5.0", features = ["transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tantivy = "0.26.0"
 tokio = { version = "1", features = [
   "io-std",
   "macros",
@@ -38,10 +37,8 @@ cuda = ["docbert-core/cuda", "docbert-web/cuda"]
 
 [dev-dependencies]
 hegeltest = "0.10"
-pdf_oxide = "0.3.35"
 rmcp = { version = "1.5.0", features = ["client", "transport-child-process"] }
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "cli_smoke"

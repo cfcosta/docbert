@@ -10,7 +10,6 @@ docbert-core = { path = "../docbert-core" }
 docbert-webui = { path = "../docbert-webui", optional = true }
 axum = "0.8"
 base64 = "0.22"
-percent-encoding = "2"
 rand = "0.10"
 reqwest = { version = "0.13.2", default-features = false, features = [
   "json",
