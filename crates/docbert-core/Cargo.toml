@@ -10,6 +10,7 @@ blake3 = "1.8.4"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 candle-core = "0.10.2"
 docbert-plaid = { path = "../docbert-plaid" }
+half = "2.7"
 heed = "0.22"
 ignore = "0.4"
 docbert-pylate = { path = "../docbert-pylate" }

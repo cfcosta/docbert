@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use half::bf16;
 use heed::{
     Database,
     Env,
@@ -24,26 +25,63 @@ const EMBEDDINGS_DB_NAME: &str = "embeddings";
 /// Header size: 4 bytes token count + 4 bytes dimension.
 const HEADER_SIZE: usize = 8;
 
-fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
+/// Bytes per component in the current (bf16) value layout.
+const BF16_BYTES: usize = 2;
+/// Bytes per component in the legacy (f32) value layout.
+const F32_BYTES: usize = 4;
+
+/// Read the `(num_tokens, dimension, component_count)` header of a
+/// stored value. Returns `None` when the blob is too short to carry
+/// the 8-byte header at all.
+fn parse_header(bytes: &[u8]) -> Option<(u32, u32, usize)> {
     if bytes.len() < HEADER_SIZE {
         return None;
     }
-
     let num_tokens =
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     let dimension =
         u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let expected_len =
-        HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
-    if bytes.len() != expected_len {
+    let components = (num_tokens as usize) * (dimension as usize);
+    Some((num_tokens, dimension, components))
+}
+
+fn parse_embedding_matrix(bytes: &[u8]) -> Option<EmbeddingMatrix> {
+    let (num_tokens, dimension, components) = parse_header(bytes)?;
+    let body = &bytes[HEADER_SIZE..];
+
+    // The two layouts are told apart purely by body length, which is
+    // unambiguous for any `components > 0` (and identical — empty —
+    // for zero). Byte-wise reads keep this independent of the mmap'd
+    // slice's alignment.
+    let data: Vec<f32> = if body.len() == components * BF16_BYTES {
+        body.as_chunks::<BF16_BYTES>()
+            .0
+            .iter()
+            .map(|c| bf16::from_bits(u16::from_le_bytes(*c)).to_f32())
+            .collect()
+    } else if body.len() == components * F32_BYTES {
+        body.as_chunks::<F32_BYTES>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect()
+    } else {
         return None;
-    }
+    };
 
     Some(EmbeddingMatrix {
         num_tokens,
         dimension,
-        data: bytemuck::cast_slice(&bytes[HEADER_SIZE..]).to_vec(),
+        data,
     })
+}
+
+/// Validate a stored value's shape without decoding its payload.
+fn parse_shape(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (num_tokens, dimension, components) = parse_header(bytes)?;
+    let body_len = bytes.len() - HEADER_SIZE;
+    (body_len == components * BF16_BYTES || body_len == components * F32_BYTES)
+        .then_some((num_tokens, dimension))
 }
 
 fn serialize_embedding_matrix(
@@ -51,11 +89,12 @@ fn serialize_embedding_matrix(
     dimension: u32,
     data: &[f32],
 ) -> Vec<u8> {
-    let byte_len = HEADER_SIZE + std::mem::size_of_val(data);
-    let mut bytes = vec![0; byte_len];
-    bytes[0..4].copy_from_slice(&num_tokens.to_le_bytes());
-    bytes[4..8].copy_from_slice(&dimension.to_le_bytes());
-    bytes[HEADER_SIZE..].copy_from_slice(bytemuck::cast_slice(data));
+    let mut bytes = Vec::with_capacity(HEADER_SIZE + data.len() * BF16_BYTES);
+    bytes.extend_from_slice(&num_tokens.to_le_bytes());
+    bytes.extend_from_slice(&dimension.to_le_bytes());
+    for &value in data {
+        bytes.extend_from_slice(&bf16::from_f32(value).to_bits().to_le_bytes());
+    }
     bytes
 }
 
@@ -64,7 +103,21 @@ fn serialize_embedding_matrix(
 /// Each entry is packed like this:
 /// - 4 bytes: token count `T` (`u32`, little-endian)
 /// - 4 bytes: embedding dimension `D` (`u32`, little-endian)
-/// - `T * D * 4` bytes: `f32` values in row-major order
+/// - `T * D * 2` bytes: `bf16` values in row-major order
+///
+/// Components are stored as `bf16` because that's all the precision the
+/// pipeline carries: the encoder trunk computes in bf16 on CUDA, so the
+/// low 16 mantissa bits of the f32s handed to [`store`](Self::store)
+/// are normalization noise below the model's own noise floor — and the
+/// downstream consumer (the PLAID bridge) re-quantizes every token to
+/// 2 bits per dimension anyway. Dropping them halves docbert's
+/// dominant on-disk artifact.
+///
+/// Entries written before the bf16 switch carry `T * D * 4` bytes of
+/// little-endian `f32` data instead. Reads accept both layouts,
+/// distinguished by body length (unambiguous whenever `T * D > 0`, and
+/// semantically identical when it is zero); writes always produce the
+/// bf16 layout, so legacy entries convert on their next overwrite.
 ///
 /// Backed by an [LMDB](https://www.symas.com/lmdb) environment via the
 /// [`heed`](https://docs.rs/heed) crate, which gives us multi-process
@@ -106,7 +159,10 @@ impl EmbeddingDb {
 
     /// Store an embedding matrix for a document.
     ///
-    /// Overwrites any existing embedding for this `doc_id`.
+    /// Overwrites any existing embedding for this `doc_id`. Components
+    /// are rounded to `bf16` (round-to-nearest-even) on write, so
+    /// [`load`](Self::load) returns the rounded values, not the exact
+    /// input floats.
     ///
     /// # Panics
     ///
@@ -225,6 +281,8 @@ impl EmbeddingDb {
     ///
     /// Each entry is `(doc_id, num_tokens, dimension, data)`.
     /// More efficient than calling [`store`](Self::store) in a loop.
+    /// Like [`store`](Self::store), components are rounded to `bf16`
+    /// on write.
     ///
     /// # Panics
     ///
@@ -335,33 +393,24 @@ impl EmbeddingDb {
     /// embedding entry.
     ///
     /// Reads only the 8-byte header of each stored value — enough to
-    /// know an entry's shape without pulling its `T × D × 4` token
-    /// bytes into RAM. The embedding bridge uses this to size a
-    /// pooled token buffer up front and then stream each matrix
-    /// straight into that buffer, which keeps peak RSS near a single
-    /// copy of the corpus instead of two.
+    /// know an entry's shape without decoding its token payload into
+    /// RAM. The embedding bridge uses this to size a pooled token
+    /// buffer up front and then stream each matrix straight into that
+    /// buffer, which keeps peak RSS near a single copy of the corpus
+    /// instead of two.
     ///
-    /// Malformed entries (header says more data than the stored blob
-    /// carries) are skipped silently, matching [`Self::load`]'s
-    /// "return `None` on garbage" behaviour.
+    /// Malformed entries (header disagrees with the stored blob's
+    /// length under both the bf16 and legacy f32 layouts) are skipped
+    /// silently, matching [`Self::load`]'s "return `None` on garbage"
+    /// behaviour.
     pub fn list_shapes(&self) -> Result<Vec<(u64, u32, u32)>> {
         let rtxn = self.env.read_txn()?;
         let mut result = Vec::new();
         for entry in self.db.iter(&rtxn)? {
             let (doc_id, bytes) = entry?;
-            if bytes.len() < HEADER_SIZE {
-                continue;
+            if let Some((num_tokens, dimension)) = parse_shape(bytes) {
+                result.push((doc_id, num_tokens, dimension));
             }
-            let num_tokens =
-                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            let dimension =
-                u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-            let expected_len =
-                HEADER_SIZE + (num_tokens as usize) * (dimension as usize) * 4;
-            if bytes.len() != expected_len {
-                continue;
-            }
-            result.push((doc_id, num_tokens, dimension));
         }
         Ok(result)
     }
@@ -388,6 +437,9 @@ impl std::fmt::Debug for EmbeddingDb {
 ///
 /// The data lives in a flat `Vec<f32>` in row-major order. Use
 /// [`token_embedding`](Self::token_embedding) when you want one token vector.
+/// Components carry bf16 precision for entries written by current
+/// docbert (see [`EmbeddingDb::store`]); legacy entries decode at full
+/// f32 precision.
 ///
 /// # Examples
 ///
@@ -443,14 +495,83 @@ mod tests {
     fn store_and_load() {
         let (_tmp, db) = test_db();
 
-        // 3 tokens, 4 dimensions
-        let data: Vec<f32> = (0..12).map(|i| i as f32 * 0.1).collect();
+        // 3 tokens, 4 dimensions; 0.125 steps are exactly representable
+        // in bf16, so the roundtrip compares bit-for-bit.
+        let data: Vec<f32> = (0..12).map(|i| i as f32 * 0.125).collect();
         db.store(42, 3, 4, &data).unwrap();
 
         let matrix = db.load(42).unwrap().unwrap();
         assert_eq!(matrix.num_tokens, 3);
         assert_eq!(matrix.dimension, 4);
         assert_eq!(matrix.data, data);
+    }
+
+    #[test]
+    fn store_rounds_components_to_bf16() {
+        let (_tmp, db) = test_db();
+
+        // 0.1 is not representable in bf16; the store path must round
+        // to nearest-even rather than hand back the exact input.
+        let input = [0.1f32, -0.3, std::f32::consts::FRAC_1_SQRT_2];
+        db.store(1, 1, 3, &input).unwrap();
+
+        let loaded = db.load(1).unwrap().unwrap();
+        for (got, want) in loaded.data.iter().zip(input.iter()) {
+            assert_eq!(*got, bf16::from_f32(*want).to_f32());
+            // bf16 keeps ~2^-8 relative precision: close, not exact.
+            assert!((got - want).abs() <= want.abs() * 4e-3);
+        }
+        assert_ne!(loaded.data[0], 0.1);
+    }
+
+    /// Serialize a matrix in the pre-bf16 layout: same 8-byte header,
+    /// body of little-endian f32s.
+    fn legacy_f32_bytes(
+        num_tokens: u32,
+        dimension: u32,
+        data: &[f32],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&num_tokens.to_le_bytes());
+        bytes.extend_from_slice(&dimension.to_le_bytes());
+        for &v in data {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn load_reads_legacy_f32_entries_at_full_precision() {
+        let (_tmp, db) = test_db();
+
+        // Values deliberately not bf16-representable: a legacy entry
+        // must decode to the exact f32s it was written with.
+        let data = [0.1f32, 0.2, 0.3, 0.4];
+        db.insert_raw(7, &legacy_f32_bytes(2, 2, &data)).unwrap();
+
+        let matrix = db.load(7).unwrap().unwrap();
+        assert_eq!(matrix.num_tokens, 2);
+        assert_eq!(matrix.dimension, 2);
+        assert_eq!(matrix.data, data);
+
+        let batch = db.batch_load(&[7]).unwrap();
+        assert_eq!(batch[0].1.as_ref().unwrap().data, data);
+    }
+
+    #[test]
+    fn list_shapes_sees_both_layouts_and_skips_garbage() {
+        let (_tmp, db) = test_db();
+
+        db.store(1, 1, 2, &[1.0, 2.0]).unwrap(); // bf16 layout
+        db.insert_raw(2, &legacy_f32_bytes(2, 3, &[0.0; 6]))
+            .unwrap();
+        db.insert_raw(3, &[1, 2, 3, 4]).unwrap(); // short header
+        db.insert_raw(4, &legacy_f32_bytes(5, 5, &[0.0; 3]))
+            .unwrap(); // bad len
+
+        let mut shapes = db.list_shapes().unwrap();
+        shapes.sort();
+        assert_eq!(shapes, vec![(1, 1, 2), (2, 2, 3)]);
     }
 
     #[test]

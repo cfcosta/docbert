@@ -355,7 +355,11 @@ The binary layout is implementation-specific, but conceptually each entry stores
 
 - token count
 - embedding dimension
-- row-major `f32` vector data
+- row-major `bf16` vector data
+
+Components are stored at `bf16` precision: the encoder trunk computes in bf16 on CUDA, so the extra mantissa bits of an `f32` representation are noise below the model's own precision floor, and the PLAID index re-quantizes every token to 2 bits per dimension downstream. Halving the per-component width halves what is by far the largest file in the data directory.
+
+Entries written by older docbert versions carry row-major `f32` data instead; reads accept both layouts transparently, and any rewrite of an entry (re-ingest, `rebuild`, `reindex`) converts it to the bf16 layout. Note that LMDB reuses freed pages rather than shrinking its file, so converting an existing corpus only reclaims disk space if the file is recreated — the simplest path is deleting `embeddings.db` and running `rebuild`, which re-embeds every chunk into a fresh, all-bf16 file at roughly half the previous size.
 
 Because embeddings are the largest stored artifact, `embeddings.db` is usually the main consumer of disk space in docbert.
 
