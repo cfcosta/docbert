@@ -1,7 +1,7 @@
 # Proposal: run the embedding encoder in BF16
 
-**TL;DR:** document embedding — the part of `docbert sync`/`rebuild` that
-takes minutes — runs the ModernBERT trunk entirely in F32, and candle's F32
+**TL;DR:** document embedding, the part of `docbert sync`/`rebuild` that
+takes minutes, runs the ModernBERT trunk entirely in F32, and candle's F32
 GEMMs default to `CUBLAS_COMPUTE_32F`: they never touch the GPU's tensor
 cores. Loading the model in BF16 and deleting the per-layer F32→F16→F32
 conversion churn around flash-attention is a small change (~60 lines, all
@@ -51,7 +51,7 @@ The sorted document path collected per-row valid lengths _after_
 `pad_encodings` had extended every row in place, so flash varlen
 treated every padded width as real: [PAD] positions served as
 attention keys in every padded batch on the whole GPU indexing path.
-No existing gate could catch it — the integration tests encode 1–3
+No existing gate could catch it: the integration tests encode 1–3
 documents (generic eager path), and this proposal's original parity
 protocol compared against a GPU reference dump that took the same
 code path as the run under test, so the varlen path was never measured
@@ -70,8 +70,8 @@ kernel rounding amplified by the 768→128 projection, not semantics.
 ## 1. Where the time goes today
 
 The production encoder is ModernBERT-base: 22 layers, hidden 768, GeGLU MLPs
-(Wi 768→2304, Wo 1152→768), 12 heads, RoPE, alternating attention — every
-third layer global, the other 14 local with a ±64-token sliding window —
+(Wi 768→2304, Wo 1152→768), 12 heads, RoPE, alternating attention (every
+third layer global, the other 14 local with a ±64-token sliding window),
 projected to 128-dim ColBERT token embeddings. Documents truncate to 300
 tokens, queries pad to 48. Linear layers alone cost ≈ 220 MFLOPs/token.
 
@@ -88,10 +88,10 @@ Two facts, confirmed in candle 0.10.2's CUDA backend
    candle-flash-attn natively accepts **F16 and BF16** (FlashAttention-2,
    sm86-aware tiling; head_dim=64 is a first-class kernel). Because the
    trunk is F32 but flash-attn needs half precision, every attention call
-   converts q/k/v F32→F16 and the output back — 4 full-tensor conversions ×
+   converts q/k/v F32→F16 and the output back: 4 full-tensor conversions ×
    22 layers × every forward.
 
-So a 16-bit trunk simultaneously: moves all GEMMs onto tensor cores, halves
+So a 16-bit trunk simultaneously moves all GEMMs onto tensor cores, halves
 weight/activation memory traffic, and turns the conversion churn into no-ops.
 
 This is the published standard, not a bet: the XTR replicability study
@@ -136,27 +136,27 @@ What the failures taught us:
 - **F16 overflows.** Document embeddings come back NaN-contaminated
   (`mean_token_cosine: null` is serde's NaN; all 16 top-1 "flips" are NaN
   MaxSim scores winning `total_cmp`). F16's ±65504 range is exceeded
-  somewhere in the trunk (transformer activation outliers — GeGLU
+  somewhere in the trunk (transformer activation outliers: GeGLU
   intermediates or residual stream); reduced-precision accumulation makes it
   slightly worse. BF16 shares F32's exponent range and is clean. This
-  empirically settles BF16 vs F16 — no quality study needed.
+  empirically settles BF16 vs F16: no quality study needed.
 - **The packed-local rewrite is slower, and we know why.** The varlen path
   keeps hidden states packed `(total_tokens, hidden)` but unpacks to padded
   and re-packs q/k/v at each of the 14 local-attention layers
   (`unpack_varlen_bsd`/`pack_varlen_thd`, per-sequence `narrow`/`cat`
   loops). Calling `flash_attn_varlen_windowed` directly on the packed
   tensors (as the 8 global layers already do) removes thousands of tiny
-  kernel launches and is bit-exact — but measured 15% _slower_. Root cause:
+  kernel launches and is bit-exact, but measured 15% _slower_. Root cause:
   the padded path applies RoPE with the **fused `rope_thd` kernel**
   (`apply_rotary_emb_thd`, one kernel per tensor), while the packed path
   (`apply_rotary_emb_packed`, modernbert.rs:142) composes rope from
-  `broadcast_mul` + `rotate_half` (narrow/neg/cat) — ~7 kernels per tensor
+  `broadcast_mul` + `rotate_half` (narrow/neg/cat): ~7 kernels per tensor
   over ~15M elements, several on non-contiguous views. Extending that to 14
   more layers added more memory traffic than the unpack/repack it removed
   (length-sorted batches have little padding, so the padded compute isn't
-  actually very wasteful). A v2 — gather per-token cos/sin rows by packed
+  actually very wasteful). A v2 (gather per-token cos/sin rows by packed
   position, then call fused `rope_thd` on the packed tensor viewed as
-  `(1, t, h, d)` — should get the launch-count win without the rope
+  `(1, t, h, d)`) should get the launch-count win without the rope
   regression; it is follow-up material, not part of this proposal.
 
 ## 3. Proposed change
@@ -176,8 +176,8 @@ All inside `docbert-pylate` (~60 lines):
 4. **Keep the public output F32.** Cast the projected embeddings to F32
    immediately after the 128-dim projection, before L2-normalization: the
    normalize epsilon (1e-12) would underflow in half precision, and
-   everything downstream — Ward pooling, PLAID, LMDB layout, `similarity`,
-   tests reading `to_vec3::<f32>` — stays byte-compatible.
+   everything downstream (Ward pooling, PLAID, LMDB layout, `similarity`,
+   tests reading `to_vec3::<f32>`) stays byte-compatible.
 5. **Dtype-safe attention mask.** `prepare_4d_attention_mask` multiplies by
    `f32::MIN`, which becomes −∞/NaN territory when cast to half precision.
    Use a finite per-dtype min (−1e38 for BF16, −65504 for F16). This

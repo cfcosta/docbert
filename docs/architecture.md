@@ -17,7 +17,7 @@ At a high level, docbert:
 3. stores lexical index data, metadata, embeddings, and settings locally
 4. serves retrieval through the CLI, the web API/UI, or MCP tools/resources
 
-docbert is centered on **local state and local files**: every runtime is a local process working over a local data directory.
+docbert keeps state and files local: every runtime is a local process working over a local data directory.
 
 ## Product surfaces
 
@@ -29,7 +29,7 @@ The CLI is the main operational interface for:
 - context management
 - search and retrieval
 - indexing (`sync`, `rebuild`, `reindex`)
-- maintenance and recovery (`clean` — removes orphan and wrong-model embeddings and resets pre-1.0 legacy data)
+- maintenance and recovery (`clean` removes orphan and wrong-model embeddings and resets pre-1.0 legacy data)
 - runtime inspection (`status`, `doctor`, `model show`)
 - starting the web or MCP runtimes
 
@@ -64,15 +64,15 @@ It owns:
 - handing `docbert web` off to the `docbert-web` crate
 - runtime resource management around `config.db`, `embeddings.db`, `plaid.idx`, and Tantivy writers
 
-Important modules:
+Main modules:
 
-- `src/main.rs` — process entrypoint, command dispatch, data-dir resolution, model resolution
-- `src/cli.rs` — clap command surface
-- `src/commands/*` — CLI behaviors
-- `src/indexing.rs` — sync/rebuild planning and snapshot finalization
-- `src/mcp.rs` — MCP runtime
-- `src/runtime.rs` — blocking `config.db` open helper
-- `src/snapshots.rs` — collection snapshot support around indexing/web mutations
+- `src/main.rs`: process entrypoint, command dispatch, data-dir resolution, model resolution
+- `src/cli.rs`: clap command surface
+- `src/commands/*`: CLI behaviors
+- `src/indexing.rs`: sync/rebuild planning and snapshot finalization
+- `src/mcp.rs`: MCP runtime
+- `src/runtime.rs`: blocking `config.db` open helper
+- `src/snapshots.rs`: collection snapshot support around indexing/web mutations
 
 ## `crates/docbert-web`
 
@@ -110,7 +110,7 @@ It owns:
 - search execution and reranking logic
 - filesystem walking/discovery rules
 
-Important public types re-exported by `docbert-core` include:
+Public types re-exported by `docbert-core` include:
 
 - `ConfigDb`
 - `DataDir`
@@ -288,7 +288,7 @@ Examples:
 
 The web runtime is the `docbert web` process, implemented by the `docbert-web` crate.
 
-Important boundary details:
+Boundary details:
 
 - one local process serves the SPA and the HTTP API
 - the runtime is entered through `docbert_web::run`, which initializes shared state via `state::init` in the `docbert-web` crate
@@ -302,7 +302,7 @@ For the concrete route contract, see [`web-api.md`](./web-api.md).
 
 The MCP runtime is a separate long-lived stdio server.
 
-Important boundary details:
+Boundary details:
 
 - it keeps a shared `SearchIndex` and `ModelManager` in process state
 - it reopens `config.db` and `embeddings.db` for calls and resource reads
@@ -320,7 +320,7 @@ docbert's chat system is a browser-side agent that calls the docbert HTTP API an
 - web API routes for conversations and settings
 - UI/runtime orchestration in the browser client
 
-Important boundary clarification:
+Boundary details:
 
 - conversation persistence and LLM settings are backend concerns
 - chat orchestration strategy is largely a UI/runtime concern
@@ -332,14 +332,12 @@ For the concrete persisted schema and route behavior, see [`chat-and-conversatio
 
 The retrieval stack supports two main modes:
 
-- **hybrid**
-  - lexical retrieval plus ColBERT reranking
-- **semantic**
-  - semantic scoring path through ColBERT-only search
+- **hybrid**: lexical retrieval plus ColBERT reranking
+- **semantic**: semantic scoring path through ColBERT-only search
 
 Both modes ultimately depend on the same local metadata, source files, embeddings, and model runtime.
 
-One subtle but important detail is that some response enrichment is pulled from disk at read time:
+Some response enrichment is pulled from disk at read time:
 
 - search titles may be recomputed from the current document content on disk
 - excerpts/snippets come from current file content on disk
@@ -351,9 +349,9 @@ For pipeline details, see [`pipeline.md`](./pipeline.md).
 
 ## Concurrency and resource management
 
-docbert is designed around local-process concurrency rather than distributed coordination.
+docbert relies on local-process concurrency rather than distributed coordination.
 
-Important patterns:
+Patterns:
 
 - Tantivy supplies read/write index primitives
 - LMDB-backed stores are opened per operation where appropriate
@@ -367,13 +365,13 @@ The exact persistence and lock-sensitive storage details are documented in [`sto
 
 Use these terms consistently:
 
-- **collection** — a named root directory registered in `config.db`
-- **document** — one indexed source file within a collection
-- **conversation** — persisted chat history record
-- **web runtime** / **web server** — the process started by `docbert web`
-- **MCP runtime** / **MCP server** — the process started by `docbert mcp`
-- **hybrid search** — lexical retrieval plus semantic reranking
-- **semantic search** — semantic-only retrieval path
+- **collection**: a named root directory registered in `config.db`
+- **document**: one indexed source file within a collection
+- **conversation**: persisted chat history record
+- **web runtime** / **web server**: the process started by `docbert web`
+- **MCP runtime** / **MCP server**: the process started by `docbert mcp`
+- **hybrid search**: lexical retrieval plus semantic reranking
+- **semantic search**: semantic-only retrieval path
 
 ## Related references
 

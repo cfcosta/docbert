@@ -21,7 +21,7 @@ The pipeline then works across these kinds of state:
 - **`plaid.idx`** for the PLAID multi-vector index (the actual storage backing the semantic leg)
 - **`config.db`** for collection registration, document metadata, chunk byte offsets, settings, and collection Merkle snapshots
 
-One important architectural detail: **source files on disk are part of the read path**. Search result enrichment and document retrieval read current file contents from disk, rather than treating the index as the only source of truth.
+Source files on disk are part of the read path. Search result enrichment and document retrieval read current file contents from disk, rather than treating the index as the only source of truth.
 
 ## Indexing pipeline
 
@@ -33,10 +33,10 @@ Indexing happens through:
 
 - `docbert sync`
 - `docbert rebuild`
-- `docbert reindex` (PLAID-only — rebuilds the semantic index from existing embeddings without re-encoding)
+- `docbert reindex` (PLAID-only: rebuilds the semantic index from existing embeddings without re-encoding)
 - web document ingestion and deletion via `docbert web`
 
-The CLI and web runtime use the same shared discovery, preparation, metadata, and snapshot primitives.
+The CLI and web runtime use the same discovery, preparation, metadata, and snapshot primitives.
 
 ## Stage 1: collection discovery
 
@@ -57,7 +57,7 @@ It:
 
 ### Git ignore behavior
 
-Discovery is Git-aware, but only when the **collection root itself is a Git repo**.
+Discovery is Git-aware, but only when the collection root itself is a Git repo.
 
 If `collection_root/.git` exists, discovery respects:
 
@@ -66,7 +66,7 @@ If `collection_root/.git` exists, discovery respects:
 - `.git/info/exclude`
 - Git global excludes
 
-If the collection root is **not** a Git repo, a stray `.gitignore` file does **not** affect indexing.
+If the collection root is not a Git repo, a stray `.gitignore` file does not affect indexing.
 
 That distinction is intentional and is part of the indexing contract.
 
@@ -90,7 +90,7 @@ The flow is:
 5. convert deleted paths into deterministic document IDs
 6. process only new and changed files, and remove state for deleted files
 
-**Incremental sync is snapshot-based**: change selection is driven by the Merkle snapshot diff. `mtime` is stored in `DocumentMetadata` as per-document metadata, not as the change signal.
+Incremental sync is snapshot-based: change selection is driven by the Merkle snapshot diff. `mtime` is stored in `DocumentMetadata` as per-document metadata, not as the change signal.
 
 ### `docbert rebuild`
 
@@ -132,7 +132,7 @@ For `DELETE /v1/documents/{collection}/{path}`:
 5. remove document metadata and user metadata
 6. refresh the collection snapshot
 
-The snapshot update is intentionally kept behind successful mutation work.
+The snapshot update intentionally happens only after the mutation work succeeds.
 
 ## Stage 3: loading and preparing documents
 
@@ -251,7 +251,7 @@ For web uploads, optional user metadata is also stored separately.
 
 ### Collection snapshots
 
-Collection Merkle snapshots record the discovered file set for each collection and are used to drive later sync selection.
+Collection Merkle snapshots record the discovered file set for each collection and drive later sync selection.
 
 Snapshot behavior:
 
@@ -366,7 +366,7 @@ If the literal query text does not appear, excerpt generation can fall back to t
 
 `GET /v1/documents/{collection}/{path}` also reads directly from the source file on disk and derives the returned title from the current content.
 
-This is why the filesystem is part of the live retrieval path, not just the indexing path.
+This is why the filesystem is part of the live retrieval path as well as the indexing path.
 
 ## End-to-end flow by surface
 

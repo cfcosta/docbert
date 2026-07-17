@@ -15,11 +15,11 @@ It is intentionally narrower than a UI walkthrough. The source of truth here is 
 - `crates/docbert-core/src/conversation.rs`
 - `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`
 
-The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend — the only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
+The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend. The only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
 
 ## What is persisted
 
-The chat system persists two different kinds of state in `config.db`:
+The chat system persists two kinds of state in `config.db`:
 
 1. **Conversations**
    - stored in the `conversations` table
@@ -40,7 +40,7 @@ Those are separate concerns:
 
 ## Conversation lifecycle
 
-The current conversation lifecycle is implemented entirely through the web API routes under `/v1/conversations`.
+The conversation lifecycle is implemented entirely through the web API routes under `/v1/conversations`.
 
 ### Create
 
@@ -82,7 +82,7 @@ Example response:
 Status codes:
 
 - `201 Created`
-- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites — use PUT to update)
+- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites; use PUT to update)
 - `500 Internal Server Error`
 
 ### List
@@ -188,14 +188,14 @@ PUT /v1/conversations/{id}
 
 Request body:
 
-- must be a full `Conversation` object — `messages` is required (the field has no `serde(default)`, so a body without it fails deserialization with `422 Unprocessable Entity`; malformed JSON syntax returns `400 Bad Request`)
+- must be a full `Conversation` object; `messages` is required (the field has no `serde(default)`, so a body without it fails deserialization with `422 Unprocessable Entity`; malformed JSON syntax returns `400 Bad Request`)
 
 Behavior:
 
 - the server checks that the conversation already exists
 - the server overwrites `body.id` with the `{id}` path parameter
 - the server refreshes `updated_at` on write
-- `created_at` is stored verbatim from the request body — it is not preserved from the existing record
+- `created_at` is stored verbatim from the request body; it is not preserved from the existing record
 - the rest of the conversation body is stored as provided
 
 Example request:
@@ -272,7 +272,7 @@ Each message has:
 - `parts`
 - optional `sources`
 
-Unknown fields on input are silently ignored and dropped — for example, a client that sends an extra `content` field on a message gets it discarded, not an error.
+Unknown fields on input are silently ignored and dropped. For example, a client that sends an extra `content` field on a message gets it discarded, not an error.
 
 #### `role`
 
@@ -338,7 +338,7 @@ Examples:
 }
 ```
 
-The `name` field is free-form (any string the chat runtime chose to label the call); in current usage the values match docbert's MCP tool names — `search`, `semantic_search`, `get`, `multi_get`, or `status`.
+The `name` field is free-form (any string the chat runtime chose to label the call); in current usage the values match docbert's MCP tool names: `search`, `semantic_search`, `get`, `multi_get`, or `status`.
 
 #### `sources`
 
@@ -498,7 +498,7 @@ Clears the stored ChatGPT Codex OAuth session without removing the selected prov
 
 ## What the backend guarantees
 
-These are stable backend-level behaviors documented by the current implementation:
+These backend behaviors are stable in the current implementation:
 
 - conversations are persisted in `config.db`
 - listing conversations returns summaries sorted by descending `updated_at`
@@ -510,7 +510,7 @@ These are stable backend-level behaviors documented by the current implementatio
 
 ## What is runtime guidance, not a backend guarantee
 
-The chat runtime also contains prompt and orchestration logic in `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`. That file is important context, but it should not be confused with a stable backend contract.
+The chat runtime also contains prompt and orchestration logic in `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`. That file is useful context, but it is not a stable backend contract.
 
 Current runtime guidance includes:
 

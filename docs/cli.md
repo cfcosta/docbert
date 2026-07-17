@@ -37,7 +37,7 @@ Two commands are handled before storage initialization:
 
 That means they do not require an existing data directory.
 
-`docbert clean` is also dispatched before the normal database open. It resolves the data directory like any storage command, but it inspects the database files at the filesystem level before opening anything — resetting stores written in the pre-1.0 format is its job, and the normal open path refuses those files.
+`docbert clean` is also dispatched before the normal database open. It resolves the data directory like any storage command, but it inspects the database files at the filesystem level before opening anything: resetting stores written in the pre-1.0 format is its job, and the normal open path refuses those files.
 
 ## Commands
 
@@ -149,7 +149,7 @@ Behavior notes:
   1. `--json`
   2. `--files`
   3. human-readable formatted results
-- `--all` changes result selection behavior but does not suppress `--count` parsing; it simply tells the search layer to return all results instead of truncating to `--count`. Under RRF fusion no score filter applies; with `--bm25-only`, results below `--min-score` are dropped.
+- `--all` changes result selection behavior but does not suppress `--count` parsing; it tells the search layer to return all results instead of truncating to `--count`. Under RRF fusion no score filter applies; with `--bm25-only`, results below `--min-score` are dropped.
 
 Examples:
 
@@ -318,7 +318,7 @@ Behavior notes:
 - Reindex does not walk collection roots, does not read source files, and does not call the model.
 - It reads every stored embedding, retrains the PLAID centroids/codec, and replaces the on-disk PLAID file at `<data-dir>/plaid.idx`.
 - Typical use is after a PLAID builder change (centroid count, codec bit-width, k-means iterations, …) where `rebuild` would unnecessarily re-embed every document against the unchanged model.
-- If you changed the embedding model itself, run `docbert rebuild` instead — reindex won't regenerate embeddings.
+- If you changed the embedding model itself, run `docbert rebuild` instead; reindex won't regenerate embeddings.
 
 This command takes no flags.
 
@@ -349,8 +349,8 @@ Behavior notes:
   - If only `embeddings.db` is in the pre-1.0 redb format, clean deletes `embeddings.db`, `embeddings.db-lock`, and `plaid.idx`, then clears per-document state so the next `docbert sync` re-embeds everything. Collections stay registered.
   - When legacy-format files are found, this reset (or its `--dry-run` preview) is the whole clean run.
 - Normal pass, when no legacy-format databases exist:
-  - removes orphan embeddings — rows that no chunk manifest references
-  - removes wrong-model embeddings — if the stored `embedding_model` differs from the model resolved for this invocation (including a `--model` override), every stored embedding is wrong-model, and document state is cleared so `docbert sync` re-embeds
+  - removes orphan embeddings: rows that no chunk manifest references
+  - removes wrong-model embeddings: if the stored `embedding_model` differs from the model resolved for this invocation (including a `--model` override), every stored embedding is wrong-model, and document state is cleared so `docbert sync` re-embeds
   - removes rows still in the pre-1.0 `f32` embedding layout; their presence also clears document state so `sync` re-embeds the affected documents
   - after removals, rebuilds `plaid.idx` from the remaining embeddings, or deletes it when none remain
 - `--dry-run` previews every pass without deleting anything.
@@ -386,7 +386,7 @@ Behavior notes:
   - document count
 - If the stored embedding model differs from the currently resolved model, status prints:
   - `Embedding model: <stored> (MISMATCH -- run \`docbert rebuild\`)`
-- JSON output includes `data_dir`, `model`, `model_source`, `embedding_model`, `documents`, and `collections` — note that JSON's `collections` field is a count (`usize`), not the path list shown in human output.
+- JSON output includes `data_dir`, `model`, `model_source`, `embedding_model`, `documents`, and `collections`. The JSON `collections` field is a count (`usize`), not the path list shown in human output.
 
 Example:
 

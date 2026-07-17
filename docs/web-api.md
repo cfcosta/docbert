@@ -2,7 +2,7 @@
 
 This page documents the HTTP API implemented by `docbert web`.
 
-It covers the current server behavior in `crates/docbert-web/src/routes/*`. When the browser client contains helper functions for routes the server does not implement, this page follows the server, not the client.
+It covers the current server behavior in `crates/docbert-web/src/routes/*`. When the browser client has helper functions for routes the server does not implement, this page follows the server, not the client.
 
 ## Base path
 
@@ -44,7 +44,7 @@ The web process also serves the browser UI, but UI routes are not part of this A
 
 ## Unsupported and absent routes
 
-These behaviors matter because the UI client has helpers for some of them, but the current server does not implement them:
+The UI client has helpers for some of these, but the current server does not implement them:
 
 - `POST /v1/collections` is **not implemented** and returns `404 Not Found`.
 - `DELETE /v1/collections/{name}` is **not implemented** and returns `404 Not Found`.
@@ -115,7 +115,7 @@ The conversations API persists complete conversation objects in `config.db`.
 }
 ```
 
-Important details:
+Notes:
 
 - `role` is lowercase: `"user"` or `"assistant"`.
 - `actor` is tagged with `type`, for example `{"type":"parent"}` or `{"type":"subagent", ...}`.
@@ -189,7 +189,7 @@ Response body (`201 Created`):
 Status codes:
 
 - `201 Created`
-- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites — use PUT to update)
+- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites; use PUT to update)
 - `500 Internal Server Error`
 
 ### `GET /v1/conversations/{id}`
@@ -211,7 +211,7 @@ Request body:
 - Must be a full `Conversation` object.
 - The server ignores any mismatched body `id` and replaces it with the `{id}` path parameter.
 - The server refreshes `updated_at` at write time.
-- `created_at` is stored verbatim from the request body — it is not preserved from the existing record.
+- `created_at` is stored verbatim from the request body; it is not preserved from the existing record.
 
 Example request body:
 
@@ -275,7 +275,7 @@ Uploads use `POST /v1/documents` with this request shape:
 }
 ```
 
-Important limitations:
+Limitations:
 
 - `collection` must already exist in the CLI-managed collection registry.
 - `content_type` must be either `text/markdown` or `application/pdf`.
@@ -365,7 +365,7 @@ Optional range query parameters (camelCase) let callers slice the response serve
 | `startByte` | `u64`   | 0-based inclusive first byte |
 | `endByte`   | `u64`   | 0-based inclusive last byte  |
 
-Line and byte ranges are mutually exclusive — supplying any of `startLine`/`endLine` together with any of `startByte`/`endByte` returns `400 Bad Request`. Omitting all four returns the full document.
+Line and byte ranges are mutually exclusive: supplying any of `startLine`/`endLine` together with any of `startByte`/`endByte` returns `400 Bad Request`. Omitting all four returns the full document.
 
 Response body:
 
@@ -431,11 +431,11 @@ Status codes:
 
 Fields:
 
-- `query` — required string
-- `mode` — optional, defaults to `"semantic"`
-- `collection` — optional collection filter
-- `count` — optional, defaults to `10`
-- `min_score` — optional, defaults to `0.0`
+- `query`: required string
+- `mode`: optional, defaults to `"semantic"`
+- `collection`: optional collection filter
+- `count`: optional, defaults to `10`
+- `min_score`: optional, defaults to `0.0`
 
 Supported modes:
 
@@ -483,12 +483,12 @@ Response body:
 }
 ```
 
-Behavior notes:
+Behavior:
 
 - The server defaults to `semantic` mode, not `hybrid`.
 - `title` is loaded from the current file on disk when possible.
 - `metadata` comes from stored document user metadata; omitted when none is stored.
-- `excerpts` are derived from the current file content using the query text and may be empty (omitted from the JSON when so).
+- `excerpts` are derived from the current file content using the query text and may be empty, in which case the field is omitted from the JSON.
 - `line_count` and `byte_count` describe the document on disk; both are omitted when the file cannot be read.
 - `match_chunk` carries the byte range of the best-scoring chunk surfaced by the semantic leg, clamped to the current file size. It is omitted on BM25-only hits (no chunk-level score), when chunk offsets weren't recorded, or when the document is unreadable.
 - The server returns `result_count` as the actual number of returned items.
@@ -497,7 +497,7 @@ Status codes:
 
 - `200 OK`
 - `400 Bad Request` for an unknown `mode`
-- `503 Service Unavailable` if the PLAID semantic index has not been built yet — both `semantic` and `hybrid` modes require it (`bm25` does not, and never returns this status). The server logs the query and returns an empty body; run `docbert sync` to build the index.
+- `503 Service Unavailable` if the PLAID semantic index has not been built yet. Both `semantic` and `hybrid` modes require it (`bm25` does not, and never returns this status). The server logs the query and returns an empty body; run `docbert sync` to build the index.
 - `500 Internal Server Error`
 
 ## LLM settings
@@ -525,7 +525,7 @@ Status codes:
 
 Read persisted LLM settings.
 
-Behavior notes:
+Behavior:
 
 - `provider` and `model` come from persisted settings when present.
 - For API-key-backed providers, `api_key` comes from persisted settings when present.
@@ -578,7 +578,7 @@ Request body:
 }
 ```
 
-Behavior notes:
+Behavior:
 
 - Empty-string `api_key` is stored as absent in the persisted settings.
 - `provider` and `model` may be cleared by sending `null`.
@@ -612,7 +612,7 @@ Response body:
 }
 ```
 
-Behavior notes:
+Behavior:
 
 - The route spins up a temporary localhost callback listener on `http://localhost:1455/auth/callback`.
 - If that callback port is already busy, the route returns `409 Conflict`.
@@ -628,7 +628,7 @@ Status codes:
 
 Remove the stored ChatGPT Codex OAuth session.
 
-Behavior notes:
+Behavior:
 
 - This clears the stored OAuth credential blob but leaves the selected `provider` and `model` unchanged.
 
@@ -644,4 +644,4 @@ Status codes:
 - PDF uploads send base64-encoded bytes in the request, but document reads return extracted Markdown/text content.
 - Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"` or `"mode": "bm25"`.
 - All document/search endpoints surface `doc_id` as the short hex form (e.g. `#abc123`); there is no qualified `collection:path` form on the wire.
-- If you are consuming both the web UI client and the server directly, treat this page and the route implementation as the source of truth for what the server actually supports.
+- If you consume both the web UI client and the server directly, treat this page and the route implementation as the source of truth for what the server actually supports.

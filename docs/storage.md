@@ -28,7 +28,7 @@ Within that root, docbert currently uses five storage layers:
 
 The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`); the `*-lock` siblings are LMDB's inter-process lock files. Files still in the redb format used before 1.0 are refused on open (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
 
-A key architectural point is that docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
+docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
 
 ## Data directory layout
 
@@ -52,7 +52,7 @@ The collection roots themselves are **not** stored inside the data directory unl
 
 `config.db` is the main metadata and configuration database.
 
-It is a local [LMDB](https://www.symas.com/lmdb) environment opened through the [`heed`](https://docs.rs/heed) crate by `ConfigDb`. LMDB gives docbert proper cross-process readers and writers, so multiple `docbert mcp` / `docbert web` / CLI invocations can share one data dir without stepping on each other. Alongside the data file, LMDB writes a `<path>-lock` sibling — `config.db-lock` next to `config.db` — for its inter-process lock; the lock file is small and gets recreated on demand.
+It is a local [LMDB](https://www.symas.com/lmdb) environment opened through the [`heed`](https://docs.rs/heed) crate by `ConfigDb`. LMDB gives docbert proper cross-process readers and writers, so multiple `docbert mcp` / `docbert web` / CLI invocations can share one data dir without stepping on each other. Alongside the data file, LMDB writes a `<path>-lock` sibling (`config.db-lock` next to `config.db`) for its inter-process lock; the lock file is small and gets recreated on demand.
 
 It owns these named LMDB databases:
 
@@ -75,7 +75,7 @@ It is intentionally separate from `config.db` because embeddings are much larger
 
 ## `tantivy/`
 
-The `tantivy/` directory stores the lexical search index. It holds Tantivy's own on-disk format — segment files plus `meta.json` — created on demand when the index is first opened.
+The `tantivy/` directory stores the lexical search index. It holds Tantivy's own on-disk format (segment files plus `meta.json`), created on demand when the index is first opened.
 
 It is used for:
 
@@ -181,9 +181,9 @@ Shape:
 
 Each `DocChunkEntry` contains:
 
-- `chunk_doc_id` — the chunk's content-derived ID, the same ID that keys the chunk's row in `embeddings.db`
-- `start_byte` — byte offset where the chunk begins in the source document
-- `byte_len` — byte length of the chunk in the source document
+- `chunk_doc_id`: the chunk's content-derived ID, the same ID that keys the chunk's row in `embeddings.db`
+- `start_byte`: byte offset where the chunk begins in the source document
+- `byte_len`: byte length of the chunk in the source document
 
 Important behavior:
 
@@ -307,7 +307,7 @@ These are used by the web document/search APIs to attach user metadata to docume
 
 - `doc_content:{doc_id}`
 
-The current code removes those keys for cleanup safety, but the present implementation does not actively write document content into `config.db`.
+The current code removes those keys for cleanup safety, but the implementation does not write document content into `config.db`.
 
 ## Conversation and LLM settings persistence
 
@@ -346,9 +346,7 @@ So the persisted settings record and the effective runtime value are not always 
 
 ## Snapshot storage and change tracking
 
-Merkle snapshots are part of the normal storage model, not just an implementation detail.
-
-They matter because they define how docbert decides what changed in a collection.
+Merkle snapshots are part of the storage model: they define how docbert decides what changed in a collection.
 
 High-level flow:
 
@@ -373,7 +371,7 @@ Current storage responsibilities:
 - semantic-only search
 - content-addressed embedding cache: rows are retained when documents change or disappear, so re-indexing identical chunk text is a cache hit instead of a re-encode
 
-Orphaned rows — chunk IDs that no document references in `chunk_owners` — are garbage-collected only by `docbert clean`.
+Orphaned rows (chunk IDs that no document references in `chunk_owners`) are garbage-collected only by `docbert clean`.
 
 Each stored value is packed as:
 
@@ -532,7 +530,7 @@ docbert 1.0 dropped every migration path for data written by older releases. `do
 - **redb-format `config.db` / `embeddings.db`** (releases before 1.0): `ConfigDb::open` / `EmbeddingDb::open` sniff the first nine bytes and refuse redb files. `clean` handles them below the open layer: a legacy `embeddings.db` is deleted along with `plaid.idx` and the per-document state (collections stay registered; the next `sync` re-embeds everything); a legacy `config.db` resets the whole data dir, after which collections must be re-added.
 - **`f32`-layout embedding rows** (pre-bf16 releases): reads refuse them; `clean` drops the rows and clears document state so `sync` re-embeds the affected documents. Rows already in the bf16 layout are kept and reused.
 - **`plaid.idx` versions 1–2**: the loader rejects them; `docbert reindex` (or a full `rebuild`) regenerates the index from the stored embeddings.
-- **conversation records from before 1.0** (payloads that are not current-format rkyv): reads treat them as absent — lookups return nothing and listings skip them with a warning. `docbert clean` does not touch them; deleting the affected conversation removes the record.
+- **conversation records from before 1.0** (payloads that are not current-format rkyv): reads treat them as absent; lookups return nothing and listings skip them with a warning. `docbert clean` does not touch them; deleting the affected conversation removes the record.
 
 docbert never creates or touches `.redb-bak` files; if earlier releases left any behind, delete them manually.
 

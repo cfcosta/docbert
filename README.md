@@ -203,7 +203,7 @@ More detail:
 
 ## Chat
 
-The chat experience in the web UI is built from:
+Chat in the web UI is built from:
 
 - persisted conversations in `config.db`
 - persisted LLM settings in `config.db`
@@ -215,10 +215,7 @@ Auth options for chat include:
 - API-key-backed providers such as OpenAI and Anthropic
 - ChatGPT Plus/Pro via the `openai-codex` provider and local OAuth sign-in in Settings
 
-Important boundary:
-
-- conversation persistence and settings storage are backend behavior
-- exact chat prompting/orchestration is runtime/UI behavior
+Conversation persistence and settings storage are backend behavior. Exact chat prompting/orchestration is runtime/UI behavior.
 
 See:
 

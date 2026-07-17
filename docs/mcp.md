@@ -12,9 +12,9 @@ The implementation lives in `crates/docbert/src/mcp.rs` and is the source of tru
 
 The MCP server exposes:
 
-- **six tools** for search, document retrieval, and status
-- **one prompt** that explains how to use those tools
-- **one resource template** for reading indexed documents directly as MCP resources
+- six tools for search, document retrieval, and status
+- one prompt that explains how to use those tools
+- one resource template for reading indexed documents directly as MCP resources
 
 At startup, the server:
 
@@ -82,14 +82,14 @@ Search indexed documents using the normal search stack.
 
 Fields:
 
-- `query` — required string
-- `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; applied when `bm25Only` is true, otherwise ignored under RRF fusion; default `0.0`
-- `collection` — optional collection filter
-- `bm25Only` — optional, skip the semantic leg and return BM25 results directly
-- `noFuzzy` — optional, disable fuzzy matching in the BM25 leg
-- `all` — optional, return all results
-- `includeSnippet` — optional, defaults to `true`
+- `query`: required string
+- `limit`: optional maximum number of results; default `10`
+- `minScore`: optional minimum score threshold; applied when `bm25Only` is true, otherwise ignored under RRF fusion; default `0.0`
+- `collection`: optional collection filter
+- `bm25Only`: optional, skip the semantic leg and return BM25 results directly
+- `noFuzzy`: optional, disable fuzzy matching in the BM25 leg
+- `all`: optional, return all results
+- `includeSnippet`: optional, defaults to `true`
 
 ### Behavior
 
@@ -103,8 +103,8 @@ Fields:
 
 The tool returns:
 
-1. **plain text summary** as normal MCP text content
-2. **structured JSON** in `structured_content`
+1. a plain text summary as normal MCP text content
+2. structured JSON in `structured_content`
 
 Plain text example:
 
@@ -162,17 +162,17 @@ Run semantic-only search.
 
 Fields:
 
-- `query` — required string
-- `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; applied to PLAID MaxSim scores; default `0.0`
-- `all` — optional, return all results above threshold
-- `includeSnippet` — optional, defaults to `true`
+- `query`: required string
+- `limit`: optional maximum number of results; default `10`
+- `minScore`: optional minimum score threshold; applied to PLAID MaxSim scores; default `0.0`
+- `all`: optional, return all results above threshold
+- `includeSnippet`: optional, defaults to `true`
 
 ### Behavior
 
 - Uses `search::semantic(...)`, which loads the prebuilt PLAID index and ranks documents against it.
 - Fails with an MCP error if the PLAID index has not been built yet (see `Error::PlaidIndexMissing`).
-- Does **not** accept a collection parameter in the MCP schema.
+- Does not accept a collection parameter in the MCP schema.
 - Shares the same result formatting path as `search`.
 
 ### Tool output
@@ -204,13 +204,13 @@ Run keyword-only BM25 search.
 
 Fields:
 
-- `query` — required string
-- `limit` — optional maximum number of results; default `10`
-- `minScore` — optional minimum score threshold; applied directly to BM25 scores; default `0.0`
-- `collection` — optional collection filter
-- `noFuzzy` — optional, disable fuzzy matching in the BM25 leg
-- `all` — optional, return all results above threshold
-- `includeSnippet` — optional, defaults to `true`
+- `query`: required string
+- `limit`: optional maximum number of results; default `10`
+- `minScore`: optional minimum score threshold; applied directly to BM25 scores; default `0.0`
+- `collection`: optional collection filter
+- `noFuzzy`: optional, disable fuzzy matching in the BM25 leg
+- `all`: optional, return all results above threshold
+- `includeSnippet`: optional, defaults to `true`
 
 ### Behavior
 
@@ -246,15 +246,15 @@ Fetch one document by reference.
 
 Fields:
 
-- `reference` — required; accepted forms are:
+- `reference`: required; accepted forms are:
   - `collection:path`
   - `#doc_id`
   - plain path
-- `startLine` — optional 1-based inclusive first line
-- `endLine` — optional 1-based inclusive last line
-- `startByte` — optional 0-based inclusive first byte
-- `endByte` — optional 0-based inclusive last byte
-- `lineNumbers` — optional boolean; when true, adds line numbers
+- `startLine`: optional 1-based inclusive first line
+- `endLine`: optional 1-based inclusive last line
+- `startByte`: optional 0-based inclusive first byte
+- `endByte`: optional 0-based inclusive last byte
+- `lineNumbers`: optional boolean; when true, adds line numbers
 
 Line and byte ranges are mutually exclusive. Supplying any of `startLine`/`endLine` alongside any of `startByte`/`endByte` returns an MCP `invalid_params` error.
 
@@ -280,9 +280,9 @@ For example:
 
 ### Tool output
 
-Unlike the search and status tools, `get` returns a **resource**, not plain text JSON.
+Unlike the search and status tools, `get` returns a resource, not plain text JSON.
 
-Example resource shape conceptually:
+Conceptual example of the resource shape:
 
 ```json
 {
@@ -322,13 +322,13 @@ Fetch multiple documents by glob pattern.
 
 Fields:
 
-- `pattern` — required glob against relative paths
-- `collection` — optional collection filter
-- `startLine` — optional inclusive per-file first line
-- `endLine` — optional inclusive per-file last line
-- `startByte` — optional inclusive per-file first byte
-- `endByte` — optional inclusive per-file last byte
-- `lineNumbers` — optional boolean
+- `pattern`: required glob against relative paths
+- `collection`: optional collection filter
+- `startLine`: optional inclusive per-file first line
+- `endLine`: optional inclusive per-file last line
+- `startByte`: optional inclusive per-file first byte
+- `endByte`: optional inclusive per-file last byte
+- `lineNumbers`: optional boolean
 
 Line and byte ranges are mutually exclusive, as in `get`.
 
@@ -345,7 +345,7 @@ Line and byte ranges are mutually exclusive, as in `get`.
 
 ### Tool output
 
-This tool may return a **mixed content list**:
+This tool may return a mixed content list:
 
 - `Content::resource(...)` entries for successfully read files
 - plain text entries for files that could not be resolved or read
@@ -381,7 +381,7 @@ None.
 
 - Reads collection registrations from `config.db`
 - Reads the list of document ids and metadata from `config.db`
-- Reports `model_name` from settings, falling back to `DEFAULT_MODEL_ID`. This deliberately does **not** consult the `--model` CLI flag or `DOCBERT_MODEL`; the MCP server reports the persisted setting, not the resolved CLI-time model.
+- Reports `model_name` from settings, falling back to `DEFAULT_MODEL_ID`. This deliberately does not consult the `--model` CLI flag or `DOCBERT_MODEL`; the MCP server reports the persisted setting, not the resolved CLI-time model.
 - Counts documents per collection
 
 ### Tool output
@@ -427,8 +427,8 @@ The server publishes one prompt named `query`.
 Purpose:
 
 - enumerate all six tools (`bm25_search`, `semantic_search`, `search`, `get`, `multi_get`, `status`)
-- give tool-selection-by-signal guidance: `bm25_search` for exact terms / identifiers / verbatim strings, `semantic_search` for general concepts where wording diverges, `search` when the query mixes both signals — and advise picking the narrowest tool that fits
-- share usage tips: `min_score` filters low-confidence results; `search` also accepts a `bm25_only` flag that behaves exactly like `bm25_search`, with the dedicated tool being the clearer choice; `get` supports `startLine`/`endLine` or `startByte`/`endByte` (inclusive) and optional line numbers
+- give tool-selection-by-signal guidance: `bm25_search` for exact terms / identifiers / verbatim strings, `semantic_search` for general concepts where wording diverges, `search` when the query mixes both signals, and advise picking the narrowest tool that fits
+- share usage tips: `min_score` filters low-confidence results; `search` also accepts a `bm25_only` flag that behaves exactly like `bm25_search`, though the dedicated tool is the clearer choice; `get` supports `startLine`/`endLine` or `startByte`/`endByte` (inclusive) and optional line numbers
 
 This prompt is advisory content for MCP clients. It does not change the underlying tool behavior.
 
@@ -499,15 +499,15 @@ Where it appears:
 
 ## Defaults and limits
 
-Important defaults from the implementation:
+Defaults from the implementation:
 
 - default search limit: `10`
 - search snippets are included by default
-- neither `get` nor `multi_get` impose a size cap — callers slice explicitly with `startLine`/`endLine` or `startByte`/`endByte`
+- neither `get` nor `multi_get` impose a size cap; callers slice explicitly with `startLine`/`endLine` or `startByte`/`endByte`
 
 ## Error-handling notes
 
-The MCP server uses a mix of MCP-style errors and successful tool results containing text when appropriate.
+The MCP server uses a mix of MCP-style errors and successful tool results containing text.
 
 ### MCP-style error cases
 
@@ -533,7 +533,7 @@ This distinction matters when building clients:
 
 ## Integration tips
 
-- Pick a search tool by signal — `bm25_search` for exact terms and identifiers, `semantic_search` for general concepts, `search` for mixed queries — then use `get` or `multi_get` for full text.
+- Pick a search tool by signal: `bm25_search` for exact terms and identifiers, `semantic_search` for general concepts, `search` for mixed queries. Then use `get` or `multi_get` for full text.
 - `bm25_search` is the direct route to keyword-only search; `search` with `bm25Only` behaves identically, and both accept `noFuzzy`.
 - Use `semantic_search` when you want semantic-only retrieval and do not need a collection parameter.
 - Handle both plain text and resource content in retrieval tools.

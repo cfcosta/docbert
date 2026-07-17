@@ -4,7 +4,7 @@
 
 Use it when you want to embed docbert's storage, indexing, preparation, and search primitives inside your own Rust application without shelling out to the CLI.
 
-This page focuses on the **library surface** exposed by `docbert-core`. It does **not** document application-only behavior such as:
+This page covers the library surface exposed by `docbert-core`. It does not document application-only behavior such as:
 
 - the `docbert` CLI command tree
 - `docbert web`
@@ -15,7 +15,7 @@ For those surfaces, see the other docs pages instead.
 
 ## What `docbert-core` gives you
 
-At a high level, the public library gives you:
+The public library gives you:
 
 - local storage helpers (`DataDir`, `ConfigDb`, `EmbeddingDb`)
 - lexical indexing (`SearchIndex`)
@@ -26,7 +26,7 @@ At a high level, the public library gives you:
 - result enrichment helpers (`results::enrich`)
 - a shared error type (`docbert_core::Error` / `docbert_core::Result`)
 
-The library is centered on **local files and local state**. Your application chooses where the data directory lives and when indexing/searching happens.
+The library operates on local files and local state. Your application chooses where the data directory lives and when indexing/searching happens.
 
 ## Adding the dependency
 
@@ -48,7 +48,7 @@ A typical embedded setup has four storage pieces:
 - `tantivy/`
 - one or more registered collection roots on disk
 
-`docbert-core` helps you work with those layers directly, but it does **not** provide the application runtime that `docbert web` and `docbert mcp` add on top.
+`docbert-core` helps you work with those pieces directly, but it does not provide the application runtime that `docbert web` and `docbert mcp` add on top.
 
 ## Minimal search example
 
@@ -97,7 +97,7 @@ fn main() -> docbert_core::Result<()> {
 }
 ```
 
-Note that `search::by_mode` takes `&DataDir`, not `&EmbeddingDb`. The semantic leg reads from the PLAID index file (`<data-dir>/plaid.idx`) internally, not from the embedding rows — embeddings only feed the index at build time. If `plaid.idx` is missing, the hybrid and semantic paths both fail with `Error::PlaidIndexMissing`; run `docbert sync` (or `docbert reindex` if embeddings already exist) to build it.
+`search::by_mode` takes `&DataDir`, not `&EmbeddingDb`. The semantic leg reads from the PLAID index file (`<data-dir>/plaid.idx`) internally, not from the embedding rows. Embeddings only feed the index at build time. If `plaid.idx` is missing, the hybrid and semantic paths both fail with `Error::PlaidIndexMissing`; run `docbert sync` (or `docbert reindex` if embeddings already exist) to build it.
 
 ## Core public types
 
@@ -112,7 +112,7 @@ It gives you paths for:
 - `plaid.idx`
 - `tantivy/`
 
-It does **not** resolve XDG defaults for you. That is application behavior; as a library embedder, you choose the root yourself.
+It does not resolve XDG defaults for you. That is application behavior; as a library embedder, you choose the root yourself.
 
 ```rust,no_run
 use std::path::Path;
@@ -188,7 +188,7 @@ fn main() -> docbert_core::Result<()> {
 
 ### Conversations and settings are library-visible too
 
-Even if your app is not building a web UI, note that these storage APIs are part of the public library surface:
+Even if your app is not building a web UI, these storage APIs are part of the public library surface:
 
 - `set_conversation_typed`
 - `get_conversation_typed`
@@ -245,7 +245,7 @@ fn main() -> docbert_core::Result<()> {
 
 `SearchIndex` is the lexical index only.
 
-It does **not** handle:
+It does not handle:
 
 - model loading
 - semantic reranking by itself
@@ -260,12 +260,12 @@ You compose those layers yourself when embedding the library.
 
 The public API supports:
 
-- `open` — open or create the store at a path
-- `store` / `load` / `remove` — single-entry write, read, and delete
-- `batch_store` / `batch_load` / `batch_remove` — multi-entry variants that share one transaction
-- `list_ids` — every stored id
-- `list_shapes` — `(id, num_tokens, dimension)` triples read from entry headers only
-- `list_legacy_ids` — ids of entries still in the pre-1.0 f32 layout, used by `docbert clean`
+- `open`: open or create the store at a path
+- `store` / `load` / `remove`: single-entry write, read, and delete
+- `batch_store` / `batch_load` / `batch_remove`: multi-entry variants that share one transaction
+- `list_ids`: every stored id
+- `list_shapes`: `(id, num_tokens, dimension)` triples read from entry headers only
+- `list_legacy_ids`: ids of entries still in the pre-1.0 f32 layout, used by `docbert clean`
 
 ```rust,no_run
 use docbert_core::EmbeddingDb;
@@ -317,13 +317,13 @@ fn main() -> docbert_core::Result<()> {
 
 ### Note on model resolution
 
-`resolve_model(...)` is also public via `docbert_core::model_manager`, but it is an **application-facing convenience** for the CLI/web runtime precedence rules (CLI override, env var, config, default).
+`resolve_model(...)` is also public via `docbert_core::model_manager`, but it is an application-facing convenience for the CLI/web runtime precedence rules (CLI override, env var, config, default).
 
-If you are embedding the library directly, you can use it, but many applications will be better served by choosing their model explicitly and constructing `ModelManager` themselves.
+If you are embedding the library directly, you can use it, but many applications are better off choosing their model explicitly and constructing `ModelManager` themselves.
 
 ## Document preparation and indexing primitives
 
-The library exposes the same core preparation steps that the application uses under the hood.
+The library exposes the same preparation steps the application uses.
 
 ## Discovery with `walker`
 
@@ -354,12 +354,12 @@ fn main() -> docbert_core::Result<()> {
 The main shared prepared-document type is `preparation::SearchDocument`.
 
 You typically build it through one of these helpers (note the flat,
-unprefixed names — `preparation::markdown`, not `prepare_markdown`):
+unprefixed names: `preparation::markdown`, not `prepare_markdown`):
 
-- `preparation::markdown(...)` — returns the lightweight `MarkdownBody` (title + searchable body); used as a building block by the other helpers
-- `preparation::uploaded(...)` — builds a full `SearchDocument` and keeps the raw content for later ingest/re-embedding
-- `preparation::filesystem(...)` — builds a `SearchDocument` without retaining the raw content
-- `preparation::supported_filesystem(...)` — reads a supported file from disk (markdown/text/PDF) and feeds it through `filesystem`
+- `preparation::markdown(...)`: returns the lightweight `MarkdownBody` (title + searchable body); used as a building block by the other helpers
+- `preparation::uploaded(...)`: builds a full `SearchDocument` and keeps the raw content for later ingest/re-embedding
+- `preparation::filesystem(...)`: builds a `SearchDocument` without retaining the raw content
+- `preparation::supported_filesystem(...)`: reads a supported file from disk (markdown/text/PDF) and feeds it through `filesystem`
 
 ```rust,no_run
 use std::path::Path;
@@ -626,7 +626,7 @@ That type contains:
 - `collection`
 - `path`
 - `title`
-- `best_chunk_doc_id` — `Option<u64>` carrying the chunk id of the best-scoring semantic-leg match; pass it together with `doc_num_id` to `ConfigDb::get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)` to look up the chunk's byte range within that document. `None` for BM25-only hits and for documents indexed before chunk offsets were tracked.
+- `best_chunk_doc_id`: `Option<u64>` carrying the chunk id of the best-scoring semantic-leg match; pass it together with `doc_num_id` to `ConfigDb::get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)` to look up the chunk's byte range within that document. `None` for BM25-only hits and for documents indexed before chunk offsets were tracked.
 
 If you want to attach JSON metadata for your own API/UI surface, use `results::enrich(...)`.
 
@@ -705,15 +705,15 @@ Common variants include:
 - `Error::DataDir`
 - `Error::Tantivy`
 - `Error::QueryParse`
-- `Error::Heed` — wraps `heed::Error`; covers every LMDB / heed failure surfaced by `ConfigDb` and `EmbeddingDb`
+- `Error::Heed`: wraps `heed::Error`; covers every LMDB / heed failure surfaced by `ConfigDb` and `EmbeddingDb`
 - `Error::Colbert`
 - `Error::Candle`
 - `Error::Json`
 - `Error::Pdf`
-- `Error::Plaid` — wraps `docbert_plaid::PlaidError`
-- `Error::PlaidIndexMissing` — sentinel raised by `search::run` and `search::semantic` when `plaid.idx` has not been built yet; surface as a "run `docbert sync`" message
-- `Error::LegacyDatabase { path }` — raised when opening a `config.db` or `embeddings.db` still in the pre-1.0 redb format; the message directs users to run `docbert clean`, then `docbert sync`
-- `Error::LegacyEmbeddings` — raised when an embedding row is still in the pre-1.0 f32 layout; resolved the same way (`docbert clean`, then `docbert sync`)
+- `Error::Plaid`: wraps `docbert_plaid::PlaidError`
+- `Error::PlaidIndexMissing`: sentinel raised by `search::run` and `search::semantic` when `plaid.idx` has not been built yet; surface as a "run `docbert sync`" message
+- `Error::LegacyDatabase { path }`: raised when opening a `config.db` or `embeddings.db` still in the pre-1.0 redb format; the message directs users to run `docbert clean`, then `docbert sync`
+- `Error::LegacyEmbeddings`: raised when an embedding row is still in the pre-1.0 f32 layout; resolved the same way (`docbert clean`, then `docbert sync`)
 - `Error::Rkyv`
 
 ```rust,no_run
@@ -772,7 +772,7 @@ The application crate (`crates/docbert`) owns:
 - higher-level sync/rebuild orchestration convenience commands
 - browser UI and chat runtime logic
 
-That distinction matters when writing examples. If you are documenting embedded usage, prefer showing direct calls to library APIs rather than invoking CLI concepts indirectly.
+That distinction matters when writing examples. If you are documenting embedded usage, prefer direct calls to library APIs over CLI concepts.
 
 ## Related references
 

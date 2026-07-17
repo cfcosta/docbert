@@ -1,6 +1,6 @@
 # Dependencies
 
-This page tracks the **direct Cargo dependencies** declared in the current manifests:
+This page tracks the direct Cargo dependencies declared in the current manifests:
 
 - workspace root `Cargo.toml`
 - `crates/docbert/Cargo.toml`
@@ -15,7 +15,7 @@ It focuses on what each direct dependency is for in the current codebase, plus t
 
 ## Workspace root
 
-The workspace root declares **no direct Rust dependencies**.
+The workspace root declares no direct Rust dependencies.
 
 It only defines:
 
@@ -66,7 +66,7 @@ All dependency versions live in the crate manifests.
 
 ### `docbert` feature relationships
 
-`docbert` does not define its own independent runtime backend matrix. Each of its feature flags forwards to both `docbert-core` and `docbert-web`:
+`docbert` does not define its own runtime backend matrix. Each of its feature flags forwards to both `docbert-core` and `docbert-web`:
 
 ```toml
 [features]
@@ -153,7 +153,7 @@ These are the main build-time switches for accelerated inference.
 
 This is the main ColBERT integration layer.
 
-Current uses include:
+Used for:
 
 - model loading in `model_manager.rs`
 - query/document encoding
@@ -182,7 +182,7 @@ Wraps [LMDB](https://www.symas.com/lmdb) for both major local databases:
 - `config.db`
 - `embeddings.db`
 
-Current code relies on it for:
+Used for:
 
 - collection/config storage
 - document metadata
@@ -207,7 +207,7 @@ Used for stable typed binary storage of structures such as:
 
 Used in `walker.rs` for recursive discovery.
 
-Current discovery behavior uses it to support:
+Discovery uses it for:
 
 - hidden-file filtering
 - supported-extension filtering
@@ -399,7 +399,7 @@ metal      = ["docbert-core/metal"]
 cuda       = ["docbert-core/cuda"]
 ```
 
-The MCP server is hand-rolled JSON-RPC over stdio; rustbert deliberately does not depend on `rmcp` or `schemars`. There is no `xdg` dep either — data-dir resolution is done in-tree against `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.
+The MCP server is hand-rolled JSON-RPC over stdio; rustbert deliberately does not depend on `rmcp` or `schemars`. There is no `xdg` dep either: data-dir resolution is done in-tree against `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.
 
 ## Cross-crate relationships
 
@@ -417,7 +417,7 @@ The application crate reuses the core crate for:
 - search functions
 - document preparation and indexing helpers
 
-That is why most search/storage dependency weight lives in `docbert-core`, not `docbert`. The web/HTTP dependency weight (`axum`, `reqwest`, `sha2`, `rand`, …) lives in `docbert-web`, which the `web` subcommand delegates to.
+That is why most search/storage dependency weight lives in `docbert-core`, not `docbert`. The web/HTTP dependency weight (`axum`, `reqwest`, `sha2`, `rand`, ...) lives in `docbert-web`, which the `web` subcommand delegates to.
 
 ### Feature flags flow from app to core to `docbert-pylate`
 
