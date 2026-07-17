@@ -7,7 +7,7 @@ docbert's pipeline has two related halves:
 - **indexing**, which discovers files, prepares searchable content, updates Tantivy, stores embeddings, and records metadata
 - **retrieval**, which resolves queries into ranked results and then enriches them with titles, excerpts, and document reads from disk
 
-The current implementation is shared across the CLI, the web runtime, and the MCP runtime, but each surface exposes a slightly different request shape and output format.
+The pipeline is shared across the CLI, the web runtime, and the MCP runtime, but each surface exposes a slightly different request shape and output format.
 
 ## Source material and indexed state
 
@@ -21,7 +21,7 @@ The pipeline then works across these kinds of state:
 - **`plaid.idx`** for the PLAID multi-vector index (the actual storage backing the semantic leg)
 - **`config.db`** for collection registration, document metadata, chunk byte offsets, settings, and collection Merkle snapshots
 
-One important architectural detail: docbert does **not** treat the index as the only source of truth for reads. Search result enrichment and document retrieval still read current file contents from disk.
+One important architectural detail: **source files on disk are part of the read path**. Search result enrichment and document retrieval read current file contents from disk, rather than treating the index as the only source of truth.
 
 ## Indexing pipeline
 
@@ -42,7 +42,7 @@ The CLI and web runtime use the same shared discovery, preparation, metadata, an
 
 Discovery starts in `docbert_core::walker::discover_files`.
 
-Current behavior:
+It:
 
 - recursively walks the collection root
 - skips hidden files and hidden directories
@@ -57,7 +57,7 @@ Current behavior:
 
 ### Git ignore behavior
 
-Discovery is now Git-aware, but only when the **collection root itself is a Git repo**.
+Discovery is Git-aware, but only when the **collection root itself is a Git repo**.
 
 If `collection_root/.git` exists, discovery respects:
 
@@ -68,7 +68,7 @@ If `collection_root/.git` exists, discovery respects:
 
 If the collection root is **not** a Git repo, a stray `.gitignore` file does **not** affect indexing.
 
-That distinction is intentional and is part of the current indexing contract.
+That distinction is intentional and is part of the indexing contract.
 
 ## Stage 2: deciding what work to do
 
@@ -90,9 +90,7 @@ The flow is:
 5. convert deleted paths into deterministic document IDs
 6. process only new and changed files, and remove state for deleted files
 
-This is an important current behavior change: **incremental sync is snapshot-based, not just mtime-based**.
-
-`mtime` is still stored in `DocumentMetadata`, but change selection is driven by the Merkle snapshot diff.
+**Incremental sync is snapshot-based**: change selection is driven by the Merkle snapshot diff. `mtime` is stored in `DocumentMetadata` as per-document metadata, not as the change signal.
 
 ### `docbert rebuild`
 
@@ -104,7 +102,7 @@ This is an important current behavior change: **incremental sync is snapshot-bas
 4. re-indexes and/or re-embeds them
 5. writes a fresh collection snapshot only after success
 
-Current rebuild modes:
+Rebuild modes:
 
 - default rebuild: re-index and re-embed
 - `--index-only`: clear and rebuild Tantivy plus document metadata, but do not remove or regenerate embeddings
@@ -151,7 +149,7 @@ Each successful file becomes a `SearchDocument` with:
 
 ### Markdown and text preparation
 
-For markdown and text content, docbert currently:
+For markdown and text content, docbert:
 
 - strips YAML frontmatter from the searchable body
 - derives the title from the first Markdown `# ` heading when present
@@ -159,9 +157,7 @@ For markdown and text content, docbert currently:
 
 ### PDF preparation
 
-PDF files are now part of the supported indexing pipeline.
-
-Current behavior:
+PDF files are part of the supported indexing pipeline:
 
 - PDF bytes are converted to markdown when possible
 - if markdown conversion yields nothing useful, docbert falls back to extracted text
@@ -200,7 +196,7 @@ During web ingestion:
 
 Embedding uses ColBERT-style document chunks derived from the prepared searchable body.
 
-Current chunking behavior:
+Chunking behavior:
 
 - chunking operates on characters, not tokens
 - default chunk size is based on the model's `document_length` from `config_sentence_transformers.json` (approximated as `document_length * 4` characters), falling back to `300` tokens when unavailable
@@ -216,13 +212,13 @@ That means one source document can correspond to multiple embedding rows in `emb
 
 ### Chunk byte offsets
 
-Each chunk's byte offset and length within the source document is persisted to the `chunk_offsets` table in `config.db` alongside the embeddings. Search consumers use these offsets to surface the exact byte range of the matching chunk back to callers (see `FinalResult.best_chunk_doc_id`).
+Each chunk's byte offset and length within the source document is persisted to the per-document `doc_chunks` manifest in `config.db` alongside the embeddings. Search consumers resolve these offsets through `ConfigDb::get_chunk_offset_for_doc` to surface the exact byte range of the matching chunk back to callers (see `FinalResult.best_chunk_doc_id`).
 
 ### Empty semantic bodies
 
 If a document's searchable body is empty after preparation, chunk generation returns no embedding chunks.
 
-This matters for frontmatter-only documents: they may still have metadata and a lexical entry, but they do not contribute semantic embeddings.
+This matters for frontmatter-only documents: they may have metadata and a lexical entry, but they contribute no semantic embeddings.
 
 ### Embedding storage
 
@@ -237,7 +233,7 @@ The flow is:
 
 Web ingestion follows the same conceptual flow, but at one-document granularity.
 
-When an existing document is replaced through the web runtime, docbert also removes stale chunk embeddings that no longer belong to the current chunk set.
+When an existing document is replaced through the web runtime, docbert also removes stale chunk embeddings left over from the previous chunk set.
 
 ## Stage 6: metadata and snapshot persistence
 
@@ -257,7 +253,7 @@ For web uploads, optional user metadata is also stored separately.
 
 Collection Merkle snapshots record the discovered file set for each collection and are used to drive later sync selection.
 
-Current snapshot behavior:
+Snapshot behavior:
 
 - `sync` computes the current snapshot up front but only stores it after all planned work succeeds
 - `rebuild` computes and stores a fresh snapshot only after the rebuild succeeds
@@ -269,7 +265,7 @@ If the indexing or mutation step fails, docbert keeps the previous snapshot.
 
 ## Search modes
 
-docbert currently exposes two main search modes:
+docbert exposes two main search modes:
 
 - **hybrid**: a BM25 leg over Tantivy and a ColBERT/PLAID leg, fused with Reciprocal Rank Fusion
 - **semantic**: ColBERT/PLAID-only retrieval over the stored document set
@@ -290,7 +286,7 @@ Hybrid search is implemented in `docbert_core::search::run`.
 
 The BM25 leg queries Tantivy and returns up to `100` candidates (the `RRF_CANDIDATE_LIMIT` constant).
 
-Current behavior:
+Behavior:
 
 - optionally filter to one collection
 - use fuzzy matching by default
@@ -331,7 +327,7 @@ After fusion, docbert:
 
 Semantic-only search is implemented in `docbert_core::search::semantic`.
 
-Current behavior:
+The flow is:
 
 1. load the prebuilt PLAID index (fails with `PlaidIndexMissing` if absent)
 2. load all stored document metadata from `config.db`
@@ -351,7 +347,7 @@ A retrieval result is not the final user-visible payload yet.
 
 Search result titles are refreshed from current on-disk content when possible.
 
-That means titles can reflect the source file currently on disk even if an older fallback title existed in the first-stage index result.
+That means titles can reflect the source file on disk at read time, even if an older fallback title existed in the first-stage index result.
 
 ### Excerpts
 
@@ -370,7 +366,7 @@ If the literal query text does not appear, excerpt generation can fall back to t
 
 `GET /v1/documents/{collection}/{path}` also reads directly from the source file on disk and derives the returned title from the current content.
 
-This is why the filesystem remains part of the live retrieval path, not just the indexing path.
+This is why the filesystem is part of the live retrieval path, not just the indexing path.
 
 ## End-to-end flow by surface
 
@@ -420,7 +416,7 @@ A few pipeline details matter when operating docbert in practice:
 
 - adding a collection does not index it; run `sync` or `rebuild`
 - Git ignore rules only matter when the collection root is itself a Git repo
-- PDFs are part of the current discovery and preparation pipeline
+- PDFs are part of the discovery and preparation pipeline
 - `sync` uses collection snapshots to detect new/changed/deleted files
 - both hybrid and semantic search require a prebuilt PLAID index; on a fresh data directory, search fails with `PlaidIndexMissing` until you run `docbert sync` (or `docbert rebuild`/`docbert reindex`)
 - search results and document reads can reflect current on-disk content even after indexing, because titles and excerpts are refreshed from disk at retrieval time

@@ -12,7 +12,7 @@ The implementation lives in `crates/docbert/src/mcp.rs` and is the source of tru
 
 The MCP server exposes:
 
-- **tools** for search, document retrieval, and status
+- **six tools** for search, document retrieval, and status
 - **one prompt** that explains how to use those tools
 - **one resource template** for reading indexed documents directly as MCP resources
 
@@ -28,19 +28,20 @@ For each tool call or resource read, it reopens the config and embedding databas
 
 ### Tools
 
-| Name              | Purpose                                                                                       | Returns                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `search`          | Hybrid/BM25-oriented search with optional collection filtering and optional snippet previews. | Plain text summary + structured JSON content.                            |
-| `semantic_search` | Semantic-only ColBERT search across all documents.                                            | Plain text summary + structured JSON content.                            |
-| `get`             | Read one document by reference, optionally slicing by line range.                             | Resource content (`text/markdown`).                                      |
-| `multi_get`       | Read multiple documents by glob pattern with per-file size/line limits.                       | One or more resource contents, plus plain text skip notices when needed. |
-| `status`          | Show index/data-dir/model/collection/document summary.                                        | Plain text summary + structured JSON content.                            |
+| Name              | Purpose                                                                                                                               | Returns                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `search`          | Hybrid search: BM25 keyword matching fused with ColBERT semantic reranking via RRF. For pure exact-term lookups prefer `bm25_search`. | Plain text summary + structured JSON content.                            |
+| `semantic_search` | Semantic-only ColBERT search across all documents.                                                                                    | Plain text summary + structured JSON content.                            |
+| `bm25_search`     | Keyword-only BM25 search with optional collection filtering and optional snippet previews.                                            | Plain text summary + structured JSON content.                            |
+| `get`             | Read one document by reference, optionally slicing by line range.                                                                     | Resource content (`text/markdown`).                                      |
+| `multi_get`       | Read multiple documents by glob pattern with per-file size/line limits.                                                               | One or more resource contents, plus plain text skip notices when needed. |
+| `status`          | Show index/data-dir/model/collection/document summary.                                                                                | Plain text summary + structured JSON content.                            |
 
 ### Prompt
 
-| Name    | Purpose                                                                                             |
-| ------- | --------------------------------------------------------------------------------------------------- |
-| `query` | A short usage guide telling clients to start with search, then fetch documents or status as needed. |
+| Name    | Purpose                                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------- |
+| `query` | A short usage guide covering all six tools, tool selection by signal, and document retrieval and status tips. |
 
 ### Resource template
 
@@ -52,9 +53,9 @@ For each tool call or resource read, it reopens the config and embedding databas
 
 The MCP server reports these high-level instructions to clients:
 
-- start with `search` or `semantic_search`
-- use `get` or `multi_get` once you know what to read
-- use `status` for index health and collection summary
+- pick a search tool by signal: `bm25_search` for exact terms / identifiers / verbatim strings, `semantic_search` for general concepts, `search` (hybrid) when the query mixes both
+- once you find the right document, use `get` or `multi_get` to read it
+- `status` shows overall index health
 
 Those instructions are advisory metadata, not separate executable behavior.
 
@@ -182,6 +183,51 @@ Like `search`, this returns:
 - structured JSON with `query`, `resultCount`, and `results`
 
 If the index is effectively empty or nothing matches, the structured `results` array is empty.
+
+## `bm25_search`
+
+Run keyword-only BM25 search.
+
+### Parameters
+
+```json
+{
+  "query": "PlaidIndexMissing",
+  "limit": 10,
+  "minScore": 0.0,
+  "collection": "notes",
+  "noFuzzy": false,
+  "all": false,
+  "includeSnippet": true
+}
+```
+
+Fields:
+
+- `query` — required string
+- `limit` — optional maximum number of results; default `10`
+- `minScore` — optional minimum score threshold; applied directly to BM25 scores; default `0.0`
+- `collection` — optional collection filter
+- `noFuzzy` — optional, disable fuzzy matching in the BM25 leg
+- `all` — optional, return all results above threshold
+- `includeSnippet` — optional, defaults to `true`
+
+### Behavior
+
+- Uses `search::run(...)` with the BM25-only flag always set: the semantic leg never runs and the PLAID index is never touched. There is no `bm25Only` parameter because the tool is always BM25.
+- Intended for exact terms, identifiers, symbols, file names, error strings, and other queries whose wording is expected to appear verbatim in the documents.
+- Fuzzy matching is enabled by default; `noFuzzy` disables it.
+- Opens `config.db` for the call and locks the shared `ModelManager` like the other search tools, even though BM25 scoring does not use the model.
+- Shares the same result formatting path as `search`, including `includeSnippet` handling and the structured `context` field.
+
+### Tool output
+
+Like `search`, this returns:
+
+- a plain text summary
+- structured JSON with `query`, `resultCount`, and `results`
+
+Result items have the same shape as `search` results (`docId`, `collection`, `path`, `file`, `title`, `score`, `context`, `snippet`, `lineCount`, `byteCount`).
 
 ## `get`
 
@@ -350,7 +396,7 @@ Plain text example:
 ```text
 Docbert index status:
   Data dir: /home/user/.local/share/docbert
-  Model: lightonai/LateOn
+  Model: lightonai/GTE-ModernColBERT-v1
   Documents: 42
   Collections: 2
     - notes (30 docs) /home/user/notes
@@ -362,7 +408,7 @@ Structured example:
 ```json
 {
   "dataDir": "/home/user/.local/share/docbert",
-  "model": "lightonai/LateOn",
+  "model": "lightonai/GTE-ModernColBERT-v1",
   "documents": 42,
   "collections": [
     {
@@ -380,9 +426,9 @@ The server publishes one prompt named `query`.
 
 Purpose:
 
-- explain the available tools
-- encourage clients to search first, then fetch documents
-- mention useful parameters like `min_score`, `bm25_only`, and line-range support
+- enumerate all six tools (`bm25_search`, `semantic_search`, `search`, `get`, `multi_get`, `status`)
+- give tool-selection-by-signal guidance: `bm25_search` for exact terms / identifiers / verbatim strings, `semantic_search` for general concepts where wording diverges, `search` when the query mixes both signals — and advise picking the narrowest tool that fits
+- share usage tips: `min_score` filters low-confidence results; `search` also accepts a `bm25_only` flag that behaves exactly like `bm25_search`, with the dedicated tool being the clearer choice; `get` supports `startLine`/`endLine` or `startByte`/`endByte` (inclusive) and optional line numbers
 
 This prompt is advisory content for MCP clients. It does not change the underlying tool behavior.
 
@@ -487,8 +533,8 @@ This distinction matters when building clients:
 
 ## Integration tips
 
-- Start with `search` or `semantic_search`, then use `get` or `multi_get` for full text.
-- Prefer `search` when you want BM25 controls like `bm25Only` or `noFuzzy`.
+- Pick a search tool by signal — `bm25_search` for exact terms and identifiers, `semantic_search` for general concepts, `search` for mixed queries — then use `get` or `multi_get` for full text.
+- `bm25_search` is the direct route to keyword-only search; `search` with `bm25Only` behaves identically, and both accept `noFuzzy`.
 - Use `semantic_search` when you want semantic-only retrieval and do not need a collection parameter.
 - Handle both plain text and resource content in retrieval tools.
 - If you store or compare identifiers, note that search results return normalized `#...` document references, while direct resource reads use `bert://...` URIs.

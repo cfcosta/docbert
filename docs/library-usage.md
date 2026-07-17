@@ -166,7 +166,7 @@ fn main() -> docbert_core::Result<()> {
 
     db.set_collection("notes", "/home/user/notes")?;
     db.set_context("bert://notes", "Personal notes")?;
-    db.set_setting("model_name", "lightonai/LateOn")?;
+    db.set_setting("model_name", "your-org/your-colbert-model")?;
 
     let doc_meta = DocumentMetadata {
         collection: "notes".to_string(),
@@ -260,10 +260,12 @@ You compose those layers yourself when embedding the library.
 
 The public API supports:
 
-- `store` / `load`
-- `batch_store` / `batch_load` / `batch_remove`
-- `list_ids`
-- document-family helpers used by chunked embeddings
+- `open` — open or create the store at a path
+- `store` / `load` / `remove` — single-entry write, read, and delete
+- `batch_store` / `batch_load` / `batch_remove` — multi-entry variants that share one transaction
+- `list_ids` — every stored id
+- `list_shapes` — `(id, num_tokens, dimension)` triples read from entry headers only
+- `list_legacy_ids` — ids of entries still in the pre-1.0 f32 layout, used by `docbert clean`
 
 ```rust,no_run
 use docbert_core::EmbeddingDb;
@@ -299,7 +301,7 @@ use docbert_core::ModelManager;
 
 fn main() -> docbert_core::Result<()> {
     let mut model = ModelManager::with_model_id(
-        "lightonai/LateOn".to_string(),
+        "your-org/your-colbert-model".to_string(),
     )
     .with_document_length(512);
 
@@ -459,7 +461,7 @@ use docbert_core::chunking;
 use docbert_core::preparation;
 
 fn main() -> docbert_core::Result<()> {
-    let config = chunking::resolve_config("lightonai/LateOn");
+    let config = chunking::resolve_config("lightonai/GTE-ModernColBERT-v1");
 
     let doc = preparation::filesystem(
         "notes",
@@ -624,7 +626,7 @@ That type contains:
 - `collection`
 - `path`
 - `title`
-- `best_chunk_doc_id` — `Option<u64>` carrying the chunk id of the best-scoring semantic-leg match, used to look up a chunk's byte range via `ConfigDb::get_chunk_offset`. `None` for BM25-only hits and for documents indexed before chunk offsets were tracked.
+- `best_chunk_doc_id` — `Option<u64>` carrying the chunk id of the best-scoring semantic-leg match; pass it together with `doc_num_id` to `ConfigDb::get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)` to look up the chunk's byte range within that document. `None` for BM25-only hits and for documents indexed before chunk offsets were tracked.
 
 If you want to attach JSON metadata for your own API/UI surface, use `results::enrich(...)`.
 
@@ -710,6 +712,8 @@ Common variants include:
 - `Error::Pdf`
 - `Error::Plaid` — wraps `docbert_plaid::PlaidError`
 - `Error::PlaidIndexMissing` — sentinel raised by `search::run` and `search::semantic` when `plaid.idx` has not been built yet; surface as a "run `docbert sync`" message
+- `Error::LegacyDatabase { path }` — raised when opening a `config.db` or `embeddings.db` still in the pre-1.0 redb format; the message directs users to run `docbert clean`, then `docbert sync`
+- `Error::LegacyEmbeddings` — raised when an embedding row is still in the pre-1.0 f32 layout; resolved the same way (`docbert clean`, then `docbert sync`)
 - `Error::Rkyv`
 
 ```rust,no_run
@@ -725,6 +729,22 @@ fn main() -> Result<()> {
     do_work()
 }
 ```
+
+### Detecting legacy databases
+
+The storage layer also exposes `docbert_core::is_legacy_redb_file`:
+
+```rust,no_run
+use docbert_core::is_legacy_redb_file;
+
+fn main() -> docbert_core::Result<()> {
+    let legacy = is_legacy_redb_file(std::path::Path::new("config.db"))?;
+    println!("legacy: {legacy}");
+    Ok(())
+}
+```
+
+It sniffs whether a file on disk is a pre-1.0 redb database (by magic bytes) without attempting a full open, and returns `false` for missing files, empty files, and LMDB files. `docbert clean` uses it to spot legacy `config.db`/`embeddings.db` files; embedders can do the same to decide up front whether to reset local state instead of catching `Error::LegacyDatabase` from `open`.
 
 ## What stays application-only
 

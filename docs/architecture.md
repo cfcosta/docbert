@@ -2,13 +2,13 @@
 
 ## Overview
 
-docbert is a local document retrieval system with three user-facing entrypoints:
+docbert is a local document retrieval system. The `docbert` binary has three user-facing entrypoints:
 
 - the **CLI** (`docbert ...`)
 - the **web runtime** (`docbert web`)
 - the **MCP runtime** (`docbert mcp`)
 
-All three sit on top of the same core storage and retrieval stack in `docbert-core`.
+All three sit on top of the same core storage and retrieval stack in `docbert-core`. The workspace also ships `rustbert`, a separate binary that reuses `docbert-core` for Rust crate docs lookup (see [`crates/rustbert`](#cratesrustbert) below).
 
 At a high level, docbert:
 
@@ -17,7 +17,7 @@ At a high level, docbert:
 3. stores lexical index data, metadata, embeddings, and settings locally
 4. serves retrieval through the CLI, the web API/UI, or MCP tools/resources
 
-The current implementation is centered on **local state and local files**, not a remote service architecture.
+docbert is centered on **local state and local files**: every runtime is a local process working over a local data directory.
 
 ## Product surfaces
 
@@ -29,6 +29,7 @@ The CLI is the main operational interface for:
 - context management
 - search and retrieval
 - indexing (`sync`, `rebuild`, `reindex`)
+- maintenance and recovery (`clean` — removes orphan and wrong-model embeddings and resets pre-1.0 legacy data)
 - runtime inspection (`status`, `doctor`, `model show`)
 - starting the web or MCP runtimes
 
@@ -41,7 +42,7 @@ The CLI parses commands in `crates/docbert/src/cli.rs` and dispatches them from 
 - the browser UI
 - the HTTP API documented in [`web-api.md`](./web-api.md)
 
-The web runtime is initialized in `crates/docbert/src/web/mod.rs` and its route surface lives in `crates/docbert/src/web/routes/*`.
+The web runtime is implemented by the `docbert-web` crate. `main.rs` hands off to `docbert_web::run` (`crates/docbert-web/src/lib.rs`), which opens `config.db`, builds shared state through `state::init` (`crates/docbert-web/src/state.rs`), and starts the Axum server in `server::run` (`crates/docbert-web/src/server.rs`). The route surface lives in `crates/docbert-web/src/routes/*`.
 
 ### MCP runtime
 
@@ -59,8 +60,8 @@ It owns:
 
 - CLI parsing and top-level command dispatch
 - indexing workflows and mutation orchestration
-- web runtime setup and route wiring
 - MCP server setup and tool/resource handling
+- handing `docbert web` off to the `docbert-web` crate
 - runtime resource management around `config.db`, `embeddings.db`, `plaid.idx`, and Tantivy writers
 
 Important modules:
@@ -69,9 +70,29 @@ Important modules:
 - `src/cli.rs` — clap command surface
 - `src/commands/*` — CLI behaviors
 - `src/indexing.rs` — sync/rebuild planning and snapshot finalization
-- `src/web/*` — web runtime
 - `src/mcp.rs` — MCP runtime
+- `src/runtime.rs` — blocking `config.db` open helper
 - `src/snapshots.rs` — collection snapshot support around indexing/web mutations
+
+## `crates/docbert-web`
+
+This crate implements the Axum HTTP API and server behind `docbert web`. The `docbert` binary depends on it and enters through `docbert_web::run`.
+
+It owns:
+
+- shared web state construction (`src/state.rs`) and server startup (`src/server.rs`)
+- the route surface in `src/routes/*` (`mod`, `search`, `documents`, `collections`, `conversations`, `settings`)
+- per-document ingestion paths for web uploads (`src/ingest.rs`)
+- collection snapshot refresh around web mutations (`src/snapshots.rs`)
+- path resolution helpers (`src/paths.rs`) and blocking open/lock helpers (`src/runtime.rs`)
+
+It depends on `docbert-core` for storage, search, and model management.
+
+## `crates/docbert-webui`
+
+This crate bundles the browser SPA. Its `build.rs` builds the React app in `ui/`, and `include_dir!` embeds the resulting `ui/dist` into the binary. At runtime it serves those assets as the fallback for every non-`/v1/` path.
+
+It is an optional dependency of `docbert-web`, enabled by the default `webui` feature.
 
 ## `crates/docbert-core`
 
@@ -100,7 +121,7 @@ Important public types re-exported by `docbert-core` include:
 
 ## `crates/docbert-plaid`
 
-This crate implements the PLAID (Performance-optimized Late Interaction Driver) multi-vector index used for semantic retrieval.
+This crate implements the PLAID multi-vector index used for semantic retrieval, following the pipeline described in "PLAID: An Efficient Engine for Late Interaction Retrieval" (Santhanam et al., 2022) and modelled on the `fast-plaid` reference implementation.
 
 It owns:
 
@@ -118,12 +139,18 @@ This crate is a Rust-only fork of [pylate-rs](https://github.com/lightonai/pylat
 
 It owns:
 
-- ColBERT / LateOn model loading from HuggingFace or local paths
+- ColBERT-family late-interaction model loading from HuggingFace or local paths
 - query and document encoding
 - token-level MaxSim similarity computation
 - `candle`-backed inference with CPU, CUDA, Metal, MKL, and Accelerate backends selected via feature flags
 
 `docbert-core::ModelManager` is a thin wrapper around this crate.
+
+## `crates/rustbert`
+
+`rustbert` is a separate sibling binary for Rust crate docs lookup: it fetches published crates and serves search over their public APIs, with its own CLI (`src/main.rs`) and MCP server (`src/mcp.rs`). It reuses `docbert-core` but is not wired into the `docbert` binary, and it is packaged independently (nix: `rustbert`, `rustbert-cuda`, `rustbert-metal`).
+
+See [`rustbert.md`](./rustbert.md) for the full design.
 
 ## Core persistent state
 
@@ -146,7 +173,7 @@ The major persistent pieces are:
 - `tantivy/`
   - lexical search index
 - source collection directories on disk
-  - still treated as the authoritative document content for many read paths
+  - treated as the authoritative document content for many read paths
 
 For storage details, see [`storage.md`](./storage.md).
 
@@ -175,7 +202,7 @@ Implemented across `walker`, `ingestion`, `preparation`, and `indexing`.
 Responsibilities:
 
 - discover eligible files from collection roots
-- respect current walker rules, including Git ignore behavior for repo-backed collections
+- respect the walker rules, including Git ignore behavior for repo-backed collections
 - load Markdown, text, and PDF files from disk
 - convert PDFs into extracted Markdown/text for preview, search, and embeddings
 - derive titles and metadata used by search and API responses
@@ -198,7 +225,7 @@ This layer serves all three product surfaces.
 
 ## 4. Runtime surface layer
 
-The application crate exposes the retrieval and storage layers through three runtimes:
+The `docbert` binary exposes the retrieval and storage layers through three runtimes:
 
 - CLI handlers
 - Axum HTTP routes for the web runtime
@@ -252,18 +279,19 @@ Not every command initializes the same resources.
 
 Examples:
 
-- `doctor` and `completions` are handled early
+- `doctor` and `completions` are handled early, before the data directory is resolved
+- `clean` is dispatched before the shared `ConfigDb::open`: it is the recovery path for data directories left in the pre-1.0 redb format, which `ConfigDb::open` refuses with `Error::LegacyDatabase` (an error whose message points at `docbert clean`)
 - `web` and `mcp` resolve the model, then hand off into their long-lived runtimes
 - most other commands open `ConfigDb` and run as short-lived operations
 
 ## Web runtime boundary
 
-The web runtime is not a separate historical “docserver”; it is the current `docbert web` process.
+The web runtime is the `docbert web` process, implemented by the `docbert-web` crate.
 
-Important boundary details from the current implementation:
+Important boundary details:
 
 - one local process serves the SPA and the HTTP API
-- the runtime is initialized through `web::state::init(...)`
+- the runtime is entered through `docbert_web::run`, which initializes shared state via `state::init` in the `docbert-web` crate
 - route handlers open `config.db` / `embeddings.db` as needed
 - document uploads and deletes mutate both source files and indexed state
 - search reads use the shared in-process search index and model manager
@@ -285,7 +313,7 @@ For the concrete MCP contract, see [`mcp.md`](./mcp.md).
 
 ## Chat-related architecture
 
-docbert's chat system is not a separate backend service. It is built from:
+docbert's chat system is a browser-side agent that calls the docbert HTTP API and the configured LLM provider. It is built from:
 
 - persisted conversation records in `config.db`
 - LLM settings in `config.db`
@@ -302,7 +330,7 @@ For the concrete persisted schema and route behavior, see [`chat-and-conversatio
 
 ## Search architecture
 
-The current retrieval stack supports two main modes:
+The retrieval stack supports two main modes:
 
 - **hybrid**
   - lexical retrieval plus ColBERT reranking
@@ -317,7 +345,7 @@ One subtle but important detail is that some response enrichment is pulled from 
 - excerpts/snippets come from current file content on disk
 - single-document reads also come directly from source files on disk
 
-That means the source collection directories remain part of the live read architecture, not just the indexing pipeline.
+That means the source collection directories are part of the live read architecture as well as the indexing pipeline.
 
 For pipeline details, see [`pipeline.md`](./pipeline.md).
 
@@ -325,19 +353,19 @@ For pipeline details, see [`pipeline.md`](./pipeline.md).
 
 docbert is designed around local-process concurrency rather than distributed coordination.
 
-Important patterns in the current implementation:
+Important patterns:
 
 - Tantivy supplies read/write index primitives
 - LMDB-backed stores are opened per operation where appropriate
 - long-lived runtimes keep search/model state alive, but do not hold every storage handle permanently open
 - mutation-heavy operations open writers around the work that needs them
-- lock/contention retry behavior is part of runtime resource handling for long-lived web/MCP processes
+- retry behavior is limited to the Tantivy index-writer lock: the web runtime retries writer acquisition on lock contention (`crates/docbert-web/src/runtime.rs`), while heed/LMDB database opens succeed without retries because LMDB supports concurrent handles
 
 The exact persistence and lock-sensitive storage details are documented in [`storage.md`](./storage.md).
 
 ## Terminology guide
 
-Use these terms consistently in the current codebase:
+Use these terms consistently:
 
 - **collection** — a named root directory registered in `config.db`
 - **document** — one indexed source file within a collection
@@ -347,8 +375,6 @@ Use these terms consistently in the current codebase:
 - **hybrid search** — lexical retrieval plus semantic reranking
 - **semantic search** — semantic-only retrieval path
 
-Avoid stale terminology like **docserver** when describing the current implementation.
-
 ## Related references
 
 - [`cli.md`](./cli.md)
@@ -357,4 +383,5 @@ Avoid stale terminology like **docserver** when describing the current implement
 - [`mcp.md`](./mcp.md)
 - [`pipeline.md`](./pipeline.md)
 - [`storage.md`](./storage.md)
+- [`rustbert.md`](./rustbert.md)
 - [`library-usage.md`](./library-usage.md)

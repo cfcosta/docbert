@@ -12,11 +12,11 @@ docbert [GLOBAL OPTIONS] <COMMAND>
 
 ## Global options
 
-| Option                 | Description                                                                     |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| `--data-dir <path>`    | Override the resolved data directory for this invocation.                       |
-| `--model <id-or-path>` | Override the resolved ColBERT model for this invocation.                        |
-| `-v`, `-vv`, `-vvv`    | Enable logging to stderr. `-v` = info, `-vv` = debug, `-vvv` and above = trace. |
+| Option                 | Description                                                                                              |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--data-dir <path>`    | Override the resolved data directory for this invocation.                                                |
+| `--model <id-or-path>` | Override the resolved ColBERT model for this invocation.                                                 |
+| `-v`, `-vv`            | Raise stderr log verbosity. Logging is always on: no flag = info, `-v` = debug, `-vv` and above = trace. |
 
 ### Data directory resolution
 
@@ -36,6 +36,8 @@ Two commands are handled before storage initialization:
 - `docbert completions <shell>`
 
 That means they do not require an existing data directory.
+
+`docbert clean` is also dispatched before the normal database open. It resolves the data directory like any storage command, but it inspects the database files at the filesystem level before opening anything — resetting stores written in the pre-1.0 format is its job, and the normal open path refuses those files.
 
 ## Commands
 
@@ -65,10 +67,11 @@ Remove a collection and its indexed state.
 
 This command:
 
-- removes the collection registration
+- removes the collection registration and its Merkle snapshot
 - removes Tantivy index entries for that collection
-- removes stored embeddings for that collection
-- removes stored document metadata and user metadata for that collection
+- removes chunk manifests, document metadata, and user metadata for that collection
+
+Embedding rows are left in place: they live in a content-addressed cache, so re-indexing identical content gets cache hits instead of re-running the encoder. Run `docbert clean` to reclaim rows that nothing references anymore.
 
 It does **not** delete the source directory on disk.
 
@@ -132,7 +135,7 @@ Options:
 | `-n, --count <count>`     | Number of results to return. Default: `10`.                                                    |
 | `-c, --collection <name>` | Restrict search to one collection.                                                             |
 | `--json`                  | Emit JSON output.                                                                              |
-| `--all`                   | Return all results above `--min-score`.                                                        |
+| `--all`                   | Return all results instead of only the top `--count`.                                          |
 | `--files`                 | Print only matching file paths.                                                                |
 | `--min-score <score>`     | Minimum score threshold. Applied with `--bm25-only`; ignored under RRF fusion. Default: `0.0`. |
 | `--bm25-only`             | Skip the semantic leg and return BM25 results directly.                                        |
@@ -146,15 +149,15 @@ Behavior notes:
   1. `--json`
   2. `--files`
   3. human-readable formatted results
-- `--all` changes result selection behavior but does not suppress `--count` parsing; it simply tells the search layer to return all results above the score threshold.
+- `--all` changes result selection behavior but does not suppress `--count` parsing; it simply tells the search layer to return all results instead of truncating to `--count`. Under RRF fusion no score filter applies; with `--bm25-only`, results below `--min-score` are dropped.
 
 Examples:
 
 ```bash
 docbert search "vector search"
 docbert search "release notes" -c docs --files
-docbert search "gpu fallback" --json --min-score 0.2
-docbert search "roadmap" --bm25-only --no-fuzzy
+docbert search "gpu fallback" --json
+docbert search "roadmap" --bm25-only --no-fuzzy --min-score 0.2
 ```
 
 ### `docbert ssearch <query>`
@@ -173,7 +176,7 @@ Options:
 
 Behavior notes:
 
-- This command does not accept `--collection`; it currently searches semantically across the configured corpus through the semantic-search path.
+- This command does not accept `--collection`; it searches semantically across the configured corpus through the semantic-search path.
 - Output mode selection is the same as for `docbert search`.
 - It initializes the model runtime for every invocation and logs runtime details to stderr.
 
@@ -195,11 +198,11 @@ Accepted reference forms:
 
 Options:
 
-| Option   | Description                                                                                          |
-| -------- | ---------------------------------------------------------------------------------------------------- |
-| `--json` | Emit JSON with metadata and content.                                                                 |
-| `--meta` | Print only collection/path/file metadata.                                                            |
-| `--full` | Accepted but currently a no-op: the default non-JSON, non-meta mode already prints the full content. |
+| Option   | Description                                                                                |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `--json` | Emit JSON with metadata and content.                                                       |
+| `--meta` | Print only collection/path/file metadata.                                                  |
+| `--full` | Accepted but a no-op: the default non-JSON, non-meta mode already prints the full content. |
 
 Behavior notes:
 
@@ -264,7 +267,7 @@ Behavior notes:
 - If no collections are registered for the requested scope, docbert prints `No collections to sync.`
 - Sync refuses to run if the stored `embedding_model` differs from the currently resolved model. In that case it tells you to run `docbert rebuild`.
 - On success, sync stores the current model id as the embedding model.
-- File discovery now respects Git ignore rules when the collection root itself is a Git repository.
+- File discovery respects Git ignore rules when the collection root itself is a Git repository.
 
 Use `sync` for normal updates.
 
@@ -323,6 +326,43 @@ Example:
 
 ```bash
 docbert reindex
+```
+
+### `docbert clean`
+
+Remove data that no longer belongs in the store, and reset data written by docbert releases before 1.0.
+
+This is the recovery command that the pre-1.0 refusal errors point at: when `config.db` or `embeddings.db` is in the old redb format, the normal open paths refuse it, and `docbert clean` resets it.
+
+Options:
+
+| Option      | Description                                     |
+| ----------- | ----------------------------------------------- |
+| `--dry-run` | Show what would be removed without removing it. |
+| `--json`    | Emit a machine-readable report instead of text. |
+
+Behavior notes:
+
+- Clean is dispatched before the normal database open (see "Commands that do not open the data directory" above), so it works on stores the rest of the CLI refuses to open.
+- Legacy pre-pass, at the filesystem level, before any database opens:
+  - If `config.db` is in the pre-1.0 redb format, clean deletes `config.db` and `config.db-lock`, `embeddings.db` and `embeddings.db-lock`, `plaid.idx`, and the `tantivy/` directory. This is a full reset: re-add collections with `docbert collection add`, then run `docbert sync`.
+  - If only `embeddings.db` is in the pre-1.0 redb format, clean deletes `embeddings.db`, `embeddings.db-lock`, and `plaid.idx`, then clears per-document state so the next `docbert sync` re-embeds everything. Collections stay registered.
+  - When legacy-format files are found, this reset (or its `--dry-run` preview) is the whole clean run.
+- Normal pass, when no legacy-format databases exist:
+  - removes orphan embeddings — rows that no chunk manifest references
+  - removes wrong-model embeddings — if the stored `embedding_model` differs from the model resolved for this invocation (including a `--model` override), every stored embedding is wrong-model, and document state is cleared so `docbert sync` re-embeds
+  - removes rows still in the pre-1.0 `f32` embedding layout; their presence also clears document state so `sync` re-embeds the affected documents
+  - after removals, rebuilds `plaid.idx` from the remaining embeddings, or deletes it when none remain
+- `--dry-run` previews every pass without deleting anything.
+- `--json` emits a machine-readable report: the normal pass reports counts of total, orphan, wrong-model, and legacy-layout embeddings, how many were removed, and stored-vs-current model mismatch details; the legacy pre-pass reports which database files were detected as legacy and which paths were removed.
+- After a clean that removed anything, run `docbert sync` to re-index.
+
+Examples:
+
+```bash
+docbert clean --dry-run
+docbert clean
+docbert clean --json
 ```
 
 ### `docbert status`
@@ -489,11 +529,12 @@ The resolved model used by commands is chosen in this priority order:
 
 ## Environment variables
 
-| Variable           | Description                                                                                                                                                             |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DOCBERT_DATA_DIR` | Override the data directory when `--data-dir` is not provided.                                                                                                          |
-| `DOCBERT_MODEL`    | Override the resolved model when `--model` is not provided.                                                                                                             |
-| `DOCBERT_LOG`      | Logging filter used when tracing is initialized. Only takes effect when at least one `-v` is also passed; without `-v`, logging stays off and `DOCBERT_LOG` is ignored. |
+| Variable                       | Description                                                                                                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCBERT_DATA_DIR`             | Override the data directory when `--data-dir` is not provided.                                                                                                                                                                  |
+| `DOCBERT_MODEL`                | Override the resolved model when `--model` is not provided.                                                                                                                                                                     |
+| `DOCBERT_LOG`                  | Tracing filter for stderr logging (tracing-subscriber `EnvFilter` syntax). When set, it replaces the `-v` verbosity mapping; when unset, verbosity is `info` by default, `debug` with `-v`, and `trace` with `-vv` and above.   |
+| `DOCBERT_EMBEDDING_BATCH_SIZE` | Override the embedding batch size used when encoding documents (default: 32 on CPU, 64 on CUDA/Metal). On accelerated devices the value acts as a token-budget ceiling (`batch_size × document_length`), not a fixed doc count. |
 
 ## Exit behavior
 

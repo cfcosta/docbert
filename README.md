@@ -11,7 +11,7 @@ It uses a hybrid retrieval stack:
 - **Tantivy/BM25** for fast lexical retrieval
 - **ColBERT** for semantic reranking or semantic-only search
 
-The current implementation works against local files and local state. Registered collection directories remain the source of truth for document content.
+docbert works against local files and local state. Registered collection directories remain the source of truth for document content.
 
 ## What it does
 
@@ -121,7 +121,7 @@ docbert rebuild -c docs
 docbert reindex
 ```
 
-Current indexing behavior:
+Indexing behavior:
 
 - discovers supported files under each collection root
 - supports `.md`, `.txt`, and `.pdf`
@@ -143,8 +143,8 @@ docbert search "query" -c notes
 # More results
 docbert search "query" -n 20
 
-# Return all results above a threshold
-docbert search "query" --all --min-score 0.2
+# Return all results instead of the top 10
+docbert search "query" --all
 
 # Disable fuzzy matching
 docbert search "exact phrase" --no-fuzzy
@@ -189,7 +189,7 @@ docbert web --host 127.0.0.1 --port 3030
 
 The web runtime uses the same collection roots and local storage as the CLI.
 
-Current highlights:
+Highlights:
 
 - search API under `/v1/search`
 - document upload/delete routes that mutate source files on disk and keep indexed state in sync
@@ -210,7 +210,7 @@ The chat experience in the web UI is built from:
 - web API routes for conversations and settings
 - browser/runtime orchestration on top of docbert search and retrieval tools
 
-Current auth options for chat include:
+Auth options for chat include:
 
 - API-key-backed providers such as OpenAI and Anthropic
 - ChatGPT Plus/Pro via the `openai-codex` provider and local OAuth sign-in in Settings
@@ -228,7 +228,7 @@ See:
 
 `docbert mcp` starts a stdio MCP server for editor and agent integrations.
 
-The current MCP surface includes:
+The MCP surface includes:
 
 - search tools
 - retrieval tools
@@ -255,7 +255,7 @@ See:
 
 ## Model selection
 
-Model resolution currently follows this priority order:
+Model resolution follows this priority order:
 
 1. `--model <id-or-path>`
 2. `DOCBERT_MODEL`
@@ -280,7 +280,7 @@ Useful environment variables:
 
 - `DOCBERT_DATA_DIR`
 - `DOCBERT_MODEL`
-- `DOCBERT_LOG` (only takes effect when at least one `-v` is also passed)
+- `DOCBERT_LOG` (tracing filter for stderr logging; when set, it replaces the `-v` verbosity mapping)
 - `DOCBERT_EMBEDDING_BATCH_SIZE` (override the default embedding batch size used during indexing)
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`

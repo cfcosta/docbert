@@ -2,7 +2,7 @@
 
 This page documents the HTTP API implemented by `docbert web`.
 
-It covers the current server behavior in `crates/docbert/src/web/routes/*`. When the browser client contains helper functions for routes the server does not implement, this page follows the server, not the client.
+It covers the current server behavior in `crates/docbert-web/src/routes/*`. When the browser client contains helper functions for routes the server does not implement, this page follows the server, not the client.
 
 ## Base path
 
@@ -121,7 +121,8 @@ Important details:
 - `actor` is tagged with `type`, for example `{"type":"parent"}` or `{"type":"subagent", ...}`.
 - `parts` is tagged with `type`, for example `text`, `thinking`, or `tool_call`.
 - `sources` is optional.
-- Legacy stored payloads may be normalized on read, but the route responses use the current normalized shape.
+- Unknown fields in request bodies are silently ignored and dropped, not rejected.
+- Stored conversation records are rkyv-encoded in this shape. A stored record that fails to decode is treated as absent: `GET /v1/conversations/{id}` returns `404`, `GET /v1/conversations` skips it (a warning is logged server-side), and `DELETE` still removes it.
 
 ### `GET /v1/conversations`
 
@@ -210,6 +211,7 @@ Request body:
 - Must be a full `Conversation` object.
 - The server ignores any mismatched body `id` and replaces it with the `{id}` path parameter.
 - The server refreshes `updated_at` at write time.
+- `created_at` is stored verbatim from the request body — it is not preserved from the existing record.
 
 Example request body:
 
@@ -439,12 +441,13 @@ Supported modes:
 
 - `semantic`
 - `hybrid`
+- `bm25`
 
-Any other mode returns `400 Bad Request`.
+Any mode other than these three returns `400 Bad Request`. `bm25` runs on the Tantivy full-text index alone and does not require the PLAID semantic index.
 
 ### `POST /v1/search`
 
-Run semantic or hybrid search and return enriched results.
+Run semantic, hybrid, or BM25 search and return enriched results.
 
 Response body:
 
@@ -494,7 +497,7 @@ Status codes:
 
 - `200 OK`
 - `400 Bad Request` for an unknown `mode`
-- `503 Service Unavailable` if the PLAID semantic index has not been built yet — both `semantic` and `hybrid` modes require it. The server logs the query and returns an empty body; run `docbert sync` to build the index.
+- `503 Service Unavailable` if the PLAID semantic index has not been built yet — both `semantic` and `hybrid` modes require it (`bm25` does not, and never returns this status). The server logs the query and returns an empty body; run `docbert sync` to build the index.
 - `500 Internal Server Error`
 
 ## LLM settings
@@ -639,6 +642,6 @@ Status codes:
 - Use the CLI to create collections; do not assume an HTTP collection-create route exists.
 - Uploads support both Markdown and PDF documents.
 - PDF uploads send base64-encoded bytes in the request, but document reads return extracted Markdown/text content.
-- Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"`.
+- Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"` or `"mode": "bm25"`.
 - All document/search endpoints surface `doc_id` as the short hex form (e.g. `#abc123`); there is no qualified `collection:path` form on the wire.
 - If you are consuming both the web UI client and the server directly, treat this page and the route implementation as the source of truth for what the server actually supports.

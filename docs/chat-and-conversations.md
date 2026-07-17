@@ -9,11 +9,11 @@ This page documents the backend-facing parts of docbert's chat system:
 
 It is intentionally narrower than a UI walkthrough. The source of truth here is the current implementation in:
 
-- `crates/docbert/src/web/routes/conversations.rs`
-- `crates/docbert/src/web/routes/settings.rs`
+- `crates/docbert-web/src/routes/conversations.rs`
+- `crates/docbert-web/src/routes/settings.rs`
 - `crates/docbert-core/src/config_db.rs`
 - `crates/docbert-core/src/conversation.rs`
-- `crates/docbert/ui/src/pages/chat-agent-runtime.ts`
+- `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`
 
 The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend — the only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
 
@@ -188,13 +188,14 @@ PUT /v1/conversations/{id}
 
 Request body:
 
-- must be a full `Conversation` object — `messages` is required (the field has no `serde(default)`, so a body without it deserializes as `400 Bad Request`)
+- must be a full `Conversation` object — `messages` is required (the field has no `serde(default)`, so a body without it fails deserialization with `422 Unprocessable Entity`; malformed JSON syntax returns `400 Bad Request`)
 
 Behavior:
 
 - the server checks that the conversation already exists
 - the server overwrites `body.id` with the `{id}` path parameter
 - the server refreshes `updated_at` on write
+- `created_at` is stored verbatim from the request body — it is not preserved from the existing record
 - the rest of the conversation body is stored as provided
 
 Example request:
@@ -270,6 +271,8 @@ Each message has:
 - optional `actor`
 - `parts`
 - optional `sources`
+
+Unknown fields on input are silently ignored and dropped — for example, a client that sends an extra `content` field on a message gets it discarded, not an error.
 
 #### `role`
 
@@ -349,21 +352,13 @@ When present, each source has:
 }
 ```
 
-## Legacy normalization behavior
+## Undecodable stored records
 
-`docbert_core::conversation` still knows how to deserialize older stored payloads that used legacy fields like:
+Stored conversation records are rkyv-encoded in the current format. A stored record that fails to decode is treated as absent:
 
-- `content`
-- `content_parts`
-- `tool_calls`
-
-When those legacy payloads are read, they are normalized into the current `parts`-based structure.
-
-That means:
-
-- old stored data may still load successfully
-- current API responses use the normalized modern shape
-- new clients should target `parts`, not the legacy fields
+- `GET /v1/conversations/{id}` returns `404 Not Found`
+- `GET /v1/conversations` skips the record (a warning is logged server-side)
+- `DELETE /v1/conversations/{id}` still removes it
 
 ## Persisted LLM settings
 
@@ -515,7 +510,7 @@ These are stable backend-level behaviors documented by the current implementatio
 
 ## What is runtime guidance, not a backend guarantee
 
-The chat runtime also contains prompt and orchestration logic in `crates/docbert/ui/src/pages/chat-agent-runtime.ts`. That file is important context, but it should not be confused with a stable backend contract.
+The chat runtime also contains prompt and orchestration logic in `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`. That file is important context, but it should not be confused with a stable backend contract.
 
 Current runtime guidance includes:
 
@@ -560,7 +555,7 @@ Not guaranteed by the backend:
 
 - If you need durable history, use the conversation routes; they are the persistence boundary.
 - If you need to inspect whether chat can run at all, check `/v1/settings/llm` and whether provider/model plus either an API key or `oauth_connected = true` are effectively available.
-- If you are building tooling against stored conversation data, target the modern `parts`-based schema and support optional `actor` and `sources`.
+- If you are building tooling against stored conversation data, target the `parts`-based schema and support optional `actor` and `sources`.
 - If you are reasoning about answer quality, distinguish between:
   - what the backend stores and returns
   - what the prompt currently encourages the model to do
