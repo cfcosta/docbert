@@ -235,6 +235,11 @@ mod tests {
             } else {
                 semver::Version::new(major, minor, patch)
             };
+            // crates.io never lists the same version number twice, and
+            // the reverse lookup below relies on that uniqueness.
+            if versions.iter().any(|v: &PublishedVersion| v.num == num) {
+                continue;
+            }
             versions.push(PublishedVersion {
                 num,
                 yanked,
