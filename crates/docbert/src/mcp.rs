@@ -20,7 +20,6 @@ use percent_encoding::{
     utf8_percent_encode,
 };
 use rmcp::{
-    RoleServer,
     ServerHandler,
     ServiceExt,
     handler::server::{
@@ -28,28 +27,23 @@ use rmcp::{
         wrapper::Parameters,
     },
     model::{
-        AnnotateAble,
         CallToolResult,
-        Content,
-        GetPromptRequestParams,
-        GetPromptResult,
+        ContentBlock,
         Implementation,
-        ListPromptsResult,
         ListResourceTemplatesResult,
         PaginatedRequestParams,
         PromptMessage,
-        PromptMessageRole,
-        RawResourceTemplate,
         ReadResourceRequestParams,
         ReadResourceResult,
         ResourceContents,
+        ResourceTemplate,
+        Role,
         ServerCapabilities,
         ServerInfo,
     },
     prompt,
     prompt_handler,
     prompt_router,
-    service::RequestContext,
     tool,
     tool_handler,
     tool_router,
@@ -127,7 +121,7 @@ fn structured_tool_result(
     summary: String,
     structured: serde_json::Value,
 ) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(summary)]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(summary)]);
     result.structured_content = Some(structured);
     result
 }
@@ -407,7 +401,9 @@ impl DocbertMcpServer {
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(resource)]))
+        Ok(CallToolResult::success(vec![ContentBlock::resource(
+            resource,
+        )]))
     }
 
     /// Retrieve multiple documents by glob pattern.
@@ -460,18 +456,17 @@ impl DocbertMcpServer {
         matches.sort();
 
         if matches.is_empty() {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "No documents match '{}'",
-                params.pattern
-            ))]));
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                format!("No documents match '{}'", params.pattern),
+            )]));
         }
 
-        let mut content: Vec<Content> = Vec::new();
+        let mut content: Vec<ContentBlock> = Vec::new();
 
         for (collection, path) in matches {
             let full_path = resolve_full_path(&config_db, &collection, &path);
             let Some(full_path) = full_path else {
-                content.push(Content::text(format!(
+                content.push(ContentBlock::text(format!(
                     "[SKIPPED: {collection}:{path} - collection not found]"
                 )));
                 continue;
@@ -483,7 +478,7 @@ impl DocbertMcpServer {
                     &full_path,
                 )
             else {
-                content.push(Content::text(format!(
+                content.push(ContentBlock::text(format!(
                     "[SKIPPED: {collection}:{path} - failed to read]"
                 )));
                 continue;
@@ -509,7 +504,7 @@ impl DocbertMcpServer {
                 text: body,
                 meta: None,
             };
-            content.push(Content::resource(resource));
+            content.push(ContentBlock::resource(resource));
         }
 
         Ok(CallToolResult::success(content))
@@ -583,7 +578,7 @@ impl DocbertMcpServer {
     )]
     pub async fn query_guide(&self) -> Vec<PromptMessage> {
         vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             r#"# Docbert MCP Quick Guide
 
 docbert indexes local document collections and provides MCP tools for search and retrieval.
@@ -634,18 +629,12 @@ impl ServerHandler for DocbertMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
-        let template = RawResourceTemplate {
-            uri_template: "bert://{+path}".to_string(),
-            name: "docbert-document".to_string(),
-            title: Some("docbert document".to_string()),
-            description: Some(
-                "A document from your docbert index. Use search tools to discover documents."
-                    .to_string(),
-            ),
-            mime_type: Some("text/markdown".to_string()),
-            icons: None,
-        }
-        .no_annotation();
+        let template = ResourceTemplate::new("bert://{+path}", "docbert-document")
+            .with_title("docbert document")
+            .with_description(
+                "A document from your docbert index. Use search tools to discover documents.",
+            )
+            .with_mime_type("text/markdown");
 
         Ok(ListResourceTemplatesResult {
             meta: None,

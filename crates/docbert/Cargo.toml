@@ -13,7 +13,7 @@ clap_complete = "4.6"
 globset = "0.4"
 kdam = { version = "0.6.4", features = ["spinner", "template"] }
 percent-encoding = "2"
-rmcp = { version = "1.8.0", features = ["transport-io"] }
+rmcp = { version = "2.2.0", features = ["transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,7 +36,7 @@ cuda = ["docbert-core/cuda", "docbert-web/cuda"]
 
 [dev-dependencies]
 hegeltest = "0.28"
-rmcp = { version = "1.8.0", features = ["client", "transport-child-process"] }
+rmcp = { version = "2.2.0", features = ["client", "transport-child-process"] }
 tempfile = "3"
 
 [[test]]
