@@ -1,61 +1,61 @@
 # Web API reference
 
-This page documents the HTTP API implemented by `docbert web`.
+This page gives information about the HTTP API of `docbert web`.
 
-It covers the current server behavior in `crates/docbert-web/src/routes/*`. When the browser client has helper functions for routes the server does not implement, this page follows the server, not the client.
+This page shows how the server operates. The code is in `crates/docbert-web/src/routes/*`. If the browser client has functions for routes that the server does not have, this page agrees with the server, not the client.
 
 ## Base path
 
-All API routes live under:
+All API routes use this base path:
 
 ```text
 /v1
 ```
 
-The web process also serves the browser UI, but UI routes are not part of this API reference.
+The web process also supplies the browser UI. But this page does not include the UI routes.
 
 ## Format and conventions
 
-- Request and response bodies are JSON unless otherwise noted.
-- Successful `DELETE` responses typically return `204 No Content`.
-- Most unexpected storage or indexing failures return `500 Internal Server Error`.
-- Route parameters are path-decoded by Axum after URL encoding.
+- Request and response bodies are JSON, unless this page shows something different.
+- A correct `DELETE` request usually gives a `204 No Content` response.
+- Most unusual storage or indexing failures give `500 Internal Server Error`.
+- Axum path-decodes the route parameters after URL encoding.
 - The UI client sends `Content-Type: application/json` for API requests.
 
 ## Route summary
 
-| Method   | Route                                        | Purpose                                                                  |
-| -------- | -------------------------------------------- | ------------------------------------------------------------------------ |
-| `GET`    | `/v1/collections`                            | List registered collection names.                                        |
-| `GET`    | `/v1/conversations`                          | List saved conversations.                                                |
-| `POST`   | `/v1/conversations`                          | Create a conversation.                                                   |
-| `GET`    | `/v1/conversations/{id}`                     | Get one conversation.                                                    |
-| `PUT`    | `/v1/conversations/{id}`                     | Replace one conversation.                                                |
-| `DELETE` | `/v1/conversations/{id}`                     | Delete one conversation.                                                 |
-| `POST`   | `/v1/documents`                              | Upload and ingest Markdown or PDF documents into an existing collection. |
-| `GET`    | `/v1/collections/{name}/documents`           | List documents in one collection.                                        |
-| `GET`    | `/v1/documents/{collection}/{*path}`         | Read one document and its stored metadata.                               |
-| `DELETE` | `/v1/documents/{collection}/{*path}`         | Delete one document from disk and from indexed state.                    |
-| `POST`   | `/v1/search`                                 | Run semantic or hybrid search.                                           |
-| `GET`    | `/v1/settings/llm`                           | Read persisted LLM settings, including effective auth state.             |
-| `PUT`    | `/v1/settings/llm`                           | Update persisted LLM settings.                                           |
-| `POST`   | `/v1/settings/llm/oauth/openai-codex/start`  | Start ChatGPT Plus/Pro (Codex) OAuth login.                              |
-| `POST`   | `/v1/settings/llm/oauth/openai-codex/logout` | Clear the stored ChatGPT Plus/Pro (Codex) OAuth session.                 |
+| Method   | Route                                        | Purpose                                                                          |
+| -------- | -------------------------------------------- | -------------------------------------------------------------------------------- |
+| `GET`    | `/v1/collections`                            | Shows the collection names in the registry.                                      |
+| `GET`    | `/v1/conversations`                          | Shows the conversations in storage.                                              |
+| `POST`   | `/v1/conversations`                          | Makes a conversation.                                                            |
+| `GET`    | `/v1/conversations/{id}`                     | Gets one conversation.                                                           |
+| `PUT`    | `/v1/conversations/{id}`                     | Replaces one conversation.                                                       |
+| `DELETE` | `/v1/conversations/{id}`                     | Deletes one conversation.                                                        |
+| `POST`   | `/v1/documents`                              | Uploads and ingests Markdown or PDF documents into a collection in the registry. |
+| `GET`    | `/v1/collections/{name}/documents`           | Shows the documents in one collection.                                           |
+| `GET`    | `/v1/documents/{collection}/{*path}`         | Reads one document and its metadata in storage.                                  |
+| `DELETE` | `/v1/documents/{collection}/{*path}`         | Deletes one document from disk and from the indexed state.                       |
+| `POST`   | `/v1/search`                                 | Does semantic or hybrid search.                                                  |
+| `GET`    | `/v1/settings/llm`                           | Reads the LLM settings in storage, with the auth state in use.                   |
+| `PUT`    | `/v1/settings/llm`                           | Updates the LLM settings in storage.                                             |
+| `POST`   | `/v1/settings/llm/oauth/openai-codex/start`  | Starts ChatGPT Plus/Pro (Codex) OAuth login.                                     |
+| `POST`   | `/v1/settings/llm/oauth/openai-codex/logout` | Removes the ChatGPT Plus/Pro (Codex) OAuth session in storage.                   |
 
-## Unsupported and absent routes
+## Routes that the server does not have
 
-The UI client has helpers for some of these, but the current server does not implement them:
+The UI client has functions for some of these routes, but the server does not have them:
 
-- `POST /v1/collections` is **not implemented** and returns `404 Not Found`.
-- `DELETE /v1/collections/{name}` is **not implemented** and returns `404 Not Found`.
-- There is no HTTP route for `PUT /v1/documents/...`; upload uses `POST /v1/documents` instead.
-- There is no separate collection-create API. Collections are created through the CLI with `docbert collection add`.
+- `POST /v1/collections` is **not available** and gives `404 Not Found`.
+- `DELETE /v1/collections/{name}` is **not available** and gives `404 Not Found`.
+- There is no HTTP route for `PUT /v1/documents/...`. Upload uses `POST /v1/documents`.
+- docbert has no API to make a collection. The `docbert collection add` command in the CLI makes collections.
 
 ## Collections
 
 ### `GET /v1/collections`
 
-Return the names of collections already registered in `config.db`.
+This route gives the names of the collections in the registry in `config.db`.
 
 Response body:
 
@@ -65,17 +65,17 @@ Response body:
 
 Notes:
 
-- The server intentionally returns only `name`, not the collection filesystem path.
-- Items are derived from the CLI-managed collection registry.
+- The server gives only `name`, not the collection filesystem path.
+- The items are from the collection registry that the CLI keeps.
 
 Status codes:
 
-- `200 OK` on success
-- `500 Internal Server Error` if the config database cannot be opened or read
+- `200 OK` for a correct request
+- `500 Internal Server Error` if the server cannot open or read the config database
 
 ## Conversations
 
-The conversations API persists complete conversation objects in `config.db`.
+The conversations API keeps full conversation objects in `config.db`.
 
 ### Conversation shape
 
@@ -118,15 +118,15 @@ The conversations API persists complete conversation objects in `config.db`.
 Notes:
 
 - `role` is lowercase: `"user"` or `"assistant"`.
-- `actor` is tagged with `type`, for example `{"type":"parent"}` or `{"type":"subagent", ...}`.
-- `parts` is tagged with `type`, for example `text`, `thinking`, or `tool_call`.
+- `actor` has a `type` tag, for example `{"type":"parent"}` or `{"type":"subagent", ...}`.
+- `parts` has a `type` tag, for example `text`, `thinking`, or `tool_call`.
 - `sources` is optional.
-- Unknown fields in request bodies are silently ignored and dropped, not rejected.
-- Stored conversation records are rkyv-encoded in this shape. A stored record that fails to decode is treated as absent: `GET /v1/conversations/{id}` returns `404`, `GET /v1/conversations` skips it (a warning is logged server-side), and `DELETE` still removes it.
+- The server ignores and discards unknown fields in request bodies. It does not reject them.
+- The server keeps the conversation records with rkyv encoding in this shape. If the server cannot decode a record, the record is not available. Then `GET /v1/conversations/{id}` gives `404`, and `GET /v1/conversations` does not include the record. For such a record, the server records a warning. `DELETE` still removes the record.
 
 ### `GET /v1/conversations`
 
-List saved conversations in descending `updated_at` order.
+This route gives the conversations in storage in `updated_at` sequence, with the highest value first.
 
 Response body:
 
@@ -156,7 +156,7 @@ Status codes:
 
 ### `POST /v1/conversations`
 
-Create a conversation record.
+This route makes a conversation record.
 
 Request body:
 
@@ -167,11 +167,11 @@ Request body:
 }
 ```
 
-Behavior:
+Notes:
 
 - `title` is optional.
-- If `title` is omitted, the server stores `"New conversation"`.
-- `created_at` and `updated_at` are assigned by the server using the current Unix time in milliseconds.
+- If the request has no `title`, the server keeps `"New conversation"`.
+- The server gives `created_at` and `updated_at` the Unix time in milliseconds.
 - `messages` starts as an empty list.
 
 Response body (`201 Created`):
@@ -189,29 +189,29 @@ Response body (`201 Created`):
 Status codes:
 
 - `201 Created`
-- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites; use PUT to update)
+- `409 Conflict` if a conversation with this `id` is in storage. A POST request does not replace it, but a PUT request updates it.
 - `500 Internal Server Error`
 
 ### `GET /v1/conversations/{id}`
 
-Read one conversation by id.
+This route reads one conversation by `id`.
 
 Status codes:
 
 - `200 OK`
-- `404 Not Found` if the conversation does not exist
+- `404 Not Found` if there is no conversation with this `id`
 - `500 Internal Server Error`
 
 ### `PUT /v1/conversations/{id}`
 
-Replace one conversation.
+This route replaces one conversation.
 
 Request body:
 
-- Must be a full `Conversation` object.
-- The server ignores any mismatched body `id` and replaces it with the `{id}` path parameter.
-- The server refreshes `updated_at` at write time.
-- `created_at` is stored verbatim from the request body; it is not preserved from the existing record.
+- The body must be a full `Conversation` object.
+- The server ignores a body `id` that is different from the `{id}` path parameter, and uses the `{id}` value.
+- The server sets `updated_at` to the write time.
+- The server keeps `created_at` from the request body without change. The server does not keep `created_at` from the record in storage.
 
 Example request body:
 
@@ -240,22 +240,22 @@ Example response:
 Status codes:
 
 - `200 OK`
-- `404 Not Found` if the conversation does not exist
+- `404 Not Found` if there is no conversation with this `id`
 - `500 Internal Server Error`
 
 ### `DELETE /v1/conversations/{id}`
 
-Delete one conversation.
+This route deletes one conversation.
 
 Status codes:
 
 - `204 No Content`
-- `404 Not Found` if the conversation does not exist
+- `404 Not Found` if there is no conversation with this `id`
 - `500 Internal Server Error`
 
 ## Documents
 
-The documents API writes into collection folders on disk and keeps the search index, embeddings, metadata, and stored snapshots in sync.
+The documents API writes into collection folders on disk. It also updates the search index, the embeddings, the metadata, and the snapshots in storage.
 
 ### Ingest request shape
 
@@ -275,19 +275,19 @@ Uploads use `POST /v1/documents` with this request shape:
 }
 ```
 
-Limitations:
+Limits:
 
-- `collection` must already exist in the CLI-managed collection registry.
-- `content_type` must be either `text/markdown` or `application/pdf`.
-- For `text/markdown`, `content` is the raw Markdown text.
-- For `application/pdf`, `content` is a base64-encoded PDF payload.
-- The server writes the uploaded file into the collection root on disk before ingesting it.
-- Uploaded PDFs are stored as `.pdf` files on disk; indexing and preview use extracted Markdown/text.
-- Nested paths are allowed.
+- The `collection` must be in the collection registry that the CLI keeps.
+- The `content_type` must be `text/markdown` or `application/pdf`.
+- For `text/markdown`, `content` is the Markdown source text.
+- For `application/pdf`, `content` is the PDF data with base64 encoding.
+- The server writes the uploaded file into the collection root on disk before it ingests the file.
+- The server keeps uploaded PDFs as `.pdf` files on disk. The index and preview use the Markdown or text that the server gets from the PDF.
+- A path can have subdirectories.
 
 ### `POST /v1/documents`
 
-Upload and ingest one or more Markdown or PDF documents into an existing collection.
+This route uploads and ingests one or more Markdown or PDF documents into a collection in the registry.
 
 Response body:
 
@@ -305,24 +305,24 @@ Response body:
 }
 ```
 
-Behavior:
+Notes:
 
-- The returned `title` is derived from document content and path.
-- For PDFs, the title comes from extracted Markdown/text content, while the original PDF remains on disk.
-- `metadata` is optional and is stored as document user metadata.
-- Existing files at the same path are overwritten.
-- Ingest also updates the collection snapshot state.
+- The server makes the `title` in the response from the document content and path.
+- For PDFs, the `title` is from the Markdown or text content. The uploaded PDF stays on disk.
+- `metadata` is optional. The server keeps it as document user metadata.
+- The server replaces a file at the same path.
+- When the server ingests a document, it also updates the collection snapshot state.
 
 Status codes:
 
 - `200 OK`
-- `400 Bad Request` for unsupported content types or invalid base64/PDF payloads
-- `404 Not Found` if the target `collection` is not registered
+- `400 Bad Request` for a content type that the server cannot use, or for base64 or PDF data that is not correct
+- `404 Not Found` if the `collection` is not in the registry
 - `500 Internal Server Error`
 
 ### `GET /v1/collections/{name}/documents`
 
-List stored documents for one collection.
+This route gives the documents in storage for one collection.
 
 Response body:
 
@@ -336,27 +336,27 @@ Response body:
 ]
 ```
 
-Behavior:
+Notes:
 
-- The route verifies that the collection exists.
-- `title` is recomputed from the document currently on disk, not just from indexed state.
-- For PDFs, the title is derived from extracted Markdown/text preview content.
-- Results are sorted by `path`.
+- The route makes sure that the collection is in the registry.
+- The server makes the `title` again from the document on disk, not only from the indexed state.
+- For PDFs, the `title` is from the Markdown or text preview.
+- The server gives the results in `path` sequence.
 
 Status codes:
 
 - `200 OK`
-- `404 Not Found` if the collection does not exist
-- `400 Bad Request` if a stored PDF for that collection cannot be parsed
+- `404 Not Found` if the collection is not in the registry
+- `400 Bad Request` if the server cannot parse a PDF in storage for that collection
 - `500 Internal Server Error`
 
 ### `GET /v1/documents/{collection}/{*path}`
 
-Read one document and its stored metadata.
+This route reads one document and its metadata in storage.
 
-For Markdown documents, `content` is the stored source text. For PDFs, `content` is extracted Markdown/text preview content rather than raw PDF bytes.
+For Markdown documents, `content` is the source text in storage. For PDFs, `content` is the Markdown or text preview, not the PDF bytes.
 
-Optional range query parameters (camelCase) let callers slice the response server-side:
+Optional range query parameters (camelCase) let callers get a part of the response from the server:
 
 | Query param | Type    | Notes                        |
 | ----------- | ------- | ---------------------------- |
@@ -365,7 +365,7 @@ Optional range query parameters (camelCase) let callers slice the response serve
 | `startByte` | `u64`   | 0-based inclusive first byte |
 | `endByte`   | `u64`   | 0-based inclusive last byte  |
 
-Line and byte ranges are mutually exclusive: supplying any of `startLine`/`endLine` together with any of `startByte`/`endByte` returns `400 Bad Request`. Omitting all four returns the full document.
+You cannot use a line range and a byte range at the same time. If you send `startLine` or `endLine` with `startByte` or `endByte`, the server gives `400 Bad Request`. If you send none of the four parameters, the server gives the full document.
 
 Response body:
 
@@ -384,33 +384,33 @@ Response body:
 
 Field notes:
 
-- `doc_id` is the short hex form (e.g. `#abc123`), produced by `disambiguated_short_id` (or `DocumentId::Display` as fallback). It matches the form returned by document listing and search.
-- `metadata` is omitted when the document has no stored user metadata.
-- `line_count` and `byte_count` describe the **un-sliced** document so callers can size a follow-up range request without a second round-trip; both are omitted when the file cannot be read.
+- `doc_id` is the short hex form (for example, `#abc123`). The `disambiguated_short_id` function makes it. If that function is not available, the server uses the `DocumentId::Display` form. `doc_id` agrees with the form that the document list and the search give.
+- The server does not include `metadata` when the document has no user metadata in storage.
+- `line_count` and `byte_count` give the dimensions of the full document. Callers can use them to make a range request without a second request. The server does not include the two values when it cannot read the file.
 
 Status codes:
 
 - `200 OK`
-- `400 Bad Request` if both line and byte ranges are supplied, or if the current PDF content cannot be parsed
-- `404 Not Found` if the document metadata does not exist or the file cannot be read from disk
+- `400 Bad Request` if you send a line range and a byte range at the same time, or if the server cannot parse the PDF content
+- `404 Not Found` if there is no document metadata, or if the server cannot read the file from disk
 - `500 Internal Server Error`
 
 ### `DELETE /v1/documents/{collection}/{*path}`
 
-Delete one document from disk and from indexed state.
+This route deletes one document from disk and from the indexed state.
 
-Behavior:
+Notes:
 
-- The route first checks that stored metadata exists for the requested document.
-- It then deletes the source file from disk.
-- After that it removes indexed state, embeddings, chunk offsets, and metadata.
-- The collection snapshot is updated as part of the deletion flow.
+- First, the route makes sure that the metadata for the document is in storage.
+- Then the route deletes the source file from disk.
+- Then the route removes the indexed state, the embeddings, the chunk offsets, and the metadata.
+- The route also updates the collection snapshot as part of this procedure.
 
 Status codes:
 
 - `204 No Content`
-- `400 Bad Request` if the collection/path cannot be resolved
-- `404 Not Found` if the document metadata is missing or the file cannot be removed from disk
+- `400 Bad Request` if the server cannot find the collection or the path
+- `404 Not Found` if the document metadata is missing, or if the server cannot remove the file from disk
 - `500 Internal Server Error`
 
 ## Search
@@ -431,23 +431,23 @@ Status codes:
 
 Fields:
 
-- `query`: required string
-- `mode`: optional, defaults to `"semantic"`
-- `collection`: optional collection filter
-- `count`: optional, defaults to `10`
-- `min_score`: optional, defaults to `0.0`
+- `query`: a string. This field is necessary.
+- `mode`: optional. The default is `"semantic"`.
+- `collection`: an optional collection filter.
+- `count`: optional. The default is `10`.
+- `min_score`: optional. The default is `0.0`.
 
-Supported modes:
+The modes are:
 
 - `semantic`
 - `hybrid`
 - `bm25`
 
-Any mode other than these three returns `400 Bad Request`. `bm25` runs on the Tantivy full-text index alone and does not require the PLAID semantic index.
+Any mode that is not one of these three gives `400 Bad Request`. The `bm25` mode uses only the Tantivy full-text index. The PLAID semantic index is not necessary for `bm25`.
 
 ### `POST /v1/search`
 
-Run semantic, hybrid, or BM25 search and return enriched results.
+This route does semantic, hybrid, or BM25 search. It gives results with more fields.
 
 Response body:
 
@@ -483,21 +483,21 @@ Response body:
 }
 ```
 
-Behavior:
+Notes:
 
-- The server defaults to `semantic` mode, not `hybrid`.
-- `title` is loaded from the current file on disk when possible.
-- `metadata` comes from stored document user metadata; omitted when none is stored.
-- `excerpts` are derived from the current file content using the query text and may be empty, in which case the field is omitted from the JSON.
-- `line_count` and `byte_count` describe the document on disk; both are omitted when the file cannot be read.
-- `match_chunk` carries the byte range of the best-scoring chunk surfaced by the semantic leg, clamped to the current file size. It is omitted on BM25-only hits (no chunk-level score), when chunk offsets weren't recorded, or when the document is unreadable.
-- The server returns `result_count` as the actual number of returned items.
+- The default mode is `semantic`, not `hybrid`.
+- The server reads the `title` from the file on disk, if possible.
+- `metadata` is from the document user metadata in storage. The server does not include it when there is no metadata in storage.
+- The server makes the `excerpts` from the file content with the query text. The `excerpts` can be empty. Then the server does not include the field in the JSON.
+- `line_count` and `byte_count` give the dimensions of the document on disk. The server does not include the two values when it cannot read the file.
+- `match_chunk` has the byte range of the chunk with the best score from the semantic search. The server makes sure that this byte range is not more than the number of bytes in the file. The server does not include `match_chunk` for a BM25-only hit with no chunk-level score. The server also does not include it when it did not record the chunk offsets, or when it cannot read the document.
+- The server sets `result_count` to the number of items in the response.
 
 Status codes:
 
 - `200 OK`
 - `400 Bad Request` for an unknown `mode`
-- `503 Service Unavailable` if the PLAID semantic index has not been built yet. Both `semantic` and `hybrid` modes require it (`bm25` does not, and never returns this status). The server logs the query and returns an empty body; run `docbert sync` to build the index.
+- `503 Service Unavailable` if the server does not have the PLAID semantic index. The PLAID semantic index is necessary for the `semantic` and `hybrid` modes. The `bm25` mode does not use it, and never gives this status. The server records the query and gives an empty body. The `docbert sync` command makes the index.
 - `500 Internal Server Error`
 
 ## LLM settings
@@ -515,26 +515,26 @@ Status codes:
 }
 ```
 
-`provider`, `model`, and `api_key` may also be `null`.
+`provider`, `model`, and `api_key` can also be `null`.
 
-`oauth_connected` is always present and is `true` only when the current provider is using a live OAuth-backed ChatGPT Codex session.
+`oauth_connected` is always in the response. It is `true` only when the provider in use has an available OAuth session for ChatGPT Codex.
 
-`oauth_expires_at` is omitted unless an OAuth-backed ChatGPT Codex session is currently available.
+The server does not include `oauth_expires_at`, unless an OAuth session for ChatGPT Codex is available.
 
 ### `GET /v1/settings/llm`
 
-Read persisted LLM settings.
+This route reads the LLM settings in storage.
 
-Behavior:
+Notes:
 
-- `provider` and `model` come from persisted settings when present.
-- For API-key-backed providers, `api_key` comes from persisted settings when present.
-- If a stored API key is absent, the server may substitute an environment variable based on `provider`:
+- `provider` and `model` are from the settings in storage, when the settings have them.
+- For a provider that uses an API key, `api_key` is from the settings in storage, when the settings have it.
+- If no API key is in storage, the server can use an environment variable for the `provider`:
   - `openai` → `OPENAI_API_KEY`
   - `anthropic` → `ANTHROPIC_API_KEY`
-- Unknown API-key providers do not get environment fallback.
-- For `provider = "openai-codex"`, the route does not use `llm_api_key` or env fallback. Instead it resolves a stored OAuth session, refreshes it when needed, and returns the current access token as `api_key`.
-- If no valid ChatGPT Codex OAuth session is available, `oauth_connected` is `false` and `api_key` is `null`.
+- An unknown API-key provider does not get an environment variable.
+- For `provider = "openai-codex"`, the route does not use `llm_api_key` or an environment variable. The route finds the OAuth session in storage and refreshes it when necessary. Then the route gives the access token as `api_key`.
+- If no OAuth session for ChatGPT Codex is available, `oauth_connected` is `false` and `api_key` is `null`.
 
 Example response:
 
@@ -566,7 +566,7 @@ Status codes:
 
 ### `PUT /v1/settings/llm`
 
-Persist LLM settings.
+This route keeps the LLM settings in storage.
 
 Request body:
 
@@ -578,14 +578,14 @@ Request body:
 }
 ```
 
-Behavior:
+Notes:
 
-- Empty-string `api_key` is stored as absent in the persisted settings.
-- `provider` and `model` may be cleared by sending `null`.
-- If `provider = "openai-codex"`, the server ignores any supplied `api_key` field and persists only the provider/model selection. OAuth state is managed separately.
-- The HTTP response returns the normalized effective settings shape, including `oauth_connected`.
+- If `api_key` is an empty string, the server keeps it as no value in the settings.
+- You can remove `provider` and `model` when you send `null`.
+- If `provider = "openai-codex"`, the server ignores an `api_key` field in the request. The server keeps only the selected `provider` and `model`. The server keeps the OAuth state independently.
+- The HTTP response gives the settings shape in use, and includes `oauth_connected`.
 
-Example request that clears settings:
+Example request that removes settings:
 
 ```json
 {
@@ -602,7 +602,7 @@ Status codes:
 
 ### `POST /v1/settings/llm/oauth/openai-codex/start`
 
-Start the ChatGPT Plus/Pro (Codex) OAuth flow.
+This route starts the ChatGPT Plus/Pro (Codex) OAuth login.
 
 Response body:
 
@@ -612,25 +612,25 @@ Response body:
 }
 ```
 
-Behavior:
+Notes:
 
-- The route spins up a temporary localhost callback listener on `http://localhost:1455/auth/callback`.
-- If that callback port is already busy, the route returns `409 Conflict`.
-- The returned URL is intended to be opened in the user's browser.
+- The route starts a temporary listener for the localhost callback on `http://localhost:1455/auth/callback`.
+- If a different program uses the callback port, the route gives `409 Conflict`.
+- The user opens the `authorization_url` in a browser.
 
 Status codes:
 
 - `200 OK`
-- `409 Conflict` when the temporary callback listener cannot bind to port `1455`
+- `409 Conflict` when the temporary callback listener cannot use port `1455`
 - `500 Internal Server Error`
 
 ### `POST /v1/settings/llm/oauth/openai-codex/logout`
 
-Remove the stored ChatGPT Codex OAuth session.
+This route removes the OAuth session for ChatGPT Codex from storage.
 
-Behavior:
+Notes:
 
-- This clears the stored OAuth credential blob but leaves the selected `provider` and `model` unchanged.
+- This route removes the OAuth credential in storage. It keeps the selected `provider` and `model` without change.
 
 Status codes:
 
@@ -639,9 +639,9 @@ Status codes:
 
 ## Notes for integrators
 
-- Use the CLI to create collections; do not assume an HTTP collection-create route exists.
-- Uploads support both Markdown and PDF documents.
-- PDF uploads send base64-encoded bytes in the request, but document reads return extracted Markdown/text content.
-- Search defaults to semantic mode unless you explicitly send `"mode": "hybrid"` or `"mode": "bm25"`.
-- All document/search endpoints surface `doc_id` as the short hex form (e.g. `#abc123`); there is no qualified `collection:path` form on the wire.
-- If you consume both the web UI client and the server directly, treat this page and the route implementation as the source of truth for what the server actually supports.
+- Use the CLI to make collections. Do not think that docbert has an HTTP route to make a collection.
+- You can upload Markdown documents and PDF documents.
+- PDF uploads send base64-encoded bytes in the request. Document reads give the Markdown or text content.
+- Search uses `semantic` mode as the default. To use a different mode, send `"mode": "hybrid"` or `"mode": "bm25"`.
+- All document and search endpoints give `doc_id` as the short hex form (for example, `#abc123`). There is no `collection:path` form in the response.
+- Use this page and the route source code to know what the server can do. Do not use only the web UI client.

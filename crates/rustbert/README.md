@@ -1,15 +1,15 @@
 # rustbert
 
-Rust crate docs lookup — fetch and search published Rust APIs without registering anything.
+rustbert is a lookup tool for Rust crate docs. It fetches and searches Rust APIs from crates.io. It is not necessary to prepare a crate first.
 
 ## What it does
 
-Give it a crate name and an optional version. It fetches the source from crates.io, parses every public item with `syn`, and serves item-level search and retrieval through:
+You give rustbert a crate name and an optional version. It fetches the source from crates.io. It parses each public item with `syn`. Then it gives item-level search and retrieval through these two:
 
-- a **CLI** for one-off lookups and `Cargo.lock`-driven pre-fetching
-- an **MCP server** for editor and agent integrations
+- A **CLI** for one-off lookups and `Cargo.lock`-driven pre-fetching
+- An **MCP server** for editor and agent integration.
 
-Every operation is scoped to a single `(crate, version)`; there is no global cross-crate index.
+Each operation uses only one `(crate, version)`. There is no cross-crate index.
 
 ## Quick start
 
@@ -47,21 +47,21 @@ rustbert evict --all
 rustbert mcp
 ```
 
-Spec strings parse the same shape every time: `name`, `name@1.2.3`, `name@^1.0`, `name@latest`, `name@*`. `latest` and `*` are sentinels for "max stable, non-yanked version".
+Spec strings parse to the same shape each time: `name`, `name@1.2.3`, `name@^1.0`, `name@latest`, `name@*`. `latest` and `*` select the maximum stable version that is not yanked.
 
-## What's in scope
+## What is in scope
 
-1. Lookups by `(crate, version)` with **no registration step**.
-2. Item-level results: one hit per `fn` / `struct` / `enum` / `union` / `trait` / `impl` / `mod` / `const` / `static` / `type alias` / `macro_rules!`, with signature, docstring, qualified path, and source span.
-3. Search ranks by token overlap weighted toward the qualified path; case-insensitive substring matching.
-4. `rustbert sync` walks a `Cargo.lock` and pre-fetches every crates.io dep in parallel so the working set is hot before the first search runs.
-5. `rustbert refresh` re-resolves cached `latest` entries against upstream without re-downloading.
+1. Lookups by `(crate, version)`. It is not necessary to prepare a crate first.
+2. rustbert gives item-level results. Each result is one hit for a `fn`, `struct`, `enum`, `union`, `trait`, `impl`, `mod`, `const`, `static`, `type alias`, or `macro_rules!`. Each hit has the signature, docstring, qualified path, and source span.
+3. Search ranks the items by token overlap, and overlap in the qualified path is more important. The substring search is case-insensitive.
+4. `rustbert sync` reads a `Cargo.lock`. It pre-fetches all the crates.io dependencies at the same time. Thus the working set is available before the first search.
+5. `rustbert refresh` resolves the cached `latest` entries again. It uses the upstream registry, and does not download the crates again.
 
-## What's out of scope
+## What is out of scope
 
-- Indexing the whole crates.io corpus. Fetches are demand-driven or scoped to a project's lockfile.
-- Type resolution / cross-crate `pub use` chasing.
-- Macro expansion. Items synthesized by macros are invisible to source-level parsing.
+- rustbert does not index the full crates.io corpus. It fetches only when necessary, or for the crates in a project lockfile.
+- rustbert does not do type resolution. It does not resolve cross-crate `pub use` re-exports.
+- rustbert does not do macro expansion. Source-level parsing cannot find the items that macros make.
 
 ## How it stores things
 
@@ -74,20 +74,20 @@ Spec strings parse the same shape every time: `name`, `name@1.2.3`, `name@^1.0`,
     └── <crate>-<version>/               # extracted source tree
 ```
 
-Concrete versions (`serde@1.0.219`) are immutable — never re-fetched without `--force`. `latest` resolutions live in the registry; `rustbert refresh` re-checks them on demand.
+A version number (for example, `serde@1.0.219`) does not change. Without `--force`, rustbert does not fetch it again. The registry holds the `latest` resolutions. `rustbert refresh` examines them again when necessary.
 
 ## MCP tools
 
-The `rustbert mcp` server speaks JSON-RPC 2.0 on stdio and exposes four tools:
+The `rustbert mcp` server uses JSON-RPC 2.0 on stdio. It gives four tools:
 
-- `search(crate, version?, query, kind?, module_prefix?, limit?)` — search a crate's public API by query.
-- `get(crate, version?, path)` — full rustdoc for one item by qualified path.
-- `list(crate, version?, kind?, module_prefix?, limit?)` — browse items in a crate.
-- `status(crate?)` — report which crates/versions are cached locally.
+- `search(crate, version?, query, kind?, module_prefix?, limit?)` — searches a crate's public API by query.
+- `get(crate, version?, path)` — gives the full rustdoc for one item by qualified path.
+- `list(crate, version?, kind?, module_prefix?, limit?)` — shows the items in a crate.
+- `status(crate?)` — shows which crates and versions are in the local cache.
 
-Plus the standard `initialize` / `tools/list` / `tools/call` lifecycle. `sync` is intentionally CLI-only — lockfile walks can run for minutes, which is the wrong shape for an MCP request.
+The server also has the standard `initialize`, `tools/list`, and `tools/call` lifecycle. `sync` is CLI-only. The lockfile operation can continue for minutes. This is not correct for an MCP request.
 
-Wire it up in your editor / agent config the same way you'd wire any other stdio MCP server (point it at the `rustbert` binary with `mcp` as the only arg).
+Configure it in your editor or agent config, the same as other stdio MCP servers. Set the config to the `rustbert` binary. Use `mcp` as the only argument.
 
 ## Configuration
 
@@ -97,25 +97,25 @@ Wire it up in your editor / agent config the same way you'd wire any other stdio
 | `RUSTBERT_LOG`           | tracing-subscriber filter (default `warn,rustbert=info`) |
 | `XDG_DATA_HOME` / `HOME` | Standard XDG fallbacks                                   |
 
-CLI flag `--data-dir <path>` takes precedence over both.
+The CLI flag `--data-dir <path>` overrides the two variables.
 
-## What's in scope (continued)
+## What is in scope (continued)
 
-- Indexing your own project's source via `rustbert index <path>`. The indexed package becomes a synthetic collection (`<name>@<version>`) and `search` / `get` / `list` work against it identically to fetched crates. Workspace roots without a `[package]` table aren't supported — point at individual member directories.
-- Best-effort docs.rs rustdoc JSON enrichment. When docs.rs has a JSON build for the requested `(crate, version)`, the raw JSON lands at `<data_dir>/items/<crate>-<version>.rustdoc.json` for downstream tooling. 404 / 410 responses (the common case for crates without published JSON) are silently skipped — syn-only parsing remains the source of truth.
+- rustbert can index your project source through `rustbert index <path>`. rustbert makes the indexed package into a collection (`<name>@<version>`). Then `search`, `get`, and `list` operate on it the same as on fetched crates. rustbert cannot index workspace roots that have no `[package]` table. As an alternative, the member directories are the correct targets.
+- rustbert can also add the rustdoc JSON data from docs.rs, as a best-effort operation. When docs.rs has a JSON build for the `(crate, version)`, the JSON goes to `<data_dir>/items/<crate>-<version>.rustdoc.json` for downstream tools. rustbert ignores 404 or 410 responses without an error message. This response occurs for most crates, because they have no rustdoc JSON. The syn-only parsing stays the primary data source.
 
 ## How search works
 
-`rustbert search` runs the same hybrid retrieval stack `docbert search` uses:
+`rustbert search` uses the same hybrid retrieval stack as `docbert search`:
 
-- **BM25** via Tantivy with English stemming and fuzzy matching for the lexical leg.
-- **ColBERT** via `docbert-pylate` (the workspace fork of `pylate-rs`) for the semantic leg.
-- **Reciprocal Rank Fusion** combines the two ranked lists at `k=60`.
+- The lexical part uses **BM25** through Tantivy, with English stemming and fuzzy search.
+- The semantic part uses **ColBERT** through `docbert-pylate` (the workspace fork of `pylate-rs`).
+- **Reciprocal Rank Fusion** mixes the two ranked lists at `k=60`.
 - **PLAID** compresses the ColBERT vectors for fast MaxSim retrieval.
 
-`--kind` and `--module` filters are applied post-rank against the cached items so the CLI stays predictable.
+rustbert ranks the items first. Then it uses the `--kind` and `--module` filters on the cached items. Thus the CLI gives the same results each time.
 
-`rustbert sync` triggers a ColBERT model download from HuggingFace on first use. Pass `--no-embed` if you want a fast lexical-only sync (no model download, no PLAID rebuild).
+The first time you use `rustbert sync`, it starts a ColBERT model download from HuggingFace. For a fast lexical-only sync, use the `--no-embed` flag (no model download, no PLAID rebuild).
 
 ## License
 

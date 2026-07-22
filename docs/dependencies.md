@@ -1,6 +1,6 @@
 # Dependencies
 
-This page tracks the direct Cargo dependencies declared in the current manifests:
+This page shows the direct Cargo dependencies in these manifests:
 
 - workspace root `Cargo.toml`
 - `crates/docbert/Cargo.toml`
@@ -11,13 +11,13 @@ This page tracks the direct Cargo dependencies declared in the current manifests
 - `crates/docbert-pylate/Cargo.toml`
 - `crates/rustbert/Cargo.toml`
 
-It focuses on what each direct dependency is for in the current codebase, plus the major feature relationships that matter when changing builds or runtime behavior.
+This page shows what each direct dependency does in this codebase. It also shows the primary feature relationships. These relationships are important when you change the build or the runtime function.
 
 ## Workspace root
 
-The workspace root declares no direct Rust dependencies.
+The workspace root has no direct Rust dependencies.
 
-It only defines:
+It has only these two items:
 
 - workspace members:
   - `crates/docbert`
@@ -30,11 +30,11 @@ It only defines:
 - resolver:
   - `resolver = "3"`
 
-All dependency versions live in the crate manifests.
+All dependency versions are in the crate manifests.
 
 ## `crates/docbert`
 
-`docbert` is the application crate: CLI entrypoint, MCP runtime, and higher-level indexing/runtime orchestration. The `web` subcommand delegates to `docbert-web` for the HTTP runtime.
+`docbert` is the application crate. It contains the CLI entrypoint, the MCP runtime, and the application-level control of indexing and runtime. The `web` subcommand uses `docbert-web` for the HTTP runtime.
 
 ### Direct dependencies
 
@@ -66,7 +66,7 @@ All dependency versions live in the crate manifests.
 
 ### `docbert` feature relationships
 
-`docbert` does not define its own runtime backend matrix. Each of its feature flags forwards to both `docbert-core` and `docbert-web`:
+`docbert` has no runtime backend matrix. Each `docbert` feature flag activates the same feature in `docbert-core` and `docbert-web`:
 
 ```toml
 [features]
@@ -77,36 +77,36 @@ metal = ["docbert-core/metal", "docbert-web/metal"]
 cuda = ["docbert-core/cuda", "docbert-web/cuda"]
 ```
 
-That means the application crate's acceleration/build choices are controlled by the core crate's model backend features, reached both directly and through `docbert-web`.
+Thus the core crate's model backend features control the acceleration and build selections of the application crate. The application crate gets these features directly and through `docbert-web`.
 
-### Notes on major application dependencies
+### Notes on primary application dependencies
 
 #### `rmcp`
 
-Used in `crates/docbert/src/mcp.rs` for:
+`docbert` uses `rmcp` in `crates/docbert/src/mcp.rs` for these functions:
 
-- MCP server wiring
-- stdio transport
-- tool/prompt/resource definitions
-- MCP request/response types and errors
+- The MCP server connections
+- The stdio transport
+- The tool, prompt, and resource definitions
+- The MCP request and response types, and the errors.
 
 #### `tokio`
 
-Used for:
+`docbert` uses `tokio` for these functions:
 
-- the MCP runtime (`mcp.rs` builds a multi-thread runtime)
-- async tests around the MCP surface
+- The MCP runtime (`mcp.rs` makes a multi-thread runtime)
+- The async tests of the MCP surface.
 
 ## `crates/docbert-core`
 
-`docbert-core` is the reusable library crate: storage, search, indexing helpers, model management, chunking, and document preparation.
+`docbert-core` is the library crate that other crates use. It contains storage, search, indexing helpers, model management, chunking, and document preparation.
 
 ### Direct dependencies
 
 | Dependency       | Version                                                                  | Role in current code                                                                               |
 | ---------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
 | `blake3`         | `1.8.4`                                                                  | Merkle snapshot hashing                                                                            |
-| `bytemuck`       | `1.25.0` (`derive`)                                                      | Efficient `f32`/byte conversions in embedding storage; `derive` feature for `Pod`/`Zeroable` impls |
+| `bytemuck`       | `1.25.0` (`derive`)                                                      | Efficient `f32`/byte conversions in embedding storage. Feature `derive` for `Pod`/`Zeroable` impls |
 | `candle-core`    | `0.10.2`                                                                 | Tensor representation and tensor operations for model/embedding work                               |
 | `docbert-plaid`  | workspace path `crates/docbert-plaid`                                    | PLAID multi-vector index used by the semantic leg of search                                        |
 | `docbert-pylate` | workspace path `crates/docbert-pylate` (vendored from `pylate-rs` 1.0.4) | ColBERT model loading, query/document encoding, and similarity scoring                             |
@@ -134,7 +134,7 @@ Used for:
 
 ### `docbert-core` feature relationships
 
-`docbert-core` owns the model-backend feature mapping:
+`docbert-core` controls the model-backend feature mapping:
 
 ```toml
 [features]
@@ -145,96 +145,86 @@ metal = ["docbert-pylate/metal"]
 cuda = ["docbert-pylate/cuda", "docbert-plaid/cuda"]
 ```
 
-These are the main build-time switches for accelerated inference.
+These are the primary build-time flags for faster inference.
 
-### Notes on major core dependencies
+### Notes on primary core dependencies
 
 #### `docbert-pylate`
 
-This is the main ColBERT integration layer.
+`docbert-pylate` is the primary ColBERT integration layer.
 
-Used for:
+`docbert-core` uses `docbert-pylate` for these functions:
 
-- model loading in `model_manager.rs`
-- query/document encoding
-- similarity computation used by reranking
+- The model loading in `model_manager.rs`
+- The query and document encoding
+- The similarity computation for reranking.
 
-`docbert-pylate` is vendored into the workspace under `crates/docbert-pylate` as a
-Rust-only fork of [`pylate-rs`](https://github.com/lightonai/pylate-rs) (originally
-based on upstream 1.0.4). The upstream Python, WebAssembly, and npm packaging
-layers have been removed; the crate is consumed exclusively from inside the
-workspace and tracks the workspace release version rather than upstream's.
+The workspace has a copy of `docbert-pylate` under `crates/docbert-pylate`. `docbert-pylate` is a Rust-only fork of [`pylate-rs`](https://github.com/lightonai/pylate-rs). This fork starts from pylate-rs 1.0.4. The fork removes the upstream Python, WebAssembly, and npm packaging layers. Only code inside the workspace uses the crate. The crate uses the version number of the workspace release, not the upstream version number.
 
 #### `tantivy`
 
-Used for:
+`docbert-core` uses `tantivy` for these functions:
 
-- schema definition
-- persistent or in-memory lexical indexes
+- The schema definition
+- The lexical indexes on disk or in memory
 - BM25 retrieval
-- collection/path lookups
-- fuzzy matching support
+- The collection and path lookups
+- The fuzzy-matching support.
 
 #### `heed`
 
-Wraps [LMDB](https://www.symas.com/lmdb) for both major local databases:
+`heed` is the [LMDB](https://www.symas.com/lmdb) wrapper for the two primary local databases:
 
 - `config.db`
 - `embeddings.db`
 
-Used for:
+`docbert-core` uses `heed` to keep these items:
 
-- collection/config storage
-- document metadata
-- conversations
-- collection Merkle snapshots
-- settings and JSON metadata blobs
-- chunk byte offsets
-- embedding matrix persistence
+- The collection and config data
+- The document metadata
+- The conversations
+- The collection Merkle snapshots
+- The settings and JSON metadata blobs
+- The chunk byte offsets
+- The embedding matrix.
 
-LMDB's reader/writer locks let multiple `docbert mcp` / `docbert web` / CLI processes share one data dir without stepping on each other. Files still in the pre-1.0 redb format are refused on open; `docbert clean` resets them.
+The LMDB reader and writer locks let many processes use one data dir at the same time. These processes include `docbert mcp`, `docbert web`, and the CLI. `docbert` does not open files in the pre-1.0 redb format. The `docbert clean` command sets these files to the initial state.
 
 #### `rkyv`
 
-Used for stable typed binary storage of structures such as:
+`docbert-core` uses `rkyv` to keep these typed structures in a stable binary format:
 
-- document metadata
-- conversations
-- stored JSON wrappers
-- Merkle snapshot structures
+- The document metadata
+- The conversations
+- The JSON wrappers
+- The Merkle snapshot structures.
 
 #### `ignore`
 
-Used in `walker.rs` for recursive discovery.
+`docbert-core` uses `ignore` in `walker.rs` for the recursive search of files. This search has these functions:
 
-Discovery uses it for:
-
-- hidden-file filtering
-- supported-extension filtering
-- Git ignore handling when the collection root is itself a Git repo
+- The hidden-file filtering
+- The supported-extension filtering
+- The Git-ignore rules, when the collection root is a Git repo.
 
 #### `pdf_oxide`
 
-Used in `preparation.rs` to:
-
-- load PDF bytes
-- convert PDFs to markdown when possible
-- fall back to extracted text when markdown conversion is empty
+`docbert-core` uses `pdf_oxide` in `preparation.rs`. `pdf_oxide` loads the PDF bytes and converts the PDFs to markdown when possible. When the markdown output is empty, `docbert-core` uses the extracted text.
 
 ## `crates/docbert-web`
 
-`docbert-web` is the web server crate behind `docbert web`: the Axum HTTP API, conversation/chat endpoints, document routes, and the ChatGPT Codex OAuth settings flow. It serves the embedded browser UI from `docbert-webui` through the default `webui` feature.
+`docbert-web` is the web server crate behind `docbert web`. It contains the Axum HTTP API, the conversation and chat endpoints, the document routes, and the OAuth settings flow for ChatGPT Codex. It supplies the embedded browser UI from `docbert-webui` through the default `webui` feature.
 
 ### Direct dependencies
 
 | Dependency      | Version                            | Role in current code                                                                                                |
 | --------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `docbert-core`  | path `../docbert-core`             | Storage, indexing, search, embedding, and model primitives behind the HTTP API                                      |
-| `docbert-webui` | path `../docbert-webui` (optional) | Embedded browser UI assets and SPA fallback handler; enabled by the default `webui` feature                         |
+| `docbert-webui` | path `../docbert-webui` (optional) | Embedded browser UI assets and SPA fallback handler. The default `webui` feature includes them                      |
 | `axum`          | `0.8`                              | HTTP routing, state extraction, and JSON request/response handling                                                  |
 | `base64`        | `0.22`                             | PDF upload decoding in document routes and URL-safe encoding in the ChatGPT Codex OAuth flow (`routes/settings.rs`) |
 | `rand`          | `0.10`                             | OAuth state / PKCE verifier generation for the ChatGPT Codex login flow (`routes/settings.rs`)                      |
-| `reqwest`       | `0.13.2`                           | Outbound HTTP client for the OAuth token exchange (`json`, `form`, `rustls` features; no defaults)                  |
+| `reqwest`       | `0.13.2`                           | Outbound HTTP client for the OAuth token exchange (`json`, `form`, `rustls` features, no defaults)                  |
 | `serde`         | `1`                                | Serialization/deserialization for HTTP request/response types                                                       |
 | `serde_json`    | `1`                                | JSON values and serialization for HTTP payloads                                                                     |
 | `sha2`          | `0.11`                             | PKCE code-challenge hashing for the ChatGPT Codex OAuth flow (`routes/settings.rs`)                                 |
@@ -262,11 +252,11 @@ metal = ["docbert-core/metal"]
 cuda = ["docbert-core/cuda"]
 ```
 
-The `webui` feature (on by default) pulls in the embedded browser UI; the acceleration flags forward to `docbert-core`.
+The `webui` feature (on by default) includes the embedded browser UI. The acceleration flags activate the same features in `docbert-core`.
 
 ## `crates/docbert-webui`
 
-`docbert-webui` embeds the built browser UI. Its `build.rs` builds the frontend under `ui/` with bun (`bun install --frozen-lockfile` + `bun run build`, falling back to npm), and the crate embeds the resulting `ui/dist` output at compile time.
+`docbert-webui` embeds the built browser UI. The `build.rs` script builds the frontend under `ui/` with bun. The commands are `bun install --frozen-lockfile` and `bun run build`. If bun is not available, `build.rs` uses npm. The crate then embeds the `ui/dist` output at compile time.
 
 ### Direct dependencies
 
@@ -277,7 +267,7 @@ The `webui` feature (on by default) pulls in the embedded browser UI; the accele
 
 ## `crates/docbert-plaid`
 
-`docbert-plaid` is the workspace-local crate that implements the PLAID multi-vector index used for ColBERT late-interaction retrieval. It has no dependency on `docbert-core`; `docbert-core` depends on it.
+`docbert-plaid` is the workspace-local crate for the PLAID multi-vector index. ColBERT late-interaction retrieval uses this index. `docbert-plaid` has no dependency on `docbert-core`. `docbert-core` has a dependency on `docbert-plaid`.
 
 ### Direct dependencies
 
@@ -307,9 +297,9 @@ cuda = ["candle-core/cuda"]
 
 ## `crates/docbert-pylate`
 
-`docbert-pylate` is the Rust-only fork of [pylate-rs](https://github.com/lightonai/pylate-rs) (originally based on upstream 1.0.4) that has been vendored into the workspace. The upstream Python, WebAssembly, and npm packaging layers were removed; the crate tracks the workspace release version rather than upstream's.
+`docbert-pylate` is the Rust-only fork of [pylate-rs](https://github.com/lightonai/pylate-rs). This fork starts from pylate-rs 1.0.4. The workspace has a copy of it. The fork removes the upstream Python, WebAssembly, and npm packaging layers. The crate uses the version number of the workspace release, not the upstream version number.
 
-It owns the ColBERT-family late-interaction model loading, query/document encoding, and token-level similarity work used by `docbert-core::ModelManager`.
+`docbert-pylate` contains the model loading, the query and document encoding, and the token-level similarity work for the ColBERT-family late-interaction models. `docbert-core::ModelManager` uses this work.
 
 ### Direct dependencies
 
@@ -317,13 +307,13 @@ It owns the ColBERT-family late-interaction model loading, query/document encodi
 | --------------------- | --------- | ---------------------------------------------------------------------------------------- |
 | `candle-core`         | `0.10.2`  | Tensor representation and ops for inference                                              |
 | `candle-nn`           | `0.10.2`  | Neural-network primitives used by the model stack                                        |
-| `candle-transformers` | `0.10.2`  | Transformer building blocks (ModernBERT encoder, pooling, etc.)                          |
-| `candle-flash-attn`   | `0.10.2`  | Optional flash-attention kernel; enabled only through the `cuda` feature                 |
+| `candle-transformers` | `0.10.2`  | Transformer building blocks (ModernBERT encoder, pooling, and other blocks)              |
+| `candle-flash-attn`   | `0.10.2`  | Optional flash-attention kernel. It is active only with the `cuda` feature               |
 | `tokenizers`          | `0.23`    | HuggingFace tokenizer runtime (`onig` backend)                                           |
 | `serde`               | `1.0.228` | Model config / metadata deserialization                                                  |
 | `serde_json`          | `1.0.149` | JSON parsing for model configuration files                                               |
 | `thiserror`           | `2.0.18`  | Error definitions                                                                        |
-| `hf-hub`              | `0.5.0`   | Downloads model weights and configs from HuggingFace (`ureq`, `rustls-tls`; no defaults) |
+| `hf-hub`              | `0.5.0`   | Downloads model weights and configs from HuggingFace (`ureq`, `rustls-tls`, no defaults) |
 | `kodama`              | `0.3.0`   | Hierarchical Ward clustering used by token-pooling encode paths                          |
 | `rayon`               | `1.12.0`  | Parallelism in encoding/batching paths                                                   |
 
@@ -347,11 +337,11 @@ mkl        = ["candle-core/mkl",        "candle-nn/mkl",        "candle-transfor
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 ```
 
-These are the leaf flags that `docbert-core`'s `mkl`/`accelerate`/`metal`/`cuda` features ultimately enable.
+`docbert-core`'s `mkl`, `accelerate`, `metal`, and `cuda` features activate these leaf flags.
 
 ## `crates/rustbert`
 
-`rustbert` is a separate binary that depends on `docbert-core` as a library and ships its own crates.io fetcher, parser, and MCP server. See [`rustbert.md`](./rustbert.md) for the full story; the manifest section there is the canonical dep list. The summary below mirrors `crates/rustbert/Cargo.toml`.
+`rustbert` is a binary that is not part of `docbert`. It has a dependency on `docbert-core` as a library. `rustbert` has a crates.io fetcher, a parser, and an MCP server. [`rustbert.md`](./rustbert.md) gives the full description. The manifest section there is the correct dependency list. The summary below shows the same data as `crates/rustbert/Cargo.toml`.
 
 ### Direct dependencies
 
@@ -362,12 +352,12 @@ These are the leaf flags that `docbert-core`'s `mkl`/`accelerate`/`metal`/`cuda`
 | `clap`                 | `4.6` (`derive`, `env`)                                 | CLI parsing                                                                                                                           |
 | `flate2`               | `1`                                                     | Gzip decode for crates.io tarballs                                                                                                    |
 | `globset`              | `0.4`                                                   | `--exclude` glob filtering in `rustbert sync`                                                                                         |
-| `proc-macro2`          | `1` (`span-locations`)                                  | Feature-only direct dep so `tt.span().start().line` returns real line numbers; cargo-machete is configured to ignore the absent `use` |
+| `proc-macro2`          | `1` (`span-locations`)                                  | Feature-only direct dep so `tt.span().start().line` returns real line numbers. Cargo-machete is configured to ignore the absent `use` |
 | `quote`                | `1`                                                     | Token-tree rendering for synthesized signatures                                                                                       |
-| `reqwest`              | `0.13.2` (`rustls`, `stream`; no defaults)              | HTTP client for crates.io / docs.rs                                                                                                   |
+| `reqwest`              | `0.13.2` (`rustls`, `stream`, no defaults)              | HTTP client for crates.io / docs.rs                                                                                                   |
 | `semver`               | `1` (`serde`)                                           | Version resolution                                                                                                                    |
 | `serde` / `serde_json` | `1`                                                     | crates.io API and metadata blobs                                                                                                      |
-| `sha2`                 | `0.11`                                                  | Tarball checksum verification                                                                                                         |
+| `sha2`                 | `0.11`                                                  | Tarball checksum check                                                                                                                |
 | `syn`                  | `2` (`full`)                                            | Rust AST parsing                                                                                                                      |
 | `tantivy`              | `0.26.0`                                                | Direct access to the lexical index used by the rustbert indexer                                                                       |
 | `tar`                  | `0.4`                                                   | Tarball extraction                                                                                                                    |
@@ -399,15 +389,15 @@ metal      = ["docbert-core/metal"]
 cuda       = ["docbert-core/cuda"]
 ```
 
-The MCP server is hand-rolled JSON-RPC over stdio; rustbert deliberately does not depend on `rmcp` or `schemars`. There is no `xdg` dep either: data-dir resolution is done in-tree against `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.
+The `rustbert` MCP server uses JSON-RPC over stdio without a library. Thus `rustbert` has no dependency on `rmcp` or `schemars`. `rustbert` also has no `xdg` dependency. `rustbert` finds the data dir in the source tree from `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.
 
 ## Cross-crate relationships
 
-A few relationships matter more than the raw version list.
+A few relationships are more important than the version list.
 
-### `docbert` depends on `docbert-core` and `docbert-web`
+### `docbert` uses `docbert-core` and `docbert-web`
 
-The application crate reuses the core crate for:
+The application crate uses the core crate for these items:
 
 - `ConfigDb`
 - `DataDir`
@@ -417,7 +407,7 @@ The application crate reuses the core crate for:
 - search functions
 - document preparation and indexing helpers
 
-That is why most search/storage dependency weight lives in `docbert-core`, not `docbert`. The web/HTTP dependency weight (`axum`, `reqwest`, `sha2`, `rand`, ...) lives in `docbert-web`, which the `web` subcommand delegates to.
+Thus most search and storage dependencies are in `docbert-core`, not `docbert`. The web and HTTP dependencies (`axum`, `reqwest`, `sha2`, `rand`, and others) are in `docbert-web`. The `web` subcommand uses `docbert-web`.
 
 ### Feature flags flow from app to core to `docbert-pylate`
 
@@ -436,18 +426,18 @@ cargo build -p docbert --features cuda
     -> docbert-core/cuda enables docbert-pylate/cuda and docbert-plaid/cuda
 ```
 
-### Some crates appear in several manifests for different reasons
+### Some crates are in more than one manifest
 
 - `tantivy`
-  - core crate: main index abstraction and retrieval
+  - core crate: primary index abstraction and retrieval
   - web crate: shared index writer and lock-failure classification in the web runtime
-  - app crate: `IndexWriter` handles obtained from `docbert-core`'s `SearchIndex` in CLI indexing flows
+  - app crate: `IndexWriter` handles from `docbert-core`'s `SearchIndex` in the CLI indexing paths
 - `serde` / `serde_json`
   - core crate: stored/config/runtime data types
   - web crate: HTTP payload types
   - app crate: MCP payload types and CLI JSON output
 - `pdf_oxide`
-  - core crate: actual PDF preparation support
+  - core crate: PDF preparation support
   - web crate dev-dependency: test helpers for PDF upload coverage
 
 ## Related references

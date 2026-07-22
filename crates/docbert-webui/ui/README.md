@@ -2,34 +2,34 @@
 
 ## Docbert UI surface tokens
 
-The shared design-system entrypoint is `src/index.css`. Use semantic surface tokens there before introducing new one-off gradients in page CSS.
+The shared design-system entrypoint is `src/index.css`. Use the semantic surface tokens in that file before you add new gradients for one page in the page CSS.
 
-Current extracted tokens:
+At this time, the design system has these extracted tokens:
 
-- `--surface-control`: default interactive control surface
-- `--surface-control-hover`: hover state for text inputs and neutral controls
-- `--surface-emphasis-hover`: richer hover state for toggles and secondary actions
-- `--surface-selected`: selected/active neutral card surface
-- `--surface-accent-strong`: primary accent action surface
-- `--surface-accent-hover`: hover state for primary accent actions
-- `--surface-danger-soft`: soft error surface for inline alert cards
+- `--surface-control`: the default surface for interactive controls
+- `--surface-control-hover`: the hover state for text inputs and neutral controls
+- `--surface-emphasis-hover`: the hover state with more emphasis for toggles and secondary actions
+- `--surface-selected`: the surface for a selected or active neutral card
+- `--surface-accent-strong`: the surface for primary accent actions
+- `--surface-accent-hover`: the hover state for primary accent actions
+- `--surface-danger-soft`: the soft error surface for inline alert cards.
 
-Recent consumers include Search, Settings, Chat, and shared `SearchResults` styles.
+At this time, the consumers of these tokens include Search, Settings, Chat, and the shared `SearchResults` styles.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This template gives a minimum setup that makes React operate in Vite with HMR and some ESLint rules.
 
-Currently, two official plugins are available:
+At this time, two official plugins are available:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs).
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/).
 
 ## React Compiler
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The React Compiler is not active on this template because the compiler decreases dev and build performance. To add the compiler, refer to [this documentation](https://react.dev/learn/react-compiler/installation).
 
-## Expanding the ESLint configuration
+## How to expand the ESLint configuration
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+For a production application, we recommend that you update the configuration to activate the type-aware lint rules:
 
 ```js
 export default defineConfig([

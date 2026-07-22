@@ -1,13 +1,13 @@
 # Chat, conversations, and LLM settings
 
-This page documents the backend-facing parts of docbert's chat system:
+This page gives information about the backend parts of the docbert chat system:
 
-- how conversations are persisted
-- what the conversation HTTP routes actually do
-- how LLM settings are stored and resolved
-- which chat behaviors are real backend guarantees versus prompt- or UI-driven runtime behavior
+- How the server stores conversations
+- What the conversation HTTP routes do
+- How the server stores and finds the LLM settings
+- Which chat functions the backend makes sure of, and which functions come from the prompt or the UI at runtime.
 
-It is intentionally narrower than a UI walkthrough. The source of truth here is the current implementation in:
+This page does not try to give full UI information. This information comes from the implementation in these files:
 
 - `crates/docbert-web/src/routes/conversations.rs`
 - `crates/docbert-web/src/routes/settings.rs`
@@ -15,32 +15,32 @@ It is intentionally narrower than a UI walkthrough. The source of truth here is 
 - `crates/docbert-core/src/conversation.rs`
 - `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`
 
-The chat agent runs entirely in the browser: it talks to the configured LLM directly, then calls docbert's MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. There is **no** `/v1/chat` endpoint on the backend. The only chat-adjacent HTTP surface is `/v1/conversations` (history persistence) and `/v1/settings/llm` (provider/key configuration).
+The chat agent operates fully in the browser. It connects to the configured LLM. Then it uses the docbert MCP tools (`search`, `semantic_search`, `get`, `multi_get`, `status`) for retrieval. The backend has **no** `/v1/chat` endpoint. The only chat-adjacent HTTP surfaces are `/v1/conversations` (conversation persistence) and `/v1/settings/llm` (provider and key configuration).
 
-## What is persisted
+## What the server stores
 
-The chat system persists two kinds of state in `config.db`:
+The chat system stores two types of data in `config.db`:
 
 1. **Conversations**
-   - stored in the `conversations` table
-   - keyed by conversation id
-   - contain title, timestamps, and the full message list
+   - The server stores them in the `conversations` table.
+   - The server uses the conversation id as the key.
+   - Each record has the title, the timestamps, and all the messages.
 
 2. **Persisted LLM settings**
-   - stored in the shared `settings` table
-   - use these keys:
+   - The server stores them in the `settings` table. Other settings also use this table.
+   - The settings use these keys:
      - `llm_provider`
      - `llm_model`
      - `llm_api_key`
 
-Those are separate concerns:
+The two are different:
 
-- conversation persistence controls chat history
-- persisted LLM settings control which provider/model/key the chat UI can use
+- Conversation persistence controls the stored conversations.
+- The persisted LLM settings control the provider, model, and key that the chat UI can use.
 
 ## Conversation lifecycle
 
-The conversation lifecycle is implemented entirely through the web API routes under `/v1/conversations`.
+The web API routes under `/v1/conversations` do the full conversation lifecycle.
 
 ### Create
 
@@ -59,13 +59,13 @@ Request body:
 }
 ```
 
-Behavior:
+Function:
 
-- `id` is required.
-- `title` is optional.
-- if `title` is omitted, the server stores `"New conversation"`
-- `created_at` and `updated_at` are set by the server to the current Unix time in milliseconds
-- `messages` starts empty
+- The `id` field is necessary.
+- The `title` field is optional.
+- If the request has no `title`, the server stores `"New conversation"`.
+- When it creates the conversation, the server sets `created_at` and `updated_at` to the Unix time in milliseconds.
+- The `messages` list starts empty.
 
 Example response:
 
@@ -82,7 +82,7 @@ Example response:
 Status codes:
 
 - `201 Created`
-- `409 Conflict` if a conversation with the supplied `id` already exists (POST never overwrites; use PUT to update)
+- `409 Conflict` if a conversation has this `id`. POST does not replace a record. PUT changes a stored record.
 - `500 Internal Server Error`
 
 ### List
@@ -114,11 +114,11 @@ Response shape:
 ]
 ```
 
-Behavior:
+Function:
 
-- conversations are returned as summaries, not full message transcripts
-- results are sorted by `updated_at` descending
-- `message_count` is derived from the stored `messages.len()`
+- The server gives each conversation as a short record, without all the messages.
+- The server gives the results by `updated_at`, most recent first.
+- The server calculates `message_count` from the stored `messages.len()`.
 
 Status codes:
 
@@ -135,7 +135,7 @@ GET /v1/conversations/{id}
 
 Response shape:
 
-- returns the full stored `Conversation` record
+- The server gives the full stored `Conversation` record.
 
 Example:
 
@@ -175,7 +175,7 @@ Example:
 Status codes:
 
 - `200 OK`
-- `404 Not Found` if the conversation id does not exist
+- `404 Not Found` if no conversation has this id
 - `500 Internal Server Error`
 
 ### Update
@@ -188,15 +188,18 @@ PUT /v1/conversations/{id}
 
 Request body:
 
-- must be a full `Conversation` object; `messages` is required (the field has no `serde(default)`, so a body without it fails deserialization with `422 Unprocessable Entity`; malformed JSON syntax returns `400 Bad Request`)
+- The body must be a full `Conversation` object.
+- The `messages` field is necessary. It has no `serde(default)`.
+- A body without `messages` does not deserialize. The server gives `422 Unprocessable Entity`.
+- If the JSON syntax is incorrect, the server gives `400 Bad Request`.
 
-Behavior:
+Function:
 
-- the server checks that the conversation already exists
-- the server overwrites `body.id` with the `{id}` path parameter
-- the server refreshes `updated_at` on write
-- `created_at` is stored verbatim from the request body; it is not preserved from the existing record
-- the rest of the conversation body is stored as provided
+- The server makes sure that the conversation is in the database.
+- The server replaces `body.id` with the `{id}` path parameter.
+- When the server writes the record, it sets a new `updated_at`.
+- The server stores `created_at` from the request body without a change. The server does not keep `created_at` from the record in the database.
+- The server stores the remaining fields of the conversation body without changes.
 
 Example request:
 
@@ -225,7 +228,7 @@ Example response:
 Status codes:
 
 - `200 OK`
-- `404 Not Found` if the conversation id does not exist
+- `404 Not Found` if no conversation has this id
 - `500 Internal Server Error`
 
 ### Delete
@@ -236,19 +239,19 @@ Route:
 DELETE /v1/conversations/{id}
 ```
 
-Behavior:
+Function:
 
-- deletes the stored conversation record if present
+- The server deletes the stored conversation record, if it is in the database.
 
 Status codes:
 
 - `204 No Content`
-- `404 Not Found` if the conversation id does not exist
+- `404 Not Found` if no conversation has this id
 - `500 Internal Server Error`
 
 ## Conversation message format
 
-Stored conversations use `docbert_core::Conversation` and related chat types.
+Stored conversations use `docbert_core::Conversation` and the related chat types.
 
 ### Conversation shape
 
@@ -266,24 +269,24 @@ Stored conversations use `docbert_core::Conversation` and related chat types.
 
 Each message has:
 
-- `id`
-- `role`
-- optional `actor`
-- `parts`
-- optional `sources`
+- The `id` field
+- The `role` field
+- The optional `actor` field
+- The `parts` field
+- The optional `sources` field.
 
-Unknown fields on input are silently ignored and dropped. For example, a client that sends an extra `content` field on a message gets it discarded, not an error.
+The server ignores and discards unknown input fields. For example, a client can send an unknown `content` field on a message. The server discards it and does not give an error.
 
 #### `role`
 
-Serialized as lowercase:
+The server serializes `role` in lowercase:
 
 - `"user"`
 - `"assistant"`
 
 #### `actor`
 
-`actor` is optional and tagged by `type`.
+The `actor` field is optional. It has a `type` tag.
 
 Parent example:
 
@@ -312,7 +315,7 @@ Subagent status values:
 
 #### `parts`
 
-`parts` is a tagged list. Supported part types are:
+The `parts` field is a tagged list. The permitted part types are:
 
 - `text`
 - `thinking`
@@ -338,11 +341,11 @@ Examples:
 }
 ```
 
-The `name` field is free-form (any string the chat runtime chose to label the call); in current usage the values match docbert's MCP tool names: `search`, `semantic_search`, `get`, `multi_get`, or `status`.
+The chat runtime selects the string in the `name` field to identify the call. The backend does not do a check of this string. At this time, this string is the same as one of the docbert MCP tool names: `search`, `semantic_search`, `get`, `multi_get`, or `status`.
 
 #### `sources`
 
-When present, each source has:
+When a source is available, it has these fields:
 
 ```json
 {
@@ -352,17 +355,17 @@ When present, each source has:
 }
 ```
 
-## Undecodable stored records
+## Stored records that do not decode
 
-Stored conversation records are rkyv-encoded in the current format. A stored record that fails to decode is treated as absent:
+The server encodes stored conversation records with rkyv, in this format. A stored record that does not decode has the same result as a missing record:
 
-- `GET /v1/conversations/{id}` returns `404 Not Found`
-- `GET /v1/conversations` skips the record (a warning is logged server-side)
-- `DELETE /v1/conversations/{id}` still removes it
+- `GET /v1/conversations/{id}` gives `404 Not Found`.
+- `GET /v1/conversations` does not include the record. The server records a warning.
+- `DELETE /v1/conversations/{id}` removes the record.
 
 ## Persisted LLM settings
 
-The chat UI depends on LLM settings served from `/v1/settings/llm`.
+The chat UI uses the LLM settings from `/v1/settings/llm`.
 
 ### HTTP shape
 
@@ -377,42 +380,42 @@ The chat UI depends on LLM settings served from `/v1/settings/llm`.
 }
 ```
 
-`provider`, `model`, and `api_key` may also be `null`.
+The `provider`, `model`, and `api_key` fields can also be `null`.
 
-`oauth_connected` is always present and indicates whether the current provider is backed by an active ChatGPT Codex OAuth session.
+The response always includes the `oauth_connected` field. This field shows if the provider has an active ChatGPT Codex OAuth session.
 
-`oauth_expires_at` appears only when a live ChatGPT Codex OAuth session is currently available.
+The response includes `oauth_expires_at` only when an active ChatGPT Codex OAuth session is available.
 
 ### Storage mapping
 
-The backend stores the base provider/model/API-key values in `config.db` via `PersistedLlmSettings` using these keys:
+The backend stores the primary provider, model, and API-key values in `config.db` with `PersistedLlmSettings`. The server uses these keys:
 
 - `llm_provider`
 - `llm_model`
 - `llm_api_key`
 
-The ChatGPT Codex OAuth session, when present, is stored separately as structured JSON under:
+When a ChatGPT Codex OAuth session is available, the server stores it independently. The server uses JSON with a specified structure, under this key:
 
 - `llm_oauth:openai-codex`
 
 ### `GET /v1/settings/llm`
 
-Behavior:
+Function:
 
-- loads persisted provider/model values from `config.db`
-- for API-key-backed providers, if a stored API key exists, it is returned directly
-- if no stored API key exists, the server may fall back to an environment variable based on `provider`
-- for `provider = "openai-codex"`, the server resolves a stored OAuth session instead of using `llm_api_key`
-- if the stored ChatGPT Codex session is close to expiry, the server refreshes it before returning settings
-- if no valid ChatGPT Codex session exists, `oauth_connected` is `false` and `api_key` is `null`
+- The server reads the stored provider and model values from `config.db`.
+- For a provider that uses an API key, the server gives a stored API key if there is one.
+- If there is no stored API key, the server can use an environment variable for the `provider`.
+- For `provider = "openai-codex"`, the server uses a stored OAuth session and not `llm_api_key`.
+- The stored ChatGPT Codex session has an end time. If this time is near, the server refreshes the session before it gives the settings.
+- If the server has no active ChatGPT Codex session, `oauth_connected` is `false` and `api_key` is `null`.
 
-Current environment fallback rules:
+These are the environment fallback rules:
 
 - `provider = "anthropic"` → `ANTHROPIC_API_KEY`
 - `provider = "openai"` → `OPENAI_API_KEY`
 - unknown providers → no fallback
 
-Example response using a stored key:
+Example response with a stored key:
 
 ```json
 {
@@ -423,7 +426,7 @@ Example response using a stored key:
 }
 ```
 
-Example response using env fallback:
+Example response with env fallback:
 
 ```json
 {
@@ -434,7 +437,7 @@ Example response using env fallback:
 }
 ```
 
-Example response using a connected ChatGPT Codex session:
+Example response with a connected ChatGPT Codex session:
 
 ```json
 {
@@ -453,13 +456,13 @@ Status codes:
 
 ### `PUT /v1/settings/llm`
 
-Behavior:
+Function:
 
-- replaces the persisted provider/model/API-key settings in one write transaction
-- empty-string `api_key` is normalized to absent in storage
-- `provider` and `model` can be cleared by sending `null`
-- if `provider = "openai-codex"`, any supplied `api_key` is ignored and OAuth state remains managed separately
-- the HTTP response returns the normalized effective settings shape, including `oauth_connected`
+- The server replaces the stored provider, model, and API-key settings in one write transaction.
+- For an empty-string `api_key`, the server stores no value.
+- You can remove `provider` and `model` when you send `null`.
+- For `provider = "openai-codex"`, the server ignores the `api_key` in the request. The server keeps the OAuth state independently.
+- The HTTP response gives the settings shape, with `oauth_connected`. This shape shows the settings after the write.
 
 Example request:
 
@@ -471,7 +474,7 @@ Example request:
 }
 ```
 
-Example clear request:
+Example request to remove values:
 
 ```json
 {
@@ -488,74 +491,76 @@ Status codes:
 
 ### `POST /v1/settings/llm/oauth/openai-codex/start`
 
-Starts the ChatGPT Plus/Pro (Codex) OAuth flow and returns an authorization URL.
+This route starts the ChatGPT Plus/Pro (Codex) OAuth flow. It gives an authorization URL.
 
-The server temporarily binds `http://localhost:1455/auth/callback` and expects the browser to complete the OAuth redirect there.
+For a short time, the server binds `http://localhost:1455/auth/callback`. The browser completes the OAuth redirect at this address.
 
 ### `POST /v1/settings/llm/oauth/openai-codex/logout`
 
-Clears the stored ChatGPT Codex OAuth session without removing the selected provider/model.
+This route removes the stored ChatGPT Codex OAuth session. It does not remove the selected provider and model.
 
-## What the backend guarantees
+## What the backend makes sure of
 
-These backend behaviors are stable in the current implementation:
+These backend functions are stable in this implementation:
 
-- conversations are persisted in `config.db`
-- listing conversations returns summaries sorted by descending `updated_at`
-- creating a conversation defaults the title to `New conversation` when omitted
-- updating a conversation overwrites the body id with the path id and refreshes `updated_at`
-- deleting a conversation removes the stored record
-- LLM settings are persisted separately from conversation history
-- stored API keys can fall back to provider-specific environment variables when absent
+- The server stores conversations in `config.db`.
+- The list route gives short records, by `updated_at`, most recent first.
+- When a create request has no title, the server sets the title to `New conversation`.
+- An update replaces the body id with the path id. The update sets a new `updated_at`.
+- A delete request removes the stored record.
+- The server stores the LLM settings independently from the stored conversations.
+- When a stored API key is missing, the server can use a provider-specific environment variable.
 
-## What is runtime guidance, not a backend guarantee
+## Runtime information, not a stable backend function
 
-The chat runtime also contains prompt and orchestration logic in `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`. That file is useful context, but it is not a stable backend contract.
+The chat runtime also has prompt and orchestration code in `crates/docbert-webui/ui/src/pages/chat-agent-runtime.ts`. That file gives good information. But it is not a stable backend contract.
 
-Current runtime guidance includes:
+At this time, the chat runtime prompt recommends that the model:
 
-- the parent agent should start with search tools
-- it should not stop after a single search or a single file when synthesis is needed
-- it should analyze multiple promising files before answering
-- it should prefer evidence-backed synthesis across documents
-- file-analysis subagents are prompted to stay within one file and return structured markdown sections
+- Starts with the search tools
+- Does not stop after one search or one file, when more information is necessary
+- Examines more than one file before it gives a result
+- Uses data from more than one document for its result
 
-Those behaviors are **prompt-driven and runtime-driven**, not enforced by the conversation routes themselves.
+The prompt also tells the file-analysis subagents to stay in one file. These subagents give markdown sections with a specified structure.
 
-In practice, that means:
+These functions come from the prompt and the runtime. The conversation routes do **not** make sure of them.
 
-- a stored conversation may contain parent-agent and subagent messages that reflect this orchestration
-- the backend conversation schema supports those messages
-- the backend does **not** independently enforce that the model will always search multiple times, analyze multiple files, or structure answers exactly as prompted
+As a result:
 
-## Boundaries between UI behavior and backend behavior
+- A stored conversation can contain parent-agent and subagent messages. These messages show this orchestration.
+- The backend conversation schema includes these messages.
+- The backend does not make sure that the model always searches more than one time or examines more than one file.
+- The backend does not make sure that the model gives results with the structure that the prompt shows.
 
-To avoid over-documenting frontend details as server guarantees:
+## The difference between UI function and backend function
 
-### Backend behavior
+This section shows the difference between the backend functions and the frontend functions.
 
-Documented here:
+### Backend function
 
-- persistence format
-- conversation CRUD routes
-- LLM settings persistence and env fallback
-- current serialized message schema
+This page includes:
 
-### UI/runtime behavior
+- The persistence format
+- The conversation CRUD routes
+- The LLM settings persistence and env fallback
+- The serialized message schema.
 
-Not guaranteed by the backend:
+### UI and runtime function
 
-- exact conversation title generation rules in the browser beyond what the server stores
-- placeholder messages used while streaming
-- local message-update behavior while tokens arrive
-- how the transcript visually renders thinking/tool-call/subagent parts
-- whether the model follows the current system prompt perfectly on every run
+The backend does not make sure of these functions:
 
-## Practical integration notes
+- The conversation title rules in the browser that the server does not store
+- The temporary messages during the token stream
+- The local message-update function during the token stream
+- How the transcript shows the thinking, tool-call, and subagent parts
+- Whether the model obeys the system prompt fully each time it operates.
 
-- If you need durable history, use the conversation routes; they are the persistence boundary.
-- If you need to inspect whether chat can run at all, check `/v1/settings/llm` and whether provider/model plus either an API key or `oauth_connected = true` are effectively available.
-- If you are building tooling against stored conversation data, target the `parts`-based schema and support optional `actor` and `sources`.
-- If you are reasoning about answer quality, distinguish between:
-  - what the backend stores and returns
-  - what the prompt currently encourages the model to do
+## Integration notes
+
+- If you must keep conversations, use the conversation routes. These routes store the conversations.
+- To find if chat can operate, examine `/v1/settings/llm`. Make sure that a provider and a model are available. Make sure that there is an API key, or that `oauth_connected` is `true`.
+- If you make tools for the stored conversation data, use the `parts`-based schema. Your tools must accept the optional `actor` and `sources` fields.
+- If you think about result quality, know the difference between the two:
+  - What the backend stores and gives
+  - What the prompt tells the model to do.

@@ -2,37 +2,37 @@
 
 ## Overview
 
-docbert keeps its local state under one resolved data directory.
+docbert keeps its local state in one data directory.
 
-By default that is the XDG data path for `docbert`, usually:
+By default this is the XDG data path for `docbert`. Usually this is:
 
 ```text
 ~/.local/share/docbert/
 ```
 
-The actual location is resolved in this order:
+docbert finds the location in this sequence:
 
 1. `--data-dir <path>`
 2. `DOCBERT_DATA_DIR`
-3. the XDG data directory (`$XDG_DATA_HOME/docbert` or the platform equivalent)
+3. The XDG data directory (`$XDG_DATA_HOME/docbert` or the platform equivalent)
 
-Within that root, docbert currently uses five storage layers:
+In that root, docbert uses five storage layers:
 
 | Path / system                    | Role                                                                                                                             |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `config.db` (+ `config.db-lock`) | collections, contexts, document metadata, chunk manifests and chunk ownership, conversations, collection snapshots, and settings |
-| `embeddings.db` (+ `…-lock`)     | stored ColBERT embedding matrices keyed by content-derived chunk ID                                                              |
+| `embeddings.db` (+ `…-lock`)     | ColBERT embedding matrices, keyed by content-derived chunk ID                                                                    |
 | `tantivy/`                       | lexical search index                                                                                                             |
 | `plaid.idx`                      | PLAID semantic index — compressed centroid assignments over the embeddings for fast MaxSim                                       |
-| collection roots on disk         | source document content used for indexing, document reads, titles, and excerpts                                                  |
+| collection roots on disk         | source document contents for indexing, document reads, titles, and excerpts                                                      |
 
-The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`); the `*-lock` siblings are LMDB's inter-process lock files. Files still in the redb format used before 1.0 are refused on open (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
+The `*.db` files are LMDB single-file environments (`NO_SUB_DIR`). The `*-lock` files are LMDB's inter-process lock files. docbert rejects files that use the redb format from before 1.0 when it opens them (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
 
-docbert is **not** purely index-backed. The source files in registered collection roots remain part of the live system.
+docbert does **not** use only the index. The source files in the collection roots that you add stay part of the active system.
 
 ## Data directory layout
 
-`DataDir` resolves the following paths:
+`DataDir` finds these paths:
 
 ```text
 <docbert-data-dir>/
@@ -42,19 +42,19 @@ docbert is **not** purely index-backed. The source files in registered collectio
   tantivy/
 ```
 
-`tantivy/` is created on demand when the search index is opened. `plaid.idx` is built by `sync`, `rebuild`, or `reindex` and is not present on a fresh data directory; both `semantic` and `hybrid` search fail with `PlaidIndexMissing` until one of those commands has run.
+docbert makes `tantivy/` when it first opens the search index. The `sync`, `rebuild`, or `reindex` commands make `plaid.idx`. A new data directory does not have `plaid.idx`. Thus `semantic` and `hybrid` search give a `PlaidIndexMissing` error until one of those commands runs.
 
-The collection roots themselves are **not** stored inside the data directory unless you explicitly register paths there. They can live anywhere on disk.
+docbert does **not** keep the collection roots in the data directory, unless you add paths there. The roots can be at other locations on disk.
 
-## Storage responsibilities by layer
+## Storage functions by layer
 
 ## `config.db`
 
-`config.db` is the main metadata and configuration database.
+`config.db` is the primary metadata and configuration database.
 
-It is a local [LMDB](https://www.symas.com/lmdb) environment opened through the [`heed`](https://docs.rs/heed) crate by `ConfigDb`. LMDB gives docbert proper cross-process readers and writers, so multiple `docbert mcp` / `docbert web` / CLI invocations can share one data dir without stepping on each other. Alongside the data file, LMDB writes a `<path>-lock` sibling (`config.db-lock` next to `config.db`) for its inter-process lock; the lock file is small and gets recreated on demand.
+`ConfigDb` opens a local [LMDB](https://www.symas.com/lmdb) environment through the [`heed`](https://docs.rs/heed) crate. LMDB gives docbert correct cross-process readers and writers. Thus you can safely run `docbert mcp`, `docbert web`, and CLI commands at the same time on one data directory. Next to the data file, LMDB writes a `<path>-lock` file (`config.db-lock` next to `config.db`) for its inter-process lock. The lock file is small, and docbert makes it again when necessary.
 
-It owns these named LMDB databases:
+`config.db` has these named LMDB databases:
 
 - `collections`
 - `contexts`
@@ -65,98 +65,98 @@ It owns these named LMDB databases:
 - `collection_merkle_snapshots`
 - `settings`
 
-This database is shared across the CLI, web runtime, and MCP runtime.
+The CLI, web runtime, and MCP runtime all use this database.
 
 ## `embeddings.db`
 
-`embeddings.db` stores the semantic retrieval data used for ColBERT reranking and semantic search.
+`embeddings.db` keeps the semantic retrieval data for ColBERT reranking and semantic search.
 
-It is intentionally separate from `config.db` because embeddings are much larger and are often rebuilt independently from the lighter metadata/config state.
+docbert keeps `embeddings.db` apart from `config.db`. The embeddings use much more space than the smaller metadata and config state. docbert also makes the embeddings again frequently, apart from that state.
 
 ## `tantivy/`
 
-The `tantivy/` directory stores the lexical search index. It holds Tantivy's own on-disk format (segment files plus `meta.json`), created on demand when the index is first opened.
+The `tantivy/` directory keeps the lexical search index. It holds Tantivy's on-disk format (segment files and `meta.json`). docbert makes this directory when it first opens the index.
 
-It is used for:
+docbert uses it for:
 
-- hybrid search candidate generation
-- CLI and web retrieval paths that depend on BM25/fuzzy search
-- collection-wide delete/rebuild operations that rewrite lexical state
+- Hybrid-search candidate lists
+- The CLI and web retrieval paths that use BM25 or fuzzy search
+- Collection-wide delete or rebuild operations that rewrite the lexical state
 
 ## Collection roots on disk
 
-The registered collection roots remain the source of truth for document content.
+The collection roots that you add stay the primary source for the document contents.
 
-Current read/write behavior:
+The read and write operations:
 
-- `sync` and `rebuild` discover and load files from the collection roots
-- web ingestion writes uploaded source files into those roots
-- web deletion removes source files from those roots
-- search result titles and excerpts are recomputed from current files on disk when possible
-- document retrieval endpoints read current files from disk
-- semantic search checks current on-disk content to decide whether a document has a non-empty semantic body
+- The `sync` and `rebuild` commands find and read files from the collection roots
+- Web ingestion writes the uploaded source files into those roots
+- Web deletion removes source files from those roots
+- docbert makes search result titles and excerpts again from the files on disk when possible
+- Document retrieval endpoints read the files from disk
+- Semantic search examines the on-disk contents to find if a document has a non-empty semantic body
 
-That means docbert stores **indexed state** locally, but still depends on the live filesystem for many reads.
+So docbert keeps **indexed state** on the local disk. But docbert continues to use the active filesystem for many read operations.
 
 ## `config.db` details
 
 ## Encoding model
 
-`config.db` is not a plain SQL schema.
+`config.db` does not use a SQL schema.
 
-Internally it is an LMDB environment with eight named databases. Keys are typed (`&str` / `u64`); values are stored as binary blobs and decoded by `ConfigDb`.
+`config.db` is an LMDB environment with eight named databases. The keys have types (`&str` or `u64`). docbert keeps the values as binary blobs, and `ConfigDb` decodes them.
 
-Current encoding patterns:
+The encoding patterns:
 
-- most typed structs use checked `rkyv` serialization
-- plain settings strings are stored as encoded string values
-- JSON settings are stored through `StoredJsonValue`
+- Most typed structs use checked `rkyv` serialization.
+- docbert keeps the string settings as encoded string values.
+- docbert keeps the JSON settings through `StoredJsonValue`.
 
 ## Table: `collections`
 
 Purpose:
 
-- maps a collection name to its filesystem root
+- Maps a collection name to its filesystem root.
 
 Shape:
 
-- key: collection name (`&str`)
-- value: encoded path string blob
+- Key: the collection name (`&str`)
+- Value: the encoded path string blob
 
 Examples:
 
 - `notes -> /home/user/notes`
 - `docs -> /srv/wiki`
 
-This table is used by all runtime surfaces to resolve where a document actually lives on disk.
+All the runtime parts use this table to find where a document is on disk.
 
 ## Table: `contexts`
 
 Purpose:
 
-- stores human-authored context descriptions for URIs such as `bert://notes`
+- Keeps the context descriptions that a person writes for URIs, for example `bert://notes`.
 
 Shape:
 
-- key: URI string
-- value: encoded description string blob
+- Key: the URI string
+- Value: the encoded description string blob
 
-This is mainly used by retrieval and MCP-related flows that want collection/document context text.
+In most cases, retrieval and MCP flows use this for the collection or document context text.
 
 ## Table: `document_metadata`
 
 Purpose:
 
-- stores the core per-document metadata used to connect doc IDs back to collection paths
-- supports lookup by short doc ID or relative path
-- tracks file mtimes for metadata purposes
+- Keeps the primary per-document metadata that connects doc IDs to collection paths.
+- Gives lookup by short doc ID or relative path.
+- Records the file mtimes for the metadata.
 
 Shape:
 
-- key: numeric document ID (`u64`)
-- value: serialized `DocumentMetadata`
+- Key: the numeric document ID (`u64`)
+- Value: the serialized `DocumentMetadata`
 
-`DocumentMetadata` currently contains:
+`DocumentMetadata` contains:
 
 - `collection`
 - `relative_path`
@@ -164,256 +164,258 @@ Shape:
 
 Important notes:
 
-- the numeric ID is derived deterministically from `(collection, relative_path)`
-- `sync` change detection is driven by Merkle snapshots, not these mtimes alone
-- the metadata is required for document lookup, deletion, result decoration, and semantic-search candidate enumeration
+- docbert calculates the numeric ID from `(collection, relative_path)`. The same values always give the same ID.
+- Merkle snapshots control `sync` change detection, and not only these mtimes.
+- docbert uses the metadata to find and delete documents, to add information to the results, and to find the semantic-search candidates.
 
 ## Table: `doc_chunks`
 
 Purpose:
 
-- stores each document's chunk manifest: the ordered list of chunks the document was split into, with the byte range each chunk occupies in the source file
+- Keeps each document's chunk manifest. The manifest is the list of the chunks in sequence. docbert divided the document into these chunks. Each entry has the byte range that the chunk uses in the source file.
 
 Shape:
 
-- key: numeric document ID (`u64`)
-- value: ordered list of `DocChunkEntry` records
+- Key: the numeric document ID (`u64`)
+- Value: the list of `DocChunkEntry` records in sequence
 
 Each `DocChunkEntry` contains:
 
-- `chunk_doc_id`: the chunk's content-derived ID, the same ID that keys the chunk's row in `embeddings.db`
-- `start_byte`: byte offset where the chunk begins in the source document
-- `byte_len`: byte length of the chunk in the source document
+- `chunk_doc_id`: the content-derived ID of the chunk, and the same ID that keys the chunk's row in `embeddings.db`
+- `start_byte`: the byte offset where the chunk starts in the source document
+- `byte_len`: the byte length of the chunk in the source document
 
-Important behavior:
+Important notes:
 
-- chunk IDs are content-derived, so the same chunk text can belong to many documents at different byte offsets; the manifest is the per-document record of those offsets
-- the same chunk text appearing twice in one document produces two entries with the same ID and different byte ranges
-- `ChunkByteOffset` values are derived from the manifest via `ConfigDb::get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)`, not stored per chunk ID
-- search consumers resolve a matching chunk's byte range by passing `FinalResult.best_chunk_doc_id` to `get_chunk_offset_for_doc`; a missing manifest or chunk entry falls back to no chunk-range information
-- written during sync/rebuild and web ingestion; removed via `ConfigDb::remove_doc_chunks` / `batch_remove_doc_chunks`, which update `chunk_owners` in the same transaction and leave embedding rows in place
+- Chunk IDs are content-derived. Thus the same chunk text can be in many documents at different byte offsets. The manifest is the per-document record of those offsets.
+- The same chunk text can appear twice in one document. This makes two entries with the same ID and different byte ranges.
+- docbert calculates `ChunkByteOffset` values from the manifest with `ConfigDb::get_chunk_offset_for_doc(doc_num_id, chunk_doc_id)`. docbert does not keep them for each chunk ID.
+- The search code finds a chunk's byte range. It gives `FinalResult.best_chunk_doc_id` to `get_chunk_offset_for_doc`. If a manifest or chunk entry is missing, docbert gives no chunk-range information.
+- docbert writes this during `sync`, `rebuild`, and web ingestion. `ConfigDb::remove_doc_chunks` and `batch_remove_doc_chunks` remove it. These update `chunk_owners` in the same transaction and keep the embedding rows.
 
 ## Table: `chunk_owners`
 
 Purpose:
 
-- reverse index from chunk ID to the documents that contain it
+- A reverse index from chunk ID to the documents that contain it.
 
 Shape:
 
-- key: chunk ID (`u64`)
-- value: sorted, deduplicated list of owning numeric document IDs
+- Key: the chunk ID (`u64`)
+- Value: the numeric document IDs of the documents that contain the chunk, in numeric sequence. Each ID is in the list one time only.
 
-Important behavior:
+Important notes:
 
-- maintained atomically with `doc_chunks`: every manifest write or removal adjusts the affected owners lists in the same LMDB write transaction, and an owners entry is dropped once its list is empty
-- lets identical chunk text be shared across documents while staying attributable to each of them; semantic search uses it to fan a chunk hit in the PLAID index back out to every owning document
-- `docbert clean` uses it for garbage collection: embedding rows whose chunk ID has no owners are orphans and get removed
+- docbert updates this and `doc_chunks` in the same LMDB write transaction. Each manifest write or removal changes the applicable `chunk_owners` lists. docbert removes a `chunk_owners` entry when its list is empty.
+- This lets documents use the same chunk text. docbert keeps a record of each document that uses the chunk. Semantic search uses this to map a chunk hit in the PLAID index back to each document that contains the chunk.
+- `docbert clean` uses it for garbage collection. If a chunk ID has no document in `chunk_owners`, its embedding row is an orphan. `docbert clean` removes the orphan rows.
 
 ## Table: `conversations`
 
 Purpose:
 
-- stores persisted chat conversations
+- Keeps the chat conversations.
 
 Shape:
 
-- key: conversation ID (`&str`)
-- value: rkyv-encoded conversation record (`StoredConversation`)
+- Key: the conversation ID (`&str`)
+- Value: the rkyv-encoded conversation record (`StoredConversation`)
 
-A stored conversation contains:
+A conversation record contains:
 
-- conversation metadata such as `id`, `title`, `created_at`, `updated_at`
-- message history
-- per-message roles, actors, parts, and optional sources
+- The conversation metadata, for example `id`, `title`, `created_at`, and `updated_at`
+- The message history
+- The per-message roles, actors, parts, and optional sources
 
-Records are accepted only in this rkyv format. A record that fails to decode is treated as absent: a lookup by ID returns nothing, listing skips the record (with a tracing warning), and it can still be deleted by ID.
+docbert accepts records only in this rkyv format. If a record does not decode, docbert ignores it. A lookup by ID gives nothing. A list request ignores the record and writes a tracing warning. docbert can delete the record by ID.
 
-This is the persistent backend state behind the web chat/conversation API.
+This is the backend state that docbert keeps for the web chat and conversation API.
 
-For the full conversation model, see [`chat-and-conversations.md`](./chat-and-conversations.md).
+The file [`chat-and-conversations.md`](./chat-and-conversations.md) gives the full conversation model.
 
 ## Table: `collection_merkle_snapshots`
 
 Purpose:
 
-- stores one Merkle snapshot per collection
-- lets `sync` detect new, changed, and deleted files by comparing snapshots
-- keeps web document mutations and indexing state aligned with the discovered collection contents
+- Keeps one Merkle snapshot for each collection.
+- Lets `sync` compare snapshots to find new, changed, and deleted files.
+- Keeps web document mutations and indexing state aligned with the collection contents that `sync` finds.
 
 Shape:
 
-- key: collection name (`&str`)
-- value: serialized `Snapshot`
+- Key: the collection name (`&str`)
+- Value: the serialized `Snapshot`
 
 A snapshot includes:
 
-- collection name
-- root hash
-- persisted directory nodes
-- persisted file leaves
+- The collection name
+- The root hash
+- The directory nodes
+- The file leaves
 
-File and directory hashes are based on BLAKE3.
+File and directory hashes use BLAKE3.
 
-Important behavior:
+Important notes:
 
-- `sync` computes a fresh snapshot before doing work, but only stores it after success
-- `rebuild` stores a fresh snapshot only after the rebuild succeeds
-- web ingest/delete refreshes the snapshot only after mutation work succeeds end to end
-- if the operation fails, docbert preserves the previous snapshot
+- `sync` calculates a new snapshot before it does the work. `sync` keeps the snapshot only after the work completes correctly.
+- `rebuild` keeps a new snapshot only after it completes correctly.
+- Web ingest and delete refresh the snapshot only after the mutation work completes fully.
+- If the operation does not complete correctly, docbert keeps the previous snapshot.
 
 ## Table: `settings`
 
 Purpose:
 
-- stores general settings, persisted LLM settings, and document-scoped JSON metadata entries
+- Keeps general settings, the LLM settings, and document-scoped JSON metadata entries.
 
 Shape:
 
-- key: string
-- value: encoded string or encoded JSON blob, depending on the helper used
+- Key: a string
+- Value: an encoded string or an encoded JSON blob. The helper selects which type docbert uses.
 
-This is the most mixed-use table in `config.db`.
+This table has the most different functions in `config.db`.
 
-### Stable setting keys in current use
+### Stable setting keys in use
 
-Current implementation-visible keys include:
+The implementation shows these keys:
 
 - `model_name`
-  - the stored default retrieval model selected by `docbert model set`
+  - The default retrieval model that `docbert model set` selects.
 - `embedding_model`
-  - the model ID last used to compute the current embeddings
-  - used to block `sync` when the active model no longer matches the stored embeddings
+  - The model ID that docbert last used to calculate the embeddings.
+  - docbert uses this to stop `sync` when the active model does not agree with the embeddings in `embeddings.db`.
 - `llm_provider`
-  - persisted chat/provider setting
+  - The chat provider setting.
 - `llm_model`
-  - persisted chat/model setting
+  - The chat model setting.
 - `llm_api_key`
-  - persisted chat API key, if stored in docbert instead of coming from environment variables
+  - The chat API key, if docbert keeps it and it does not come from environment variables.
 - `llm_oauth:openai-codex`
-  - structured JSON blob holding the local ChatGPT Plus/Pro (Codex) OAuth session when that provider is used
+  - A JSON blob that holds the local ChatGPT Plus/Pro (Codex) OAuth session. docbert uses this blob for that provider.
 
 ### Document-scoped settings entries
 
-The settings table also stores per-document JSON user metadata under generated keys:
+The settings table also keeps per-document JSON user metadata under these keys:
 
 - `doc_meta:{doc_id}`
 
-These are used by the web document/search APIs to attach user metadata to documents.
+The web document and search APIs use these to attach user metadata to documents.
 
-### Compatibility / cleanup note
+### Compatibility and cleanup note
 
 `ConfigDb::batch_remove_document_state` also removes keys with this prefix:
 
 - `doc_content:{doc_id}`
 
-The current code removes those keys for cleanup safety, but the implementation does not write document content into `config.db`.
+The code removes those keys for cleanup safety. But the implementation does not write document contents into `config.db`.
 
-## Conversation and LLM settings persistence
+## Conversation and LLM settings storage
 
-Two user-visible features persist state in `config.db` beyond classic indexing metadata.
+You see two features that keep state in `config.db`. This state is more than the usual indexing metadata.
 
 ### Conversations
 
-Conversation history is stored in the `conversations` table.
+docbert keeps the conversation history in the `conversations` table.
 
-That means conversations survive process restarts for:
+So the conversations continue when these restart:
 
 - `docbert web`
-- any future tooling that uses the same `ConfigDb`
+- Other tools that will use the same `ConfigDb`
 
 ### LLM settings
 
-The web settings API persists provider/model/API-key choices into the `settings` table through the `PersistedLlmSettings` helper.
+The web settings API keeps the provider, model, and API-key selections in the `settings` table. It uses the `PersistedLlmSettings` helper.
 
-Stored keys:
+These keys:
 
 - `llm_provider`
 - `llm_model`
 - `llm_api_key`
 - `llm_oauth:openai-codex`
-  - JSON-encoded OAuth credentials for the ChatGPT Plus/Pro (Codex) flow
+  - The JSON-encoded OAuth credentials for the ChatGPT Plus/Pro (Codex) flow.
 
-Read behavior is broader than write behavior:
+docbert reads the LLM settings with this method:
 
-- if `llm_api_key` is stored, docbert returns that value for API-key-backed providers
-- if it is not stored and the provider is `openai`, docbert falls back to `OPENAI_API_KEY`
-- if it is not stored and the provider is `anthropic`, docbert falls back to `ANTHROPIC_API_KEY`
-- if the provider is `openai-codex`, docbert resolves the separate OAuth blob instead of `llm_api_key`
-- if that OAuth blob is close to expiry, docbert refreshes it before returning `/v1/settings/llm`
+- If docbert has `llm_api_key`, docbert gives that value for API-key-backed providers.
+- If docbert does not have it and the provider is `openai`, docbert uses `OPENAI_API_KEY`.
+- If docbert does not have it and the provider is `anthropic`, docbert uses `ANTHROPIC_API_KEY`.
+- If the provider is `openai-codex`, docbert uses the different OAuth blob and not `llm_api_key`.
+- If that OAuth blob is near its end time, docbert refreshes it before it gives `/v1/settings/llm`.
 
-So the persisted settings record and the effective runtime value are not always identical.
+So the settings record on disk and the runtime value are not always the same.
 
-## Snapshot storage and change tracking
+## Snapshot storage and change records
 
-Merkle snapshots are part of the storage model: they define how docbert decides what changed in a collection.
+Merkle snapshots are part of the storage model. They give the method that docbert uses to find the changes in a collection.
 
-High-level flow:
+docbert uses this general flow:
 
-1. discover the current supported files in a collection
-2. build a deterministic Merkle snapshot from those files
-3. compare that snapshot to the previously stored snapshot in `config.db`
-4. classify paths as new, changed, or deleted
-5. update `tantivy/`, `embeddings.db`, and metadata
-6. replace the stored snapshot only if the operation succeeds
+1. It finds the applicable files in a collection.
+2. It makes a deterministic Merkle snapshot from those files.
+3. It compares that snapshot to the snapshot in `config.db`.
+4. It identifies each path as new, changed, or deleted.
+5. It updates `tantivy/`, `embeddings.db`, and the metadata.
+6. It replaces the snapshot on disk only if the operation completes correctly.
 
-This keeps `config.db` as the canonical record of the last fully successful indexing view of each collection.
+This keeps `config.db` as the primary record of the last indexing view of each collection that fully completed.
 
 ## `embeddings.db` details
 
-`embeddings.db` stores embedding matrices keyed by numeric chunk IDs.
+`embeddings.db` keeps embedding matrices, keyed by numeric chunk IDs.
 
-Chunk IDs are content-derived: each ID is a hash of the embedding model ID and the chunk text (`chunking::chunk_doc_id`). Identical chunk text produces the same ID in every document that contains it, so one row can be shared by many documents, and one source document usually maps to several rows through its `doc_chunks` manifest.
+Chunk IDs are content-derived. Each ID is a hash of the embedding model ID and the chunk text (`chunking::chunk_doc_id`). The same chunk text makes the same ID in each document that contains it. Thus many documents can use one row. One source document usually maps to some rows through its `doc_chunks` manifest.
 
-Current storage responsibilities:
+The storage functions:
 
-- hybrid search reranking
-- semantic-only search
-- content-addressed embedding cache: rows are retained when documents change or disappear, so re-indexing identical chunk text is a cache hit instead of a re-encode
+- Hybrid search reranking
+- Semantic-only search
+- Content-addressed embedding cache. docbert keeps the rows when a document changes and when docbert removes the document. Thus a re-index of the same chunk text is a cache hit and not a re-encode.
 
-Orphaned rows (chunk IDs that no document references in `chunk_owners`) are garbage-collected only by `docbert clean`.
+Only `docbert clean` removes the orphan rows. An orphan row has a chunk ID with no document in `chunk_owners`.
 
-Each stored value is packed as:
+docbert writes each value in this format:
 
-- 4 bytes: token count (`u32`, little-endian)
-- 4 bytes: embedding dimension (`u32`, little-endian)
-- `token_count × dimension × 2` bytes: `bf16` values (little-endian, 2 bytes each) in row-major order
+- 4 bytes: the token count (`u32`, little-endian)
+- 4 bytes: the embedding dimension (`u32`, little-endian)
+- `token_count × dimension × 2` bytes: the `bf16` values (little-endian, 2 bytes each) in row-major sequence
 
-Components are stored at `bf16` precision: the encoder trunk computes in bf16 on CUDA, so the extra mantissa bits of an `f32` representation are noise below the model's own precision floor, and the PLAID index re-quantizes every token to 2 bits per dimension downstream. Halving the per-component width halves what is by far the largest file in the data directory.
+docbert keeps components at `bf16` precision. The encoder trunk calculates in bf16 on CUDA. Thus an `f32` layout has more mantissa bits. These bits are noise below the model's precision floor. Downstream, the PLAID index re-quantizes each token to 2 bits for each dimension.
 
-Entries written by docbert releases before 1.0 carried row-major `f32` data instead. That layout is not decoded: reads fail with an error pointing at `docbert clean`, which drops the undecodable rows and clears the per-document state so the next `sync` re-embeds the affected documents (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
+A bf16 component uses 2 bytes. An f32 component uses 4 bytes. `embeddings.db` uses much more space than the other files in the data directory. Thus the bf16 layout makes `embeddings.db` smaller.
 
-Because embeddings are the largest stored artifact, `embeddings.db` is usually the main consumer of disk space in docbert.
+Entries from docbert releases before 1.0 had row-major `f32` data. docbert does not decode that layout. Reads give an error that points to `docbert clean`. `docbert clean` removes the rows that do not decode. It also removes the per-document state. Thus the next `sync` re-embeds the applicable documents (see [Legacy formats from releases before 1.0](#legacy-formats-from-releases-before-10)).
+
+The embeddings use the most space of all docbert data. Thus `embeddings.db` usually uses the most disk space in docbert.
 
 ## Tantivy storage details
 
-The `tantivy/` directory stores the lexical index entries for each prepared document.
+The `tantivy/` directory keeps the lexical index entries for each prepared document.
 
-The current schema includes:
+The schema includes:
 
-- document ID string (stored)
-- numeric document ID (stored, fast)
-- collection (stored, fast)
-- relative path (stored)
-- title (stored, indexed with English stemming and 2x boost)
-- body (indexed with English stemming, **not stored**)
-- mtime (stored, fast)
+- The document ID string (kept)
+- The numeric document ID (kept, fast)
+- The collection (kept, fast)
+- The relative path (kept)
+- The title (kept, indexed with English stemming and 2x boost)
+- The body (indexed with English stemming, **not kept**)
+- The mtime (kept, fast)
 
-Important boundary:
+Important notes:
 
-- Tantivy stores enough metadata for retrieval result decoration but not the body itself; body bytes only exist in the inverted index
-- it is **not** the sole source of returned titles, excerpts, or document content
-- the web layer often rereads the source file from disk and recomputes title/excerpt information
+- Tantivy keeps sufficient metadata to add information to retrieval results. Tantivy does not keep the body. The body bytes are only in the inverted index.
+- Tantivy is **not** the only source of the titles, excerpts, or document contents that docbert gives.
+- The web layer frequently reads the source file from disk again. It then makes the title and excerpt information again.
 
 ## Storage lifecycle by operation
 
 ## `docbert collection add`
 
-Writes:
+`docbert collection add` writes to these:
 
 - `config.db` `collections`
 
-Does not write:
+`docbert collection add` does not write to these:
 
 - `embeddings.db`
 - `tantivy/`
@@ -421,27 +423,27 @@ Does not write:
 
 ## `docbert sync`
 
-May update:
+`sync` can update these:
 
 - `tantivy/`
 - `embeddings.db`
-- `plaid.idx` (rebuilt or incrementally updated for touched documents)
+- `plaid.idx` (docbert makes it again, or updates it for the touched documents)
 - `config.db` `document_metadata`
 - `config.db` `doc_chunks` and `chunk_owners`
-- `config.db` `settings` via `embedding_model`
+- `config.db` `settings` through `embedding_model`
 - `config.db` `collection_merkle_snapshots`
 
-May remove:
+`sync` can remove these:
 
 - deleted documents from Tantivy
-- deleted documents' chunk manifests from `config.db` `doc_chunks`, with the matching `chunk_owners` entries
+- the chunk manifests of deleted documents from `config.db` `doc_chunks`, with the applicable `chunk_owners` entries
 - deleted document metadata and document user metadata from `config.db`
 
-Sync does not remove embedding rows: they stay in `embeddings.db` as a content-addressed cache. The only command that removes embedding rows is `docbert clean`.
+`sync` does not remove embedding rows. They stay in `embeddings.db` as a content-addressed cache. Only `docbert clean` removes embedding rows.
 
 ## `docbert rebuild`
 
-May clear and rebuild:
+`rebuild` can remove these and make them again:
 
 - `tantivy/`
 - `plaid.idx`
@@ -449,53 +451,53 @@ May clear and rebuild:
 - `config.db` `doc_chunks` and `chunk_owners`
 - `config.db` `collection_merkle_snapshots`
 
-Also updates:
+`rebuild` also updates this:
 
 - `config.db` `settings.embedding_model`
 
-Rebuild does not clear `embeddings.db`. It removes chunk manifests and document artifacts, rewrites Tantivy state, and re-embeds the collections; because embedding rows are content-addressed, chunks whose text is unchanged resolve to existing rows as cache hits instead of being re-encoded.
+`rebuild` does not remove `embeddings.db`. It removes chunk manifests and document artifacts. It rewrites the Tantivy state and re-embeds the collections. Embedding rows are content-addressed. Thus a chunk with text that did not change maps to a row that docbert keeps. This is a cache hit, and docbert does not re-encode the chunk.
 
 ## `docbert reindex`
 
-Rewrites only:
+`reindex` rewrites only this:
 
 - `plaid.idx`
 
-Does not read or write source files, embeddings, Tantivy, or any other `config.db` table. The PLAID index is retrained over every embedding currently in `embeddings.db`. Use this when only the PLAID builder parameters changed (centroid count, codec bit-width, k-means iterations, …) and embeddings remain valid.
+`reindex` does not read or write the source files, embeddings, Tantivy, or other `config.db` tables. `reindex` retrains the PLAID index over all embeddings in `embeddings.db`. Use `reindex` only when the PLAID builder parameters changed (centroid count, codec bit-width, k-means iterations) and the embeddings stay correct.
 
 ## Web document upload
 
-Writes:
+The upload writes these:
 
-- source file into the collection root
-- Tantivy entry for that document
-- embedding rows for the document's chunks, keyed by content-derived chunk ID (rewriting a row for identical chunk text stores identical bytes)
-- the document's chunk manifest in `doc_chunks`, with the matching `chunk_owners` entries
+- the source file into the collection root
+- a Tantivy entry for that document
+- the embedding rows for the document's chunks, keyed by content-derived chunk ID (a rewrite of a row for the same chunk text keeps the same bytes)
+- the document's chunk manifest in `doc_chunks`, with the applicable `chunk_owners` entries
 - `document_metadata`
-- optional `doc_meta:{doc_id}` JSON metadata
-- updated collection snapshot
+- the optional `doc_meta:{doc_id}` JSON metadata
+- the updated collection snapshot
 
-Upload does not update `plaid.idx`; the PLAID index is built only by `sync`, `rebuild`, or `reindex`.
+The upload does not update `plaid.idx`. Only `sync`, `rebuild`, or `reindex` make the PLAID index.
 
 ## Web document delete
 
-Removes:
+The delete removes these:
 
-- source file from the collection root
-- the document's chunk manifest from `doc_chunks`, with the matching `chunk_owners` entries
-- document metadata
-- optional `doc_meta:{doc_id}` JSON metadata
-- Tantivy entry
+- the source file from the collection root
+- the document's chunk manifest from `doc_chunks`, with the applicable `chunk_owners` entries
+- the document metadata
+- the optional `doc_meta:{doc_id}` JSON metadata
+- the Tantivy entry
 
-Then refreshes:
+Then the delete refreshes this:
 
-- collection snapshot
+- the collection snapshot
 
-Delete touches neither `plaid.idx` nor `embeddings.db`: embedding rows stay behind as content-addressed cache entries, searches skip chunks whose owners list is empty, and `docbert clean` garbage-collects rows no document owns.
+The delete does not touch `plaid.idx` or `embeddings.db`. The embedding rows stay as content-addressed cache entries. Searches ignore the chunks with an empty `chunk_owners` list. `docbert clean` removes the rows with no document in `chunk_owners`.
 
-## Web conversation/settings APIs
+## Web conversation and settings APIs
 
-Write to:
+These APIs write to:
 
 - `conversations`
 - `settings` (`llm_provider`, `llm_model`, `llm_api_key`, `llm_oauth:openai-codex`)
@@ -504,39 +506,39 @@ Write to:
 
 ## Rebuildability
 
-Because source files remain authoritative, docbert can rebuild most derived state from disk:
+The source files stay the primary source. Thus docbert can make most of these again from disk:
 
-- Tantivy entries
-- embeddings
-- metadata
-- collection snapshots
+- The Tantivy entries
+- The embeddings
+- The metadata
+- The collection snapshots
 
-A rebuild does **not** recreate everything in `config.db` from documents alone, though. User-managed state such as collections, contexts, conversations, and persisted LLM settings still lives only in `config.db`.
+A rebuild does **not** make all the data in `config.db` again from the documents. docbert keeps some state only in `config.db`. This state includes the collections, contexts, conversations, and LLM settings.
 
 ## Model mismatch safety
 
-`embedding_model` in `config.db` is used as a safety check.
+docbert uses `embedding_model` in `config.db` as a safety check.
 
-If you switch to a different embedding model and then run `sync`, docbert refuses to mix old and new embeddings and tells you to run `rebuild` instead.
+You can change to a different embedding model. If you then run `sync`, docbert does not mix the previous and new embeddings. docbert tells you to run `rebuild`.
 
 ## Schema compatibility
 
-On open, `ConfigDb` ensures the expected named LMDB databases exist.
+On open, `ConfigDb` makes sure that `config.db` contains the necessary named LMDB databases.
 
 ### Legacy formats from releases before 1.0
 
-docbert 1.0 dropped every migration path for data written by older releases. `docbert clean` is the single recovery command; it detects each legacy artifact and resets exactly as much as necessary (use `--dry-run` to preview):
+docbert 1.0 removed all migration paths for data from previous releases. `docbert clean` is the only command that repairs legacy data. It finds each legacy artifact and repairs only the necessary data. To see the changes first, use `--dry-run`. `docbert clean` repairs these legacy artifacts:
 
-- **redb-format `config.db` / `embeddings.db`** (releases before 1.0): `ConfigDb::open` / `EmbeddingDb::open` sniff the first nine bytes and refuse redb files. `clean` handles them below the open layer: a legacy `embeddings.db` is deleted along with `plaid.idx` and the per-document state (collections stay registered; the next `sync` re-embeds everything); a legacy `config.db` resets the whole data dir, after which collections must be re-added.
-- **`f32`-layout embedding rows** (pre-bf16 releases): reads refuse them; `clean` drops the rows and clears document state so `sync` re-embeds the affected documents. Rows already in the bf16 layout are kept and reused.
-- **`plaid.idx` versions 1–2**: the loader rejects them; `docbert reindex` (or a full `rebuild`) regenerates the index from the stored embeddings.
-- **conversation records from before 1.0** (payloads that are not current-format rkyv): reads treat them as absent; lookups return nothing and listings skip them with a warning. `docbert clean` does not touch them; deleting the affected conversation removes the record.
+- **redb-format `config.db` or `embeddings.db`** (releases before 1.0): `ConfigDb::open` and `EmbeddingDb::open` read the first nine bytes and reject redb files. `clean` repairs them below the open layer. For a legacy `embeddings.db`, `clean` deletes it, `plaid.idx`, and the per-document state. The collections stay in the database, and the next `sync` re-embeds all the documents. For a legacy `config.db`, `clean` removes all data in the data directory. Then you must add the collections again.
+- **`f32`-layout embedding rows** (pre-bf16 releases): reads reject them. `clean` removes the rows and removes the document state. Thus `sync` re-embeds the applicable documents. `clean` keeps and reuses the rows that are in the bf16 layout.
+- **`plaid.idx` versions 1–2**: docbert rejects them. `docbert reindex` (or a full `rebuild`) makes the index again from the embeddings in `embeddings.db`.
+- **conversation records from before 1.0** (payloads that do not use the rkyv format of docbert 1.0): reads ignore them. Lookups give nothing, and list requests ignore them with a warning. `docbert clean` does not touch them. To remove the record, delete the applicable conversation.
 
-docbert never creates or touches `.redb-bak` files; if earlier releases left any behind, delete them manually.
+docbert does not make or touch `.redb-bak` files. If previous releases made `.redb-bak` files, delete them by hand.
 
 ### Hard schema breaks
 
-If the LMDB env reports an unexpected database type or layout (very rare), docbert surfaces that as a configuration error and instructs you to back up and reset `config.db`.
+The LMDB env can report a database type or layout that is not correct. This does not occur frequently. Then docbert gives a configuration error. docbert tells you to make a backup of `config.db` and then to remove it.
 
 ## Related references
 

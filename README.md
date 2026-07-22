@@ -1,31 +1,33 @@
 # docbert
 
-docbert is a local document retrieval tool with three main entrypoints:
+docbert is a local document retrieval tool with three primary entrypoints:
 
-- a **CLI** for registering collections, indexing them, and searching them
-- a **local web runtime** with a browser UI and HTTP API
-- an **MCP server** for editor and agent integrations
+- A **CLI** that records, indexes, and searches collections
+- A **local web runtime** with a browser UI and an HTTP API
+- An **MCP server** for editor and agent integrations
 
-It uses a hybrid retrieval stack:
+docbert uses a hybrid retrieval stack:
 
 - **Tantivy/BM25** for fast lexical retrieval
 - **ColBERT** for semantic reranking or semantic-only search
 
-docbert works against local files and local state. Registered collection directories remain the source of truth for document content.
+docbert uses local files and local data. The collection directories that you record are the primary source of the documents.
 
 ## What it does
 
-- named collections backed by filesystem directories
-- incremental indexing with collection snapshots (`docbert sync`), full rebuilds (`docbert rebuild`), and PLAID-only re-trains over existing embeddings (`docbert reindex`)
-- hybrid search with BM25 + ColBERT reranking
-- semantic-only search with `docbert ssearch`
-- Markdown, plain text, and PDF ingestion
-- per-collection context strings (`docbert context add/list/remove`) consumed by retrieval surfaces
-- runtime diagnostics via `docbert doctor` (accelerator availability) and `docbert status`
-- local web UI and JSON API via `docbert web`
-- persisted conversations and LLM settings for chat in the web UI, including ChatGPT Codex OAuth
-- MCP tools, prompt, and `bert://...` resources via `docbert mcp`
-- CPU, CUDA, Metal, Accelerate, and MKL build options through feature flags
+docbert has these functions:
+
+- Collections with names in filesystem directories
+- Incremental indexing with collection snapshots (`docbert sync`), full index rebuilding (`docbert rebuild`), and PLAID-only reindexing of the embeddings (`docbert reindex`)
+- Hybrid search with BM25 and ColBERT reranking
+- Semantic-only search with `docbert ssearch`
+- Markdown, plain text, and PDF files as document sources
+- Context strings for each collection (`docbert context add/list/remove`) that the retrieval tools use
+- Runtime diagnostics through `docbert doctor` (the available accelerators) and `docbert status`
+- Local web UI and JSON API through `docbert web`
+- Kept conversations and LLM settings for web UI chat, with ChatGPT Codex OAuth
+- MCP tools, prompt, and `bert://...` resources through `docbert mcp`
+- CPU, CUDA, Metal, Accelerate, and MKL backends through feature flags
 
 ## Quick start
 
@@ -87,9 +89,9 @@ cargo build --release --features cuda
 cargo build --release --features metal
 ```
 
-## Basic workflow
+## Basic steps
 
-### 1. Register collections
+### 1. Add collections
 
 ```bash
 docbert collection add /path/to/docs --name docs
@@ -97,11 +99,11 @@ docbert collection add /path/to/notes --name notes
 docbert collection list
 ```
 
-A collection is a named root directory stored in `config.db`.
+A collection is a root directory with a name. docbert keeps it in `config.db`.
 
-Adding a collection does **not** index it. Run `sync` or `rebuild` after registration.
+When you add a collection, docbert does **not** index it. Use `docbert sync` or `docbert rebuild` after you add the collection.
 
-### 2. Index content
+### 2. Index documents
 
 ```bash
 # Normal incremental update
@@ -121,15 +123,15 @@ docbert rebuild -c docs
 docbert reindex
 ```
 
-Indexing behavior:
+docbert does these tasks when it indexes files:
 
-- discovers supported files under each collection root
-- supports `.md`, `.txt`, and `.pdf`
-- respects Git ignore rules only when the collection root is itself a Git repo
-- uses collection Merkle snapshots to detect new, changed, and deleted files during `sync`
-- stores lexical index data, embeddings, metadata, and snapshot state locally
+- docbert finds the applicable files below each collection root.
+- docbert reads `.md`, `.txt`, and `.pdf` files.
+- docbert obeys the Git ignore rules only when the collection root is a Git repo.
+- docbert uses the collection Merkle snapshots to find the new, changed, and removed files during `sync`.
+- docbert keeps the lexical index data, the embeddings, the metadata, and the snapshot data on the local disk.
 
-If the active model no longer matches the stored embeddings, `sync` will refuse to proceed and tell you to run `docbert rebuild`.
+docbert keeps the embeddings for one model. If the active model is different, `sync` stops. Then `sync` tells you to use `docbert rebuild`.
 
 ### 3. Search
 
@@ -174,12 +176,12 @@ docbert multi-get "**/*.md" -c notes --files
 
 ## Web UI and HTTP API
 
-`docbert web` starts one local process that serves:
+The `docbert web` command starts one local process. This process supplies:
 
-- the browser UI
-- the `/v1` HTTP API
+- The browser UI
+- The `/v1` HTTP API
 
-Typical setup:
+Typical steps:
 
 ```bash
 docbert collection add ~/notes --name notes
@@ -189,49 +191,49 @@ docbert web --host 127.0.0.1 --port 3030
 
 The web runtime uses the same collection roots and local storage as the CLI.
 
-Highlights:
+The web runtime includes these functions:
 
-- search API under `/v1/search`
-- document upload/delete routes that mutate source files on disk and keep indexed state in sync
-- persisted conversations and LLM settings for chat
-- one local process serving both the SPA and the API
+- A search API at `/v1/search`
+- Document upload and delete endpoints that change the source files on disk and keep the indexed data in sync
+- Kept conversations and LLM settings for chat
+- One local process that supplies the SPA and the API
 
-More detail:
+Refer to:
 
 - [Web API reference](./docs/web-api.md)
 - [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
 
 ## Chat
 
-Chat in the web UI is built from:
+The chat in the web UI uses these parts:
 
-- persisted conversations in `config.db`
-- persisted LLM settings in `config.db`
-- web API routes for conversations and settings
-- browser/runtime orchestration on top of docbert search and retrieval tools
+- The conversations in `config.db`
+- The LLM settings in `config.db`
+- The web API endpoints for conversations and settings
+- The orchestration of the docbert search and retrieval tools, in the browser and the runtime
 
-Auth options for chat include:
+The chat authentication options include:
 
-- API-key-backed providers such as OpenAI and Anthropic
-- ChatGPT Plus/Pro via the `openai-codex` provider and local OAuth sign-in in Settings
+- The providers that use an API key, for example OpenAI and Anthropic
+- ChatGPT Plus/Pro through the `openai-codex` provider, with local OAuth sign-in in Settings
 
-Conversation persistence and settings storage are backend behavior. Exact chat prompting/orchestration is runtime/UI behavior.
+docbert keeps the conversations and the settings in the backend. The runtime and the UI control the chat prompts and the tool orchestration.
 
-See:
+Refer to:
 
 - [Chat, conversations, and LLM settings](./docs/chat-and-conversations.md)
 
 ## MCP server
 
-`docbert mcp` starts a stdio MCP server for editor and agent integrations.
+The `docbert mcp` command starts a stdio MCP server for editor and agent integrations.
 
-The MCP surface includes:
+The MCP server has these parts:
 
-- search tools
-- retrieval tools
-- status tool
-- one prompt
-- one `bert://{+path}` resource template
+- Search tools
+- Retrieval tools
+- A status tool
+- One prompt
+- One `bert://{+path}` resource template
 
 Example Claude Desktop config:
 
@@ -246,20 +248,20 @@ Example Claude Desktop config:
 }
 ```
 
-See:
+Refer to:
 
 - [MCP reference](./docs/mcp.md)
 
 ## Model selection
 
-Model resolution follows this priority order:
+docbert selects the model in this sequence:
 
-1. `--model <id-or-path>`
-2. `DOCBERT_MODEL`
-3. persisted `model_name` in `config.db`
-4. built-in default model
+1. The `--model <id-or-path>` option
+2. The `DOCBERT_MODEL` variable
+3. The `model_name` value in `config.db`
+4. The built-in default model
 
-Useful commands:
+You can use these commands:
 
 ```bash
 docbert model show
@@ -267,56 +269,64 @@ docbert model set /path/to/model
 docbert model clear
 ```
 
-For one-off overrides:
+To set a different model one time only:
 
 ```bash
 docbert --model /path/to/model search "query"
 ```
 
-Useful environment variables:
+docbert uses these environment variables:
 
 - `DOCBERT_DATA_DIR`
 - `DOCBERT_MODEL`
-- `DOCBERT_LOG` (tracing filter for stderr logging; when set, it replaces the `-v` verbosity mapping)
-- `DOCBERT_EMBEDDING_BATCH_SIZE` (override the default embedding batch size used during indexing)
+- `DOCBERT_LOG`
+- `DOCBERT_EMBEDDING_BATCH_SIZE`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
+`DOCBERT_LOG` is the tracing filter for stderr logging. When you set this variable, it replaces the `-v` verbosity mapping. `DOCBERT_EMBEDDING_BATCH_SIZE` sets a different embedding batch size for indexing.
+
 ## Data and storage
 
-By default, docbert stores local state in the XDG data directory, typically:
+By default, docbert keeps its local data in the XDG data directory. The usual path is:
 
 ```text
 ~/.local/share/docbert/
 ```
 
-That state includes:
+This data includes these files:
 
-- `config.db` (LMDB env; `config.db-lock` lives next to it)
-- `embeddings.db` (LMDB env; `embeddings.db-lock` lives next to it)
+- `config.db` (an LMDB env, with the `config.db-lock` file adjacent to it)
+- `embeddings.db` (an LMDB env, with the `embeddings.db-lock` file adjacent to it)
 - `plaid.idx`
 - `tantivy/`
 
-`config.db` and `embeddings.db` are LMDB-backed via [`heed`](https://docs.rs/heed), so multiple `docbert mcp` / `docbert web` / CLI processes can share one data dir. Data written by docbert releases before 1.0 (redb-format files, `f32`-layout embeddings) is refused with an error; run `docbert clean` to reset it, then `docbert sync` to re-index. The collection roots themselves can live anywhere on disk.
+The `config.db` and `embeddings.db` files use LMDB through [`heed`](https://docs.rs/heed). Thus, the `docbert mcp`, `docbert web`, and CLI processes can use one data dir at the same time.
 
-See:
+docbert rejects data from releases before 1.0 and gives an error. This data includes redb-format files and `f32`-layout embeddings. You can use `docbert clean` to remove this data. Then you can use `docbert sync` to index it again.
+
+The collection roots can be at different locations on the disk.
+
+Refer to:
 
 - [Storage reference](./docs/storage.md)
 
-## How search works
+## How search operates
 
-Hybrid search runs a BM25 leg and a ColBERT/PLAID leg over the same query, then fuses the rankings with Reciprocal Rank Fusion:
+Hybrid search does a BM25 search and a ColBERT/PLAID search for the same query. Reciprocal Rank Fusion (RRF) then makes one ranking from the two result lists:
 
-1. Tantivy produces up to 100 BM25 candidates (fuzzy matching on by default).
-2. The prebuilt PLAID semantic index produces up to 100 ColBERT MaxSim candidates for the same query.
-3. The two ranked lists are combined with RRF (`k = 60`); each document contributes `1 / (k + rank_i)` from each list it appears in.
-4. The top `--count` fused results are returned (or all results, with `--all`).
+1. Tantivy gives a maximum of 100 BM25 candidates (docbert uses fuzzy matching by default).
+2. The PLAID semantic index gives a maximum of 100 ColBERT MaxSim candidates for the same query.
+3. RRF makes one ranking from the two ranked lists (`k = 60`). Each document gets a score of `1 / (k + rank_i)` from each list that contains it.
+4. docbert shows the top `--count` results, or all results with `--all`.
 
-`--min-score` is ignored under RRF because fused scores are not on the BM25 scale. It applies in `--bm25-only` mode and in semantic-only search (`docbert ssearch`, `POST /v1/search` with `mode=semantic`).
+RRF ignores `--min-score` because the RRF scores are not on the BM25 scale. docbert uses `--min-score` in `--bm25-only` mode and in semantic-only search (`docbert ssearch`, `POST /v1/search` with `mode=semantic`).
 
-Semantic-only search skips the BM25 leg and ranks documents directly against the PLAID index. Both modes require a prebuilt PLAID index — search fails with `Error::PlaidIndexMissing` (or HTTP 503 from the web API) until you run `docbert sync`, `docbert rebuild`, or `docbert reindex`.
+Semantic-only search does not do a BM25 search. This search ranks the documents directly with the PLAID index.
 
-See:
+A PLAID index is necessary for the two modes. Without this index, search gives `Error::PlaidIndexMissing`, or HTTP 503 from the web API. You can make this index with `docbert sync`, `docbert rebuild`, or `docbert reindex`.
+
+Refer to:
 
 - [Pipeline reference](./docs/pipeline.md)
 - [Architecture overview](./docs/architecture.md)
