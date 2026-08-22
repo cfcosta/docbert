@@ -29,7 +29,7 @@ The types that every later phase speaks in. This phase is complete.
 The parts that hold a message and find it again.
 
 - [x] **T9** The MIME pipeline: bodies, attachments, and ciphertext. (§5.1, §5.3, §5.4)
-- [ ] **T10** The message record, and one message in many locations. (§4.2)
+- [x] **T10** The message record, and one message in many locations. (§4.2)
 - [ ] **T11** The store, the tags, and the saved searches. (§9)
 - [ ] **T12** The Tantivy schema, and the writer. (§6.1)
 - [ ] **T13** Compile a query into a filter that gates both legs. (§8.2)
