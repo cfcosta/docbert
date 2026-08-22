@@ -38,7 +38,17 @@ pub const DRAFT: &str = r"\draft";
 const RECENT: &str = r"\recent";
 
 /// One copy of a message on one server.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Location {
     /// The account name from the configuration file.
     pub account: String,
@@ -57,7 +67,15 @@ pub struct Location {
 }
 
 /// One message, whatever number of copies the servers hold.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Message {
     /// The identity from §4.1.
     pub id: MessageId,
@@ -232,7 +250,7 @@ impl Message {
     ///
     /// The two must be the same message. `collate` is the way that a
     /// caller gets that guarantee.
-    fn absorb(&mut self, other: Message) {
+    pub(crate) fn absorb(&mut self, other: Message) {
         // The minimum is commutative, so two copies of one message date
         // it the same however the parallel sync finds them.
         self.date = self.date.min(other.date);

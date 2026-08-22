@@ -14,6 +14,7 @@ pub mod message;
 pub mod message_id;
 pub mod mime;
 pub mod query;
+pub mod store;
 pub mod threading;
 
 pub use address::Address;
@@ -26,4 +27,5 @@ pub use message::{Location, Message};
 pub use message_id::MessageId;
 pub use mime::{Attachment, MimeError, Parsed, Source};
 pub use query::{Field, Flag, Query, QueryError, Value};
+pub use store::{Store, normalize_tag};
 pub use threading::{ThreadId, ThreadInput, Threading};

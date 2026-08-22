@@ -38,7 +38,16 @@ const SMIME_SUBTYPES: [&str; 2] = ["pkcs7-mime", "x-pkcs7-mime"];
 const BULK_PRECEDENCE: [&str; 3] = ["bulk", "list", "junk"];
 
 /// Where the indexed text of a message came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub enum Source {
     /// A `text/plain` part.
     Plain,
@@ -54,7 +63,15 @@ pub enum Source {
 }
 
 /// One attachment. mailbert indexes the name, and not the bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Attachment {
     /// The filename, when the message gave one.
     pub name: Option<String>,
@@ -63,7 +80,7 @@ pub struct Attachment {
     pub content_type: String,
 
     /// The size in bytes, after the transfer encoding is removed.
-    pub size: usize,
+    pub size: u64,
 }
 
 /// A message, after the pipeline reads it.
@@ -301,7 +318,7 @@ fn attachments(message: &MailMessage<'_>) -> Vec<Attachment> {
         .map(|part| Attachment {
             name: part.attachment_name().map(str::to_string),
             content_type: media_type(part.content_type()),
-            size: part.len(),
+            size: part.len() as u64,
         })
         .collect()
 }

@@ -107,7 +107,19 @@ pub fn normalize_message_id(raw: &str) -> Option<String> {
 /// assert_eq!(id, MessageId::from_message_id("<abc@EXAMPLE.com>").unwrap());
 /// assert!(id.full_hex().starts_with(&id.short()));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct MessageId {
     hash: [u8; 32],
 }
@@ -167,6 +179,36 @@ impl MessageId {
     /// The short display form, [`SHORT_LEN`] hex characters.
     pub fn short(&self) -> String {
         self.full_hex()[..SHORT_LEN].to_string()
+    }
+
+    /// Read an identity back from its full hex form.
+    ///
+    /// The store keys its entries by [`MessageId::full_hex`], so this is
+    /// the way back from a key to an identity. Returns `None` when the
+    /// text is not 64 hex characters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mailbert_core::MessageId;
+    ///
+    /// let id = MessageId::from_message_id("<abc@example.com>").unwrap();
+    ///
+    /// assert_eq!(MessageId::from_hex(&id.full_hex()), Some(id));
+    /// assert_eq!(MessageId::from_hex(&id.short()), None);
+    /// ```
+    pub fn from_hex(text: &str) -> Option<Self> {
+        if text.len() != FULL_LEN {
+            return None;
+        }
+
+        let mut hash = [0u8; 32];
+        for (byte, pair) in hash.iter_mut().zip(text.as_bytes().chunks(2)) {
+            let pair = std::str::from_utf8(pair).ok()?;
+            *byte = u8::from_str_radix(pair, 16).ok()?;
+        }
+
+        Some(Self { hash })
     }
 
     /// The numeric key used by the embedding database.

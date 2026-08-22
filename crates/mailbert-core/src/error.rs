@@ -16,6 +16,27 @@ pub enum Error {
     #[error("config parse error: {0}")]
     ConfigParse(#[from] toml::de::Error),
 
+    #[error("store error: {0}")]
+    Store(#[from] heed::Error),
+
+    #[error("stored record error: {0}")]
+    Record(#[from] rkyv::rancor::Error),
+
+    #[error(
+        "`{0}` is not a tag — a tag holds no space, no quote, and no \
+         parenthesis, and does not start with `\\`"
+    )]
+    InvalidTag(String),
+
+    #[error("`{0}` is not a name for a saved search")]
+    InvalidSearchName(String),
+
+    #[error("the saved search `{0}` needs a query")]
+    EmptySearch(String),
+
+    #[error("no message has the identity `{0}`")]
+    UnknownMessage(String),
+
     #[error("two accounts are named `{0}` — account names must be unique")]
     DuplicateAccount(String),
 

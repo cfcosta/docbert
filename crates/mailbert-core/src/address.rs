@@ -18,7 +18,18 @@ use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 const LOCAL_PART_BREAKS: [char; 4] = ['.', '-', '_', '+'];
 
 /// One mailbox from a header.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Address {
     /// The display name, with its whitespace collapsed and its quoting
     /// removed. `None` when the header carried no name.
