@@ -51,6 +51,24 @@ impl UidSet {
         })
     }
 
+    /// The set of one range of UIDs.
+    pub fn range(low: u32, high: u32) -> Self {
+        let low = low.max(1);
+        let high = high.max(1);
+
+        Self {
+            ranges: vec![(low.min(high), low.max(high))],
+        }
+    }
+
+    /// How many UIDs the set holds.
+    pub fn count(&self) -> u64 {
+        self.ranges
+            .iter()
+            .map(|(low, high)| u64::from(*high) - u64::from(*low) + 1)
+            .sum()
+    }
+
     /// The smallest set that holds each of these UIDs.
     pub fn of(uids: &[u32]) -> Self {
         Self {
@@ -153,6 +171,31 @@ fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     joined
 }
 
+/// The batches of one fetch, newest first. (§3.1, §3.2)
+///
+/// §3.1 fetches in batches of a few hundred UIDs, and §3.2 wants the
+/// newest mail first. The list is therefore in falling order, and the
+/// batch of the largest UIDs comes first.
+pub fn batches(low: u32, high: u32, size: u32) -> Vec<UidSet> {
+    let mut out = Vec::new();
+    if low > high {
+        return out;
+    }
+
+    let size = size.max(1);
+    let mut top = high;
+
+    loop {
+        let bottom = top.saturating_sub(size - 1).max(low);
+        out.push(UidSet::range(bottom, top));
+
+        if bottom <= low {
+            return out;
+        }
+        top = bottom - 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Property inventory
@@ -164,6 +207,9 @@ mod tests {
     //! | `prop_a_set_holds_nothing_else` | model-based | A set that is too wide fetches mail twice, and §3.1 counts every byte. |
     //! | `prop_the_ranges_of_a_set_never_touch` | algebraic | §3.1 keeps each command short. Ranges that touch make the command longer for no gain. |
     //! | `prop_a_reversed_range_is_the_same_set` | metamorphic | RFC 3501 §9 says that `10:1` and `1:10` name one set. A server writes either one. |
+    //! | `prop_the_batches_cover_the_range` | model-based | §3.2 fetches every message once. A gap between two batches leaves mail that no later sync finds. |
+    //! | `prop_a_batch_never_holds_more_than_its_size` | algebraic | §3.1 keeps each command short, so one slow batch never blocks the rest. |
+    //! | `prop_the_batches_run_newest_first` | algebraic | §3.2 wants the newest mail first, so a sync that stops early still gives the mail that matters. |
 
     use std::collections::BTreeSet;
 
@@ -189,6 +235,23 @@ mod tests {
             .collect::<BTreeSet<u32>>()
             .into_iter()
             .collect()
+    }
+
+    /// The text of each batch.
+    fn text(batches: &[UidSet]) -> Vec<String> {
+        batches.iter().map(UidSet::to_string).collect()
+    }
+
+    /// A range of UIDs, and the size of a batch of it.
+    fn a_plan(tc: &TestCase) -> (u32, u32, u32) {
+        let low: u32 =
+            tc.draw(gs::integers::<u32>().min_value(1).max_value(50));
+        let span: u32 =
+            tc.draw(gs::integers::<u32>().min_value(0).max_value(300));
+        let size: u32 =
+            tc.draw(gs::integers::<u32>().min_value(0).max_value(40));
+
+        (low, low + span, size)
     }
 
     // -----------------------------------------------------------------
@@ -391,6 +454,97 @@ mod tests {
             let (after, _) = pair[1];
 
             assert!(after > before + 1, "{before} and {after} touch");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Unit tests: the batches of a fetch.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_short_range_makes_one_batch() {
+        assert_eq!(text(&batches(1, 10, 300)), ["1:10"]);
+    }
+
+    #[test]
+    fn a_long_range_makes_batches_of_the_size() {
+        assert_eq!(
+            text(&batches(1, 1000, 300)),
+            ["701:1000", "401:700", "101:400", "1:100"]
+        );
+    }
+
+    #[test]
+    fn a_range_that_holds_nothing_makes_no_batch() {
+        assert!(batches(5, 4, 10).is_empty());
+    }
+
+    #[test]
+    fn a_size_of_one_makes_one_batch_for_each_uid() {
+        assert_eq!(text(&batches(1, 3, 1)), ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn a_size_of_nothing_counts_as_one() {
+        assert_eq!(text(&batches(1, 3, 0)), text(&batches(1, 3, 1)));
+    }
+
+    #[test]
+    fn a_range_that_starts_high_still_makes_batches() {
+        assert_eq!(
+            text(&batches(900, 1000, 40)),
+            ["961:1000", "921:960", "900:920"]
+        );
+    }
+
+    #[test]
+    fn a_range_holds_the_count_of_its_uids() {
+        assert_eq!(UidSet::range(3, 7).count(), 5);
+        assert_eq!(UidSet::range(7, 3).count(), 5);
+        assert_eq!(UidSet::parse("1:3,9").unwrap().count(), 4);
+    }
+
+    // -----------------------------------------------------------------
+    // Properties.
+    // -----------------------------------------------------------------
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_the_batches_cover_the_range(tc: TestCase) {
+        let (low, high, size) = a_plan(&tc);
+        let made = batches(low, high, size);
+
+        for uid in low..=high {
+            assert!(
+                made.iter().any(|batch| batch.holds(uid)),
+                "no batch holds {uid}"
+            );
+        }
+        for batch in &made {
+            for (start, end) in batch.ranges() {
+                assert!(*start >= low && *end <= high, "a batch goes outside");
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_a_batch_never_holds_more_than_its_size(tc: TestCase) {
+        let (low, high, size) = a_plan(&tc);
+
+        for batch in batches(low, high, size) {
+            assert!(batch.count() <= u64::from(size.max(1)), "{batch} is long");
+        }
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_the_batches_run_newest_first(tc: TestCase) {
+        let (low, high, size) = a_plan(&tc);
+        let made = batches(low, high, size);
+
+        for pair in made.windows(2) {
+            let (younger, _) = pair[0].ranges()[0];
+            let (_, older) = pair[1].ranges()[0];
+
+            assert!(older < younger, "{} comes before {}", pair[0], pair[1]);
         }
     }
 

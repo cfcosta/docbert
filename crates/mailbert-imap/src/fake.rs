@@ -170,6 +170,8 @@ pub struct Plan {
     pub separator: char,
     /// Close the connection after this count of commands. (§3.4)
     pub cut_after: Option<usize>,
+    /// Refuse a connection above this count. (§3.1)
+    pub max_connections: Option<usize>,
 }
 
 impl Default for Plan {
@@ -184,6 +186,7 @@ impl Default for Plan {
             folders: Vec::new(),
             separator: '/',
             cut_after: None,
+            max_connections: None,
         }
     }
 }
@@ -212,6 +215,12 @@ impl Plan {
 
     pub fn cut_after(mut self, count: usize) -> Self {
         self.cut_after = Some(count);
+        self
+    }
+
+    /// Refuse a connection above this count. (§3.1)
+    pub fn max_connections(mut self, count: usize) -> Self {
+        self.max_connections = Some(count);
         self
     }
 
@@ -397,6 +406,18 @@ async fn talk(
     let mut reader = BufReader::new(reader);
     let mut session = Session::default();
     let mut count = 0;
+
+    // §3.1: a server can refuse a connection. A client that sees this
+    // must use fewer connections.
+    let most = hold(plan).max_connections;
+    let open = hold(seen).open;
+    if most.is_some_and(|most| open > most) {
+        writer
+            .write_all(b"* BYE too many connections are open\r\n")
+            .await?;
+
+        return Ok(());
+    }
 
     let greeting = {
         let plan = hold(plan);

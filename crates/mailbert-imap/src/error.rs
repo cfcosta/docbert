@@ -21,4 +21,19 @@ pub enum Error {
 
     #[error("the server closed the connection")]
     Closed,
+
+    #[error("the server refused the connection: {0}")]
+    Refused(String),
+
+    #[error("the server said no: {0}")]
+    No(String),
+
+    #[error("the server did not understand: {0}")]
+    Bad(String),
+
+    #[error("TLS error: {0}")]
+    Tls(#[from] rustls::Error),
+
+    #[error("`{0}` is not a name that TLS can check")]
+    BadName(#[from] rustls_pki_types::InvalidDnsNameError),
 }

@@ -67,7 +67,14 @@ The parts that hold a message and find it again.
   - [x] A fake server that holds folders and messages, so a test needs no
         network.
   - [x] The fake server refuses each command that would write.
-- [ ] **T16** The connection pool, and the parallel fetch. (§3.1, §3.2)
+- [x] **T16** The connection pool, and the parallel fetch. (§3.1, §3.2)
+  - [x] The batches of a fetch, newest first. (§3.2)
+  - [x] The transport: TLS, and a plain socket for a test.
+  - [x] One connection: greet, capability, login, examine, fetch, logout.
+  - [x] Read a `FETCH` answer into a message.
+  - [x] Pipelining: send the next command before the last answer arrives.
+  - [x] The pool, and the count of connections that the config names.
+  - [x] Fewer connections when the server refuses one. (§3.1)
 - [ ] **T17** Incremental sync with UIDVALIDITY and CONDSTORE. (§3.3)
 - [ ] **T18** Failure, and the resume after it. (§3.4)
 
