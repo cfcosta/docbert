@@ -15,6 +15,7 @@
 
 use std::{collections::HashSet, path::PathBuf};
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -85,6 +86,12 @@ pub struct Account {
     /// Folders never to sync. Applied after `folders` and `all_folders`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+
+    /// Regular expressions that identify a corporate footer. A line
+    /// that matches one, and each line after it, leaves the indexed
+    /// text. See `docs/mailbert.md` §5.2 rule 4.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub footers: Vec<String>,
 
     /// Sync every folder the server lists.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -254,6 +261,7 @@ impl Config {
             // Fail here rather than at sync time, when the user has
             // already waited for a connection.
             account.credential()?;
+            account.footer_patterns()?;
 
             if !seen.insert(account.name.as_str()) {
                 return Err(Error::DuplicateAccount(account.name.clone()));
@@ -325,6 +333,31 @@ impl Account {
         }
 
         selected
+    }
+
+    /// The compiled corporate footer patterns of this account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidFooter`] for the first pattern that
+    /// does not compile.
+    pub fn footer_patterns(&self) -> Result<Vec<Regex>> {
+        let mut patterns = Vec::with_capacity(self.footers.len());
+
+        for pattern in &self.footers {
+            match Regex::new(pattern) {
+                Ok(regex) => patterns.push(regex),
+                Err(source) => {
+                    return Err(Error::InvalidFooter {
+                        account: self.name.clone(),
+                        pattern: pattern.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+
+        Ok(patterns)
     }
 
     /// Configured folders that the server did not list.
@@ -411,6 +444,7 @@ mod tests {
             password: None,
             folders,
             exclude,
+            footers: vec![],
             all_folders,
             connections: DEFAULT_CONNECTIONS,
         };
@@ -436,6 +470,7 @@ mod tests {
                 password: None,
                 folders: vec!["INBOX".to_string()],
                 exclude: vec![],
+                footers: vec![],
                 all_folders: false,
                 connections: DEFAULT_CONNECTIONS,
             })
@@ -459,6 +494,7 @@ mod tests {
             password: None,
             folders: vec![],
             exclude: vec![],
+            footers: vec![],
             all_folders: true,
             connections: DEFAULT_CONNECTIONS,
         }
@@ -837,5 +873,79 @@ mod tests {
         assert!(
             matches!(config.validate(), Err(Error::DuplicateAccount(n)) if n == name)
         );
+    }
+
+    #[test]
+    fn footers_default_to_none_at_all() {
+        let config = Config::parse(MINIMAL).unwrap();
+        let account = &config.accounts[0];
+
+        assert!(account.footers.is_empty());
+        assert!(account.footer_patterns().unwrap().is_empty());
+    }
+
+    #[test]
+    fn footer_patterns_compile_in_order() {
+        let config = Config::parse(
+            r#"
+            [[account]]
+            name     = "work"
+            host     = "imap.example.com"
+            user     = "me@example.com"
+            password = "x"
+            footers  = ["^CONFIDENTIALITY NOTICE", "^Sent from my"]
+        "#,
+        )
+        .unwrap();
+
+        let patterns =
+            config.account("work").unwrap().footer_patterns().unwrap();
+
+        assert_eq!(patterns.len(), 2);
+        assert!(patterns[0].is_match("CONFIDENTIALITY NOTICE: do not read"));
+        assert!(patterns[1].is_match("Sent from my phone"));
+    }
+
+    #[test]
+    fn parse_rejects_a_footer_pattern_that_does_not_compile() {
+        // A bad pattern must fail here, and not at sync time, when the
+        // user has already waited for a connection.
+        let err = Config::parse(
+            r#"
+            [[account]]
+            name     = "work"
+            host     = "imap.example.com"
+            user     = "me@example.com"
+            password = "x"
+            footers  = ["^Sent from ["]
+        "#,
+        );
+
+        assert!(matches!(
+            err,
+            Err(Error::InvalidFooter { ref account, .. }) if account == "work"
+        ));
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_configured_footers_cut_the_body(tc: TestCase) {
+        let footer: String = tc.draw(gs::sampled_from(vec![
+            "Sent from my iPhone".to_string(),
+            "CONFIDENTIALITY NOTICE".to_string(),
+            "Diese E-Mail ist vertraulich".to_string(),
+        ]));
+        let tail: String = tc.draw(gs::sampled_from(vec![
+            "and may hold privileged material.".to_string(),
+            "Delete this message if it is misdirected.".to_string(),
+        ]));
+
+        let mut account = account_named("work");
+        account.footers = vec![format!("^{}", regex::escape(&footer))];
+
+        let patterns = account.footer_patterns().unwrap();
+        let body = format!("The invoice is attached.\n\n{footer}\n{tail}\n");
+        let stripped = crate::body::strip_with_footers(&body, &patterns);
+
+        assert_eq!(stripped.text, "The invoice is attached.");
     }
 }

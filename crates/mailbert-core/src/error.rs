@@ -30,6 +30,14 @@ pub enum Error {
         account: String,
         field: &'static str,
     },
+
+    #[error("account `{account}` has an invalid footer pattern `{pattern}`")]
+    InvalidFooter {
+        account: String,
+        pattern: String,
+        #[source]
+        source: regex::Error,
+    },
 }
 
 #[cfg(test)]
