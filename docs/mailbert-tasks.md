@@ -28,9 +28,9 @@ The types that every later phase speaks in. This phase is complete.
 
 The parts that hold a message and find it again.
 
-- [ ] **T9** The message record, and the MIME pipeline. (§5.1, §5.3, §5.4)
-- [ ] **T10** The store, and one message in many locations. (§4.2)
-- [ ] **T11** Tags, and saved searches. (§9)
+- [x] **T9** The MIME pipeline: bodies, attachments, and ciphertext. (§5.1, §5.3, §5.4)
+- [ ] **T10** The message record, and one message in many locations. (§4.2)
+- [ ] **T11** The store, the tags, and the saved searches. (§9)
 - [ ] **T12** The Tantivy schema, and the writer. (§6.1)
 - [ ] **T13** Compile a query into a filter that gates both legs. (§8.2)
 - [ ] **T14** Fusion, the recency prior, and thread grouping. (§8.1, §8.3, §8.4)

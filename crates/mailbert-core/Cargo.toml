@@ -8,6 +8,8 @@ description = "Core library for mailbert — mail storage, MIME pipeline, thread
 [dependencies]
 blake3 = "1"
 chumsky = "0.13.0"
+html2text = "0.17.1"
+mail-parser = { version = "0.11.8", features = ["full_encoding"] }
 miette = { version = "7.6.0", features = ["derive"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }

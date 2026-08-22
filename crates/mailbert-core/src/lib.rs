@@ -11,6 +11,7 @@ pub mod contacts;
 pub mod date;
 pub mod error;
 pub mod message_id;
+pub mod mime;
 pub mod query;
 pub mod threading;
 
@@ -21,5 +22,6 @@ pub use contacts::{Contact, Contacts, Seen};
 pub use date::{Clock, DateRange};
 pub use error::{Error, Result};
 pub use message_id::MessageId;
+pub use mime::{Attachment, MimeError, Parsed, Source};
 pub use query::{Field, Flag, Query, QueryError, Value};
 pub use threading::{ThreadId, ThreadInput, Threading};

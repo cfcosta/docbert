@@ -257,6 +257,30 @@ fn needs_quoting(name: &str) -> bool {
 
 impl Address {
     /// The part before the `@`.
+    /// Build an address from parts that a parser already decoded.
+    ///
+    /// Returns `None` when the address is not one that mailbert can
+    /// index, which is the same rule that [`parse`] applies.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mailbert_core::Address;
+    ///
+    /// let found = Address::new(Some("  Alice   Smith "), "Alice@X.TEST")
+    ///     .unwrap();
+    ///
+    /// assert_eq!(found.name.as_deref(), Some("Alice Smith"));
+    /// assert_eq!(found.address, "alice@x.test");
+    /// assert_eq!(Address::new(None, "not an address"), None);
+    /// ```
+    pub fn new(name: Option<&str>, address: &str) -> Option<Self> {
+        Some(Self {
+            name: clean_name(name),
+            address: normalize(address)?,
+        })
+    }
+
     pub fn local_part(&self) -> &str {
         self.address
             .split_once('@')
