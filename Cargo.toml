@@ -7,6 +7,7 @@ members = [
   "crates/docbert-plaid",
   "crates/docbert-pylate",
   "crates/mailbert-core",
+  "crates/mailbert-imap",
   "crates/rustbert",
 ]
 resolver = "3"

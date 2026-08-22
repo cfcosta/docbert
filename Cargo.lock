@@ -3194,6 +3194,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailbert-imap"
+version = "0.1.0"
+dependencies = [
+ "hegeltest",
+ "mailbert-core",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 1.0.8",
+]
+
+[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

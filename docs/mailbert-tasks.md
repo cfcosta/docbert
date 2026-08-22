@@ -58,7 +58,15 @@ The parts that hold a message and find it again.
 
 ## Phase 3 — the downloader
 
-- [ ] **T15** Scaffold `mailbert-imap`, and a fake server to test against.
+- [x] **T15** Scaffold `mailbert-imap`, and a fake server to test against.
+  - [x] The crate, its manifest, and its error type.
+  - [x] The token tree of a response, and the encoder for it.
+  - [x] Read one response from a stream, with the literals in it.
+  - [x] Write a tagged command, with a tag that never repeats.
+  - [x] The set of UIDs that a fetch names, and the text of it.
+  - [x] A fake server that holds folders and messages, so a test needs no
+        network.
+  - [x] The fake server refuses each command that would write.
 - [ ] **T16** The connection pool, and the parallel fetch. (§3.1, §3.2)
 - [ ] **T17** Incremental sync with UIDVALIDITY and CONDSTORE. (§3.3)
 - [ ] **T18** Failure, and the resume after it. (§3.4)
