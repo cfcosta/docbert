@@ -75,8 +75,20 @@ The parts that hold a message and find it again.
   - [x] Pipelining: send the next command before the last answer arrives.
   - [x] The pool, and the count of connections that the config names.
   - [x] Fewer connections when the server refuses one. (§3.1)
-- [ ] **T17** Incremental sync with UIDVALIDITY and CONDSTORE. (§3.3)
-- [ ] **T18** Failure, and the resume after it. (§3.4)
+- [x] **T17** Incremental sync with UIDVALIDITY and CONDSTORE. (§3.3)
+  - [x] Union, difference, and the batches of a set of UIDs.
+  - [x] The state of a folder: UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ, and
+        the UIDs that never arrived.
+  - [x] The plan of one folder sync, out of the state and the view.
+  - [x] A UIDVALIDITY that changed starts the folder again. (§3.3)
+  - [x] CONDSTORE: ask only about the messages that changed. (§3.3)
+  - [x] Run a plan on a connection, and keep each batch.
+- [x] **T18** Failure, and the resume after it. (§3.4)
+  - [x] The wait after a failure, and the longest wait.
+  - [x] The errors that are worth another try.
+  - [x] A connection that broke never goes back to the pool.
+  - [x] Read the state out of the store, and continue from it.
+  - [x] A sync that stops anywhere still reads every message.
 
 ## Phase 4 — the tool
 

@@ -105,6 +105,100 @@ impl UidSet {
     }
 
     /// The ranges of the set, sorted.
+    /// Each UID that is in this set, or in the other one.
+    pub fn union(&self, other: &Self) -> Self {
+        let mut ranges = self.ranges.clone();
+        ranges.extend_from_slice(&other.ranges);
+
+        Self {
+            ranges: merged(ranges),
+        }
+    }
+
+    /// Each UID that is in this set, and not in the other one.
+    pub fn without(&self, other: &Self) -> Self {
+        let mut ranges = Vec::new();
+
+        for (low, high) in &self.ranges {
+            let mut pieces = vec![(*low, *high)];
+
+            for (cut_low, cut_high) in &other.ranges {
+                let mut left = Vec::new();
+
+                for (low, high) in pieces {
+                    if *cut_high < low || *cut_low > high {
+                        left.push((low, high));
+                        continue;
+                    }
+                    if *cut_low > low {
+                        left.push((low, cut_low - 1));
+                    }
+                    if *cut_high < high {
+                        left.push((cut_high + 1, high));
+                    }
+                }
+
+                pieces = left;
+            }
+
+            ranges.extend(pieces);
+        }
+
+        Self {
+            ranges: merged(ranges),
+        }
+    }
+
+    /// The batches of this set, newest first. (§3.2)
+    ///
+    /// Each batch holds no more UIDs than the size. A batch can hold
+    /// more than one range, because a fetch of `1:2,10` costs the same
+    /// as a fetch of `1:3`.
+    pub fn split(&self, size: u32) -> Vec<Self> {
+        let size = u64::from(size.max(1));
+        let mut out = Vec::new();
+        let mut taken: Vec<(u32, u32)> = Vec::new();
+        let mut room = size;
+
+        for (low, high) in self.ranges.iter().rev() {
+            let (low, mut top) = (*low, *high);
+
+            loop {
+                let span = u64::from(top) - u64::from(low) + 1;
+                let take = span.min(room) as u32;
+                let bottom = top - (take - 1);
+
+                taken.push((bottom, top));
+                room -= u64::from(take);
+
+                if room == 0 {
+                    out.push(Self {
+                        ranges: merged(std::mem::take(&mut taken)),
+                    });
+                    room = size;
+                }
+                if bottom == low {
+                    break;
+                }
+
+                top = bottom - 1;
+            }
+        }
+
+        if !taken.is_empty() {
+            out.push(Self {
+                ranges: merged(taken),
+            });
+        }
+
+        out
+    }
+
+    /// The largest UID of the set.
+    pub fn last(&self) -> Option<u32> {
+        self.ranges.last().map(|(_, high)| *high)
+    }
+
     pub fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges
     }
@@ -559,5 +653,168 @@ mod tests {
             UidSet::parse(&format!("{high}:{low}")).unwrap(),
             UidSet::parse(&format!("{low}:{high}")).unwrap()
         );
+    }
+    // -----------------------------------------------------------------
+    // Union, difference, and split. (§3.3)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_union_holds_both_sets() {
+        let one = UidSet::parse("1:3,10").unwrap();
+        let two = UidSet::parse("4:5,20:21").unwrap();
+
+        assert_eq!(one.union(&two).to_string(), "1:5,10,20:21");
+    }
+
+    #[test]
+    fn a_union_with_nothing_changes_nothing() {
+        let one = UidSet::parse("1:3").unwrap();
+
+        assert_eq!(one.union(&UidSet::new()), one);
+        assert_eq!(UidSet::new().union(&one), one);
+    }
+
+    #[test]
+    fn a_difference_takes_a_piece_out_of_the_middle() {
+        let one = UidSet::parse("1:10").unwrap();
+        let two = UidSet::parse("4:6").unwrap();
+
+        assert_eq!(one.without(&two).to_string(), "1:3,7:10");
+    }
+
+    #[test]
+    fn a_difference_takes_a_piece_off_each_end() {
+        let one = UidSet::parse("5:10").unwrap();
+
+        assert_eq!(
+            one.without(&UidSet::parse("1:6").unwrap()).to_string(),
+            "7:10"
+        );
+        assert_eq!(
+            one.without(&UidSet::parse("9:20").unwrap()).to_string(),
+            "5:8"
+        );
+    }
+
+    #[test]
+    fn a_difference_of_everything_is_nothing() {
+        let one = UidSet::parse("1:10,20").unwrap();
+
+        assert!(one.without(&UidSet::parse("1:30").unwrap()).is_empty());
+    }
+
+    #[test]
+    fn a_difference_of_nothing_changes_nothing() {
+        let one = UidSet::parse("1:10,20").unwrap();
+
+        assert_eq!(one.without(&UidSet::new()), one);
+    }
+
+    #[test]
+    fn a_split_gives_the_batches_newest_first() {
+        let set = UidSet::parse("1:10").unwrap();
+
+        assert_eq!(text(&set.split(4)), vec!["7:10", "3:6", "1:2"]);
+    }
+
+    #[test]
+    fn a_split_fills_a_batch_out_of_more_than_one_range() {
+        let set = UidSet::parse("1:2,10:11,20").unwrap();
+
+        assert_eq!(text(&set.split(3)), vec!["10:11,20", "1:2"]);
+    }
+
+    #[test]
+    fn a_split_of_nothing_gives_no_batch() {
+        assert!(UidSet::new().split(10).is_empty());
+    }
+
+    #[test]
+    fn a_split_of_a_size_of_nothing_counts_as_one() {
+        let set = UidSet::parse("1:3").unwrap();
+
+        assert_eq!(text(&set.split(0)), vec!["3", "2", "1"]);
+    }
+
+    #[test]
+    fn the_last_uid_of_a_set_is_the_largest_one() {
+        assert_eq!(UidSet::parse("1:3,20,7").unwrap().last(), Some(20));
+        assert_eq!(UidSet::new().last(), None);
+    }
+
+    #[hegel::test(test_cases = 150)]
+    fn prop_a_union_holds_every_uid_of_both_sets(tc: TestCase) {
+        let one = tc.draw(some_uids());
+        let two = tc.draw(some_uids());
+        let both = UidSet::of(&one).union(&UidSet::of(&two));
+
+        for uid in one.iter().chain(&two) {
+            assert!(both.holds(*uid), "the union lost {uid}");
+        }
+        for (low, high) in both.ranges() {
+            for uid in [*low, *high] {
+                assert!(one.contains(&uid) || two.contains(&uid));
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 150)]
+    fn prop_a_difference_holds_what_the_other_set_does_not(tc: TestCase) {
+        let one = tc.draw(some_uids());
+        let two = tc.draw(some_uids());
+        let left = UidSet::of(&one).without(&UidSet::of(&two));
+
+        for uid in &one {
+            assert_eq!(
+                left.holds(*uid),
+                !two.contains(uid),
+                "the difference is wrong at {uid}"
+            );
+        }
+        for uid in &two {
+            assert!(!left.holds(*uid), "the difference kept {uid}");
+        }
+    }
+
+    #[hegel::test(test_cases = 100)]
+    fn prop_a_set_less_itself_is_nothing(tc: TestCase) {
+        let uids = tc.draw(some_uids());
+        let set = UidSet::of(&uids);
+
+        assert!(set.without(&set).is_empty());
+        assert_eq!(set.union(&set), set);
+    }
+
+    #[hegel::test(test_cases = 150)]
+    fn prop_the_batches_of_a_split_cover_the_set(tc: TestCase) {
+        let uids = tc.draw(some_uids());
+        let size = tc.draw(gs::integers::<u32>().min_value(0).max_value(20));
+        let set = UidSet::of(&uids);
+        let parts = set.split(size);
+
+        let mut whole = UidSet::new();
+        let mut total = 0;
+        for part in &parts {
+            assert!(part.count() <= u64::from(size.max(1)));
+            total += part.count();
+            whole = whole.union(part);
+        }
+
+        assert_eq!(whole, set);
+        assert_eq!(total, set.count(), "a batch holds a UID twice");
+    }
+
+    #[hegel::test(test_cases = 100)]
+    fn prop_a_split_runs_newest_first(tc: TestCase) {
+        let uids = tc.draw(some_uids());
+        let size = tc.draw(gs::integers::<u32>().min_value(1).max_value(20));
+        let parts = UidSet::of(&uids).split(size);
+
+        for pair in parts.windows(2) {
+            let earlier = pair[0].ranges().first().map(|(low, _)| *low);
+            let later = pair[1].last();
+
+            assert!(later < earlier, "{later:?} is not below {earlier:?}");
+        }
     }
 }

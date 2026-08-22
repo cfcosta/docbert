@@ -10,6 +10,7 @@ pub mod fake;
 pub mod pool;
 pub mod sequence;
 pub mod stream;
+pub mod sync;
 pub mod token;
 pub mod wire;
 
@@ -18,5 +19,6 @@ pub use error::{Error, Result};
 pub use pool::{Held, Pool, Server};
 pub use sequence::{UidSet, batches};
 pub use stream::Stream;
+pub use sync::{Backoff, FolderState, Job, Keep, plan, resume};
 pub use token::{Token, encode, lex};
 pub use wire::{Tags, read_answer, read_line, write_line};
