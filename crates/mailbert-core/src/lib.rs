@@ -4,12 +4,16 @@
 //! See `docs/mailbert.md` in the repository root for the design document.
 //! This crate is in early implementation.
 
+pub mod address;
 pub mod body;
 pub mod config;
+pub mod contacts;
 pub mod error;
 pub mod message_id;
 
+pub use address::Address;
 pub use body::{Stripped, strip, strip_with_footers};
 pub use config::{Account, Config, Credential};
+pub use contacts::{Contact, Contacts, Seen};
 pub use error::{Error, Result};
 pub use message_id::MessageId;
