@@ -5,5 +5,7 @@
 //! This crate is in early implementation.
 
 pub mod error;
+pub mod message_id;
 
 pub use error::{Error, Result};
+pub use message_id::MessageId;
