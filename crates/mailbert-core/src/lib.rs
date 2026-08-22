@@ -16,6 +16,7 @@ pub mod message;
 pub mod message_id;
 pub mod mime;
 pub mod query;
+pub mod rank;
 pub mod store;
 pub mod threading;
 
@@ -31,5 +32,6 @@ pub use message::{Location, Message};
 pub use message_id::MessageId;
 pub use mime::{Attachment, MimeError, Parsed, Source};
 pub use query::{Field, Flag, Query, QueryError, Value};
+pub use rank::{Options, Row, Sort, Threads, decay, fuse, rank};
 pub use store::{Store, normalize_tag};
 pub use threading::{ThreadId, ThreadInput, Threading};

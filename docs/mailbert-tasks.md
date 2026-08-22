@@ -48,7 +48,13 @@ The parts that hold a message and find it again.
   - [x] The free text becomes a query over the word fields, with the boost. (§6.1)
   - [x] `and`, `or`, and `not` become the occurrences of a `BooleanQuery`.
   - [x] The filter alone, and the allowlist that gates the semantic leg. (§8.2)
-- [ ] **T14** Fusion, the recency prior, and thread grouping. (§8.1, §8.3, §8.4)
+- [x] **T14** Fusion, the recency prior, and thread grouping. (§8.1, §8.3, §8.4)
+  - [x] Reciprocal Rank Fusion over the two ranked legs. (§8.1)
+  - [x] The recency prior, with the half-life of the config. (§8.3)
+  - [x] `--sort date` and `--sort score`. (§8.3)
+  - [x] One row for each thread, and the best message of it. (§8.4)
+  - [x] The position of that message in its thread, for `[3/7]`. (§10.1)
+  - [x] Read the messages of one thread from the index, in date order.
 
 ## Phase 3 — the downloader
 

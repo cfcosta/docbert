@@ -561,6 +561,26 @@ impl MailIndex {
         Ok(hits)
     }
 
+    /// Every message of one thread, earliest first. (§8.4)
+    ///
+    /// §10.1 shows the position of a message in its thread, as `[3/7]`,
+    /// and this is what counts the 3 and the 7. `mailbert thread` reads
+    /// the same list.
+    ///
+    /// The order is by date, and a tie goes to the key, so that two
+    /// runs give the same list.
+    pub fn thread(&self, thread: ThreadId) -> Result<Vec<Hit>> {
+        let query = TermQuery::new(
+            Term::from_field_text(self.fields.thread_id, &thread.full_hex()),
+            IndexRecordOption::Basic,
+        );
+
+        let mut hits = self.top(&query, self.len().max(1))?;
+        hits.sort_by(|a, b| a.date.cmp(&b.date).then(a.num_id.cmp(&b.num_id)));
+
+        Ok(hits)
+    }
+
     /// Every embedding key that a filter allows.
     ///
     /// §8.2 gates the semantic leg with this list, before that leg
@@ -625,6 +645,7 @@ mod tests {
     //! | `prop_the_index_agrees_with_matches` | differential | `is:` reads the index and `Message::matches` reads the message. A disagreement makes a filter drop mail without a word. |
     //! | `prop_a_message_reads_back_from_the_index` | round-trip | Every row of the output comes from a stored field. A wrong field shows the wrong mail. |
     //! | `prop_every_place_finds_the_message` | model-based | `folder:` and `account:` must find every copy, because §4.2 keeps one document for many places. |
+    //! | `prop_a_thread_holds_the_messages_that_joined_it` | model-based | §10.1 counts `[3/7]` from this list. A thread that loses a message shows the wrong count, and `mailbert thread` hides mail. |
     //! | `prop_a_second_write_keeps_one_document` | algebraic | Every re-sync writes each message again, and must not make a duplicate. |
     //! | `prop_a_tag_is_never_a_state` | algebraic | A tag that reads as `\encrypted` would answer `is:encrypted` for mail that is not encrypted. |
 
@@ -1131,6 +1152,55 @@ mod tests {
         assert_eq!(count(&index, &query), 2);
     }
 
+    #[test]
+    fn reads_the_messages_of_a_thread_in_date_order() {
+        let index = MailIndex::open_in_ram().expect("an index");
+        let mut writer = index.writer(BUDGET).expect("a writer");
+
+        let mut root = message("a", "work", "INBOX");
+        let mut middle = message("b", "work", "INBOX");
+        let mut last = message("c", "work", "INBOX");
+        let other = message("d", "work", "INBOX");
+
+        root.date = 10 * DAY;
+        middle.date = 20 * DAY;
+        last.date = 30 * DAY;
+
+        let thread = ThreadId::from_root(root.id);
+        let alone = ThreadId::from_root(other.id);
+
+        // Write them out of order, so the answer cannot be the order
+        // that the writer saw.
+        for found in [&last, &root, &middle] {
+            index
+                .add(&writer, found, thread, &no_tags())
+                .expect("a write");
+        }
+        index
+            .add(&writer, &other, alone, &no_tags())
+            .expect("a write");
+        index.commit(&mut writer).expect("a commit");
+
+        let members = index.thread(thread).expect("a thread");
+        let dates: Vec<i64> = members.iter().map(|hit| hit.date).collect();
+
+        assert_eq!(dates, vec![10 * DAY, 20 * DAY, 30 * DAY]);
+        assert_eq!(index.thread(alone).expect("a thread").len(), 1);
+    }
+
+    #[test]
+    fn reads_no_message_for_a_thread_that_is_not_there() {
+        let index = MailIndex::open_in_ram().expect("an index");
+        let found = message("a", "work", "INBOX");
+        write(&index, &found);
+
+        let nobody =
+            MessageId::from_message_id("<nobody@x.test>").expect("an id");
+        let thread = ThreadId::from_root(nobody);
+
+        assert!(index.thread(thread).expect("a thread").is_empty());
+    }
+
     // -----------------------------------------------------------------
     // Properties.
     // -----------------------------------------------------------------
@@ -1279,6 +1349,63 @@ mod tests {
         for account in found.accounts() {
             let query = term_query(&index, fields.account, account);
             assert_eq!(count(&index, &query), 1, "`account:{account}` missed");
+        }
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_a_thread_holds_the_messages_that_joined_it(tc: TestCase) {
+        let index = MailIndex::open_in_ram().expect("an index");
+        let mut writer = index.writer(BUDGET).expect("a writer");
+        let drawn = tc.draw(gs::vecs(a_key()).min_size(1).max_size(4));
+
+        // A key is an identity, so a repeat would replace a document
+        // and move it out of the thread that it joined.
+        let mut keys: Vec<String> = Vec::new();
+        for key in drawn {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+
+        let mut wanted: BTreeMap<ThreadId, BTreeSet<MessageId>> =
+            BTreeMap::new();
+        let mut roots: Vec<MessageId> = Vec::new();
+
+        for key in &keys {
+            let mut found = message(key, "work", "INBOX");
+            found.date =
+                tc.draw(gs::integers::<i64>().min_value(0).max_value(9)) * DAY;
+
+            // Either start a thread, or join the first one.
+            let thread = match roots.first() {
+                Some(root) if tc.draw(gs::booleans()) => {
+                    ThreadId::from_root(*root)
+                }
+                _ => {
+                    roots.push(found.id);
+                    ThreadId::from_root(found.id)
+                }
+            };
+
+            wanted.entry(thread).or_default().insert(found.id);
+            index
+                .add(&writer, &found, thread, &no_tags())
+                .expect("a write");
+        }
+        index.commit(&mut writer).expect("a commit");
+
+        for (thread, members) in wanted {
+            let read = index.thread(thread).expect("a thread");
+            let ids: BTreeSet<MessageId> =
+                read.iter().map(|hit| hit.id).collect();
+
+            assert_eq!(ids, members, "the thread lost a message");
+
+            let dates: Vec<i64> = read.iter().map(|hit| hit.date).collect();
+            let mut sorted = dates.clone();
+            sorted.sort_unstable();
+
+            assert_eq!(dates, sorted, "the thread is not in date order");
         }
     }
 
