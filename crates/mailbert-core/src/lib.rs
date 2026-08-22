@@ -4,8 +4,10 @@
 //! See `docs/mailbert.md` in the repository root for the design document.
 //! This crate is in early implementation.
 
+pub mod config;
 pub mod error;
 pub mod message_id;
 
+pub use config::{Account, Config, Credential};
 pub use error::{Error, Result};
 pub use message_id::MessageId;

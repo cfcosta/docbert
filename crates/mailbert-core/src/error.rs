@@ -9,6 +9,27 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("config parse error: {0}")]
+    ConfigParse(#[from] toml::de::Error),
+
+    #[error("two accounts are named `{0}` — account names must be unique")]
+    DuplicateAccount(String),
+
+    #[error("account names cannot be empty")]
+    EmptyAccountName,
+
+    #[error(
+        "account `{0}` has no credential — set password_command, \
+         password_file, or password"
+    )]
+    MissingCredential(String),
+
+    #[error("account `{account}` has an empty {field}")]
+    EmptyField {
+        account: String,
+        field: &'static str,
+    },
 }
 
 #[cfg(test)]
