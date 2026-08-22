@@ -311,6 +311,14 @@ Each term that has no field prefix is free text. Free text goes to the hybrid le
 
 `is:` accepts `read`, `unread`, `flagged`, `replied`, `draft`, `encrypted`, `gone`, and `bulk`. `has:` accepts `attachment`. `saved:` expands to a saved search from §9.
 
+A value that holds `*` or `?` is a glob. A glob matches the whole term, and `*` stands for any run of characters. A `tag:` glob matches only the tags that the store knows. This keeps a `*` away from the states of §6.1, because the same field holds the tags and the states.
+
+A value of `from:`, `to:`, or `cc:` that holds an `@` is a whole address, and mailbert matches it exactly. A value that does not hold an `@` is a part of an address. For `from:` it is also a part of the name of the sender.
+
+A value of `mid:` or `thread:` is a prefix of an identity from §4.1. An identity is hexadecimal, so a value that has other characters finds no message.
+
+**Known limit.** §6.1 keeps one field for the To line and the Cc line together. `cc:` therefore finds the two lines, and it gives the same answer as `to:`. To tell the two lines apart, the schema needs a second field, and that is a change of the index format.
+
 Deferred to a later version: `lastmod:`, `property:`, `path:` with a regular expression, and `#raw:` passthrough.
 
 ### 7.2 Errors

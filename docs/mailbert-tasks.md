@@ -42,7 +42,12 @@ The parts that hold a message and find it again.
   - [x] The terms of the `flags` field: IMAP flags, tags, and states.
   - [x] Write a message, replace it, and remove it.
   - [x] Read a hit back, and run a query that a caller built. (§8.2)
-- [ ] **T13** Compile a query into a filter that gates both legs. (§8.2)
+- [x] **T13** Compile a query into a filter that gates both legs. (§8.2)
+  - [x] Expand `saved:` into the query that it names, and refuse a cycle. (§9)
+  - [x] Each filter becomes a Tantivy query on its own field. (§7.1)
+  - [x] The free text becomes a query over the word fields, with the boost. (§6.1)
+  - [x] `and`, `or`, and `not` become the occurrences of a `BooleanQuery`.
+  - [x] The filter alone, and the allowlist that gates the semantic leg. (§8.2)
 - [ ] **T14** Fusion, the recency prior, and thread grouping. (§8.1, §8.3, §8.4)
 
 ## Phase 3 — the downloader

@@ -6,6 +6,7 @@
 
 pub mod address;
 pub mod body;
+pub mod compile;
 pub mod config;
 pub mod contacts;
 pub mod date;
@@ -20,6 +21,7 @@ pub mod threading;
 
 pub use address::Address;
 pub use body::{Stripped, strip, strip_with_footers};
+pub use compile::{Compiled, Vocabulary, compile, expand};
 pub use config::{Account, Config, Credential};
 pub use contacts::{Contact, Contacts, Seen};
 pub use date::{Clock, DateRange};

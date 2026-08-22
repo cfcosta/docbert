@@ -46,6 +46,24 @@ pub enum Error {
     #[error("`{0}` is not a name for a saved search")]
     InvalidSearchName(String),
 
+    #[error("no saved search is named `{0}`")]
+    UnknownSearch(String),
+
+    #[error(
+        "the saved search `{0}` names itself, or names a chain that is \
+         too long"
+    )]
+    SearchTooDeep(String),
+
+    #[error(transparent)]
+    Query(#[from] crate::query::QueryError),
+
+    #[error("that is not a pattern that I can read: {0}")]
+    BadGlob(#[from] regex::Error),
+
+    #[error("`{field}:` does not take that value")]
+    BadFilterValue { field: &'static str },
+
     #[error("the saved search `{0}` needs a query")]
     EmptySearch(String),
 

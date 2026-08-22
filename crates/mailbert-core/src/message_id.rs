@@ -18,7 +18,7 @@ use std::fmt;
 pub const SHORT_LEN: usize = 16;
 
 /// Length of the full hex digest.
-const FULL_LEN: usize = 64;
+pub const FULL_LEN: usize = 64;
 
 /// Domain separator for identities derived from a `Message-ID`.
 const MESSAGE_ID_DOMAIN: &[u8] = b"mailbert.mid.v1\0";

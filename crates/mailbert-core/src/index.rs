@@ -18,9 +18,13 @@
 //! build a query. §8.2 compiles a query into a filter, and gives that
 //! filter to [`MailIndex::top`].
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use tantivy::{
+    DocId,
     Index,
     IndexReader,
     IndexSettings,
@@ -28,7 +32,7 @@ use tantivy::{
     ReloadPolicy,
     TantivyDocument,
     Term,
-    collector::TopDocs,
+    collector::{DocSetCollector, TopDocs},
     directory::MmapDirectory,
     query::{Query, QueryParser, TermQuery},
     schema::{
@@ -555,6 +559,39 @@ impl MailIndex {
         }
 
         Ok(hits)
+    }
+
+    /// Every embedding key that a filter allows.
+    ///
+    /// §8.2 gates the semantic leg with this list, before that leg
+    /// ranks. The keys are the `num_id` of §6.1, because that is what
+    /// the embedding database is keyed by.
+    pub fn allow(&self, filter: &dyn Query) -> Result<BTreeSet<u64>> {
+        let searcher = self.reader.searcher();
+        let found = searcher.search(filter, &DocSetCollector)?;
+
+        // Group by segment, so the fast field opens one time for each
+        // segment and not one time for each document.
+        let mut by_segment: BTreeMap<u32, Vec<DocId>> = BTreeMap::new();
+        for address in found {
+            by_segment
+                .entry(address.segment_ord)
+                .or_default()
+                .push(address.doc_id);
+        }
+
+        let mut allowed = BTreeSet::new();
+        for (ord, docs) in by_segment {
+            let segment = searcher.segment_reader(ord);
+            let column = segment.fast_fields().u64(fields::NUM_ID)?;
+
+            for doc in docs {
+                let key = column.first(doc).ok_or(Error::BrokenDocument)?;
+                allowed.insert(key);
+            }
+        }
+
+        Ok(allowed)
     }
 
     /// Make a row from the stored fields of a document.
