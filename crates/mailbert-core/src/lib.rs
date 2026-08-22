@@ -10,6 +10,7 @@ pub mod config;
 pub mod contacts;
 pub mod error;
 pub mod message_id;
+pub mod threading;
 
 pub use address::Address;
 pub use body::{Stripped, strip, strip_with_footers};
@@ -17,3 +18,4 @@ pub use config::{Account, Config, Credential};
 pub use contacts::{Contact, Contacts, Seen};
 pub use error::{Error, Result};
 pub use message_id::MessageId;
+pub use threading::{ThreadId, ThreadInput, Threading};
