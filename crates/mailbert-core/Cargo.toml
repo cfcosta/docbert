@@ -1,0 +1,13 @@
+[package]
+name = "mailbert-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Core library for mailbert — mail storage, MIME pipeline, threading, and search"
+
+[dependencies]
+blake3 = "1"
+thiserror = "2"
+
+[dev-dependencies]
+hegeltest = "0.28"
