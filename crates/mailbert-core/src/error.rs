@@ -10,6 +10,9 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error(transparent)]
+    Date(#[from] crate::date::DateError),
+
     #[error("config parse error: {0}")]
     ConfigParse(#[from] toml::de::Error),
 
