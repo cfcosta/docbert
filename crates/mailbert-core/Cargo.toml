@@ -15,6 +15,7 @@ miette = { version = "7.6.0", features = ["derive"] }
 regex = "1"
 rkyv = "0.8.17"
 serde = { version = "1", features = ["derive"] }
+tantivy = "0.26.1"
 thiserror = "2"
 toml = "1"
 unicode-normalization = "0.1"

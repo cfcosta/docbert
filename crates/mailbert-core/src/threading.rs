@@ -277,6 +277,14 @@ impl ThreadInput {
 }
 
 impl ThreadId {
+    /// Name a thread by the identity of its earliest message.
+    ///
+    /// The index stores the hex form of a thread, so a reader needs a
+    /// way back from an identity to a thread.
+    pub fn from_root(root: MessageId) -> Self {
+        Self(root)
+    }
+
     /// The identity of the earliest message of the thread.
     pub fn root(self) -> MessageId {
         self.0

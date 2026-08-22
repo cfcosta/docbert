@@ -22,6 +22,21 @@ pub enum Error {
     #[error("stored record error: {0}")]
     Record(#[from] rkyv::rancor::Error),
 
+    #[error("index error: {0}")]
+    Index(#[from] tantivy::TantivyError),
+
+    #[error("cannot open the index directory: {0}")]
+    IndexDir(#[from] tantivy::directory::error::OpenDirectoryError),
+
+    #[error("cannot read the index: {0}")]
+    IndexRead(#[from] tantivy::directory::error::OpenReadError),
+
+    #[error(
+        "the index holds a document that it cannot read — rebuild it with \
+         `mailbert reindex`"
+    )]
+    BrokenDocument,
+
     #[error(
         "`{0}` is not a tag — a tag holds no space, no quote, and no \
          parenthesis, and does not start with `\\`"

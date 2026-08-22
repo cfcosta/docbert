@@ -268,10 +268,20 @@ mailbert owns its Tantivy schema. This is the primary architectural difference f
 | `list_id`    | STRING, FAST         | The `List-Id` header.                   |
 | `date`       | u64, FAST, STORED    | Seconds since the Unix epoch.           |
 | `thread_id`  | STRING, FAST, STORED | The thread from §5.5.                   |
-| `flags`      | STRING, FAST, multi  | IMAP flags, and the mailbert tags.      |
+| `flags`      | STRING, FAST, multi  | IMAP flags, tags, and states.           |
 | `attachment` | TEXT, STORED         | Attachment filenames.                   |
 
 Each field that a filter uses is `FAST`, because the filter must become a fast-field predicate and not a post-filter. See §8.2.
+
+The `flags` field holds three kinds of term:
+
+- The IMAP flags that the server gives (`\seen`, `\answered`, `\flagged`, `\draft`).
+- The mailbert tags from §9.
+- The states that no header carries: `\encrypted`, `\gone`, `\bulk`, and `\attachment`.
+
+The states are in this field because `is:encrypted`, `is:gone`, `is:bulk`, and `has:attachment` must be fast-field predicates. A tag can never start with `\`, so a tag and a state never collide.
+
+`is:unread` is the one question that no term answers. The field holds `\seen` or does not hold it, and `is:unread` is the negation.
 
 ### 6.2 Embeddings
 

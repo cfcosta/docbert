@@ -37,7 +37,11 @@ The parts that hold a message and find it again.
   - [x] Resolve a git-style prefix with a key scan. (§4.1)
   - [x] Tags on the identity, so a re-sync keeps them. (§9)
   - [x] Saved searches, by name. (§9)
-- [ ] **T12** The Tantivy schema, and the writer. (§6.1)
+- [x] **T12** The Tantivy schema, and the writer. (§6.1)
+  - [x] The 14 fields, and a test that each filter field is `FAST`.
+  - [x] The terms of the `flags` field: IMAP flags, tags, and states.
+  - [x] Write a message, replace it, and remove it.
+  - [x] Read a hit back, and run a query that a caller built. (§8.2)
 - [ ] **T13** Compile a query into a filter that gates both legs. (§8.2)
 - [ ] **T14** Fusion, the recency prior, and thread grouping. (§8.1, §8.3, §8.4)
 
