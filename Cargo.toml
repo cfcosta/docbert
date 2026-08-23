@@ -6,6 +6,7 @@ members = [
   "crates/docbert-webui",
   "crates/docbert-plaid",
   "crates/docbert-pylate",
+  "crates/mailbert",
   "crates/mailbert-core",
   "crates/mailbert-imap",
   "crates/rustbert",

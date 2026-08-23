@@ -92,7 +92,14 @@ The parts that hold a message and find it again.
 
 ## Phase 4 — the tool
 
-- [ ] **T19** Scaffold the `mailbert` binary, and its CLI. (§2.1)
+- [x] **T19** Scaffold the `mailbert` binary, and its CLI. (§2.1)
+  - [x] `crates/mailbert` joins the workspace, with its manifest.
+  - [x] The command tree of §2.1, and the options that all commands take.
+  - [x] The paths: `--data-dir`, `MAILBERT_DATA_DIR`, and the XDG defaults.
+  - [x] The configuration file, a `~` in a path, and `password_command`. (§1.2)
+  - [x] The words of `tag`: `+todo`, `-done`, and the identities after them.
+  - [x] The error type, and the miette report for a bad query.
+  - [x] Property tests for the command tree, and for the words of `tag`.
 - [ ] **T20** `sync`, and the `--watch` mode.
 - [ ] **T21** The embeddings, and the semantic leg. (§6.2)
 - [ ] **T22** `search`, `ksearch`, and the output. (§10.1)
