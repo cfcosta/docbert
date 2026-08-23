@@ -523,6 +523,16 @@ impl MailIndex {
         writer.delete_term(term);
     }
 
+    /// Remove every document.
+    ///
+    /// A whole pass over the store writes the index again, and this is
+    /// what makes a message that left the store leave the index.
+    pub fn clear(&self, writer: &IndexWriter) -> Result<()> {
+        writer.delete_all_documents()?;
+
+        Ok(())
+    }
+
     /// How many documents the index holds.
     pub fn len(&self) -> usize {
         self.reader.searcher().num_docs() as usize
@@ -676,6 +686,7 @@ mod tests {
             uid,
             uid_validity: 1,
             received: 100 * DAY,
+            flags: BTreeSet::new(),
         }
     }
 
@@ -957,6 +968,19 @@ mod tests {
 
         assert!(index.is_empty());
         assert_eq!(index.get(&found.id).expect("a read"), None);
+    }
+
+    #[test]
+    fn clearing_the_index_removes_every_document() {
+        let index = MailIndex::open_in_ram().expect("an index");
+        write(&index, &message("a", "work", "INBOX"));
+        write(&index, &message("b", "work", "INBOX"));
+
+        let mut writer = index.writer(BUDGET).expect("a writer");
+        index.clear(&writer).expect("a clear");
+        index.commit(&mut writer).expect("a commit");
+
+        assert!(index.is_empty());
     }
 
     #[test]

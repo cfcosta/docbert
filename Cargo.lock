@@ -3227,6 +3227,7 @@ dependencies = [
  "mailbert-core",
  "mailbert-imap",
  "miette",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

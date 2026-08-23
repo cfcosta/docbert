@@ -623,6 +623,7 @@ mod tests {
             uid: 1,
             uid_validity: 1,
             received: NOW,
+            flags: BTreeSet::new(),
         };
 
         let mut found = Message::new(

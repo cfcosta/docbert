@@ -61,6 +61,8 @@ pub const BLOB_FILE: &str = "blobs.db";
 const MESSAGES_DB: &str = "messages";
 const TAGS_DB: &str = "tags";
 const SAVED_DB: &str = "saved";
+const STATE_DB: &str = "state";
+const PLACES_DB: &str = "places";
 
 /// The named database inside `blobs.db`.
 const RAW_DB: &str = "raw";
@@ -78,7 +80,7 @@ const BLOB_MAP_SIZE: usize = 64 * GIB;
 
 /// How many named databases each file holds. LMDB needs the count when
 /// the environment opens, so keep these in step with the names above.
-const META_MAX_DBS: u32 = 3;
+const META_MAX_DBS: u32 = 5;
 const BLOB_MAX_DBS: u32 = 1;
 
 /// The characters that a tag must not hold, because the query language
@@ -96,6 +98,12 @@ struct Tables {
     /// The name of a saved search, to its query.
     saved: Database<Str, Str>,
 
+    /// An account and a folder, to the state of the last sync.
+    state: Database<Str, Bytes>,
+
+    /// An account, a folder, and a UID, to the message that sits there.
+    places: Database<Str, Str>,
+
     /// The identity of a message, to its raw bytes.
     raw: Database<Str, Bytes>,
 }
@@ -105,6 +113,49 @@ pub struct Store {
     meta: Env,
     blobs: Env,
     db: Tables,
+}
+
+/// The mark that a sync leaves on one folder of one account (§3.3).
+///
+/// The record holds what the next sync needs to ask the server for the
+/// messages that it does not have. `pending` holds the UIDs that a
+/// sync asked for and never received, in the text of a UID set, such
+/// as `"1:20,44"`.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Archive, Serialize, Deserialize,
+)]
+pub struct SyncState {
+    /// The UIDVALIDITY of the folder. A number that changed makes every
+    /// UID of that folder worthless.
+    pub uid_validity: u32,
+
+    /// The UID that the folder gives to the next message.
+    pub uid_next: u32,
+
+    /// The HIGHESTMODSEQ that CONDSTORE gave (§3.3).
+    pub highest_mod_seq: u64,
+
+    /// The UIDs that the sync owes, in the text of a UID set.
+    pub pending: String,
+}
+
+/// The character that holds an account name apart from a folder name.
+///
+/// An IMAP folder name never holds a control character, so this makes
+/// a key that no name can copy.
+const STATE_BREAK: char = '\u{1}';
+
+/// The key of one folder of one account.
+fn state_key(account: &str, folder: &str) -> String {
+    format!("{account}{STATE_BREAK}{folder}")
+}
+
+/// The key of one copy of a message (§4.2).
+///
+/// The UID is written wide, so the keys of one folder keep the order of
+/// the numbers behind them.
+fn place_key(account: &str, folder: &str, uid: u32) -> String {
+    format!("{account}{STATE_BREAK}{folder}{STATE_BREAK}{uid:010}")
 }
 
 /// Make a tag out of what the user typed.
@@ -186,13 +237,21 @@ fn encode(
 }
 
 /// Read a record back, and check its bytes first.
+///
+/// LMDB gives the bytes at the offset that the page holds them at, and
+/// rkyv reads a record in place, so the bytes go into an aligned buffer
+/// first. Without the copy, a key of the wrong length moves the value
+/// off an 8-byte boundary and the read fails.
 fn decode<T>(bytes: &[u8]) -> Result<T>
 where
     T: Archive,
     T::Archived: for<'a> CheckBytes<HighValidator<'a, RecordError>>
         + Deserialize<T, HighDeserializer<RecordError>>,
 {
-    Ok(rkyv::from_bytes::<T, RecordError>(bytes)?)
+    let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(bytes);
+
+    Ok(rkyv::from_bytes::<T, RecordError>(&aligned)?)
 }
 
 impl Store {
@@ -208,6 +267,8 @@ impl Store {
         let messages = meta.create_database(&mut wtxn, Some(MESSAGES_DB))?;
         let tags = meta.create_database(&mut wtxn, Some(TAGS_DB))?;
         let saved = meta.create_database(&mut wtxn, Some(SAVED_DB))?;
+        let state = meta.create_database(&mut wtxn, Some(STATE_DB))?;
+        let places = meta.create_database(&mut wtxn, Some(PLACES_DB))?;
         wtxn.commit()?;
 
         let mut wtxn = blobs.write_txn()?;
@@ -221,6 +282,8 @@ impl Store {
                 messages,
                 tags,
                 saved,
+                state,
+                places,
                 raw,
             },
         })
@@ -253,6 +316,15 @@ impl Store {
         let kept: Option<Message> =
             self.db.messages.get(&wtxn, &key)?.map(decode).transpose()?;
 
+        // A folder that gave the message a new UID leaves the old key
+        // behind, so the places of the entry go before the merge does.
+        if let Some(kept) = &kept {
+            for at in &kept.locations {
+                let old = place_key(&at.account, &at.folder, at.uid);
+                self.db.places.delete(&mut wtxn, &old)?;
+            }
+        }
+
         let merged = match kept {
             Some(mut kept) => {
                 kept.absorb(message.clone());
@@ -260,6 +332,11 @@ impl Store {
             }
             None => message.clone(),
         };
+
+        for at in &merged.locations {
+            let place = place_key(&at.account, &at.folder, at.uid);
+            self.db.places.put(&mut wtxn, &place, &key)?;
+        }
 
         self.db.messages.put(&mut wtxn, &key, &encode(&merged)?)?;
         wtxn.commit()?;
@@ -295,6 +372,16 @@ impl Store {
         let key = id.full_hex();
 
         let mut wtxn = self.meta.write_txn()?;
+        let kept: Option<Message> =
+            self.db.messages.get(&wtxn, &key)?.map(decode).transpose()?;
+
+        if let Some(kept) = &kept {
+            for at in &kept.locations {
+                let place = place_key(&at.account, &at.folder, at.uid);
+                self.db.places.delete(&mut wtxn, &place)?;
+            }
+        }
+
         let existed = self.db.messages.delete(&mut wtxn, &key)?;
         self.db.tags.delete(&mut wtxn, &key)?;
         wtxn.commit()?;
@@ -556,6 +643,173 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Write the state of one folder of one account (§3.3).
+    pub fn mark(
+        &self,
+        account: &str,
+        folder: &str,
+        state: &SyncState,
+    ) -> Result<()> {
+        let mut wtxn = self.meta.write_txn()?;
+        self.db.state.put(
+            &mut wtxn,
+            &state_key(account, folder),
+            &encode(state)?,
+        )?;
+        wtxn.commit()?;
+
+        Ok(())
+    }
+
+    /// Read the state of one folder of one account.
+    ///
+    /// A folder that no sync ever read gives `None`.
+    pub fn state(
+        &self,
+        account: &str,
+        folder: &str,
+    ) -> Result<Option<SyncState>> {
+        let rtxn = self.meta.read_txn()?;
+
+        self.db
+            .state
+            .get(&rtxn, &state_key(account, folder))?
+            .map(decode)
+            .transpose()
+    }
+
+    /// The state of each folder of one account, by folder name.
+    pub fn states(&self, account: &str) -> Result<BTreeMap<String, SyncState>> {
+        let rtxn = self.meta.read_txn()?;
+        let head = format!("{account}{STATE_BREAK}");
+        let mut found = BTreeMap::new();
+
+        for entry in self.db.state.prefix_iter(&rtxn, head.as_str())? {
+            let (key, bytes) = entry?;
+            let Some(folder) = key.strip_prefix(head.as_str()) else {
+                continue;
+            };
+
+            found.insert(folder.to_string(), decode(bytes)?);
+        }
+
+        Ok(found)
+    }
+
+    /// Forget the state of one folder, which makes the next sync read
+    /// the whole folder again.
+    ///
+    /// Returns `true` when a state was there.
+    pub fn forget_state(&self, account: &str, folder: &str) -> Result<bool> {
+        let mut wtxn = self.meta.write_txn()?;
+        let existed = self
+            .db
+            .state
+            .delete(&mut wtxn, &state_key(account, folder))?;
+        wtxn.commit()?;
+
+        Ok(existed)
+    }
+
+    /// The message that sits at one UID of one folder (§4.2).
+    ///
+    /// A sync reads a UID and not an identity, so this is the way from
+    /// what the server says to what the store holds.
+    pub fn placed(
+        &self,
+        account: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<MessageId>> {
+        let rtxn = self.meta.read_txn()?;
+        let key = place_key(account, folder, uid);
+
+        Ok(self
+            .db
+            .places
+            .get(&rtxn, &key)?
+            .and_then(MessageId::from_hex))
+    }
+
+    /// Take away the copy that sits at one UID of one folder.
+    ///
+    /// The message stays, because mailbert is a mirror and keeps mail
+    /// that the server dropped. A message that loses its last copy
+    /// answers `is:gone`. Returns the identity when a copy went away.
+    pub fn vanish(
+        &self,
+        account: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<MessageId>> {
+        let place = place_key(account, folder, uid);
+
+        let mut wtxn = self.meta.write_txn()?;
+        let Some(hex) = self.db.places.get(&wtxn, &place)?.map(str::to_string)
+        else {
+            return Ok(None);
+        };
+
+        let Some(mut message) = self
+            .db
+            .messages
+            .get(&wtxn, &hex)?
+            .map(decode::<Message>)
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+
+        message.remove_location(account, folder);
+        self.db.places.delete(&mut wtxn, &place)?;
+        self.db.messages.put(&mut wtxn, &hex, &encode(&message)?)?;
+        wtxn.commit()?;
+
+        Ok(Some(message.id))
+    }
+
+    /// Give one copy the flags that the server now reports (§3.3).
+    ///
+    /// The flags replace what that folder said before, because a folder
+    /// that drops `\Seen` makes the message unread again. Returns the
+    /// identity when a copy sits there.
+    pub fn reflag(
+        &self,
+        account: &str,
+        folder: &str,
+        uid: u32,
+        flags: &[String],
+    ) -> Result<Option<MessageId>> {
+        let place = place_key(account, folder, uid);
+
+        let mut wtxn = self.meta.write_txn()?;
+        let Some(hex) = self.db.places.get(&wtxn, &place)?.map(str::to_string)
+        else {
+            return Ok(None);
+        };
+
+        let Some(mut message) = self
+            .db
+            .messages
+            .get(&wtxn, &hex)?
+            .map(decode::<Message>)
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+
+        if !message.set_flags(account, folder, flags) {
+            return Ok(None);
+        }
+
+        self.db.messages.put(&mut wtxn, &hex, &encode(&message)?)?;
+        wtxn.commit()?;
+
+        Ok(Some(message.id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Property inventory
@@ -572,6 +826,11 @@ mod tests {
     //! | `prop_tagged_agrees_with_the_tags_of` | differential | The tags of a message, and the messages behind a tag, are two views of one fact. |
     //! | `prop_normalize_tag_is_idempotent` | algebraic | The stored form must be a fixed point, or a tag can never be found again. |
     //! | `prop_a_saved_search_survives` | round-trip | A saved search that reads back wrong runs another query. |
+    //! | `prop_a_sync_state_survives_the_store` | round-trip | §3.4 resumes from this record alone. A number that reads back wrong downloads a folder again, or loses mail. |
+    //! | `prop_the_state_of_one_account_stays_there` | invariant | Two accounts hold folders of one name, such as INBOX. A key that mixes them syncs one account with the state of another. |
+    //! | `prop_every_copy_of_a_message_answers_to_its_uid` | invariant | A copy that answers to nobody can never go away, and `is:gone` would never be true. |
+    //! | `prop_a_vanish_never_moves_another_folder` | invariant | A UID that took the wrong copy loses mail that the server still holds. |
+    //! | `prop_a_reflag_says_what_the_copies_say` | invariant | The flags of a message are the flags of its copies. A set that drifts answers `is:unread` for mail that the user read. |
 
     use hegel::{TestCase, generators as gs};
     use tempfile::{TempDir, tempdir};
@@ -580,6 +839,7 @@ mod tests {
     use crate::{
         message::{Location, SEEN, collate},
         mime,
+        query::Flag,
     };
 
     // -----------------------------------------------------------------
@@ -599,6 +859,7 @@ mod tests {
             uid,
             uid_validity: 1,
             received: 100 * DAY,
+            flags: BTreeSet::new(),
         }
     }
 
@@ -624,6 +885,47 @@ mod tests {
             location(account, folder, 1),
             [SEEN],
         )
+    }
+
+    fn message_at(key: &str, account: &str, folder: &str, uid: u32) -> Message {
+        let raw = raw_bytes(key, "The deposit is due.");
+
+        Message::new(
+            mime::parse(&raw).expect("a message"),
+            location(account, folder, uid),
+            [SEEN],
+        )
+    }
+
+    /// Write one copy of a message, and give back its identity.
+    fn write_at(
+        store: &Store,
+        key: &str,
+        account: &str,
+        folder: &str,
+        uid: u32,
+    ) -> MessageId {
+        let found = message_at(key, account, folder, uid);
+        let raw = raw_bytes(key, "The deposit is due.");
+        store.put(&found, &raw).expect("a write");
+
+        found.id
+    }
+
+    /// Folder names that are not the same, and are one or more.
+    #[hegel::composite]
+    fn some_folders(tc: TestCase) -> Vec<String> {
+        let drawn: Vec<String> = tc.draw(
+            gs::vecs(gs::text().alphabet("AB/").min_size(1).max_size(3))
+                .min_size(1)
+                .max_size(4),
+        );
+
+        let mut folders = drawn;
+        folders.sort();
+        folders.dedup();
+
+        folders
     }
 
     /// Write a message, and give back its identity.
@@ -1169,6 +1471,7 @@ mod tests {
                 uid,
                 uid_validity: 1,
                 received: 100 * DAY,
+                flags: BTreeSet::new(),
             },
             [SEEN],
         );
@@ -1178,6 +1481,440 @@ mod tests {
 
     fn a_mailbox() -> impl gs::Generator<Vec<(Message, Vec<u8>)>> {
         gs::vecs(a_copy()).min_size(0).max_size(8)
+    }
+
+    // -----------------------------------------------------------------
+    // The sync state (§3.3).
+    // -----------------------------------------------------------------
+
+    fn a_state(uid_next: u32, pending: &str) -> SyncState {
+        SyncState {
+            uid_validity: 77,
+            uid_next,
+            highest_mod_seq: 900,
+            pending: pending.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_folder_that_no_sync_read_has_no_state() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        assert_eq!(store.state("work", "INBOX").expect("a read"), None);
+    }
+
+    #[test]
+    fn a_state_comes_back_as_it_went_in() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let state = a_state(400, "12:20,44");
+
+        store.mark("work", "INBOX", &state).expect("a write");
+
+        assert_eq!(store.state("work", "INBOX").expect("a read"), Some(state));
+    }
+
+    #[test]
+    fn a_second_mark_replaces_the_first() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "INBOX", &a_state(400, ""))
+            .expect("a write");
+        store
+            .mark("work", "INBOX", &a_state(500, ""))
+            .expect("a write");
+
+        let found = store.state("work", "INBOX").expect("a read");
+
+        assert_eq!(found.expect("a state").uid_next, 500);
+    }
+
+    #[test]
+    fn two_accounts_keep_the_state_of_one_folder_name_apart() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "INBOX", &a_state(400, ""))
+            .expect("a write");
+        store
+            .mark("home", "INBOX", &a_state(9, ""))
+            .expect("a write");
+
+        let work = store.state("work", "INBOX").expect("a read");
+        let home = store.state("home", "INBOX").expect("a read");
+
+        assert_eq!(work.expect("a state").uid_next, 400);
+        assert_eq!(home.expect("a state").uid_next, 9);
+    }
+
+    #[test]
+    fn the_states_of_an_account_hold_each_folder_of_it() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "INBOX", &a_state(400, ""))
+            .expect("a write");
+        store
+            .mark("work", "Archive", &a_state(20, ""))
+            .expect("a write");
+        store
+            .mark("home", "INBOX", &a_state(9, ""))
+            .expect("a write");
+
+        let found = store.states("work").expect("a read");
+
+        assert_eq!(found.len(), 2);
+        assert!(found.contains_key("INBOX"));
+        assert!(found.contains_key("Archive"));
+    }
+
+    #[test]
+    fn an_account_with_no_sync_has_no_states() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        assert!(store.states("work").expect("a read").is_empty());
+    }
+
+    #[test]
+    fn forget_state_removes_one_folder_only() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "INBOX", &a_state(400, ""))
+            .expect("a write");
+        store
+            .mark("work", "Archive", &a_state(20, ""))
+            .expect("a write");
+
+        assert!(store.forget_state("work", "INBOX").expect("a delete"));
+        assert!(!store.forget_state("work", "INBOX").expect("a delete"));
+        assert_eq!(store.state("work", "INBOX").expect("a read"), None);
+        assert!(store.state("work", "Archive").expect("a read").is_some());
+    }
+
+    #[test]
+    fn a_folder_name_with_a_stroke_in_it_keeps_its_own_state() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "Lists/Rust", &a_state(3, ""))
+            .expect("a write");
+
+        let found = store.states("work").expect("a read");
+
+        assert!(found.contains_key("Lists/Rust"), "{found:?}");
+    }
+
+    #[hegel::test(test_cases = 60)]
+    fn prop_a_sync_state_survives_the_store(tc: TestCase) {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let state = SyncState {
+            uid_validity: tc
+                .draw(gs::integers::<u32>().min_value(0).max_value(u32::MAX)),
+            uid_next: tc
+                .draw(gs::integers::<u32>().min_value(0).max_value(u32::MAX)),
+            highest_mod_seq: tc
+                .draw(gs::integers::<u64>().min_value(0).max_value(u64::MAX)),
+            pending: tc.draw(
+                gs::text().alphabet("0123456789:,").min_size(0).max_size(20),
+            ),
+        };
+        let folder: String =
+            tc.draw(gs::text().alphabet("ABCdef/. ").min_size(1).max_size(10));
+
+        store.mark("work", &folder, &state).expect("a write");
+
+        assert_eq!(store.state("work", &folder).expect("a read"), Some(state));
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_the_state_of_one_account_stays_there(tc: TestCase) {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let names: Vec<String> = tc.draw(
+            gs::vecs(gs::text().alphabet("ab").min_size(1).max_size(3))
+                .min_size(1)
+                .max_size(4),
+        );
+        let folder: String =
+            tc.draw(gs::text().alphabet("XY/").min_size(1).max_size(4));
+
+        let mut unique: Vec<String> = names.clone();
+        unique.sort();
+        unique.dedup();
+
+        for (step, account) in unique.iter().enumerate() {
+            let mut state = a_state(step as u32 + 1, "");
+            state.uid_validity = step as u32 + 1;
+            store.mark(account, &folder, &state).expect("a write");
+        }
+
+        for (step, account) in unique.iter().enumerate() {
+            let found = store.states(account).expect("a read");
+
+            assert_eq!(found.len(), 1, "`{account}` sees another account");
+            assert_eq!(
+                found[&folder].uid_next,
+                step as u32 + 1,
+                "`{account}` reads the state of another account"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Unit tests: the place of each copy (§4.2).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_copy_answers_to_its_uid() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+
+        assert_eq!(store.placed("work", "INBOX", 7).expect("a read"), Some(id));
+    }
+
+    #[test]
+    fn a_uid_that_no_copy_holds_answers_to_nobody() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        write_at(&store, "one", "work", "INBOX", 7);
+
+        assert_eq!(store.placed("work", "INBOX", 8).expect("a read"), None);
+        assert_eq!(store.placed("home", "INBOX", 7).expect("a read"), None);
+        assert_eq!(store.placed("work", "Sent", 7).expect("a read"), None);
+    }
+
+    #[test]
+    fn each_folder_of_one_message_answers_to_its_own_uid() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+        write_at(&store, "one", "work", "Archive", 31);
+
+        assert_eq!(store.placed("work", "INBOX", 7).expect("a read"), Some(id));
+        assert_eq!(
+            store.placed("work", "Archive", 31).expect("a read"),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn a_second_reading_of_a_folder_moves_the_place() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+        write_at(&store, "one", "work", "INBOX", 9);
+
+        assert_eq!(store.placed("work", "INBOX", 7).expect("a read"), None);
+        assert_eq!(store.placed("work", "INBOX", 9).expect("a read"), Some(id));
+    }
+
+    #[test]
+    fn a_message_that_goes_away_loses_that_folder() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+
+        assert_eq!(
+            store.vanish("work", "INBOX", 7).expect("a write"),
+            Some(id)
+        );
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(found.is_gone(), "the message keeps a place that is gone");
+        assert_eq!(store.placed("work", "INBOX", 7).expect("a read"), None);
+    }
+
+    #[test]
+    fn a_message_that_sits_elsewhere_is_not_gone() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+        write_at(&store, "one", "work", "Archive", 31);
+
+        store.vanish("work", "INBOX", 7).expect("a write");
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(!found.is_gone(), "one copy went, and the message went too");
+        assert_eq!(found.folders(), vec!["Archive"]);
+    }
+
+    #[test]
+    fn a_vanish_of_a_uid_that_is_not_there_changes_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+
+        assert_eq!(store.vanish("work", "INBOX", 8).expect("a write"), None);
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(!found.is_gone(), "a UID that is not there took a copy");
+    }
+
+    #[test]
+    fn a_removed_message_takes_its_places_with_it() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+
+        assert!(store.remove(&id).expect("a delete"));
+
+        assert_eq!(store.placed("work", "INBOX", 7).expect("a read"), None);
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_every_copy_of_a_message_answers_to_its_uid(tc: TestCase) {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let folders = tc.draw(some_folders());
+
+        let mut id = None;
+        for (step, folder) in folders.iter().enumerate() {
+            id = Some(write_at(&store, "one", "work", folder, step as u32 + 1));
+        }
+
+        for (step, folder) in folders.iter().enumerate() {
+            assert_eq!(
+                store
+                    .placed("work", folder, step as u32 + 1)
+                    .expect("a read"),
+                id,
+                "the copy in `{folder}` answers to nobody"
+            );
+        }
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_a_vanish_never_moves_another_folder(tc: TestCase) {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let folders = tc.draw(some_folders());
+        let which: usize = tc.draw(
+            gs::integers::<usize>()
+                .min_value(0)
+                .max_value(folders.len() - 1),
+        );
+
+        let mut id = None;
+        for (step, folder) in folders.iter().enumerate() {
+            id = Some(write_at(&store, "one", "work", folder, step as u32 + 1));
+        }
+
+        let uid = which as u32 + 1;
+        store.vanish("work", &folders[which], uid).expect("a write");
+
+        for (step, folder) in folders.iter().enumerate() {
+            let found = store
+                .placed("work", folder, step as u32 + 1)
+                .expect("a read");
+
+            match step == which {
+                true => assert_eq!(found, None, "`{folder}` stayed"),
+                false => assert_eq!(found, id, "`{folder}` went with it"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Unit tests: the flags that a folder reports again (§3.3).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_reflag_replaces_the_flags_of_that_copy() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+        let flagged = vec![r"\Flagged".to_string()];
+
+        assert_eq!(
+            store.reflag("work", "INBOX", 7, &flagged).expect("a write"),
+            Some(id)
+        );
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(found.matches(Flag::Unread), "the message stayed read");
+        assert!(found.matches(Flag::Flagged));
+    }
+
+    #[test]
+    fn a_reflag_leaves_the_flags_of_another_copy() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+        write_at(&store, "one", "work", "Archive", 31);
+
+        store.reflag("work", "INBOX", 7, &[]).expect("a write");
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(found.matches(Flag::Read), "the other copy lost its flags");
+    }
+
+    #[test]
+    fn a_reflag_of_a_uid_that_is_not_there_changes_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let id = write_at(&store, "one", "work", "INBOX", 7);
+
+        assert_eq!(
+            store.reflag("work", "INBOX", 8, &[]).expect("a write"),
+            None
+        );
+
+        let found = store.get(&id).expect("a read").expect("the message");
+        assert!(found.matches(Flag::Read), "a UID that is not there wrote");
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_a_reflag_says_what_the_copies_say(tc: TestCase) {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let folders = tc.draw(some_folders());
+
+        let mut id = None;
+        for (step, folder) in folders.iter().enumerate() {
+            id = Some(write_at(&store, "one", "work", folder, step as u32 + 1));
+        }
+
+        let which: usize = tc.draw(
+            gs::integers::<usize>()
+                .min_value(0)
+                .max_value(folders.len() - 1),
+        );
+        let carried: Vec<String> = tc.draw(
+            gs::vecs(gs::sampled_from(vec![
+                r"\Seen".to_string(),
+                r"\Flagged".to_string(),
+            ]))
+            .min_size(0)
+            .max_size(2),
+        );
+
+        let uid = which as u32 + 1;
+        store
+            .reflag("work", &folders[which], uid, &carried)
+            .expect("a write");
+
+        let id = id.expect("an identity");
+        let found = store.get(&id).expect("a read").expect("the message");
+        let want: BTreeSet<String> = found
+            .locations
+            .iter()
+            .flat_map(|at| at.flags.iter().cloned())
+            .collect();
+
+        assert_eq!(found.flags, want, "the message left its copies behind");
     }
 
     #[hegel::test(test_cases = 40)]

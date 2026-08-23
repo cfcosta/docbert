@@ -64,6 +64,13 @@ pub struct Location {
 
     /// The INTERNALDATE of the copy, in seconds since the epoch.
     pub received: i64,
+
+    /// The IMAP flags that this folder gives the copy, normalized.
+    ///
+    /// The flags sit on the copy, and not on the message, because the
+    /// server sets them per folder. A message that loses a copy loses
+    /// the flags of that copy with it.
+    pub flags: BTreeSet<String>,
 }
 
 /// One message, whatever number of copies the servers hold.
@@ -122,7 +129,10 @@ pub struct Message {
     /// Every place that a copy sits, ordered and without repeats.
     pub locations: Vec<Location>,
 
-    /// The IMAP flags, normalized and merged over the copies.
+    /// The IMAP flags of every copy, joined.
+    ///
+    /// This is what the copies say, and nothing else. Use
+    /// [`Message::add_flag`] and never write the set itself.
     pub flags: BTreeSet<String>,
 }
 
@@ -178,6 +188,13 @@ impl Message {
     ) -> Self {
         let id = parsed.identity();
 
+        let carried: BTreeSet<String> = flags
+            .into_iter()
+            .filter_map(|raw| normalize_flag(raw.as_ref()))
+            .collect();
+        let mut location = location;
+        location.flags.extend(carried.iter().cloned());
+
         // A message with no `Date` header is dated by the server, which
         // is the only other time that mailbert knows.
         let date = parsed.date.unwrap_or(location.received);
@@ -197,11 +214,8 @@ impl Message {
             text: parsed.text,
             is_bulk: parsed.is_bulk,
             attachments: parsed.attachments,
+            flags: location.flags.clone(),
             locations: vec![location],
-            flags: flags
-                .into_iter()
-                .filter_map(|raw| normalize_flag(raw.as_ref()))
-                .collect(),
         }
     }
 
@@ -215,23 +229,81 @@ impl Message {
         });
 
         match same {
-            Some(at) => {
-                if freshness(&location) > freshness(&self.locations[at]) {
-                    self.locations[at] = location;
-                }
+            // The reading that arrives last speaks for that folder. A
+            // FETCH carries every flag of a copy, so a flag that the
+            // answer does not hold is a flag that went away. (§3.3)
+            Some(at)
+                if freshness(&location) >= freshness(&self.locations[at]) =>
+            {
+                self.locations[at] = location;
             }
+            // An older copy of a folder that already has a newer one.
+            // It says nothing, because its UID is gone.
+            Some(_) => {}
             None => self.locations.push(location),
         }
 
         self.locations.sort();
+        self.rejoin();
     }
 
-    /// Record one IMAP flag. Returns true when the flag was new.
+    /// Record one IMAP flag on every copy.
+    ///
+    /// Returns true when the message did not have the flag before.
     pub fn add_flag(&mut self, raw: &str) -> bool {
-        match normalize_flag(raw) {
-            Some(flag) => self.flags.insert(flag),
-            None => false,
+        let Some(flag) = normalize_flag(raw) else {
+            return false;
+        };
+
+        let before = self.flags.contains(&flag);
+        for at in &mut self.locations {
+            at.flags.insert(flag.clone());
         }
+
+        self.rejoin();
+
+        // A message with no copy left gains nothing, because the flags
+        // of a message are the flags of its copies.
+        !before && self.flags.contains(&flag)
+    }
+
+    /// Give one copy the flags that the server now reports (§3.3).
+    ///
+    /// Returns true when the message has a copy in that folder. This is
+    /// the one way that a flag goes away, because a folder that drops
+    /// `\Seen` makes the message unread again.
+    pub fn set_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        flags: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> bool {
+        let carried: BTreeSet<String> = flags
+            .into_iter()
+            .filter_map(|raw| normalize_flag(raw.as_ref()))
+            .collect();
+
+        let Some(at) = self
+            .locations
+            .iter_mut()
+            .find(|at| at.account == account && at.folder == folder)
+        else {
+            return false;
+        };
+
+        at.flags = carried;
+        self.rejoin();
+
+        true
+    }
+
+    /// Read the flags of the copies into the set of the message.
+    fn rejoin(&mut self) {
+        self.flags = self
+            .locations
+            .iter()
+            .flat_map(|at| at.flags.iter().cloned())
+            .collect();
     }
 
     /// Forget one place, because the copy there is gone.
@@ -242,6 +314,7 @@ impl Message {
 
         self.locations
             .retain(|at| at.account != account || at.folder != folder);
+        self.rejoin();
 
         self.locations.len() != before
     }
@@ -258,8 +331,6 @@ impl Message {
         for location in other.locations {
             self.add_location(location);
         }
-
-        self.flags.extend(other.flags);
     }
 
     /// The accounts that hold a copy, ordered and without repeats.
@@ -359,6 +430,7 @@ mod tests {
     //! | `prop_flags_ignore_case` | invariant | Servers spell `\Seen` and `\SEEN`, and both mean read. |
     //! | `prop_read_and_unread_are_opposites` | model-based | `is:read` and `is:unread` must partition the mailbox, or a search loses messages. |
     //! | `prop_the_date_is_the_earliest_sighting` | algebraic | Merging must not move a message in time, whatever order the copies arrive in. |
+    //! | `prop_the_flags_of_a_message_join_the_flags_of_its_copies` | invariant | `is:unread` reads the joined set. A flag that outlives its copy hides mail that the user has not read. |
 
     use std::collections::HashMap;
 
@@ -380,6 +452,7 @@ mod tests {
             uid,
             uid_validity: 1,
             received: 100 * DAY,
+            flags: BTreeSet::new(),
         }
     }
 
@@ -442,6 +515,144 @@ mod tests {
         assert!(found.add_flag(r"\Flagged"));
         assert!(!found.add_flag(FLAGGED));
         assert_eq!(found.flags.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Unit tests: the flags of one copy (§4.2).
+    // -----------------------------------------------------------------
+
+    /// A message with one copy, and the flags of that copy.
+    fn flagged(folder: &str, flags: &[&str]) -> Message {
+        Message::new(
+            parsed("a", "The deposit is due."),
+            location("work", folder, 1),
+            flags.iter().copied(),
+        )
+    }
+
+    #[test]
+    fn each_copy_keeps_the_flags_that_its_folder_gave() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            flags: [FLAGGED.to_string()].into_iter().collect(),
+            ..location("work", "Archive", 9)
+        });
+
+        let inbox = &found.locations[1];
+        assert_eq!(inbox.folder, "INBOX");
+        assert_eq!(inbox.flags, [SEEN.to_string()].into_iter().collect());
+    }
+
+    #[test]
+    fn the_flags_of_a_message_join_its_copies() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            flags: [FLAGGED.to_string()].into_iter().collect(),
+            ..location("work", "Archive", 9)
+        });
+
+        assert!(found.matches(Flag::Read));
+        assert!(found.matches(Flag::Flagged));
+    }
+
+    #[test]
+    fn a_copy_that_goes_away_takes_its_flags_with_it() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            flags: [FLAGGED.to_string()].into_iter().collect(),
+            ..location("work", "Archive", 9)
+        });
+
+        assert!(found.remove_location("work", "Archive"));
+
+        assert!(found.matches(Flag::Read));
+        assert!(!found.matches(Flag::Flagged), "a flag outlived its copy");
+    }
+
+    #[test]
+    fn a_newer_copy_of_one_folder_gives_the_flags_of_that_folder() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            uid: 42,
+            flags: BTreeSet::new(),
+            ..location("work", "INBOX", 1)
+        });
+
+        assert!(found.matches(Flag::Unread), "the old reading held on");
+        assert_eq!(found.locations.len(), 1);
+    }
+
+    #[test]
+    fn a_second_reading_of_one_uid_gives_the_flags_that_it_carries() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            flags: [FLAGGED.to_string()].into_iter().collect(),
+            ..location("work", "INBOX", 1)
+        });
+
+        assert!(found.matches(Flag::Flagged));
+        assert!(!found.matches(Flag::Read), "the server dropped that flag");
+    }
+
+    /// §3.3: an unread message that a sync reads again stays unread.
+    #[test]
+    fn a_second_reading_that_carries_no_flag_takes_the_flags_away() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(location("work", "INBOX", 1));
+
+        assert!(found.flags.is_empty(), "{:?}", found.flags);
+    }
+
+    #[test]
+    fn an_older_copy_of_one_folder_never_speaks_for_it() {
+        let mut found = flagged("INBOX", &[SEEN]);
+        found.add_location(Location {
+            flags: [FLAGGED.to_string()].into_iter().collect(),
+            ..location("work", "INBOX", 0)
+        });
+
+        assert!(found.matches(Flag::Read));
+        assert!(!found.matches(Flag::Flagged));
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_the_flags_of_a_message_join_the_flags_of_its_copies(tc: TestCase) {
+        let names: Vec<String> = tc.draw(
+            gs::vecs(gs::text().alphabet("AB").min_size(1).max_size(2))
+                .min_size(1)
+                .max_size(4),
+        );
+
+        let mut folders: Vec<String> = names;
+        folders.sort();
+        folders.dedup();
+
+        let mut found = Message::new(
+            parsed("a", "The deposit is due."),
+            location("work", &folders[0], 1),
+            Vec::<String>::new(),
+        );
+        let mut want: BTreeSet<String> = BTreeSet::new();
+
+        for (step, folder) in folders.iter().enumerate() {
+            let carried: Vec<String> = tc.draw(
+                gs::vecs(gs::sampled_from(vec![
+                    SEEN.to_string(),
+                    FLAGGED.to_string(),
+                    DRAFT.to_string(),
+                ]))
+                .min_size(0)
+                .max_size(3),
+            );
+
+            want.extend(carried.iter().cloned());
+            found.add_location(Location {
+                flags: carried.into_iter().collect(),
+                ..location("work", folder, step as u32 + 1)
+            });
+        }
+
+        assert_eq!(found.flags, want, "the message and its copies disagree");
     }
 
     // -----------------------------------------------------------------
@@ -737,6 +948,7 @@ mod tests {
                 uid,
                 uid_validity: 1,
                 received: day * DAY,
+                flags: BTreeSet::new(),
             },
             flags,
         )

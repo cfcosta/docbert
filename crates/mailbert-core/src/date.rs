@@ -34,6 +34,12 @@ const YEARS: RangeInclusive<i64> = 1..=9_999;
 /// The units of a relative offset: day, week, month, year.
 const UNITS: [char; 4] = ['d', 'w', 'm', 'y'];
 
+/// The names that IMAP gives the months, in order (RFC 3501).
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+    "Nov", "Dec",
+];
+
 /// The current time, and the offset that turns it into a local time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Clock {
@@ -304,6 +310,90 @@ fn absolute(text: &str, clock: Clock) -> Result<Option<Moment>, DateError> {
     Ok(Some(Moment::closed(start, start + DAY)))
 }
 
+/// Read the INTERNALDATE that IMAP gives a message (§3.3).
+///
+/// The text is the RFC 3501 form, such as `14-Aug-2026 09:30:00 +0000`.
+/// The day is two characters, and a space stands for a leading zero.
+/// `None` means that the server sent text that is not a date-time.
+///
+/// # Examples
+///
+/// ```
+/// use mailbert_core::date::internal_date;
+///
+/// assert_eq!(internal_date("01-Jan-2020 00:00:00 +0000"), Some(1_577_836_800));
+/// assert_eq!(internal_date("yesterday"), None);
+/// ```
+pub fn internal_date(text: &str) -> Option<i64> {
+    let text = text.trim_start();
+    let (date, rest) = text.split_once(' ')?;
+    let (time, zone) = rest.trim_start().split_once(' ')?;
+
+    let mut parts = date.split('-');
+    let day = parts.next().and_then(day_of)?;
+    let month = parts.next().and_then(month_of)?;
+    let year = i64::from(parts.next().and_then(|part| digits(part, 4))?);
+    if parts.next().is_some() || !YEARS.contains(&year) {
+        return None;
+    }
+    if !(1..=days_in_month(year, month)).contains(&day) {
+        return None;
+    }
+
+    let mut clock = time.split(':');
+    let hour = clock.next().and_then(|part| digits(part, 2))?;
+    let minute = clock.next().and_then(|part| digits(part, 2))?;
+    let second = clock.next().and_then(|part| digits(part, 2))?;
+    if clock.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let seconds = days_from_civil(year, month, day) * DAY
+        + i64::from(hour) * 3_600
+        + i64::from(minute) * 60
+        + i64::from(second);
+
+    Some(seconds - i64::from(zone_of(zone.trim_end())?))
+}
+
+/// The day of the month, which IMAP writes as one or two digits.
+///
+/// RFC 3501 pads a single digit with a space, and the caller removed
+/// that space before the split.
+fn day_of(text: &str) -> Option<u32> {
+    match text.len() {
+        1 => digits(text, 1),
+        _ => digits(text, 2),
+    }
+}
+
+/// The number of a month that IMAP names, such as `Aug`.
+fn month_of(name: &str) -> Option<u32> {
+    let found = MONTHS
+        .iter()
+        .position(|month| month.eq_ignore_ascii_case(name))?;
+
+    u32::try_from(found + 1).ok()
+}
+
+/// The seconds that a zone such as `+0530` is ahead of UTC.
+fn zone_of(text: &str) -> Option<i32> {
+    let (sign, digits_of) = text.split_at_checked(1)?;
+    let sign = match sign {
+        "+" => 1,
+        "-" => -1,
+        _ => return None,
+    };
+
+    let hours = i32::try_from(digits(digits_of.get(..2)?, 2)?).ok()?;
+    let minutes = i32::try_from(digits(digits_of.get(2..)?, 2)?).ok()?;
+    if minutes > 59 {
+        return None;
+    }
+
+    Some(sign * (hours * 3_600 + minutes * 60))
+}
+
 /// Read a relative offset, such as `7d` or `6m`.
 fn relative(text: &str, clock: Clock) -> Result<Option<Moment>, DateError> {
     let Some(unit) = text.chars().last() else {
@@ -435,6 +525,7 @@ mod tests {
     //! | `prop_the_offset_unit_orders_the_result` | metamorphic | A day is shorter than a week, a week than a month, a month than a year. |
     //! | `prop_parse_never_panics` | invariant | The text comes from a command line, so any bytes can arrive. |
     //! | `prop_the_offset_follows_the_clock` | metamorphic | Two clocks one hour apart must put the day boundary one hour apart. |
+    //! | `prop_an_internal_date_reads_back_the_moment_that_made_it` | round-trip | The INTERNALDATE dates a message that carries no `Date` header, and it orders every sync. One wrong hour sorts the mailbox wrong. |
 
     use hegel::{TestCase, generators as gs};
 
@@ -483,6 +574,110 @@ mod tests {
     fn format(date: (i64, u32, u32)) -> String {
         let (year, month, day) = date;
         format!("{year:04}-{month:02}-{day:02}")
+    }
+
+    // -----------------------------------------------------------------
+    // Unit tests: the INTERNALDATE of a message (§3.3).
+    // -----------------------------------------------------------------
+
+    /// 2020-01-01 00:00:00 UTC.
+    const Y2020: i64 = 1_577_836_800;
+
+    #[test]
+    fn an_internal_date_reads_as_seconds() {
+        assert_eq!(
+            internal_date("14-Aug-2026 09:30:00 +0000"),
+            Some(1_786_699_800)
+        );
+    }
+
+    #[test]
+    fn a_day_with_a_space_in_front_reads() {
+        assert_eq!(internal_date(" 1-Jan-2020 00:00:00 +0000"), Some(Y2020));
+    }
+
+    #[test]
+    fn a_zone_ahead_of_utc_moves_the_moment_back() {
+        assert_eq!(
+            internal_date("01-Jan-2020 00:00:00 +0100"),
+            Some(Y2020 - 3_600)
+        );
+    }
+
+    #[test]
+    fn a_zone_behind_utc_moves_the_moment_forward() {
+        assert_eq!(
+            internal_date("01-Jan-2020 00:00:00 -0500"),
+            Some(Y2020 + 5 * 3_600)
+        );
+    }
+
+    #[test]
+    fn a_zone_with_minutes_in_it_reads() {
+        assert_eq!(
+            internal_date("01-Jan-2020 00:00:00 +0530"),
+            Some(Y2020 - 19_800)
+        );
+    }
+
+    #[test]
+    fn the_name_of_the_month_is_not_case_sensitive() {
+        assert_eq!(internal_date("01-JAN-2020 00:00:00 +0000"), Some(Y2020));
+    }
+
+    #[test]
+    fn a_month_that_is_not_a_month_reads_as_nothing() {
+        assert_eq!(internal_date("01-Xxx-2020 00:00:00 +0000"), None);
+    }
+
+    #[test]
+    fn a_day_that_the_month_does_not_have_reads_as_nothing() {
+        assert_eq!(internal_date("31-Feb-2020 00:00:00 +0000"), None);
+    }
+
+    #[test]
+    fn an_hour_that_the_day_does_not_have_reads_as_nothing() {
+        assert_eq!(internal_date("01-Jan-2020 24:00:00 +0000"), None);
+    }
+
+    #[test]
+    fn a_date_with_no_zone_reads_as_nothing() {
+        assert_eq!(internal_date("01-Jan-2020 00:00:00"), None);
+    }
+
+    #[test]
+    fn text_that_is_not_a_date_reads_as_nothing() {
+        assert_eq!(internal_date("yesterday"), None);
+        assert_eq!(internal_date(""), None);
+    }
+
+    #[hegel::test(test_cases = 60)]
+    fn prop_an_internal_date_reads_back_the_moment_that_made_it(tc: TestCase) {
+        let (year, month, day) = tc.draw(a_civil_date());
+        let hour: u32 =
+            tc.draw(gs::integers::<u32>().min_value(0).max_value(23));
+        let minute: u32 =
+            tc.draw(gs::integers::<u32>().min_value(0).max_value(59));
+        let second: u32 =
+            tc.draw(gs::integers::<u32>().min_value(0).max_value(59));
+        let zone: i32 =
+            tc.draw(gs::integers::<i32>().min_value(-720).max_value(840));
+
+        let sign = if zone < 0 { '-' } else { '+' };
+        let (hours, minutes) = (zone.abs() / 60, zone.abs() % 60);
+        let text = format!(
+            "{day:02}-{}-{year:04} {hour:02}:{minute:02}:{second:02} \
+             {sign}{hours:02}{minutes:02}",
+            MONTHS[month as usize - 1]
+        );
+
+        let want = days_from_civil(year, month, day) * DAY
+            + i64::from(hour) * 3_600
+            + i64::from(minute) * 60
+            + i64::from(second)
+            - i64::from(zone) * 60;
+
+        assert_eq!(internal_date(&text), Some(want), "`{text}` moved");
     }
 
     // -----------------------------------------------------------------

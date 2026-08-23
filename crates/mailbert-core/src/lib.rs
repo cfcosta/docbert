@@ -25,7 +25,7 @@ pub use body::{Stripped, strip, strip_with_footers};
 pub use compile::{Compiled, Vocabulary, compile, expand};
 pub use config::{Account, Config, Credential};
 pub use contacts::{Contact, Contacts, Seen};
-pub use date::{Clock, DateRange};
+pub use date::{Clock, DateRange, internal_date};
 pub use error::{Error, Result};
 pub use index::{Fields, FlagTerm, Hit, MailIndex, flag_term, flag_terms};
 pub use message::{Location, Message};

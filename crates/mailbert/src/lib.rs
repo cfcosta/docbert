@@ -6,18 +6,22 @@
 
 pub mod cli;
 pub mod error;
+pub mod pass;
 pub mod paths;
 pub mod settings;
+pub mod sink;
+pub mod sync;
 pub mod tags;
 
 use std::{
     future::Future,
     io::{self, IsTerminal, Write},
+    sync::Arc,
 };
 
 use clap::CommandFactory;
 use clap_complete::Shell;
-use mailbert_core::config::Config;
+use mailbert_core::{Store, config::Config, index::MailIndex};
 
 use crate::{
     cli::{Cli, Command, When},
@@ -65,6 +69,32 @@ impl Tool {
 
         Ok(config)
     }
+
+    /// The store of §4.2, made if it is not there.
+    ///
+    /// The store goes behind an [`Arc`], because a sync gives it to one
+    /// task for each folder.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the directory or the database is not
+    /// writable.
+    pub fn store(&self) -> Result<Arc<Store>> {
+        self.paths.make()?;
+
+        Ok(Arc::new(Store::open(&self.paths.data)?))
+    }
+
+    /// The lexical index of §6.1, made if it is not there.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the directory is not writable.
+    pub fn index(&self) -> Result<MailIndex> {
+        self.paths.make()?;
+
+        Ok(MailIndex::open(&self.paths.tantivy())?)
+    }
 }
 
 /// Do the work of one command.
@@ -78,9 +108,11 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 
     let tool = Tool::open(&cli)?;
-    let _ = &tool;
 
-    Err(Error::NotYet(cli.command.name()))
+    match &cli.command {
+        Command::Sync(args) => sync::command(&tool, args),
+        other => Err(Error::NotYet(other.name())),
+    }
 }
 
 /// Write the completions of one shell.

@@ -4,9 +4,12 @@
 //! `SELECT`, so a folder always opens read-only, and it fetches with
 //! `BODY.PEEK[]`, which sets no `\Seen` flag. See `docs/mailbert.md` §3.
 
-use std::{collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt, time::Duration};
 
-use tokio::io::{AsyncWriteExt, BufReader, ReadHalf, WriteHalf, split};
+use tokio::{
+    io::{AsyncWriteExt, BufReader, ReadHalf, WriteHalf, split},
+    time::{Instant, timeout},
+};
 
 use crate::{
     error::{Error, Result},
@@ -374,6 +377,75 @@ impl Connection {
         Ok(batch)
     }
 
+    /// Wait until the open folder changes, or until the wait ends.
+    ///
+    /// This is what makes `--watch` cheap: the server speaks first, and
+    /// mailbert asks for nothing until it does. (§3.1)
+    ///
+    /// The answer is true when the server reported a change. A server
+    /// with no `IDLE`, and a connection with no open folder, report
+    /// nothing and give false at once, so the caller falls back to a
+    /// timed pass.
+    ///
+    /// `IDLE` reads. It sets no flag, and it moves no message. (§3)
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the connection breaks, or if the server
+    /// refuses the command.
+    pub async fn idle(&mut self, wait: Duration) -> Result<bool> {
+        if !self.can("IDLE") || self.selected.is_none() {
+            return Ok(false);
+        }
+
+        let tag = self.tags.next_tag();
+        let words = [Token::Atom(tag.clone()), Token::Atom("IDLE".to_string())];
+        self.writer.write_all(&encode(&words)).await?;
+        self.writer.flush().await?;
+
+        let news = self.listen(wait).await?;
+
+        // `DONE` ends the wait. The tagged line must leave the
+        // connection here, or the next command reads it as its own.
+        self.writer
+            .write_all(
+                b"DONE
+",
+            )
+            .await?;
+        self.writer.flush().await?;
+        self.collect(&[tag]).await?.1.ok()?;
+
+        Ok(news)
+    }
+
+    /// Read the lines of one `IDLE`, until one of them is news.
+    async fn listen(&mut self, wait: Duration) -> Result<bool> {
+        let end = Instant::now() + wait;
+
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+
+            // The wait that ends first is the answer `false`, and not
+            // an error. Nothing arrived, which is what a quiet mailbox
+            // looks like.
+            let Ok(line) = timeout(left, read_answer(&mut self.reader)).await
+            else {
+                return Ok(false);
+            };
+
+            let line = line?;
+            self.learn(&line);
+
+            if news(&line) {
+                return Ok(true);
+            }
+        }
+    }
+
     /// Say goodbye, and close the connection.
     pub async fn logout(&mut self) -> Result<()> {
         self.run(&[Token::Atom("LOGOUT".to_string())]).await?;
@@ -483,6 +555,15 @@ impl Connection {
             }
         }
     }
+}
+
+/// True when this untagged line says that the folder changed.
+///
+/// `EXISTS` names a message that arrived, `EXPUNGE` and `VANISHED` name
+/// one that went away, and `FETCH` names a flag that moved. (§3.1)
+fn news(line: &[Token]) -> bool {
+    matches!(word(line, 2).as_str(), "EXISTS" | "EXPUNGE" | "FETCH")
+        || word(line, 1) == "VANISHED"
 }
 
 /// The bytes of a group of commands, ready for one write. (§3.1)
@@ -714,6 +795,94 @@ mod tests {
 
     fn noop() -> Vec<Token> {
         vec![Token::Atom("NOOP".into())]
+    }
+
+    // -----------------------------------------------------------------
+    // IDLE, and the watch loop. (§3.1)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_idle_that_sees_nothing_ends_when_the_wait_runs_out() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+
+        let news = connection
+            .idle(Duration::from_millis(60))
+            .await
+            .expect("the wait ends well");
+
+        assert!(!news);
+        assert!(server.writes().is_empty(), "{:?}", server.writes());
+    }
+
+    #[tokio::test]
+    async fn an_idle_says_that_a_message_arrived() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+
+        let news =
+            tokio::join!(connection.idle(Duration::from_secs(5)), async {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                server.change(|plan| {
+                    plan.folder_mut("INBOX").unwrap().messages.push(
+                        FakeMessage::new(3, "Subject: three\r\n\r\nnew\r\n"),
+                    );
+                });
+            })
+            .0
+            .expect("the server reports the message");
+
+        assert!(news);
+    }
+
+    /// A connection must take a command after `DONE`, or the answer of
+    /// the IDLE lands on the next command.
+    #[tokio::test]
+    async fn a_connection_reads_a_fetch_after_an_idle() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+
+        connection.idle(Duration::from_millis(40)).await.unwrap();
+        let batch = connection.fetch(&UidSet::range(1, 2), None).await.unwrap();
+
+        assert_eq!(batch.messages.len(), 2);
+        assert_eq!(batch.messages[0].uid, 1);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_has_no_idle_never_waits() {
+        let plan = a_plan().with_capabilities(&["IMAP4rev1"]);
+        let server = FakeServer::start(plan).await.unwrap();
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+
+        let started = tokio::time::Instant::now();
+        let news = connection.idle(Duration::from_secs(30)).await.unwrap();
+
+        assert!(!news);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            !server
+                .seen()
+                .commands
+                .iter()
+                .any(|line| line.contains("IDLE"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_with_no_folder_open_never_waits() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+
+        let started = tokio::time::Instant::now();
+        let news = connection.idle(Duration::from_secs(30)).await.unwrap();
+
+        assert!(!news);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     // -----------------------------------------------------------------

@@ -100,7 +100,14 @@ The parts that hold a message and find it again.
   - [x] The words of `tag`: `+todo`, `-done`, and the identities after them.
   - [x] The error type, and the miette report for a bad query.
   - [x] Property tests for the command tree, and for the words of `tag`.
-- [ ] **T20** `sync`, and the `--watch` mode.
+- [x] **T20** `sync`, and the `--watch` mode.
+  - [x] The sync state in the store, for each account and each folder. (§1.1, §3.3)
+  - [x] The sink that keeps a batch: the raw bytes, the message, and the flags. (§4.2)
+  - [x] The threading pass, and the index write that follows a sync. (§5.5, §6.1)
+  - [x] `sync`, `sync <account>`, and the folders that the config names. (§2.1)
+  - [x] `--full`, `--dry-run`, and the counts that the command writes.
+  - [x] IDLE, and the `--watch` loop that reads only what changed. (§3.1)
+  - [x] Property tests: a second sync asks for nothing, and a stop resumes.
 - [ ] **T21** The embeddings, and the semantic leg. (§6.2)
 - [ ] **T22** `search`, `ksearch`, and the output. (§10.1)
 - [ ] **T23** `get`, and `view` with ANSI. (§10.2, §10.3)
