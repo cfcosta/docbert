@@ -31,6 +31,7 @@ use heed::{
     EnvFlags,
     EnvOpenOptions,
     RoTxn,
+    RwTxn,
     types::{Bytes, Str},
 };
 use rkyv::{
@@ -63,6 +64,8 @@ const TAGS_DB: &str = "tags";
 const SAVED_DB: &str = "saved";
 const STATE_DB: &str = "state";
 const PLACES_DB: &str = "places";
+const EMBEDS_DB: &str = "embeds";
+const OWNERS_DB: &str = "owners";
 
 /// The named database inside `blobs.db`.
 const RAW_DB: &str = "raw";
@@ -80,7 +83,7 @@ const BLOB_MAP_SIZE: usize = 64 * GIB;
 
 /// How many named databases each file holds. LMDB needs the count when
 /// the environment opens, so keep these in step with the names above.
-const META_MAX_DBS: u32 = 5;
+const META_MAX_DBS: u32 = 7;
 const BLOB_MAX_DBS: u32 = 1;
 
 /// The characters that a tag must not hold, because the query language
@@ -103,6 +106,12 @@ struct Tables {
 
     /// An account, a folder, and a UID, to the message that sits there.
     places: Database<Str, Str>,
+
+    /// The identity of a message, to what the last embedding pass gave.
+    embeds: Database<Str, Bytes>,
+
+    /// The key of a passage, to the message that owns it.
+    owners: Database<Str, Str>,
 
     /// The identity of a message, to its raw bytes.
     raw: Database<Str, Bytes>,
@@ -139,6 +148,23 @@ pub struct SyncState {
     pub pending: String,
 }
 
+/// What one embedding pass gave one message. (§6.2)
+///
+/// The digest is the fingerprint of the passages under the model that
+/// made them. A second pass that reads the same fingerprint keeps the
+/// embedding that it has, and a mailbox of 100000 messages then costs
+/// one message for one new message.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Archive, Serialize, Deserialize,
+)]
+pub struct Embedded {
+    /// The fingerprint from `embed::digest`.
+    pub digest: [u8; 32],
+
+    /// The key of each passage, in the order that the message cut.
+    pub keys: Vec<u64>,
+}
+
 /// The character that holds an account name apart from a folder name.
 ///
 /// An IMAP folder name never holds a control character, so this makes
@@ -156,6 +182,14 @@ fn state_key(account: &str, folder: &str) -> String {
 /// the numbers behind them.
 fn place_key(account: &str, folder: &str, uid: u32) -> String {
     format!("{account}{STATE_BREAK}{folder}{STATE_BREAK}{uid:010}")
+}
+
+/// The key of one passage in the table of owners.
+///
+/// The number is written wide and in hexadecimal, so every key has one
+/// spelling and one length.
+fn owner_key(key: u64) -> String {
+    format!("{key:016x}")
 }
 
 /// Make a tag out of what the user typed.
@@ -254,6 +288,28 @@ where
     Ok(rkyv::from_bytes::<T, RecordError>(&aligned)?)
 }
 
+/// Drop the embedding record of one message, and the owner of each of
+/// its passages. Returns the keys that the record held.
+///
+/// The caller holds the transaction, because a message that goes away
+/// must lose its passages in the same write.
+fn clear_embedding(
+    wtxn: &mut RwTxn<'_>,
+    db: &Tables,
+    key: &str,
+) -> Result<Vec<u64>> {
+    let held: Option<Embedded> =
+        db.embeds.get(wtxn, key)?.map(decode).transpose()?;
+    let keys = held.map(|one| one.keys).unwrap_or_default();
+
+    for one in &keys {
+        db.owners.delete(wtxn, &owner_key(*one))?;
+    }
+    db.embeds.delete(wtxn, key)?;
+
+    Ok(keys)
+}
+
 impl Store {
     /// Open the store in `dir`, and make the files that are not there.
     pub fn open(dir: &Path) -> Result<Self> {
@@ -269,6 +325,8 @@ impl Store {
         let saved = meta.create_database(&mut wtxn, Some(SAVED_DB))?;
         let state = meta.create_database(&mut wtxn, Some(STATE_DB))?;
         let places = meta.create_database(&mut wtxn, Some(PLACES_DB))?;
+        let embeds = meta.create_database(&mut wtxn, Some(EMBEDS_DB))?;
+        let owners = meta.create_database(&mut wtxn, Some(OWNERS_DB))?;
         wtxn.commit()?;
 
         let mut wtxn = blobs.write_txn()?;
@@ -284,6 +342,8 @@ impl Store {
                 saved,
                 state,
                 places,
+                embeds,
+                owners,
                 raw,
             },
         })
@@ -384,6 +444,10 @@ impl Store {
 
         let existed = self.db.messages.delete(&mut wtxn, &key)?;
         self.db.tags.delete(&mut wtxn, &key)?;
+
+        // A passage of a message that went away must lose its owner,
+        // or the semantic leg answers with a message that is not here.
+        clear_embedding(&mut wtxn, &self.db, &key)?;
         wtxn.commit()?;
 
         let mut wtxn = self.blobs.write_txn()?;
@@ -810,6 +874,130 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Write what an embedding pass gave one message. (§6.2)
+    ///
+    /// Returns the keys that the message held before and holds no
+    /// more. The caller must drop those keys from the embedding
+    /// database and from the PLAID index, or they answer a search with
+    /// text that no message carries.
+    pub fn mark_embedded(
+        &self,
+        id: &MessageId,
+        embedded: &Embedded,
+    ) -> Result<Vec<u64>> {
+        let key = id.full_hex();
+
+        let mut wtxn = self.meta.write_txn()?;
+        let before: Option<Embedded> =
+            self.db.embeds.get(&wtxn, &key)?.map(decode).transpose()?;
+
+        let kept: BTreeSet<u64> = embedded.keys.iter().copied().collect();
+        let dropped: Vec<u64> = before
+            .map(|old| old.keys)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|one| !kept.contains(one))
+            .collect();
+
+        for one in &dropped {
+            self.db.owners.delete(&mut wtxn, &owner_key(*one))?;
+        }
+        for one in &kept {
+            self.db.owners.put(&mut wtxn, &owner_key(*one), &key)?;
+        }
+
+        self.db.embeds.put(&mut wtxn, &key, &encode(embedded)?)?;
+        wtxn.commit()?;
+
+        Ok(dropped)
+    }
+
+    /// What the last embedding pass gave one message.
+    ///
+    /// A message that no pass ever read gives `None`.
+    pub fn embedded(&self, id: &MessageId) -> Result<Option<Embedded>> {
+        let rtxn = self.meta.read_txn()?;
+
+        self.db
+            .embeds
+            .get(&rtxn, &id.full_hex())?
+            .map(decode)
+            .transpose()
+    }
+
+    /// The message that owns one passage. (§8.1)
+    ///
+    /// The semantic leg gives back the keys of passages, and this is
+    /// the way from a passage to the message that it belongs to.
+    pub fn owner(&self, key: u64) -> Result<Option<MessageId>> {
+        let rtxn = self.meta.read_txn()?;
+
+        Ok(self
+            .db
+            .owners
+            .get(&rtxn, &owner_key(key))?
+            .and_then(MessageId::from_hex))
+    }
+
+    /// The message that owns each passage of `keys`.
+    ///
+    /// A key that no message owns is not in the answer. One read
+    /// transaction serves the whole list, because the semantic leg
+    /// asks for a hundred keys at a time.
+    pub fn owners(&self, keys: &[u64]) -> Result<BTreeMap<u64, MessageId>> {
+        let rtxn = self.meta.read_txn()?;
+        let mut found = BTreeMap::new();
+
+        for key in keys {
+            let Some(hex) = self.db.owners.get(&rtxn, &owner_key(*key))? else {
+                continue;
+            };
+            let Some(id) = MessageId::from_hex(hex) else {
+                continue;
+            };
+
+            found.insert(*key, id);
+        }
+
+        Ok(found)
+    }
+
+    /// Forget the embedding of one message.
+    ///
+    /// Returns the keys that the message held, which the caller must
+    /// drop from the embedding database and from the PLAID index.
+    pub fn forget_embedding(&self, id: &MessageId) -> Result<Vec<u64>> {
+        let mut wtxn = self.meta.write_txn()?;
+        let dropped = clear_embedding(&mut wtxn, &self.db, &id.full_hex())?;
+        wtxn.commit()?;
+
+        Ok(dropped)
+    }
+
+    /// Every message that the store holds, and the fingerprint of the
+    /// last embedding pass over it.
+    ///
+    /// A message that no pass ever read is not in the answer, so a
+    /// pass reads this one time and knows what it has.
+    pub fn embeddings(&self) -> Result<BTreeMap<MessageId, [u8; 32]>> {
+        let rtxn = self.meta.read_txn()?;
+        let mut found = BTreeMap::new();
+
+        for entry in self.db.embeds.iter(&rtxn)? {
+            let (key, bytes) = entry?;
+            let Some(id) = MessageId::from_hex(key) else {
+                continue;
+            };
+            let embedded: Embedded = decode(bytes)?;
+
+            found.insert(id, embedded.digest);
+        }
+
+        Ok(found)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Property inventory
@@ -830,6 +1018,7 @@ mod tests {
     //! | `prop_the_state_of_one_account_stays_there` | invariant | Two accounts hold folders of one name, such as INBOX. A key that mixes them syncs one account with the state of another. |
     //! | `prop_every_copy_of_a_message_answers_to_its_uid` | invariant | A copy that answers to nobody can never go away, and `is:gone` would never be true. |
     //! | `prop_a_vanish_never_moves_another_folder` | invariant | A UID that took the wrong copy loses mail that the server still holds. |
+    //! | `prop_a_pass_leaves_one_owner_for_each_key_that_it_kept` | invariant | §6.2 keys every passage. An owner that stays behind answers a search with a message that no longer holds that text. |
     //! | `prop_a_reflag_says_what_the_copies_say` | invariant | The flags of a message are the flags of its copies. A set that drifts answers `is:unread` for mail that the user read. |
 
     use hegel::{TestCase, generators as gs};
@@ -1420,6 +1609,206 @@ mod tests {
             .collect();
 
         assert_eq!(names, vec!["bills".to_string(), "rent".to_string()]);
+    }
+
+    // -----------------------------------------------------------------
+    // The embeddings. (§6.2)
+    // -----------------------------------------------------------------
+
+    /// One embedding record, with the keys that it names.
+    fn embedded(digest: u8, keys: &[u64]) -> Embedded {
+        Embedded {
+            digest: [digest; 32],
+            keys: keys.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_message_that_no_pass_read_has_no_embedding() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store.put(&message("a", "work", "INBOX"), b"raw").unwrap();
+
+        assert_eq!(store.embedded(&id.id).expect("a read"), None);
+    }
+
+    #[test]
+    fn an_embedding_reads_back_what_the_pass_wrote() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        let record = embedded(7, &[10, 11, 12]);
+
+        let dropped = store.mark_embedded(&id, &record).expect("a write");
+
+        assert!(dropped.is_empty());
+        assert_eq!(store.embedded(&id).expect("a read"), Some(record));
+    }
+
+    #[test]
+    fn every_passage_names_the_message_that_owns_it() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+
+        store.mark_embedded(&id, &embedded(7, &[10, 11])).unwrap();
+
+        assert_eq!(store.owner(10).expect("a read"), Some(id));
+        assert_eq!(store.owner(11).expect("a read"), Some(id));
+        assert_eq!(store.owner(12).expect("a read"), None);
+    }
+
+    #[test]
+    fn a_shorter_message_gives_back_the_keys_that_it_dropped() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+
+        store
+            .mark_embedded(&id, &embedded(7, &[10, 11, 12]))
+            .unwrap();
+        let dropped = store
+            .mark_embedded(&id, &embedded(8, &[10]))
+            .expect("a write");
+
+        assert_eq!(dropped, vec![11, 12]);
+        assert_eq!(store.owner(10).expect("a read"), Some(id));
+        assert_eq!(store.owner(11).expect("a read"), None);
+    }
+
+    #[test]
+    fn a_message_that_goes_away_takes_its_passages_with_it() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        store.mark_embedded(&id, &embedded(7, &[10, 11])).unwrap();
+
+        assert!(store.remove(&id).expect("a delete"));
+
+        assert_eq!(store.embedded(&id).expect("a read"), None);
+        assert_eq!(store.owner(10).expect("a read"), None);
+        assert_eq!(store.owner(11).expect("a read"), None);
+    }
+
+    #[test]
+    fn forgetting_an_embedding_gives_back_every_key() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        store.mark_embedded(&id, &embedded(7, &[10, 11])).unwrap();
+
+        let dropped = store.forget_embedding(&id).expect("a delete");
+
+        assert_eq!(dropped, vec![10, 11]);
+        assert_eq!(store.owner(10).expect("a read"), None);
+        assert!(store.embeddings().expect("a read").is_empty());
+    }
+
+    #[test]
+    fn the_fingerprints_name_every_message_that_a_pass_read() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let first = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        let second = store
+            .put(&message("b", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+
+        store.mark_embedded(&first, &embedded(7, &[10])).unwrap();
+        store.mark_embedded(&second, &embedded(8, &[20])).unwrap();
+
+        assert_eq!(
+            store.embeddings().expect("a read"),
+            BTreeMap::from([(first, [7; 32]), (second, [8; 32])])
+        );
+    }
+
+    #[test]
+    fn the_owners_of_a_batch_leave_out_a_key_that_nobody_owns() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        store.mark_embedded(&id, &embedded(7, &[10, 11])).unwrap();
+
+        assert_eq!(
+            store.owners(&[10, 99, 11]).expect("a read"),
+            BTreeMap::from([(10, id), (11, id)])
+        );
+    }
+
+    #[hegel::test(test_cases = 60)]
+    fn prop_a_pass_leaves_one_owner_for_each_key_that_it_kept(tc: TestCase) {
+        let first: Vec<u64> = tc.draw(a_key_set());
+        let second: Vec<u64> = tc.draw(a_key_set());
+
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+
+        store.mark_embedded(&id, &embedded(1, &first)).unwrap();
+        let dropped = store
+            .mark_embedded(&id, &embedded(2, &second))
+            .expect("a write");
+
+        let kept: BTreeSet<u64> = second.iter().copied().collect();
+        let gone: BTreeSet<u64> = dropped.iter().copied().collect();
+
+        // What the pass kept, and what it gave back, cover what was
+        // there and never meet.
+        assert!(gone.is_disjoint(&kept));
+        assert_eq!(
+            first.iter().copied().collect::<BTreeSet<u64>>(),
+            gone.union(&kept)
+                .copied()
+                .filter(|one| first.contains(one))
+                .collect()
+        );
+
+        for key in &kept {
+            assert_eq!(store.owner(*key).expect("a read"), Some(id));
+        }
+        for key in &gone {
+            assert_eq!(store.owner(*key).expect("a read"), None);
+        }
+    }
+
+    /// A short list of passage keys, without repeats.
+    #[hegel::composite]
+    fn a_key_set(tc: TestCase) -> Vec<u64> {
+        let keys: Vec<u64> = tc.draw(
+            gs::vecs(gs::integers::<u64>().min_value(1).max_value(8))
+                .min_size(0)
+                .max_size(6),
+        );
+
+        keys.into_iter()
+            .collect::<BTreeSet<u64>>()
+            .into_iter()
+            .collect()
     }
 
     // -----------------------------------------------------------------

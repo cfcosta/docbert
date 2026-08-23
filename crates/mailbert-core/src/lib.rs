@@ -10,6 +10,7 @@ pub mod compile;
 pub mod config;
 pub mod contacts;
 pub mod date;
+pub mod embed;
 pub mod error;
 pub mod index;
 pub mod message;

@@ -310,6 +310,24 @@ fn absolute(text: &str, clock: Clock) -> Result<Option<Moment>, DateError> {
     Ok(Some(Moment::closed(start, start + DAY)))
 }
 
+/// The day of `at` in UTC, written as `YYYY-MM-DD`.
+///
+/// The preamble of a passage carries this day (§6.2), and so does the
+/// row of a result (§10.1). A year before 1 or after 9999 keeps every
+/// digit that it needs, because a date that is wrong must look wrong.
+///
+/// ```
+/// use mailbert_core::date::day_text;
+///
+/// assert_eq!(day_text(1_577_836_800), "2020-01-01");
+/// assert_eq!(day_text(-1), "1969-12-31");
+/// ```
+pub fn day_text(at: i64) -> String {
+    let (year, month, day) = civil_from_days(at.div_euclid(DAY));
+
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Read the INTERNALDATE that IMAP gives a message (§3.3).
 ///
 /// The text is the RFC 3501 form, such as `14-Aug-2026 09:30:00 +0000`.
@@ -516,6 +534,7 @@ mod tests {
     //! | Property | Oracle | Why it matters |
     //! | --- | --- | --- |
     //! | `prop_a_civil_date_round_trips` | round-trip | The whole module stands on the day arithmetic. One wrong day moves every result of a date filter. |
+    //! | `prop_the_day_text_names_the_day_that_holds_it` | round-trip | The preamble of a passage (§6.2) and the row of a result (§10.1) both show this day. A day that is off by one dates every message wrong. |
     //! | `prop_a_valid_date_always_parses` | invariant | A date the user can read off a message must not be rejected. |
     //! | `prop_an_impossible_day_always_fails` | invariant | `2026-02-30` is a typo, and a silent reading of it gives the wrong mail. |
     //! | `prop_a_day_lasts_one_day` | metamorphic | A bare date must cover its day, no more and no less. |
@@ -948,6 +967,28 @@ mod tests {
 
         let days = days_from_civil(date.0, date.1, date.2);
         assert_eq!(civil_from_days(days), date);
+    }
+
+    #[hegel::test(test_cases = 400)]
+    fn prop_the_day_text_names_the_day_that_holds_it(tc: TestCase) {
+        // The years reach behind 1970, because a `Date` header can
+        // name a day before the epoch and the arithmetic must hold.
+        let year: i64 =
+            tc.draw(gs::integers::<i64>().min_value(1900).max_value(2200));
+        let month: u32 =
+            tc.draw(gs::integers::<u32>().min_value(1).max_value(12));
+        let day: u32 = tc.draw(
+            gs::integers::<u32>()
+                .min_value(1)
+                .max_value(days_in_month(year, month)),
+        );
+
+        let date = (year, month, day);
+        let start = days_from_civil(date.0, date.1, date.2) * DAY;
+        let second: i64 =
+            tc.draw(gs::integers::<i64>().min_value(0).max_value(DAY - 1));
+
+        assert_eq!(day_text(start + second), format(date));
     }
 
     #[hegel::test(test_cases = 400)]

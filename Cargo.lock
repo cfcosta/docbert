@@ -3242,6 +3242,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "chumsky",
+ "docbert-core",
  "heed",
  "hegeltest",
  "html2text",
