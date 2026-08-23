@@ -120,8 +120,8 @@ mailbert search saved:unread-work
 
 # Other
 mailbert contacts caina              # what `from:caina` resolves to
-mailbert export "tag:todo" ~/mail/todo     # symlink maildir for your MUA
-mailbert status                      # message counts, index health, last sync
+mailbert export "tag:todo" ~/mail/todo     # a maildir for your MUA
+mailbert status                      # the counts of the store and the index
 mailbert mcp                         # stdio MCP server
 ```
 
@@ -250,7 +250,11 @@ The constraints prevent the failure mode of subject-only threading, where two un
 
 ### 5.6 Contacts
 
-During sync, mailbert records each address that it sees, each display name for that address, and how frequently you and that address correspond. `mailbert contacts caina` shows the result of the resolution.
+mailbert knows each address that its mail carries, each display name for that address, and how often you and that address write to each other. `mailbert contacts caina` shows what a name resolves to.
+
+The book comes from the store, and not from the sync. §4.2 keeps every message in the store, so one pass over the store gives the book. A book that the store makes never falls behind the mail that the store holds.
+
+A message that one of your addresses sent counts as outbound for each address on it. Every other message counts as inbound. mailbert reads your addresses from the `user` of each account of §1.2. A login that holds no `@` is a name, and not an address, so a configuration that gives only such logins makes every message inbound.
 
 At query time, `from:caina` becomes a set of addresses, ordered by that frequency. The filter that reaches the index is an exact match on an address set, so it stays fast. This is better than fuzzy matching on a text field, because you can see what the expansion did, and because `from:sam` cannot quietly include `samsung`.
 

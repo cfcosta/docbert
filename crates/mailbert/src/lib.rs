@@ -5,6 +5,7 @@
 //! and it never writes to one.
 
 pub mod cli;
+pub mod contacts;
 pub mod error;
 pub mod export;
 pub mod pass;
@@ -15,6 +16,7 @@ pub mod semantic;
 pub mod settings;
 pub mod show;
 pub mod sink;
+pub mod status;
 pub mod sync;
 pub mod tags;
 pub mod thread;
@@ -147,6 +149,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Thread(args) => thread::command(&tool, args),
         Command::Tag(args) => tags::command(&tool, args),
         Command::Saved { action } => saved::command(&tool, action),
+        Command::Contacts(args) => contacts::command(&tool, args),
+        Command::Status(args) => status::command(&tool, args),
         other => Err(Error::NotYet(other.name())),
     }
 }
@@ -232,12 +236,12 @@ mod tests {
             "/tmp/m",
             "--config",
             "/tmp/m.toml",
-            "status",
+            "mcp",
         ]);
 
         let result = run(cli);
 
-        assert!(matches!(result, Err(Error::NotYet("status"))), "{result:?}");
+        assert!(matches!(result, Err(Error::NotYet("mcp"))), "{result:?}");
     }
 
     #[test]

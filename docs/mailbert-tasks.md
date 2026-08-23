@@ -169,5 +169,17 @@ The parts that hold a message and find it again.
   - [x] A name that is already there takes the new query.
   - [x] `saved list` gives the searches by name, and `saved rm` forgets one.
   - [x] A name that `add` writes is a name that `saved:` expands. (§9)
-- [ ] **T26** `contacts`, and `status`. (§5.6, §10.4)
+- [x] **T26** `contacts`, and `status`. (§5.6, §10.4)
+  - [x] `contacts::mine` reads the addresses of the accounts. (§1.2)
+  - [x] A login that holds no `@` says nothing about direction.
+  - [x] `contacts::book` reads the addresses from the store. (§5.6)
+  - [x] A message that you sent counts as outbound for every address.
+  - [x] The order of the store never changes the book.
+  - [x] `contacts <name>` gives the addresses that the name resolves to.
+  - [x] The address that you write to most comes first. (§5.6)
+  - [x] `status` counts the store, the index, the vectors, and the tags.
+  - [x] `status` says how far the index is behind the store. (§3.2)
+  - [x] `status` names each folder, its UIDVALIDITY, and its UIDNEXT.
+  - [x] `status` never speaks to the IMAP server. (§3.3)
+  - [x] `--json` writes the counts and the accounts. (§10.4)
 - [ ] **T27** The MCP server. (§2.2)
