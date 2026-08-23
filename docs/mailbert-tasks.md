@@ -118,7 +118,18 @@ The parts that hold a message and find it again.
   - [x] The leg: the passages that a query finds, and the messages that own them.
   - [x] A filter gates the leg before it ranks. (§8.2)
   - [x] `sync` sweeps, and says how many messages it embedded.
-- [ ] **T22** `search`, `ksearch`, and the output. (§10.1)
+- [x] **T22** `search`, `ksearch`, and the output. (§10.1)
+  - [x] `search::find` runs both legs, and gives the rows of §8.4.
+  - [x] `search::leg` gates the semantic leg with the filter. (§8.2)
+  - [x] `ksearch` opens no brain, and loads no model. (§2.1)
+  - [x] A query with no free text never asks the model.
+  - [x] A search over mail that no pass embedded gives one leg, and says so.
+  - [x] `search::lines` gives the identity, the day, the place in the thread,
+        the sender, the subject, the folders, and the tags.
+  - [x] `--snippet` gives the part of the body that holds the word.
+  - [x] The columns of the text share one width. (§10.1)
+  - [x] `--json` writes the query, the legs, and the rows. (§10.4)
+  - [x] `crate::clock` gives the local offset that §7.1 reads dates against.
 - [ ] **T23** `get`, and `view` with ANSI. (§10.2, §10.3)
 - [ ] **T24** `export` to a maildir. (§4.3)
 - [ ] **T25** The MCP server. (§2.2)

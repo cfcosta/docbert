@@ -336,26 +336,31 @@ pub fn load(at: &Path) -> Result<Option<PlaidIndex>> {
 /// The candidates of the semantic leg, best first. (§8.1)
 ///
 /// `allow` gates the leg before it ranks (§8.2). `None` lets every
-/// message through, and a set keeps the messages that it names. The
-/// answer holds the numeric key of each message, which is what the
-/// index of §6.1 stores and what the fusion of §8.1 reads.
+/// message through, and a set of numeric keys keeps the messages that
+/// it names. Those keys are what `MailIndex::allow` gives.
+///
+/// The answer names one message for each passage that it kept, best
+/// first, and it names no message twice.
 pub fn leg(
     index: &PlaidIndex,
     store: &Store,
     query: &Tensor,
     allow: Option<&BTreeSet<u64>>,
     count: usize,
-) -> Result<Vec<u64>> {
+) -> Result<Vec<MessageId>> {
     let deep = count.saturating_mul(OVERSAMPLE).max(FLOOR);
     let found = plaid_search(index, query, deep)?;
 
     let keys: Vec<u64> = found.iter().map(|one| one.doc_id).collect();
-    let owners: BTreeMap<u64, u64> = store
-        .owners(&keys)?
-        .into_iter()
-        .map(|(key, id)| (key, id.numeric()))
-        .filter(|(_, owner)| allow.is_none_or(|set| set.contains(owner)))
-        .collect();
+    let mut names: BTreeMap<u64, MessageId> = BTreeMap::new();
+    let mut owners: BTreeMap<u64, u64> = BTreeMap::new();
+
+    for (key, id) in store.owners(&keys)? {
+        if allow.is_none_or(|set| set.contains(&id.numeric())) {
+            owners.insert(key, id.numeric());
+            names.insert(id.numeric(), id);
+        }
+    }
 
     let scored: Vec<(u64, f32)> = found
         .into_iter()
@@ -365,7 +370,10 @@ pub fn leg(
     let mut ranked = embed::collapse(&scored, &owners);
     ranked.truncate(count);
 
-    Ok(ranked)
+    Ok(ranked
+        .into_iter()
+        .filter_map(|key| names.remove(&key))
+        .collect())
 }
 
 /// The messages that a pass has embedded, by their numeric key.
@@ -637,8 +645,8 @@ mod tests {
 
         let ranked = leg(&index, &store, &query(NEAR), None, 2).expect("a leg");
 
-        assert_eq!(ranked.first(), Some(&near.numeric()));
-        assert_ne!(near.numeric(), far.numeric());
+        assert_eq!(ranked.first(), Some(&near));
+        assert_ne!(near, far);
     }
 
     #[test]
@@ -663,7 +671,7 @@ mod tests {
         let ranked =
             leg(&index, &store, &query(NEAR), Some(&allow), 2).expect("a leg");
 
-        assert_eq!(ranked, vec![far.numeric()]);
+        assert_eq!(ranked, vec![far]);
     }
 
     #[test]
@@ -691,9 +699,9 @@ mod tests {
 
         let ranked = leg(&index, &store, &query(NEAR), None, 8).expect("a leg");
 
-        let names: BTreeSet<u64> = ranked.iter().copied().collect();
+        let names: BTreeSet<MessageId> = ranked.iter().copied().collect();
         assert_eq!(names.len(), ranked.len());
-        assert_eq!(ranked.first(), Some(&long.numeric()));
+        assert_eq!(ranked.first(), Some(&long));
     }
 
     // -----------------------------------------------------------------
@@ -1015,7 +1023,9 @@ mod tests {
             .expect("a leg");
 
         for one in &ranked {
-            assert!(allow.contains(one), "the filter let {one} through");
+            let key = one.numeric();
+
+            assert!(allow.contains(&key), "the filter let {key} through");
         }
     }
 

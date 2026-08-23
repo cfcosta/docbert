@@ -8,6 +8,7 @@ pub mod cli;
 pub mod error;
 pub mod pass;
 pub mod paths;
+pub mod search;
 pub mod semantic;
 pub mod settings;
 pub mod sink;
@@ -22,7 +23,7 @@ use std::{
 
 use clap::CommandFactory;
 use clap_complete::Shell;
-use mailbert_core::{Store, config::Config, index::MailIndex};
+use mailbert_core::{Store, config::Config, date::Clock, index::MailIndex};
 
 use crate::{
     cli::{Cli, Command, When},
@@ -130,8 +131,28 @@ pub fn run(cli: Cli) -> Result<()> {
 
     match &cli.command {
         Command::Sync(args) => sync::command(&tool, args),
+        Command::Search(args) => {
+            search::command(&tool, args, search::Legs::Both)
+        }
+        Command::Ksearch(args) => {
+            search::command(&tool, args, search::Legs::Words)
+        }
         other => Err(Error::NotYet(other.name())),
     }
+}
+
+/// The clock of the machine, with the offset of its time zone.
+///
+/// §7.1 reads `date:today` against the day of the reader, and §10.1
+/// writes the day of each message. Both need the local offset, which
+/// only the machine knows. A machine that hides its zone gives UTC.
+pub fn clock() -> Clock {
+    let now = jiff::Timestamp::now();
+    let offset = jiff::tz::TimeZone::try_system()
+        .map(|zone| zone.to_offset(now).seconds())
+        .unwrap_or(0);
+
+    Clock::new(now.as_second(), offset)
 }
 
 /// Write the completions of one shell.
