@@ -204,3 +204,15 @@ The parts that hold a message and find it again.
   - [x] Each IMAP command reaches the log, and no password does. (§3)
   - [x] A sync gives one span for each account and each folder. (§3.3)
   - [x] The slow steps say how many milliseconds they took.
+
+- [x] **T29** The index catches up with the store. (§6.1)
+  - [x] `MailIndex::held` gives every identity that the index holds.
+  - [x] A pass writes the mail that the store holds and the index lacks.
+  - [x] A pass that finds nothing behind writes nothing.
+  - [x] The log says how much mail the index was behind.
+
+- [ ] **T30** Exclude a folder by the attribute that `LIST` gave. (§1.2)
+  - [ ] An `exclude` entry that starts with a backslash matches an attribute.
+  - [ ] A name in `exclude` keeps the meaning that it has now.
+  - [ ] `look` carries the attributes of each folder to the choice.
+  - [ ] The gmail account of the user leaves `\Trash` out.

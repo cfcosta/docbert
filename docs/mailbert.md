@@ -321,6 +321,8 @@ The states are in this field because `is:encrypted`, `is:gone`, `is:bulk`, and `
 
 `is:unread` is the one question that no term answers. The field holds `\seen` or does not hold it, and `is:unread` is the negation.
 
+**The index catches up with the store.** A sync writes the mail into the store first, and writes the index after. A sync that stops between those two steps leaves mail that the store holds and the index lacks. That mail is not new mail, so no later sync touches it, and no search finds it. Each pass reads the identities that the index holds, and writes the mail that the store holds and the index lacks. The log says how much mail was behind. This makes an interrupted sync safe, and it removes the need for a full download after one.
+
 ### 6.2 Embeddings
 
 mailbert embeds each message, and this includes bulk mail. At 10,000 to 100,000 messages the cost is acceptable, and nothing must be invisible to the semantic leg.

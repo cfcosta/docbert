@@ -34,7 +34,7 @@ use tantivy::{
     Term,
     collector::{DocSetCollector, TopDocs},
     directory::MmapDirectory,
-    query::{Query, QueryParser, TermQuery},
+    query::{AllQuery, Query, QueryParser, TermQuery},
     schema::{
         FAST,
         Field,
@@ -591,6 +591,16 @@ impl MailIndex {
         Ok(hits)
     }
 
+    /// Every key that the index holds.
+    ///
+    /// A sync that stops after the download, and before the pass,
+    /// leaves mail in the store that the index never saw. A pass
+    /// reads this set, and writes what the store holds and this set
+    /// lacks. (§6.1)
+    pub fn held(&self) -> Result<BTreeSet<u64>> {
+        self.allow(&AllQuery)
+    }
+
     /// Every embedding key that a filter allows.
     ///
     /// §8.2 gates the semantic leg with this list, before that leg
@@ -750,6 +760,51 @@ mod tests {
     /// How many documents one query finds.
     fn count(index: &MailIndex, query: &dyn Query) -> usize {
         index.top(query, 100).expect("a search").len()
+    }
+
+    // -----------------------------------------------------------------
+    // The keys that the index holds. (§6.1)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn held_gives_the_key_of_every_message_in_the_index() {
+        let index = MailIndex::open_in_ram().expect("an index");
+        let one = message("a", "work", "INBOX");
+        let two = message("b", "work", "Sent");
+
+        write(&index, &one);
+        write(&index, &two);
+
+        assert_eq!(
+            index.held().expect("the keys"),
+            BTreeSet::from([one.id.numeric(), two.id.numeric()])
+        );
+    }
+
+    #[test]
+    fn held_gives_nothing_for_an_index_that_holds_nothing() {
+        let index = MailIndex::open_in_ram().expect("an index");
+
+        assert!(index.held().expect("the keys").is_empty());
+    }
+
+    #[test]
+    fn held_forgets_a_message_that_left_the_index() {
+        let index = MailIndex::open_in_ram().expect("an index");
+        let one = message("a", "work", "INBOX");
+        let two = message("b", "work", "Sent");
+
+        write(&index, &one);
+        write(&index, &two);
+
+        let mut writer = index.writer(BUDGET).expect("a writer");
+        index.remove(&writer, &two.id);
+        index.commit(&mut writer).expect("a commit");
+
+        assert_eq!(
+            index.held().expect("the keys"),
+            BTreeSet::from([one.id.numeric()])
+        );
     }
 
     // -----------------------------------------------------------------

@@ -40,7 +40,10 @@ pub struct Wrote {
 ///
 /// This is the pass of a first sync, and of a rebuild.
 pub fn everything(store: &Store, index: &MailIndex) -> Result<Wrote> {
-    write(store, index, None)
+    let messages = store.all()?;
+    let threading = thread_all(&messages);
+
+    write(store, index, &messages, &threading, None)
 }
 
 /// Thread the store, and write the threads that a sync moved.
@@ -48,23 +51,52 @@ pub fn everything(store: &Store, index: &MailIndex) -> Result<Wrote> {
 /// A message that arrives can join two threads into one, and that moves
 /// every message of both. Each of those messages is in the thread of a
 /// message that the sync touched, so this writes them all.
+///
+/// The pass also writes the mail that the index is behind on. A sync
+/// that stops after the download, and before this pass, leaves mail
+/// that no later sync touches. Without this repair that mail stays out
+/// of the index for ever, and no search finds it. (§6.1)
 pub fn after_sync(
     store: &Store,
     index: &MailIndex,
     touched: &BTreeSet<MessageId>,
 ) -> Result<Wrote> {
-    match touched.is_empty() {
-        true => Ok(Wrote {
-            messages: 0,
-            threads: threads_of(store)?,
-        }),
-        false => write(store, index, Some(touched)),
+    let messages = store.all()?;
+    let threading = thread_all(&messages);
+    let behind = behind(index, &messages)?;
+
+    if !behind.is_empty() {
+        tracing::info!(
+            messages = behind.len(),
+            "the index was behind the store"
+        );
     }
+
+    let mut want = touched.clone();
+    want.extend(behind);
+
+    if want.is_empty() {
+        return Ok(Wrote {
+            messages: 0,
+            threads: threading.len(),
+        });
+    }
+
+    write(store, index, &messages, &threading, Some(&want))
 }
 
-/// How many threads the store holds.
-fn threads_of(store: &Store) -> Result<usize> {
-    Ok(thread_all(&store.all()?).len())
+/// The mail that the store holds, and that the index lacks.
+fn behind(
+    index: &MailIndex,
+    messages: &[Message],
+) -> Result<BTreeSet<MessageId>> {
+    let held = index.held()?;
+
+    Ok(messages
+        .iter()
+        .map(|message| message.id)
+        .filter(|id| !held.contains(&id.numeric()))
+        .collect())
 }
 
 /// Thread every message that the store holds. (§5.5)
@@ -102,11 +134,11 @@ fn wanted(
 fn write(
     store: &Store,
     index: &MailIndex,
+    messages: &[Message],
+    threading: &Threading,
     touched: Option<&BTreeSet<MessageId>>,
 ) -> Result<Wrote> {
-    let messages = store.all()?;
-    let threading = thread_all(&messages);
-    let wanted = wanted(&threading, touched);
+    let wanted = wanted(threading, touched);
 
     let mut writer = index.writer(BUDGET)?;
     let mut count = 0;
@@ -117,7 +149,7 @@ fn write(
         index.clear(&writer)?;
     }
 
-    for message in &messages {
+    for message in messages {
         if wanted
             .as_ref()
             .is_some_and(|set| !set.contains(&message.id))
@@ -150,6 +182,7 @@ mod tests {
     //! | --- | --- | --- |
     //! | `prop_every_message_of_the_store_reaches_the_index` | invariant | A message that the pass misses is mail that no search can find. |
     //! | `prop_the_index_agrees_with_the_threading` | differential | §10.1 counts `[3/7]` off the index, and `thread` reads it. A thread that disagrees with §5.5 shows the wrong list. |
+    //! | `prop_a_pass_leaves_no_message_out_of_the_index` | invariant | A sync that stops before the pass leaves mail that no later sync touches, and no search finds it. |
     //! | `prop_a_second_pass_changes_nothing` | algebraic | Every sync runs the pass again, and must not write a message twice. |
 
     use hegel::{TestCase, generators as gs};
@@ -164,6 +197,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::trace::pen::{Pen, capture, open};
 
     // -----------------------------------------------------------------
     // Helpers.
@@ -221,6 +255,87 @@ mod tests {
 
     fn in_ram() -> MailIndex {
         MailIndex::open_in_ram().expect("an index")
+    }
+
+    // -----------------------------------------------------------------
+    // The index catches up with the store. (§6.1)
+    // -----------------------------------------------------------------
+
+    /// A sync that stopped after the download, and before the pass,
+    /// leaves mail that no later sync touches. Each pass must find that
+    /// mail again, or the search never sees it. (§6.1)
+    #[test]
+    fn a_pass_writes_the_mail_that_an_earlier_pass_never_wrote() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let index = in_ram();
+
+        write(&store, "a", "The deposit", None);
+        write(&store, "b", "The inspection", None);
+
+        // Nothing touched this run, and the index holds nothing.
+        let wrote =
+            after_sync(&store, &index, &BTreeSet::new()).expect("a pass");
+
+        assert_eq!(wrote.messages, 2);
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn a_pass_that_finds_nothing_behind_writes_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let index = in_ram();
+
+        write(&store, "a", "The deposit", None);
+        everything(&store, &index).expect("a first pass");
+
+        let wrote = after_sync(&store, &index, &BTreeSet::new())
+            .expect("a second pass");
+
+        assert_eq!(wrote.messages, 0);
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn the_log_of_a_pass_says_how_much_the_index_was_behind() {
+        open();
+
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let index = in_ram();
+
+        write(&store, "a", "The deposit", None);
+        write(&store, "b", "The inspection", None);
+
+        let pen = Pen::default();
+        tracing::subscriber::with_default(capture(pen.clone()), || {
+            after_sync(&store, &index, &BTreeSet::new()).expect("a pass");
+        });
+
+        let log = pen.text();
+        assert!(log.contains("the index was behind the store"), "{log}");
+        assert!(log.contains("messages=2"), "{log}");
+    }
+
+    #[test]
+    fn the_log_of_a_pass_says_nothing_when_the_index_is_current() {
+        open();
+
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let index = in_ram();
+
+        write(&store, "a", "The deposit", None);
+        everything(&store, &index).expect("a first pass");
+
+        let pen = Pen::default();
+        tracing::subscriber::with_default(capture(pen.clone()), || {
+            after_sync(&store, &index, &BTreeSet::new()).expect("a pass");
+        });
+
+        let log = pen.text();
+        assert!(!log.contains("behind the store"), "{log}");
     }
 
     // -----------------------------------------------------------------
@@ -427,6 +542,40 @@ mod tests {
             .collect();
 
         assert_eq!(threads.len(), 1, "one thread became {}", threads.len());
+    }
+
+    /// Whatever a sync touched, the index must hold the whole store
+    /// after the pass. A message that this misses is mail that no
+    /// search can find. (§6.1)
+    #[hegel::test(test_cases = 20)]
+    fn prop_a_pass_leaves_no_message_out_of_the_index(tc: TestCase) {
+        let keys = tc.draw(some_keys());
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let index = in_ram();
+
+        let ids: Vec<MessageId> = keys
+            .iter()
+            .map(|key| write(&store, key, "Deposit", None))
+            .collect();
+
+        // A message that no run touched is mail that a sync left
+        // behind when it stopped before the pass.
+        let touched: BTreeSet<MessageId> = ids
+            .iter()
+            .filter(|_| tc.draw(gs::booleans()))
+            .copied()
+            .collect();
+
+        after_sync(&store, &index, &touched).expect("a pass");
+
+        assert_eq!(index.len(), store.len().expect("a read"));
+        for id in store.ids().expect("a read") {
+            assert!(
+                index.get(&id).expect("a read").is_some(),
+                "a message never reached the index"
+            );
+        }
     }
 
     #[hegel::test(test_cases = 20)]
