@@ -21,6 +21,7 @@ pub mod status;
 pub mod sync;
 pub mod tags;
 pub mod thread;
+pub mod trace;
 
 use std::{
     future::Future,

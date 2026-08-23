@@ -26,6 +26,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
   "ring",
   "tls12",
 ] }
+tracing = "0.1"
 webpki-roots = "1"
 
 [dev-dependencies]

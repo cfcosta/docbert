@@ -197,3 +197,10 @@ The parts that hold a message and find it again.
   - [x] Each answer carries the text and the fields together.
   - [x] A bad query reads as the fault of the caller, and not of the server.
   - [x] Each tool schema drops the `$schema` keyword.
+- [ ] **T28** The log of the work. (§10.5)
+  - [x] `trace::directive` turns `--verbose` into a filter.
+  - [x] `MAILBERT_LOG` wins over the flag, and an empty one does not.
+  - [x] The log goes to the standard error, so `--json` and MCP stay clean.
+  - [ ] Each IMAP command reaches the log, and no password does. (§3)
+  - [ ] A sync gives one span for each account and each folder. (§3.3)
+  - [ ] The slow steps say how many milliseconds they took.
