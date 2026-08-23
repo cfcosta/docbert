@@ -16,6 +16,7 @@ use crate::{
     sequence::{LAST, UidSet},
     stream::Stream,
     token::{Token, encode},
+    trace::{heard, said},
     wire::{Tags, read_answer},
 };
 
@@ -38,6 +39,17 @@ pub enum State {
     No,
     /// The server did not understand the command.
     Bad,
+}
+
+impl State {
+    /// The word that the server wrote. (RFC 3501 §7.1)
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::No => "NO",
+            Self::Bad => "BAD",
+        }
+    }
 }
 
 /// The answer to one command.
@@ -146,6 +158,7 @@ impl fmt::Debug for Connection {
 impl Connection {
     /// Open a connection, and read the greeting.
     pub async fn open(host: &str, port: u16, tls: bool) -> Result<Self> {
+        let start = Instant::now();
         let stream = Stream::open(host, port, tls).await?;
         let tls = stream.is_tls();
         let (reader, writer) = split(stream);
@@ -159,6 +172,14 @@ impl Connection {
             tls,
         };
         connection.greet().await?;
+
+        tracing::debug!(
+            host,
+            port,
+            tls = connection.tls,
+            ms = start.elapsed().as_millis(),
+            "opened a connection"
+        );
 
         Ok(connection)
     }
@@ -189,10 +210,22 @@ impl Connection {
             std::slice::from_ref(&tag),
             std::slice::from_ref(&words.to_vec()),
         );
+        let start = Instant::now();
+
+        // The line goes to the log before the write, so a command that
+        // never comes back still says which one it was. (§10.5)
+        tracing::trace!(command = %said(words), "sent");
         self.writer.write_all(&raw).await?;
         self.writer.flush().await?;
 
-        Ok(self.collect(&[tag]).await?.1)
+        let answer = self.collect(&[tag]).await?.1;
+        tracing::debug!(
+            command = %said(words),
+            answer = %heard(answer.state.name(), answer.lines.len()),
+            ms = start.elapsed().as_millis(),
+        );
+
+        Ok(answer)
     }
 
     /// Send each command at once, and read every answer. (§3.1)
@@ -210,6 +243,11 @@ impl Connection {
 
         let tags: Vec<String> =
             commands.iter().map(|_| self.tags.next_tag()).collect();
+        let start = Instant::now();
+
+        for words in commands {
+            tracing::trace!(command = %said(words), "sent");
+        }
         self.writer.write_all(&pipelined(&tags, commands)).await?;
         self.writer.flush().await?;
 
@@ -222,6 +260,12 @@ impl Connection {
             };
             answers[at] = Some(answer);
         }
+
+        tracing::debug!(
+            commands = commands.len(),
+            ms = start.elapsed().as_millis(),
+            "a group of commands came back"
+        );
 
         answers
             .into_iter()
@@ -342,6 +386,14 @@ impl Connection {
 
         self.selected = Some(name.to_string());
 
+        tracing::debug!(
+            folder = name,
+            exists = view.exists,
+            uid_next = view.uid_next,
+            uid_validity = view.uid_validity,
+            "opened a folder, read-only"
+        );
+
         Ok(view)
     }
 
@@ -359,6 +411,7 @@ impl Connection {
             return Ok(Batch::default());
         }
 
+        let start = Instant::now();
         let answer = self.run(&self.command(set, since)).await?.ok()?;
         let mut batch = Batch::default();
 
@@ -373,6 +426,20 @@ impl Connection {
             }
         }
         batch.messages.sort_by_key(|message| message.uid);
+
+        tracing::debug!(
+            folder = self.selected.as_deref().unwrap_or("?"),
+            asked = set.count(),
+            messages = batch.messages.len(),
+            gone = batch.gone.len(),
+            bytes = batch
+                .messages
+                .iter()
+                .map(|one| one.body.len())
+                .sum::<usize>(),
+            ms = start.elapsed().as_millis(),
+            "fetched a batch"
+        );
 
         Ok(batch)
     }
@@ -403,7 +470,18 @@ impl Connection {
         self.writer.write_all(&encode(&words)).await?;
         self.writer.flush().await?;
 
+        tracing::debug!(
+            folder = self.selected.as_deref().unwrap_or("?"),
+            seconds = wait.as_secs(),
+            "waiting for the server to speak"
+        );
+        let start = Instant::now();
         let news = self.listen(wait).await?;
+        tracing::debug!(
+            news,
+            ms = start.elapsed().as_millis(),
+            "the wait ended"
+        );
 
         // `DONE` ends the wait. The tagged line must leave the
         // connection here, or the next command reads it as its own.
@@ -740,6 +818,7 @@ mod tests {
     use crate::{
         fake::{FakeFolder, FakeMessage, FakeServer, Plan},
         sequence::batches,
+        trace::pen::{Pen, capture},
     };
 
     // -----------------------------------------------------------------
@@ -883,6 +962,52 @@ mod tests {
 
         assert!(!news);
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    // -----------------------------------------------------------------
+    // The log of the conversation. (§10.5)
+    // -----------------------------------------------------------------
+
+    /// §3 keeps a credential out of every file that the reader did not
+    /// choose, and the log is such a file.
+    #[tokio::test]
+    async fn a_login_writes_no_password_to_the_log() {
+        let pen = Pen::default();
+        let held = tracing::subscriber::set_default(capture(pen.clone()));
+        let server = FakeServer::start(a_plan().with_login("me", "hunter2"))
+            .await
+            .unwrap();
+        let mut connection =
+            Connection::open("127.0.0.1", server.port(), false)
+                .await
+                .unwrap();
+
+        connection.login("me", "hunter2").await.unwrap();
+        drop(held);
+
+        let log = pen.text();
+        assert!(!log.contains("hunter2"), "{log}");
+        assert!(log.contains("LOGIN ***"), "{log}");
+    }
+
+    /// A reader who gives `--verbose` wants to see the conversation.
+    #[tokio::test]
+    async fn a_command_and_its_answer_reach_the_log() {
+        let pen = Pen::default();
+        let held = tracing::subscriber::set_default(capture(pen.clone()));
+        let server = a_server().await;
+        let mut connection =
+            Connection::open("127.0.0.1", server.port(), false)
+                .await
+                .unwrap();
+
+        connection.examine("INBOX").await.unwrap();
+        drop(held);
+
+        let log = pen.text();
+        assert!(log.contains("EXAMINE \"INBOX\""), "{log}");
+        assert!(log.contains("answer=OK"), "{log}");
+        assert!(log.contains("opened a folder, read-only"), "{log}");
     }
 
     // -----------------------------------------------------------------

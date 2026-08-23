@@ -12,6 +12,7 @@ pub mod sequence;
 pub mod stream;
 pub mod sync;
 pub mod token;
+pub mod trace;
 pub mod wire;
 
 pub use connection::{Answer, Batch, Connection, Fetched, Folder, State, View};

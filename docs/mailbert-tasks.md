@@ -201,6 +201,6 @@ The parts that hold a message and find it again.
   - [x] `trace::directive` turns `--verbose` into a filter.
   - [x] `MAILBERT_LOG` wins over the flag, and an empty one does not.
   - [x] The log goes to the standard error, so `--json` and MCP stay clean.
-  - [ ] Each IMAP command reaches the log, and no password does. (§3)
+  - [x] Each IMAP command reaches the log, and no password does. (§3)
   - [ ] A sync gives one span for each account and each folder. (§3.3)
   - [ ] The slow steps say how many milliseconds they took.
