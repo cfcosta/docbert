@@ -154,4 +154,20 @@ The parts that hold a message and find it again.
   - [x] The export leaves a file that another tool wrote.
   - [x] A message with no bytes counts, and does not stop the export.
   - [x] A query that is bad leaves no maildir behind.
-- [ ] **T25** The MCP server. (§2.2)
+- [x] **T25** `thread`, `tag`, and `saved`. (§8.4, §9)
+  - [x] `thread::of` gives every message of the thread that one message is in.
+  - [x] The rows come earliest first, and carry a place and a total. (§8.4)
+  - [x] A message that the index does not hold is an error.
+  - [x] `--json` writes the identity, the thread, and the rows. (§10.4)
+  - [x] `tags::retag` puts the changes of a plan on the store, in order.
+  - [x] `tags::targets` reads every identity before the first change lands.
+  - [x] A plan that holds one bad identity changes nothing.
+  - [x] A tag reaches the `flags` field, so `tag:` finds the message. (§6.1)
+  - [x] A message that the index lost still takes a tag in the store.
+  - [x] `tag` never writes to the IMAP server. (§3.3)
+  - [x] `saved::add` reads the query before the store keeps it. (§9)
+  - [x] A name that is already there takes the new query.
+  - [x] `saved list` gives the searches by name, and `saved rm` forgets one.
+  - [x] A name that `add` writes is a name that `saved:` expands. (§9)
+- [ ] **T26** `contacts`, and `status`. (§5.6, §10.4)
+- [ ] **T27** The MCP server. (§2.2)

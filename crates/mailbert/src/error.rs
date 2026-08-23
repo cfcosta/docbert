@@ -72,6 +72,10 @@ pub enum Error {
     #[diagnostic(help("Give more characters. These match: {}", .ids.join(", ")))]
     AmbiguousMessage { prefix: String, ids: Vec<String> },
 
+    #[error("the index does not hold the message `{0}`")]
+    #[diagnostic(help("Run `mailbert sync` to index the mail of the store."))]
+    NotIndexed(String),
+
     #[error("I cannot run `gpg`: {0}")]
     #[diagnostic(help(
         "Install gpg. `mailbert get` gives the ciphertext without it."

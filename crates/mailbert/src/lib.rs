@@ -9,6 +9,7 @@ pub mod error;
 pub mod export;
 pub mod pass;
 pub mod paths;
+pub mod saved;
 pub mod search;
 pub mod semantic;
 pub mod settings;
@@ -16,6 +17,7 @@ pub mod show;
 pub mod sink;
 pub mod sync;
 pub mod tags;
+pub mod thread;
 
 use std::{
     future::Future,
@@ -142,6 +144,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Get(args) => show::get(&tool, args),
         Command::View(args) => show::view(&tool, args),
         Command::Export(args) => export::command(&tool, args),
+        Command::Thread(args) => thread::command(&tool, args),
+        Command::Tag(args) => tags::command(&tool, args),
+        Command::Saved { action } => saved::command(&tool, action),
         other => Err(Error::NotYet(other.name())),
     }
 }
