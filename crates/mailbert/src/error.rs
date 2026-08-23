@@ -22,6 +22,12 @@ pub enum Error {
     #[error(transparent)]
     Imap(#[from] mailbert_imap::Error),
 
+    #[error(transparent)]
+    Model(#[from] docbert_core::Error),
+
+    #[error(transparent)]
+    Plaid(#[from] docbert_plaid::PlaidError),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

@@ -445,9 +445,10 @@ impl Store {
         let existed = self.db.messages.delete(&mut wtxn, &key)?;
         self.db.tags.delete(&mut wtxn, &key)?;
 
-        // A passage of a message that went away must lose its owner,
-        // or the semantic leg answers with a message that is not here.
-        clear_embedding(&mut wtxn, &self.db, &key)?;
+        // The embedding record stays. Only the pass of §6.2 knows
+        // the embedding database and the PLAID index, so only the pass
+        // can drop the passages of this message from them. It sees a
+        // record that names a message that is gone, and it cleans both.
         wtxn.commit()?;
 
         let mut wtxn = self.blobs.write_txn()?;
@@ -1685,8 +1686,11 @@ mod tests {
         assert_eq!(store.owner(11).expect("a read"), None);
     }
 
+    /// The next pass drops these passages from the embedding database
+    /// and from the PLAID index. It finds them because the record
+    /// stays behind and names a message that the store does not hold.
     #[test]
-    fn a_message_that_goes_away_takes_its_passages_with_it() {
+    fn a_message_that_goes_away_leaves_its_record_for_the_next_pass() {
         let dir = tempdir().expect("a directory");
         let store = open_at(&dir);
         let id = store
@@ -1697,9 +1701,12 @@ mod tests {
 
         assert!(store.remove(&id).expect("a delete"));
 
-        assert_eq!(store.embedded(&id).expect("a read"), None);
-        assert_eq!(store.owner(10).expect("a read"), None);
-        assert_eq!(store.owner(11).expect("a read"), None);
+        assert_eq!(store.get(&id).expect("a read"), None);
+        assert_eq!(
+            store.embedded(&id).expect("a read").map(|one| one.keys),
+            Some(vec![10, 11])
+        );
+        assert_eq!(store.owner(10).expect("a read"), Some(id));
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod error;
 pub mod pass;
 pub mod paths;
+pub mod semantic;
 pub mod settings;
 pub mod sink;
 pub mod sync;
@@ -94,6 +95,24 @@ impl Tool {
         self.paths.make()?;
 
         Ok(MailIndex::open(&self.paths.tantivy())?)
+    }
+
+    /// The model, the embeddings, and the PLAID index of §6.2.
+    ///
+    /// The model does not load here. `DOCBERT_MODEL` names it, and the
+    /// default of docbert names it when that variable is empty.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the embedding database cannot open.
+    pub fn brain(&self) -> Result<semantic::Brain> {
+        self.paths.make()?;
+
+        semantic::Brain::open(
+            &self.paths.embeddings(),
+            &self.paths.plaid(),
+            None,
+        )
     }
 }
 

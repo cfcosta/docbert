@@ -3221,8 +3221,11 @@ dependencies = [
 name = "mailbert"
 version = "0.1.0"
 dependencies = [
+ "candle-core",
  "clap",
  "clap_complete",
+ "docbert-core",
+ "docbert-plaid",
  "hegeltest",
  "mailbert-core",
  "mailbert-imap",

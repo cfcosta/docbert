@@ -7,7 +7,10 @@ description = "Hybrid search for your mail — the mailbert command line tool"
 
 [dependencies]
 clap = { version = "4.6.2", features = ["derive"] }
+candle-core = "0.11.0"
 clap_complete = "4.6"
+docbert-core = { path = "../docbert-core" }
+docbert-plaid = { path = "../docbert-plaid" }
 mailbert-core = { path = "../mailbert-core" }
 mailbert-imap = { path = "../mailbert-imap" }
 miette = { version = "7.6.0", features = ["fancy"] }

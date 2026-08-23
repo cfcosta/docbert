@@ -108,7 +108,16 @@ The parts that hold a message and find it again.
   - [x] `--full`, `--dry-run`, and the counts that the command writes.
   - [x] IDLE, and the `--watch` loop that reads only what changed. (§3.1)
   - [x] Property tests: a second sync asks for nothing, and a stop resumes.
-- [ ] **T21** The embeddings, and the semantic leg. (§6.2)
+- [x] **T21** The embeddings, and the semantic leg. (§6.2)
+  - [x] The passage: a preamble of `From`, `Subject`, and `Date`, and a chunk. (§6.2)
+  - [x] The key of a passage, and the way back from a passage to its message.
+  - [x] An encrypted message gives its preamble, and no ciphertext. (§5.4)
+  - [x] The fingerprint that says which messages a pass must read again.
+  - [x] The embedding pass: what the model reads, and what leaves the index.
+  - [x] The PLAID index, whole on a first pass and by parts after it.
+  - [x] The leg: the passages that a query finds, and the messages that own them.
+  - [x] A filter gates the leg before it ranks. (§8.2)
+  - [x] `sync` sweeps, and says how many messages it embedded.
 - [ ] **T22** `search`, `ksearch`, and the output. (§10.1)
 - [ ] **T23** `get`, and `view` with ANSI. (§10.2, §10.3)
 - [ ] **T24** `export` to a maildir. (§4.3)

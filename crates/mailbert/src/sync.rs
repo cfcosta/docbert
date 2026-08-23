@@ -38,12 +38,16 @@ use crate::{
     cli,
     error::{Error, Result},
     pass::{self, Wrote},
+    semantic::{Brain, Embedded},
     settings,
     sink::{Counts, Sink, sync_state},
 };
 
 /// How many UIDs one `FETCH` asks for. (§3.2)
 pub const BATCH: u32 = 500;
+
+/// How many messages the sweep embeds between two lines of progress.
+pub const SAY_EVERY: usize = 500;
 
 /// How one sync runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -338,6 +342,22 @@ pub fn pools<'a>(accounts: &[&'a Account]) -> Result<Vec<Watched<'a>>> {
         .collect()
 }
 
+/// What one sync writes.
+///
+/// The store keeps the messages, the index of §6.1 answers `ksearch`,
+/// and the brain of §6.2 answers `search`. A sync with no brain writes
+/// the first two, and that is what `--dry-run` and a test both do.
+pub struct Books<'a> {
+    /// The messages, the threads, and the sync state. (§4.2)
+    pub store: &'a Arc<Store>,
+
+    /// The lexical index of §6.1.
+    pub index: &'a MailIndex,
+
+    /// The model, the embeddings, and the PLAID index of §6.2.
+    pub brain: Option<&'a mut Brain>,
+}
+
 /// Sync again each time a server says that something changed. (§3.1)
 ///
 /// The first round always runs. Each round after it waits on `IDLE`,
@@ -353,8 +373,7 @@ pub fn pools<'a>(accounts: &[&'a Account]) -> Result<Vec<Watched<'a>>> {
 /// or the index cannot take a write. A connection that breaks is not
 /// a failure: the next round opens another one.
 pub async fn watching<S: Future<Output = ()>>(
-    store: &Arc<Store>,
-    index: &MailIndex,
+    books: &mut Books<'_>,
     watched: &[Watched<'_>],
     how: How,
     pause: Duration,
@@ -371,7 +390,7 @@ pub async fn watching<S: Future<Output = ()>>(
 
         for one in watched {
             let report = self::one(
-                Arc::clone(store),
+                Arc::clone(books.store),
                 Arc::clone(&one.pool),
                 one.account,
                 how,
@@ -383,13 +402,16 @@ pub async fn watching<S: Future<Output = ()>>(
             reports.push(report);
         }
 
-        let wrote = match how.dry {
-            true => Wrote::default(),
-            false => pass::after_sync(store, index, &touched)?,
+        let (wrote, embedded) = match how.dry {
+            true => (Wrote::default(), Embedded::default()),
+            false => (
+                pass::after_sync(books.store, books.index, &touched)?,
+                sweep(books.store, books.brain.as_deref_mut(), out)?,
+            ),
         };
         rounds += 1;
 
-        say(&reports, wrote, how.dry, false, out)?;
+        say(&reports, wrote, embedded, how.dry, false, out)?;
 
         tokio::select! {
             () = &mut stop => return Ok(rounds),
@@ -506,6 +528,13 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
     let store = tool.store()?;
     let index = tool.index()?;
 
+    // A dry run asks the server for nothing, so it embeds nothing and
+    // needs no model. (§2.1)
+    let mut brain = match args.dry_run {
+        true => None,
+        false => Some(tool.brain()?),
+    };
+
     let how = How {
         full: args.full,
         dry: args.dry_run,
@@ -514,11 +543,15 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
 
     crate::block_on(async {
         let watched = pools(&wanted)?;
+        let mut books = Books {
+            store: &store,
+            index: &index,
+            brain: brain.as_mut(),
+        };
 
         let ended = match args.watch {
             true => watching(
-                &store,
-                &index,
+                &mut books,
                 &watched,
                 how,
                 PAUSE,
@@ -528,15 +561,8 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
             .await
             .map(|_| ()),
             false => {
-                once(
-                    &store,
-                    &index,
-                    &watched,
-                    how,
-                    args.json,
-                    &mut io::stdout(),
-                )
-                .await
+                once(&mut books, &watched, how, args.json, &mut io::stdout())
+                    .await
             }
         };
 
@@ -551,8 +577,7 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
 
 /// One pass over every account, and the index write after it. (§2.1)
 async fn once(
-    store: &Arc<Store>,
-    index: &MailIndex,
+    books: &mut Books<'_>,
     watched: &[Watched<'_>],
     how: How,
     json: bool,
@@ -563,7 +588,7 @@ async fn once(
     for account in watched {
         reports.push(
             one(
-                Arc::clone(store),
+                Arc::clone(books.store),
                 Arc::clone(&account.pool),
                 account.account,
                 how,
@@ -574,19 +599,46 @@ async fn once(
 
     // A dry run asks for nothing, so no thread moves and the index
     // stays as it was. (§2.1)
-    let wrote = match how.dry {
-        true => Wrote::default(),
+    let (wrote, embedded) = match how.dry {
+        true => (Wrote::default(), Embedded::default()),
         false => {
             let touched: BTreeSet<MessageId> = reports
                 .iter()
                 .flat_map(|report| report.touched.iter().copied())
                 .collect();
 
-            pass::after_sync(store, index, &touched)?
+            let wrote = pass::after_sync(books.store, books.index, &touched)?;
+
+            (wrote, sweep(books.store, books.brain.as_deref_mut(), out)?)
         }
     };
 
-    say(&reports, wrote, how.dry, json, out)
+    say(&reports, wrote, embedded, how.dry, json, out)
+}
+
+/// Embed what a sync changed, and write the PLAID index. (§6.2)
+///
+/// A sync with no brain embeds nothing. `--dry-run` is that case, and
+/// so is a test that has no model.
+///
+/// The sweep says how far it is, because a first pass over a mailbox
+/// of 100000 messages takes long enough to look stopped.
+fn sweep(
+    store: &Store,
+    brain: Option<&mut Brain>,
+    out: &mut dyn Write,
+) -> Result<Embedded> {
+    let Some(brain) = brain else {
+        return Ok(Embedded::default());
+    };
+
+    let mut said = 0;
+    brain.sweep(store, |done| {
+        if done >= said + SAY_EVERY {
+            said = done;
+            let _ = writeln!(out, "embedded {done} messages");
+        }
+    })
 }
 
 /// Drop whatever a future gives, so it can be a stop signal.
@@ -615,6 +667,8 @@ struct Answer<'a> {
     accounts: Vec<Summary<'a>>,
     messages: usize,
     threads: usize,
+    embedded: usize,
+    passages: usize,
 }
 
 /// Write what the sync did.
@@ -625,6 +679,7 @@ struct Answer<'a> {
 fn say(
     reports: &[Report],
     wrote: Wrote,
+    embedded: Embedded,
     dry: bool,
     json: bool,
     out: &mut dyn Write,
@@ -637,6 +692,8 @@ fn say(
             accounts,
             messages: wrote.messages,
             threads: wrote.threads,
+            embedded: embedded.messages,
+            passages: embedded.passages,
         };
 
         writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
@@ -681,6 +738,14 @@ fn say(
             out,
             "indexed {} messages in {} threads",
             wrote.messages, wrote.threads
+        )?;
+    }
+
+    if embedded.messages > 0 {
+        writeln!(
+            out,
+            "embedded {} messages in {} passages",
+            embedded.messages, embedded.passages
         )?;
     }
 
@@ -749,6 +814,15 @@ mod tests {
             .build()
             .expect("the machine gives a runtime")
             .block_on(future)
+    }
+
+    /// What a sync writes, with no brain. A test has no model.
+    fn books<'a>(store: &'a Arc<Store>, index: &'a MailIndex) -> Books<'a> {
+        Books {
+            store,
+            index,
+            brain: None,
+        }
     }
 
     fn open_at(dir: &TempDir) -> Arc<Store> {
@@ -1334,16 +1408,93 @@ mod tests {
 
     fn text_of(reports: &[Report], wrote: Wrote, dry: bool) -> String {
         let mut out = Vec::new();
-        say(reports, wrote, dry, false, &mut out).expect("a writable buffer");
+        say(reports, wrote, Embedded::default(), dry, false, &mut out)
+            .expect("a writable buffer");
 
         String::from_utf8(out).expect("the report is text")
     }
 
     fn json_of(reports: &[Report], wrote: Wrote, dry: bool) -> Value {
         let mut out = Vec::new();
-        say(reports, wrote, dry, true, &mut out).expect("a writable buffer");
+        say(reports, wrote, Embedded::default(), dry, true, &mut out)
+            .expect("a writable buffer");
 
         serde_json::from_slice(&out).expect("the report is JSON")
+    }
+
+    fn embedded(messages: usize, passages: usize) -> Embedded {
+        Embedded {
+            messages,
+            passages,
+            dropped: 0,
+        }
+    }
+
+    /// §6.2: a sync embeds what it fetched, and says so.
+    #[test]
+    fn the_report_names_what_the_sweep_embedded() {
+        let mut out = Vec::new();
+        let reports = [a_report("work", 1, Counts::default())];
+        say(
+            &reports,
+            Wrote::default(),
+            embedded(2, 5),
+            false,
+            false,
+            &mut out,
+        )
+        .expect("a writable buffer");
+
+        let text = String::from_utf8(out).expect("the report is text");
+
+        assert!(text.contains("embedded 2 messages in 5 passages"), "{text}");
+    }
+
+    /// A sync that embedded nothing says nothing about the model.
+    #[test]
+    fn a_report_of_no_embedding_says_nothing_about_it() {
+        let text = text_of(
+            &[a_report("work", 1, Counts::default())],
+            Wrote::default(),
+            false,
+        );
+
+        assert!(!text.contains("embedded"), "{text}");
+    }
+
+    #[test]
+    fn the_json_holds_what_the_sweep_embedded() {
+        let mut out = Vec::new();
+        let reports = [a_report("work", 1, Counts::default())];
+        say(
+            &reports,
+            Wrote::default(),
+            embedded(2, 5),
+            false,
+            true,
+            &mut out,
+        )
+        .expect("a writable buffer");
+
+        let answer: Value =
+            serde_json::from_slice(&out).expect("the report is JSON");
+
+        assert_eq!(answer["embedded"], 2);
+        assert_eq!(answer["passages"], 5);
+    }
+
+    /// A `--dry-run` makes no brain, and a test has none either. The
+    /// sweep must then do nothing at all, and load no model.
+    #[test]
+    fn a_sweep_with_no_brain_embeds_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let mut out = Vec::new();
+
+        let done = sweep(&store, None, &mut out).expect("a sweep");
+
+        assert_eq!(done, Embedded::default());
+        assert!(out.is_empty());
     }
 
     /// §1.2: the password goes over TLS, whatever the port says.
@@ -1523,8 +1674,7 @@ mod tests {
             let watched = a_watch(&account, server.port());
 
             watching(
-                &store,
-                &index,
+                &mut books(&store, &index),
                 &watched,
                 quickly(),
                 Duration::from_millis(80),
@@ -1574,10 +1724,10 @@ mod tests {
                 });
             };
 
+            let mut held = books(&store, &index);
             let (rounds, ()) = tokio::join!(
                 watching(
-                    &store,
-                    &index,
+                    &mut held,
                     &watched,
                     quickly(),
                     Duration::from_secs(20),
@@ -1610,8 +1760,7 @@ mod tests {
             let watched = a_watch(&account, server.port());
 
             let rounds = watching(
-                &store,
-                &index,
+                &mut books(&store, &index),
                 &watched,
                 quickly(),
                 Duration::from_secs(5),
@@ -1645,8 +1794,7 @@ mod tests {
             let watched = a_watch(&account, server.port());
 
             watching(
-                &store,
-                &index,
+                &mut books(&store, &index),
                 &watched,
                 quickly(),
                 Duration::from_millis(50),
