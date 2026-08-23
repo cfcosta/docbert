@@ -3266,6 +3266,8 @@ dependencies = [
  "mailbert-imap",
  "miette",
  "regex",
+ "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "syntect",

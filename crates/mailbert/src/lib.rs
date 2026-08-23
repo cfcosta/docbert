@@ -8,6 +8,7 @@ pub mod cli;
 pub mod contacts;
 pub mod error;
 pub mod export;
+pub mod mcp;
 pub mod pass;
 pub mod paths;
 pub mod saved;
@@ -33,7 +34,7 @@ use mailbert_core::{Store, config::Config, date::Clock, index::MailIndex};
 
 use crate::{
     cli::{Cli, Command, When},
-    error::{Error, Result},
+    error::Result,
     paths::Paths,
 };
 
@@ -151,7 +152,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Saved { action } => saved::command(&tool, action),
         Command::Contacts(args) => contacts::command(&tool, args),
         Command::Status(args) => status::command(&tool, args),
-        other => Err(Error::NotYet(other.name())),
+        Command::Mcp => mcp::command(&tool),
+
+        // `completions` left above, before the tool opened, because it
+        // must run where no configuration and no store are there yet.
+        Command::Completions(_) => unreachable!("handled above"),
     }
 }
 
@@ -226,22 +231,6 @@ mod tests {
         assert_eq!(tool.paths.data, PathBuf::from("/tmp/m"));
         assert_eq!(tool.paths.config, PathBuf::from("/tmp/m.toml"));
         assert_eq!(tool.verbose, 1);
-    }
-
-    #[test]
-    fn a_command_that_is_not_ready_says_which_one() {
-        let cli = parse(&[
-            "mailbert",
-            "--data-dir",
-            "/tmp/m",
-            "--config",
-            "/tmp/m.toml",
-            "mcp",
-        ]);
-
-        let result = run(cli);
-
-        assert!(matches!(result, Err(Error::NotYet("mcp"))), "{result:?}");
     }
 
     #[test]

@@ -143,6 +143,12 @@ The MCP server holds the model in memory, because the process is long-lived. Thi
 
 `tag` is the only tool that writes. It writes to mailbert's own tag table, and never to the IMAP server.
 
+Each tool gives its answer two times. The text is what the CLI writes, and the fields are what `--json` writes. The text costs the model less to read. The fields carry what the text leaves out, such as the score.
+
+A search gives 10 rows when the caller asks for no count, and never more than 100. A larger answer fills the context of the model.
+
+No tool runs `gpg`. §5.4 decrypts for `view` alone, so `get` gives an encrypted body as its ciphertext.
+
 ## 3. The IMAP downloader
 
 Speed is the design goal for this component. The first sync of a 60,000-message account must complete in minutes, and not hours.

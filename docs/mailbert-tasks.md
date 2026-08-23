@@ -182,4 +182,17 @@ The parts that hold a message and find it again.
   - [x] `status` names each folder, its UIDVALIDITY, and its UIDNEXT.
   - [x] `status` never speaks to the IMAP server. (§3.3)
   - [x] `--json` writes the counts and the accounts. (§10.4)
-- [ ] **T27** The MCP server. (§2.2)
+- [x] **T27** The MCP server. (§2.2)
+  - [x] `Desk` holds the store, the index, the configuration, and the model.
+  - [x] The model loads on the first hybrid search, and then stays. (§2.2)
+  - [x] `search` and `bm25_search` take the full query language. (§7.1)
+  - [x] `bm25_search` never loads the model.
+  - [x] A count gives 10 rows by default, and 100 at the most.
+  - [x] `get` and `thread` take a git-style prefix. (§4.1)
+  - [x] `get` never runs `gpg`, so an encrypted body stays ciphertext. (§5.4)
+  - [x] `contacts` resolves a name to addresses. (§5.6)
+  - [x] `tag` is the only tool that writes, and it writes to mailbert alone.
+  - [x] `status` gives the counts of the store and the index. (§10.4)
+  - [x] Each answer carries the text and the fields together.
+  - [x] A bad query reads as the fault of the caller, and not of the server.
+  - [x] Each tool schema drops the `$schema` keyword.

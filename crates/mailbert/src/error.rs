@@ -38,6 +38,13 @@ pub enum Error {
     #[error("cannot write the JSON: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("the MCP server did not start: {0}")]
+    #[diagnostic(help("The client must speak MCP over stdin and stdout."))]
+    Serve(Box<rmcp::service::ServerInitializeError>),
+
+    #[error("the MCP server stopped: {0}")]
+    Stopped(#[from] tokio::task::JoinError),
+
     #[error("I cannot find the directory that holds the data")]
     #[diagnostic(help("Set MAILBERT_DATA_DIR, or give --data-dir."))]
     NoDataDir,
@@ -61,12 +68,6 @@ pub enum Error {
     #[error("`{0}` comes after an identity")]
     #[diagnostic(help("Put every change before the identities."))]
     LateEdit(String),
-
-    #[error("`{0}` is not ready in this build")]
-    #[diagnostic(help(
-        "The task list in docs/mailbert-tasks.md says when it lands."
-    ))]
-    NotYet(&'static str),
 
     #[error("the identity `{prefix}` names more than one message")]
     #[diagnostic(help("Give more characters. These match: {}", .ids.join(", ")))]
@@ -94,6 +95,16 @@ pub enum Error {
         "The command, or the file, must write the password on its first line."
     ))]
     EmptySecret(String),
+}
+
+/// The box keeps this enum small.
+///
+/// The report of rmcp is four times the size of every other report
+/// here, and each `Result` of the crate would carry that size.
+impl From<rmcp::service::ServerInitializeError> for Error {
+    fn from(problem: rmcp::service::ServerInitializeError) -> Self {
+        Self::Serve(Box::new(problem))
+    }
 }
 
 impl Error {
