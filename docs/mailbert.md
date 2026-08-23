@@ -74,6 +74,7 @@ host          = "imap.gmail.com"
 user          = "me@gmail.com"
 password_file = "~/.secrets/gmail"
 all_folders   = true
+exclude       = ["\\Trash"]                # an attribute, and not a name
 
 [search]
 count         = 20
@@ -83,6 +84,8 @@ recency_half_life_days = 180
 theme  = "base16-ocean.dark"
 width  = 100
 ```
+
+**A folder that an attribute names.** An entry of `folders` or of `exclude` that starts with a backslash names an attribute of RFC 6154, and not a folder name. The server gives these attributes in its `LIST` answer, and the usual ones are `\All`, `\Trash`, `\Junk`, `\Sent`, and `\Drafts`. mailbert ignores the case of an attribute. This is necessary for Gmail, because Gmail gives `[Gmail]/All Mail` a different name in each language, and the attribute stays the same. A name never reads as an attribute, and an attribute never reads as a name.
 
 Three credential fields are available, and mailbert reads them in this order: `password_command`, then `password_file`, then `password`. `password_command` runs a shell command and reads the first line of its output, the same as isync. `password_file` reads a file, and mailbert gives a warning if the mode is not `0600`. `password` holds the value directly, and mailbert always gives a warning.
 

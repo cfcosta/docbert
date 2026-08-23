@@ -194,6 +194,58 @@ pub enum Credential {
 /// assert!(folder_eq("INBOX", "inbox"));
 /// assert!(!folder_eq("Archive", "archive"));
 /// ```
+/// One folder that the server named in its `LIST` answer. (§1.2)
+///
+/// The name alone is not enough to choose folders. Gmail translates
+/// the name of `[Gmail]/All Mail` into the language of the user, and
+/// the attribute `\\All` of RFC 6154 stays the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// The name that the server gave.
+    pub name: String,
+
+    /// The attributes of the folder, such as `\\All` or `\\Trash`.
+    pub attributes: Vec<String>,
+}
+
+impl Listed {
+    /// A folder that the server gave no attribute for.
+    pub fn named(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            attributes: Vec::new(),
+        }
+    }
+
+    /// Whether one entry of `folders` or `exclude` names this folder.
+    ///
+    /// An entry that starts with a backslash names an attribute, and
+    /// the comparison ignores the case. Every other entry names a
+    /// folder, and [`folder_eq`] compares it. A name never reads as an
+    /// attribute, and an attribute never reads as a name.
+    ///
+    /// ```
+    /// use mailbert_core::config::Listed;
+    ///
+    /// let all = Listed {
+    ///     name: "[Gmail]/Todos os e-mails".to_string(),
+    ///     attributes: vec!["\\All".to_string()],
+    /// };
+    ///
+    /// assert!(all.answers("\\all"));
+    /// assert!(!all.answers("[Gmail]/All Mail"));
+    /// ```
+    pub fn answers(&self, entry: &str) -> bool {
+        match entry.starts_with('\\') {
+            true => self
+                .attributes
+                .iter()
+                .any(|held| held.eq_ignore_ascii_case(entry)),
+            false => folder_eq(entry, &self.name),
+        }
+    }
+}
+
 pub fn folder_eq(a: &str, b: &str) -> bool {
     if a.eq_ignore_ascii_case(INBOX) {
         return b.eq_ignore_ascii_case(INBOX);
@@ -316,19 +368,23 @@ impl Account {
     /// spelling, because that is the name mailbert must SELECT. It never
     /// contains an excluded folder and has no duplicates. `exclude`
     /// always wins, and `all_folders` ignores `folders`.
-    pub fn select_folders(&self, available: &[String]) -> Vec<String> {
+    ///
+    /// An entry of `folders` or of `exclude` that starts with a
+    /// backslash names an attribute of RFC 6154. See
+    /// [`Listed::answers`].
+    pub fn select_folders(&self, available: &[Listed]) -> Vec<String> {
         let mut selected: Vec<String> = Vec::new();
 
         for folder in available {
             let wanted = self.all_folders
-                || self.folders.iter().any(|f| folder_eq(f, folder));
+                || self.folders.iter().any(|f| folder.answers(f));
 
             let skip = !wanted
-                || self.exclude.iter().any(|e| folder_eq(e, folder))
-                || selected.iter().any(|s| folder_eq(s, folder));
+                || self.exclude.iter().any(|e| folder.answers(e))
+                || selected.iter().any(|s| folder_eq(s, &folder.name));
 
             if !skip {
-                selected.push(folder.clone());
+                selected.push(folder.name.clone());
             }
         }
 
@@ -364,7 +420,7 @@ impl Account {
     ///
     /// The CLI warns about these, because a typo is otherwise silent.
     /// `all_folders` reports nothing, because it never reads `folders`.
-    pub fn missing_folders(&self, available: &[String]) -> Vec<String> {
+    pub fn missing_folders(&self, available: &[Listed]) -> Vec<String> {
         if self.all_folders {
             return Vec::new();
         }
@@ -372,7 +428,7 @@ impl Account {
         let mut missing: Vec<String> = Vec::new();
 
         for folder in &self.folders {
-            let known = available.iter().any(|a| folder_eq(a, folder));
+            let known = available.iter().any(|a| a.answers(folder));
             let seen = missing.iter().any(|m| folder_eq(m, folder));
 
             if !known && !seen {
@@ -394,6 +450,7 @@ mod tests {
     //! | `prop_credential_precedence_is_total` | model-based | The precedence rule is the whole contract of the three password fields. Getting it wrong reads the wrong secret. |
     //! | `prop_selection_is_a_subset_of_available` | invariant | mailbert must never try to SELECT a folder the server did not list. |
     //! | `prop_exclude_always_wins` | invariant | A folder in both `folders` and `exclude` must not sync. This is how a user keeps Spam out. |
+    //! | `prop_an_attribute_in_exclude_removes_the_folders_that_have_it` | invariant | Gmail translates its folder names, so only the attribute keeps `[Gmail]/Trash` out. |
     //! | `prop_selection_has_no_duplicates` | invariant | A duplicate would fetch and hash the same folder twice. |
     //! | `prop_all_folders_selects_the_complement` | differential | `all_folders` must equal `available` minus `exclude`, exactly. |
     //! | `prop_folder_eq_is_an_equivalence` | algebraic | Reflexive, symmetric, transitive. Used to compare server names to config names. |
@@ -422,16 +479,57 @@ mod tests {
         ])
     }
 
-    fn folder_list() -> impl gs::Generator<Vec<String>> {
-        gs::vecs(folder_name()).min_size(0).max_size(7)
+    /// An attribute of RFC 6154, drawn from a small pool for the same
+    /// reason as [`folder_name`].
+    fn attribute() -> impl gs::Generator<String> {
+        gs::sampled_from(vec![
+            "\\All".to_string(),
+            "\\Trash".to_string(),
+            "\\Junk".to_string(),
+            "\\Sent".to_string(),
+        ])
+    }
+
+    /// An entry of `folders` or of `exclude`: a name, or an attribute.
+    fn entry() -> impl gs::Generator<String> {
+        gs::sampled_from(vec![
+            "INBOX".to_string(),
+            "Archive".to_string(),
+            "Sent".to_string(),
+            "Drafts".to_string(),
+            "Trash".to_string(),
+            "Junk".to_string(),
+            "[Gmail]/All Mail".to_string(),
+            "\\All".to_string(),
+            "\\Trash".to_string(),
+            "\\Junk".to_string(),
+            "\\Sent".to_string(),
+        ])
+    }
+
+    fn entry_list() -> impl gs::Generator<Vec<String>> {
+        gs::vecs(entry()).min_size(0).max_size(7)
+    }
+
+    #[hegel::composite]
+    fn listed_folder(tc: TestCase) -> Listed {
+        let name: String = tc.draw(folder_name());
+        let attributes: Vec<String> =
+            tc.draw(gs::vecs(attribute()).min_size(0).max_size(2));
+
+        Listed { name, attributes }
+    }
+
+    fn listed_list() -> impl gs::Generator<Vec<Listed>> {
+        gs::vecs(listed_folder()).min_size(0).max_size(7)
     }
 
     /// An account with every folder-selection field drawn independently.
     #[hegel::composite]
-    fn account_with_folders(tc: TestCase) -> (Account, Vec<String>) {
-        let available: Vec<String> = tc.draw(folder_list());
-        let folders: Vec<String> = tc.draw(folder_list());
-        let exclude: Vec<String> = tc.draw(folder_list());
+    fn account_with_folders(tc: TestCase) -> (Account, Vec<Listed>) {
+        let available: Vec<Listed> = tc.draw(listed_list());
+        let folders: Vec<String> = tc.draw(entry_list());
+        let exclude: Vec<String> = tc.draw(entry_list());
         let all_folders: bool = tc.draw(gs::booleans());
 
         let account = Account {
@@ -704,13 +802,104 @@ mod tests {
         assert!(folder_eq("Archive", "Archive"));
     }
 
+    // -----------------------------------------------------------------
+    // A folder that an attribute names. (§1.2)
+    // -----------------------------------------------------------------
+
+    /// Gmail translates the name of `[Gmail]/All Mail` into the
+    /// language of the user, and the attribute stays the same. (§1.2)
+    #[test]
+    fn an_exclude_that_starts_with_a_backslash_reads_an_attribute() {
+        let mut account = account_named("work");
+        account.all_folders = true;
+        account.exclude = vec!["\\Trash".to_string()];
+
+        let available = vec![
+            Listed::named("INBOX"),
+            Listed {
+                name: "[Gmail]/Lixeira".to_string(),
+                attributes: vec![
+                    "\\HasNoChildren".to_string(),
+                    "\\Trash".to_string(),
+                ],
+            },
+        ];
+
+        assert_eq!(account.select_folders(&available), vec!["INBOX"]);
+    }
+
+    #[test]
+    fn an_attribute_matches_whatever_the_case_of_the_server_is() {
+        let mut account = account_named("work");
+        account.all_folders = true;
+        account.exclude = vec!["\\trash".to_string()];
+
+        let available = vec![Listed {
+            name: "Deleted Items".to_string(),
+            attributes: vec!["\\Trash".to_string()],
+        }];
+
+        assert!(account.select_folders(&available).is_empty());
+    }
+
+    #[test]
+    fn a_folders_entry_may_also_name_an_attribute() {
+        let mut account = account_named("work");
+        account.all_folders = false;
+        account.folders = vec!["\\All".to_string()];
+
+        let available = vec![
+            Listed::named("INBOX"),
+            Listed {
+                name: "[Gmail]/Todos os e-mails".to_string(),
+                attributes: vec!["\\All".to_string()],
+            },
+        ];
+
+        assert_eq!(
+            account.select_folders(&available),
+            vec!["[Gmail]/Todos os e-mails"]
+        );
+        assert!(account.missing_folders(&available).is_empty());
+    }
+
+    #[test]
+    fn missing_folders_reports_an_attribute_that_no_folder_has() {
+        let mut account = account_named("work");
+        account.all_folders = false;
+        account.folders = vec!["\\Junk".to_string()];
+
+        let available = vec![Listed::named("INBOX")];
+
+        assert_eq!(account.missing_folders(&available), vec!["\\Junk"]);
+    }
+
+    /// A name never reads as an attribute, and an attribute never
+    /// reads as a name. A folder that a server calls `\Trash` is not
+    /// the folder that the attribute `\Trash` names.
+    #[test]
+    fn a_name_and_an_attribute_never_cross() {
+        let mut account = account_named("work");
+        account.all_folders = true;
+        account.exclude = vec!["Trash".to_string()];
+
+        let available = vec![Listed {
+            name: "Deleted Items".to_string(),
+            attributes: vec!["\\Trash".to_string()],
+        }];
+
+        // `exclude = ["Trash"]` is a name, and this folder has
+        // another name.
+        assert_eq!(account.select_folders(&available), vec!["Deleted Items"]);
+    }
+
     #[test]
     fn select_folders_uses_the_server_spelling_of_inbox() {
         let mut account = account_named("work");
         account.all_folders = false;
         account.folders = vec!["inbox".to_string()];
 
-        let available = vec!["INBOX".to_string()];
+        let available = vec![Listed::named("INBOX")];
 
         // The name the server gave is the one mailbert must SELECT.
         assert_eq!(account.select_folders(&available), vec!["INBOX"]);
@@ -723,7 +912,7 @@ mod tests {
         account.all_folders = false;
         account.folders = vec!["Archve".to_string(), "INBOX".to_string()];
 
-        let available = vec!["INBOX".to_string(), "Archive".to_string()];
+        let available = vec![Listed::named("INBOX"), Listed::named("Archive")];
 
         assert_eq!(account.missing_folders(&available), vec!["Archve"]);
     }
@@ -735,8 +924,11 @@ mod tests {
         account.folders = vec!["Sent".to_string()];
         account.exclude = vec!["Trash".to_string()];
 
-        let available =
-            vec!["INBOX".to_string(), "Sent".to_string(), "Trash".to_string()];
+        let available = vec![
+            Listed::named("INBOX"),
+            Listed::named("Sent"),
+            Listed::named("Trash"),
+        ];
 
         assert_eq!(account.select_folders(&available), vec!["INBOX", "Sent"]);
         // `folders` is not consulted, so nothing can be missing.
@@ -794,7 +986,7 @@ mod tests {
 
         for selected in account.select_folders(&available) {
             assert!(
-                available.iter().any(|a| a == &selected),
+                available.iter().any(|a| a.name == selected),
                 "selected {selected:?} is not in {available:?}"
             );
         }
@@ -804,10 +996,52 @@ mod tests {
     fn prop_exclude_always_wins(tc: TestCase) {
         let (account, available) = tc.draw(account_with_folders());
 
-        for selected in account.select_folders(&available) {
+        let chosen = account.select_folders(&available);
+
+        // A server lists one name one time, but the generator can give
+        // two folders one name. Each chosen name must come from a
+        // folder that no `exclude` entry answers.
+        for selected in &chosen {
+            let clean = available.iter().any(|folder| {
+                folder_eq(&folder.name, selected)
+                    && !account.exclude.iter().any(|e| folder.answers(e))
+            });
+
+            assert!(clean, "excluded folder {selected:?} was selected");
+        }
+    }
+
+    /// The oracle reads the attributes itself, and never calls
+    /// [`Listed::answers`], so a broken `answers` cannot hide here.
+    #[hegel::test(test_cases = 200)]
+    fn prop_an_attribute_in_exclude_removes_the_folders_that_have_it(
+        tc: TestCase,
+    ) {
+        let (mut account, available) = tc.draw(account_with_folders());
+        let unwanted: String = tc.draw(attribute());
+
+        account.all_folders = true;
+        account.exclude = vec![unwanted.clone()];
+
+        let chosen = account.select_folders(&available);
+
+        for folder in &available {
+            // A server lists one name one time, but the generator can
+            // give two. A name stays out only when every folder that
+            // carries it has the attribute.
+            let all_have = available
+                .iter()
+                .filter(|other| folder_eq(&other.name, &folder.name))
+                .all(|other| {
+                    other
+                        .attributes
+                        .iter()
+                        .any(|held| held.eq_ignore_ascii_case(&unwanted))
+                });
+
             assert!(
-                !account.exclude.iter().any(|e| folder_eq(e, &selected)),
-                "excluded folder {selected:?} was selected"
+                !all_have || !chosen.contains(&folder.name),
+                "{folder:?} has {unwanted} and reached {chosen:?}"
             );
         }
     }
@@ -836,10 +1070,10 @@ mod tests {
         // The reference implementation, written the obvious slow way.
         let mut expected: Vec<String> = Vec::new();
         for folder in &available {
-            let excluded = account.exclude.iter().any(|e| folder_eq(e, folder));
-            let seen = expected.iter().any(|s| folder_eq(s, folder));
+            let excluded = account.exclude.iter().any(|e| folder.answers(e));
+            let seen = expected.iter().any(|s| folder_eq(s, &folder.name));
             if !excluded && !seen {
-                expected.push(folder.clone());
+                expected.push(folder.name.clone());
             }
         }
 

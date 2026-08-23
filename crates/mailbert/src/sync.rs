@@ -17,7 +17,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mailbert_core::{MessageId, Store, config::Account, index::MailIndex};
+use mailbert_core::{
+    Listed,
+    MessageId,
+    Store,
+    config::Account,
+    index::MailIndex,
+};
 use mailbert_imap::{
     Backoff,
     FolderState,
@@ -243,10 +249,13 @@ async fn look(
 
     // A folder that holds no mail cannot answer an `EXAMINE`, so it
     // never reaches a plan. (§3.1)
-    let available: Vec<String> = listed
+    //
+    // The attributes travel with the name, because an `exclude` entry
+    // can name an attribute of RFC 6154. (§1.2)
+    let available: Vec<Listed> = listed
         .iter()
         .filter(|folder| folder.holds_mail())
-        .map(|folder| folder.name.clone())
+        .map(Listed::from)
         .collect();
 
     let chosen = account.select_folders(&available);
@@ -1254,6 +1263,30 @@ mod tests {
 
         assert_eq!(report.folders.len(), 2);
         assert_eq!(report.counts.kept, 5);
+    }
+
+    /// Gmail translates the name of its Trash folder, so a name in
+    /// `exclude` cannot keep that folder out. The attribute can. (§1.2)
+    #[test]
+    fn an_exclude_that_names_an_attribute_keeps_a_folder_out() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let report = run_on(async {
+            let plan = Plan::new()
+                .with(a_folder("INBOX", 2))
+                .with(a_folder("Lixeira", 3).with_attribute("\\Trash"));
+            let server = FakeServer::start(plan).await.expect("a server");
+
+            let mut account = an_account(server.port(), &[]);
+            account.all_folders = true;
+            account.exclude = vec!["\\Trash".to_string()];
+
+            sync(&store, &a_pool(server.port()), &account, How::default()).await
+        });
+
+        // The two of INBOX arrive, and the three of the trash do not.
+        assert_eq!(report.counts.kept, 2);
     }
 
     #[test]

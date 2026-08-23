@@ -119,6 +119,8 @@ pub struct FakeFolder {
     pub messages: Vec<FakeMessage>,
     /// The UIDs that the server held once, and holds no more.
     pub gone: Vec<u32>,
+    /// The attributes of RFC 6154, such as `\All` or `\Trash`.
+    pub attributes: Vec<String>,
 }
 
 impl FakeFolder {
@@ -128,7 +130,14 @@ impl FakeFolder {
             uid_validity: 1,
             messages: Vec::new(),
             gone: Vec::new(),
+            attributes: Vec::new(),
         }
+    }
+
+    /// Give the folder one attribute of RFC 6154.
+    pub fn with_attribute(mut self, attribute: &str) -> Self {
+        self.attributes.push(attribute.to_string());
+        self
     }
 
     pub fn with(mut self, message: FakeMessage) -> Self {
@@ -622,11 +631,15 @@ fn list(
             .folders
             .iter()
             .any(|other| other.name.starts_with(&prefix));
-        let attribute = if children {
+        let shape = if children {
             "\\HasChildren"
         } else {
             "\\HasNoChildren"
         };
+        let attribute = std::iter::once(shape.to_string())
+            .chain(folder.attributes.iter().cloned())
+            .collect::<Vec<String>>()
+            .join(" ");
 
         line(
             reply,

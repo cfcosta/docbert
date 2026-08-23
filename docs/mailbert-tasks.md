@@ -211,8 +211,8 @@ The parts that hold a message and find it again.
   - [x] A pass that finds nothing behind writes nothing.
   - [x] The log says how much mail the index was behind.
 
-- [ ] **T30** Exclude a folder by the attribute that `LIST` gave. (§1.2)
-  - [ ] An `exclude` entry that starts with a backslash matches an attribute.
-  - [ ] A name in `exclude` keeps the meaning that it has now.
-  - [ ] `look` carries the attributes of each folder to the choice.
-  - [ ] The gmail account of the user leaves `\Trash` out.
+- [x] **T30** Exclude a folder by the attribute that `LIST` gave. (§1.2)
+  - [x] An `exclude` entry that starts with a backslash matches an attribute.
+  - [x] A name in `exclude` keeps the meaning that it has now.
+  - [x] `look` carries the attributes of each folder to the choice.
+  - [x] The gmail account of the user leaves `\Trash` out.

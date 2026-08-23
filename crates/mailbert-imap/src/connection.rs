@@ -88,6 +88,16 @@ pub struct Folder {
     pub attributes: Vec<String>,
 }
 
+impl From<&Folder> for mailbert_core::Listed {
+    /// The folder, as the configuration of §1.2 sees it.
+    fn from(folder: &Folder) -> Self {
+        Self {
+            name: folder.name.clone(),
+            attributes: folder.attributes.clone(),
+        }
+    }
+}
+
 impl Folder {
     /// True when the folder can hold mail.
     ///
@@ -1138,6 +1148,45 @@ mod tests {
         assert_eq!(names, vec!["INBOX", "INBOX/Work"]);
         assert_eq!(folders[0].separator, Some('/'));
         assert!(folders[0].holds_mail());
+    }
+
+    /// Gmail gives `[Gmail]/All Mail` the attribute `\All`, and it
+    /// translates the name into the language of the user. The choice
+    /// of §1.2 reads the attribute, so the attribute must arrive.
+    #[tokio::test]
+    async fn a_connection_keeps_the_attributes_that_a_folder_has() {
+        let plan = Plan::new()
+            .with(FakeFolder::new("INBOX"))
+            .with(FakeFolder::new("Lixeira").with_attribute("\\Trash"));
+        let server = FakeServer::start(plan).await.unwrap();
+        let mut connection = dial(&server).await;
+
+        let folders = connection.folders().await.unwrap();
+        let trash = folders
+            .iter()
+            .find(|folder| folder.name == "Lixeira")
+            .expect("the folder");
+
+        assert!(
+            trash.attributes.iter().any(|name| name == "\\Trash"),
+            "{:?}",
+            trash.attributes
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_carries_its_attributes_into_the_choice_of_a_sync() {
+        let folder = Folder {
+            name: "Lixeira".into(),
+            separator: Some('/'),
+            attributes: vec!["\\HasNoChildren".into(), "\\Trash".into()],
+        };
+
+        let listed = mailbert_core::Listed::from(&folder);
+
+        assert_eq!(listed.name, "Lixeira");
+        assert!(listed.answers("\\Trash"));
+        assert!(!listed.answers("Trash"));
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ pub mod threading;
 pub use address::Address;
 pub use body::{Stripped, strip, strip_with_footers};
 pub use compile::{Compiled, Vocabulary, compile, expand};
-pub use config::{Account, Config, Credential};
+pub use config::{Account, Config, Credential, Listed};
 pub use contacts::{Contact, Contacts, Seen};
 pub use date::{Clock, DateRange, internal_date};
 pub use error::{Error, Result};
