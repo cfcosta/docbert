@@ -156,6 +156,9 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
         return Vec::new();
     }
 
+    // A zero-width chunk would advance one character at a time and
+    // emit nothing at all, dropping the whole document.
+    let chunk_size = chunk_size.max(1);
     let char_count = text.chars().count();
 
     // Short text doesn't need chunking
@@ -174,7 +177,6 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
         .chain(std::iter::once(text.len()))
         .collect();
 
-    let step = chunk_size.saturating_sub(overlap).max(1);
     let mut chunks = Vec::new();
     let mut start_char = 0;
     let mut index = 0;
@@ -182,9 +184,11 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
     while start_char < char_count {
         let end_char = (start_char + chunk_size).min(char_count);
 
-        // Try to break at word boundary
+        // Try to break at word boundary, but never before this chunk
+        // started — a boundary behind `start_char` would invert the
+        // slice below and panic.
         let chunk_end_char = if end_char < char_count {
-            find_word_boundary_char(text, &char_to_byte, end_char)
+            find_word_boundary_char(text, &char_to_byte, start_char, end_char)
         } else {
             end_char
         };
@@ -202,27 +206,39 @@ pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
             index += 1;
         }
 
-        start_char += step;
-
-        // Avoid creating a tiny final chunk
-        if char_count.saturating_sub(start_char) < chunk_size / 4
-            && !chunks.is_empty()
-        {
-            break;
-        }
+        // Resume where this chunk actually ended, not where it would
+        // have ended without the boundary search. Stepping by a whole
+        // `chunk_size` instead would skip everything the search backed
+        // past — the split word belongs to the next chunk, not to
+        // neither. `find_word_boundary_char` guarantees the end is
+        // past `start_char`, so this always moves forward.
+        start_char = chunk_end_char.saturating_sub(overlap).max(start_char + 1);
     }
 
     chunks
 }
 
+/// How far back to look for a word boundary, in characters.
+const BOUNDARY_LOOKBACK: usize = 100;
+
 /// Find a nearby word boundary so we can avoid splitting in the middle of a word.
+///
+/// The result is always strictly greater than `floor_char`, which is
+/// where the chunk being cut starts. Without that floor a short chunk
+/// could break behind its own start and produce a backwards slice.
 fn find_word_boundary_char(
     text: &str,
     char_to_byte: &[usize],
+    floor_char: usize,
     pos_char: usize,
 ) -> usize {
     // Look back up to 100 chars for a good break point
-    let search_start_char = pos_char.saturating_sub(100);
+    let search_start_char =
+        pos_char.saturating_sub(BOUNDARY_LOOKBACK).max(floor_char);
+
+    if search_start_char >= pos_char {
+        return pos_char;
+    }
 
     let start_byte = char_to_byte[search_start_char];
     let end_byte = char_to_byte[pos_char];
@@ -232,13 +248,17 @@ fn find_word_boundary_char(
     if let Some(ws_byte_offset) =
         search_region.rfind(|c: char| c.is_whitespace())
     {
-        // Convert byte offset back to char position
+        // Convert byte offset back to char position. char_to_byte is
+        // sorted, so this is a binary search rather than a scan from
+        // the front — the scan made chunking quadratic in document
+        // length.
         let ws_byte = start_byte + ws_byte_offset;
-        // Find the char index for this byte position
-        for (char_idx, &byte_idx) in char_to_byte.iter().enumerate() {
-            if byte_idx > ws_byte {
-                return char_idx;
-            }
+        let char_idx = char_to_byte.partition_point(|&byte| byte <= ws_byte);
+
+        // ws_byte >= start_byte, so char_idx > search_start_char, and
+        // search_start_char >= floor_char.
+        if char_idx < char_to_byte.len() {
+            return char_idx;
         }
     }
 
@@ -292,9 +312,42 @@ pub fn chunk_doc_id(model_id: &str, chunk_text: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use hegel::{TestCase, generators as gs};
     use tempfile::tempdir;
 
     use super::*;
+
+    /// The byte ranges the chunks claim to cover.
+    ///
+    /// Also checks that `start_offset` tells the truth: the slice it
+    /// points at has to be the chunk's own text.
+    fn covered(text: &str, chunks: &[Chunk]) -> Vec<bool> {
+        let mut seen = vec![false; text.len()];
+
+        for chunk in chunks {
+            let end = chunk.start_offset + chunk.text.len();
+            assert_eq!(
+                &text[chunk.start_offset..end],
+                chunk.text,
+                "chunk {} points at the wrong bytes",
+                chunk.index
+            );
+            seen[chunk.start_offset..end].fill(true);
+        }
+
+        seen
+    }
+
+    /// The first character the chunks left behind, if any.
+    ///
+    /// Whitespace-only gaps don't count — an all-whitespace chunk is
+    /// dropped on purpose, since it carries nothing to embed.
+    fn lost(text: &str, chunks: &[Chunk]) -> Option<(usize, char)> {
+        let seen = covered(text, chunks);
+
+        text.char_indices()
+            .find(|(at, c)| !seen[*at] && !c.is_whitespace())
+    }
 
     #[test]
     fn empty_text_produces_no_chunks() {
@@ -374,10 +427,104 @@ mod tests {
         // First chunk starts at 0
         assert_eq!(chunks[0].start_offset, 0);
 
-        // Last chunk should reach near the end
+        // The last chunk reaches the end. Anything short of that is
+        // text the index will never see.
         let last = chunks.last().unwrap();
-        let last_end = last.start_offset + last.text.len();
-        assert!(last_end >= text.len() - 250, "should cover most of text");
+        assert_eq!(last.start_offset + last.text.len(), text.len());
+    }
+
+    #[test]
+    fn the_word_at_a_boundary_survives() {
+        // 40 words of 4 letters plus a space. A 100-char cut lands
+        // mid-word, so the boundary search backs up — and whatever it
+        // backs past has to show up in the next chunk.
+        let text = "wxyz ".repeat(40);
+        let chunks = chunk_text(&text, 98, 0);
+
+        assert_eq!(lost(&text, &chunks), None, "{chunks:#?}");
+    }
+
+    #[test]
+    fn a_short_tail_survives() {
+        // 30 chars past the first chunk, well under chunk_size / 4.
+        let text = format!("{}TAILWORD", "ab ".repeat(40));
+        let chunks = chunk_text(&text, 100, 0);
+
+        assert!(
+            chunks.iter().any(|chunk| chunk.text.contains("TAILWORD")),
+            "the tail is gone: {chunks:#?}"
+        );
+        assert_eq!(lost(&text, &chunks), None);
+    }
+
+    #[test]
+    fn no_chunk_runs_past_the_size() {
+        let text = "word ".repeat(400);
+
+        for chunk in chunk_text(&text, 137, 20) {
+            assert!(
+                chunk.text.chars().count() <= 137,
+                "chunk {} is {} chars",
+                chunk.index,
+                chunk.text.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn multibyte_text_keeps_every_character() {
+        let text = "café ☕ naïve 日本語 🎉 ".repeat(50);
+        let chunks = chunk_text(&text, 100, 20);
+
+        assert_eq!(lost(&text, &chunks), None);
+    }
+
+    /// Chunking exists to feed the embedder. A character that no chunk
+    /// carries is a character no search can ever match, so coverage is
+    /// the one property that has to hold for every input.
+    #[hegel::test(test_cases = 200)]
+    fn prop_chunks_carry_every_character(tc: TestCase) {
+        let text = tc
+            .draw(gs::text().alphabet("ab \n\u{e9}").min_size(0).max_size(400));
+        let size = tc.draw(gs::integers::<usize>().min_value(0).max_value(80));
+        let overlap =
+            tc.draw(gs::integers::<usize>().min_value(0).max_value(40));
+
+        let chunks = chunk_text(&text, size, overlap);
+
+        assert_eq!(
+            lost(&text, &chunks),
+            None,
+            "size {size}, overlap {overlap}"
+        );
+        assert!(
+            chunks.is_empty()
+                || chunks[0].start_offset == 0
+                || text[..chunks[0].start_offset]
+                    .chars()
+                    .all(char::is_whitespace),
+            "the front of {text:?} is gone"
+        );
+    }
+
+    /// The chunk size is the model's document budget. A chunk over it
+    /// gets truncated at embed time, which loses text just as surely.
+    #[hegel::test(test_cases = 200)]
+    fn prop_no_chunk_runs_past_the_size(tc: TestCase) {
+        let text = tc
+            .draw(gs::text().alphabet("ab \n\u{e9}").min_size(0).max_size(400));
+        let size = tc.draw(gs::integers::<usize>().min_value(1).max_value(80));
+        let overlap =
+            tc.draw(gs::integers::<usize>().min_value(0).max_value(40));
+
+        for chunk in chunk_text(&text, size, overlap) {
+            assert!(
+                chunk.text.chars().count() <= size,
+                "chunk {} is {} chars, size {size}",
+                chunk.index,
+                chunk.text.chars().count()
+            );
+        }
     }
 
     #[test]

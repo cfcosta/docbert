@@ -132,40 +132,14 @@ pub fn passages(
 
 /// Cut `body` into the parts that the passages carry.
 ///
-/// [`chunk_text`] of docbert steps forward by a whole chunk, and it
-/// cuts back to a word boundary before that. The word that it split
-/// then lies between two chunks and belongs to neither. Its last cut
-/// drops a tail that is shorter than a quarter of a chunk in the same
-/// way.
-///
-/// A body that the store holds must be searchable to its end, so what
-/// a cut drops joins the part in front of it. The parts of a body with
-/// no overlap then hold that body and nothing else.
+/// [`chunk_text`] of docbert carries each character of the body, so
+/// the parts of a body with no overlap hold that body and nothing
+/// else. A body that the store holds is searchable to its end.
 fn parts(body: &str, size: usize, overlap: usize) -> Vec<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let mut end = 0;
-
-    for chunk in chunk_text(body, size, overlap) {
-        let start = chunk.start_offset;
-        let stop = start + chunk.text.len();
-
-        if start > end
-            && let Some(last) = parts.last_mut()
-        {
-            last.push_str(&body[end..start]);
-        }
-
-        parts.push(chunk.text);
-        end = end.max(stop);
-    }
-
-    if end < body.len()
-        && let Some(last) = parts.last_mut()
-    {
-        last.push_str(&body[end..]);
-    }
-
-    parts
+    chunk_text(body, size, overlap)
+        .into_iter()
+        .map(|chunk| chunk.text)
+        .collect()
 }
 
 /// A fingerprint of the passages of one message, under one model.
