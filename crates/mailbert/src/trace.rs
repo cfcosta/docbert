@@ -85,37 +85,38 @@ fn colorful() -> bool {
     )
 }
 
+/// A log that the tests read. (§10.5)
 #[cfg(test)]
-mod tests {
-    //! Property inventory
-    //!
-    //! | Property | Oracle | Why it matters |
-    //! | --- | --- | --- |
-    //! | Every filter of every flag count parses | `EnvFilter::try_new` | A directive that does not parse loses the whole log. |
-    //! | The environment always wins over the flag | the text of the variable | §10.5 gives the reader the last word. |
-
+pub(crate) mod pen {
     use std::{
-        io::Write,
-        sync::{Arc, Mutex},
+        io,
+        sync::{Arc, Mutex, Once},
     };
 
-    use hegel::{TestCase, generators as gs};
+    use tracing::{
+        Event,
+        Metadata,
+        Subscriber,
+        level_filters::LevelFilter,
+        span,
+        subscriber::Interest,
+    };
+    use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
-    use super::*;
-
-    /// A writer that keeps the log in memory.
+    /// A writer that keeps every line in memory.
     #[derive(Clone, Default)]
-    struct Pen(Arc<Mutex<Vec<u8>>>);
+    pub struct Pen(Arc<Mutex<Vec<u8>>>);
 
     impl Pen {
-        fn text(&self) -> String {
+        /// Everything that the log holds now.
+        pub fn text(&self) -> String {
             let held = self.0.lock().expect("no writer panicked");
 
-            String::from_utf8(held.clone()).expect("the log is text")
+            String::from_utf8_lossy(&held).to_string()
         }
     }
 
-    impl Write for Pen {
+    impl io::Write for Pen {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0.lock().expect("no writer panicked").extend(bytes);
 
@@ -135,15 +136,96 @@ mod tests {
         }
     }
 
+    /// A subscriber that answers "maybe" for every callsite.
+    ///
+    /// `tracing` keeps one answer for each callsite, for the whole
+    /// process. A test that touches a callsite first, while no
+    /// subscriber is there, makes that answer "never". Every later
+    /// event of that callsite goes away, and the pen of another test
+    /// stays empty. This subscriber is always there, and it always
+    /// answers "maybe", so the pen of each test gets its events.
+    struct Always;
+
+    impl Subscriber for Always {
+        fn register_callsite(&self, _: &Metadata<'_>) -> Interest {
+            Interest::sometimes()
+        }
+
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn max_level_hint(&self) -> Option<LevelFilter> {
+            Some(LevelFilter::TRACE)
+        }
+
+        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+
+        fn event(&self, _: &Event<'_>) {}
+
+        fn enter(&self, _: &span::Id) {}
+
+        fn exit(&self, _: &span::Id) {}
+    }
+
+    /// Open the answer of every callsite, one time for each run.
+    ///
+    /// A test that reads the log calls this before it makes a pen.
+    pub fn open() {
+        static ONCE: Once = Once::new();
+
+        ONCE.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(Always);
+        });
+    }
+
+    /// A subscriber that writes this filter into that pen.
+    pub fn over(
+        filter: &str,
+        pen: Pen,
+    ) -> impl Subscriber + Send + Sync + 'static {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new(filter))
+            .with_writer(pen)
+            .with_ansi(false)
+            .without_time()
+            .finish()
+    }
+
+    /// A subscriber that keeps every event, at every level.
+    pub fn capture(pen: Pen) -> impl Subscriber + Send + Sync + 'static {
+        over("trace", pen)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Property inventory
+    //!
+    //! | Property | Oracle | Why it matters |
+    //! | --- | --- | --- |
+    //! | Every filter of every flag count parses | `EnvFilter::try_new` | A directive that does not parse loses the whole log. |
+    //! | The environment always wins over the flag | the text of the variable | §10.5 gives the reader the last word. |
+
+    use hegel::{TestCase, generators as gs};
+
+    use super::{
+        pen::{Pen, over},
+        *,
+    };
+
     /// Write the events of one closure, and give back the log.
     fn logged(verbose: u8, work: impl FnOnce()) -> String {
         let pen = Pen::default();
         let filter = directive(verbose, None);
 
-        tracing::subscriber::with_default(
-            subscriber(&filter, pen.clone(), false),
-            work,
-        );
+        tracing::subscriber::with_default(over(&filter, pen.clone()), work);
 
         pen.text()
     }

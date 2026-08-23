@@ -14,7 +14,7 @@ use std::{
     future::Future,
     io::{self, Write},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use mailbert_core::{MessageId, Store, config::Account, index::MailIndex};
@@ -32,6 +32,7 @@ use mailbert_imap::{
 use regex::Regex;
 use serde::Serialize;
 use tokio::{task::JoinSet, time::sleep};
+use tracing::{Instrument, instrument::WithSubscriber};
 
 use crate::{
     Tool,
@@ -117,12 +118,18 @@ pub fn server(account: &Account, password: &str) -> Server {
 ///
 /// The function fails if the server refuses a command, if a footer
 /// pattern is broken, or if the store cannot take a message.
+#[tracing::instrument(
+    skip_all,
+    fields(account = %account.name),
+    name = "account"
+)]
 pub async fn one(
     store: Arc<Store>,
     pool: Arc<Pool>,
     account: &Account,
     how: How,
 ) -> Result<Report> {
+    let start = Instant::now();
     let footers = account.footer_patterns()?;
     let (jobs, missing) = prepare(&store, &pool, account, how).await?;
 
@@ -135,6 +142,8 @@ pub async fn one(
     };
 
     if how.dry {
+        tracing::info!(asked = report.asked(), "a dry run asks for this");
+
         return Ok(report);
     }
 
@@ -142,6 +151,17 @@ pub async fn one(
         work(&store, &pool, account, jobs, &footers, how.back).await?;
     report.counts = counts;
     report.touched = touched;
+
+    tracing::info!(
+        folders = report.folders.len(),
+        kept = counts.kept,
+        moved = counts.moved,
+        gone = counts.gone,
+        broken = counts.broken,
+        bytes = counts.bytes,
+        ms = start.elapsed().as_millis(),
+        "the account is done"
+    );
 
     Ok(report)
 }
@@ -232,6 +252,13 @@ async fn look(
     let chosen = account.select_folders(&available);
     let mut jobs = Vec::with_capacity(chosen.len());
 
+    tracing::info!(
+        listed = listed.len(),
+        holding = available.len(),
+        chosen = chosen.len(),
+        "listed the folders"
+    );
+
     for folder in &chosen {
         let view = held.examine(folder).await?;
         let saved = match how.full {
@@ -243,7 +270,14 @@ async fn look(
                 .unwrap_or_default(),
         };
 
-        jobs.push(plan(folder, &saved, &view, BATCH));
+        let job = plan(folder, &saved, &view, BATCH);
+        tracing::debug!(
+            folder,
+            asked = job.count(),
+            restart = job.restart,
+            "planned a folder"
+        );
+        jobs.push(job);
     }
 
     Ok((jobs, account.missing_folders(&available)))
@@ -270,13 +304,36 @@ async fn work(
         let pool = Arc::clone(pool);
         let name = account.name.clone();
         let footers = footers.to_vec();
+        let span = tracing::info_span!("folder", folder = %job.folder);
 
-        tasks.spawn(async move {
-            let mut sink = Sink::new(store, &name).with_footers(footers);
-            let ended = resume(&pool, &job, &mut sink, back).await;
+        // The span and the subscriber both travel with the task. A
+        // folder runs on its own thread, and neither one crosses a
+        // `spawn` on its own. (§10.5)
+        tasks.spawn(
+            async move {
+                let start = Instant::now();
+                let asked = job.count();
+                let mut sink = Sink::new(store, &name).with_footers(footers);
+                let ended = resume(&pool, &job, &mut sink, back).await;
+                let counts = sink.counts();
 
-            (sink.counts(), sink.touched().clone(), ended)
-        });
+                tracing::info!(
+                    asked,
+                    kept = counts.kept,
+                    moved = counts.moved,
+                    gone = counts.gone,
+                    broken = counts.broken,
+                    bytes = counts.bytes,
+                    ms = start.elapsed().as_millis(),
+                    ok = ended.is_ok(),
+                    "the folder is done"
+                );
+
+                (counts, sink.touched().clone(), ended)
+            }
+            .instrument(span)
+            .with_current_subscriber(),
+        );
     }
 
     let mut counts = Counts::default();
@@ -585,6 +642,13 @@ async fn once(
 ) -> Result<()> {
     let mut reports = Vec::with_capacity(watched.len());
 
+    tracing::info!(
+        accounts = watched.len(),
+        full = how.full,
+        dry = how.dry,
+        "the sync starts"
+    );
+
     for account in watched {
         reports.push(
             one(
@@ -607,7 +671,15 @@ async fn once(
                 .flat_map(|report| report.touched.iter().copied())
                 .collect();
 
+            let start = Instant::now();
             let wrote = pass::after_sync(books.store, books.index, &touched)?;
+            tracing::info!(
+                touched = touched.len(),
+                messages = wrote.messages,
+                threads = wrote.threads,
+                ms = start.elapsed().as_millis(),
+                "wrote the index"
+            );
 
             (wrote, sweep(books.store, books.brain.as_deref_mut(), out)?)
         }
@@ -632,13 +704,25 @@ fn sweep(
         return Ok(Embedded::default());
     };
 
+    let start = Instant::now();
     let mut said = 0;
-    brain.sweep(store, |done| {
+    let embedded = brain.sweep(store, |done| {
         if done >= said + SAY_EVERY {
             said = done;
+            tracing::info!(done, "embedding");
             let _ = writeln!(out, "embedded {done} messages");
         }
-    })
+    })?;
+
+    tracing::info!(
+        messages = embedded.messages,
+        passages = embedded.passages,
+        dropped = embedded.dropped,
+        ms = start.elapsed().as_millis(),
+        "embedded what the sync changed"
+    );
+
+    Ok(embedded)
 }
 
 /// Drop whatever a future gives, so it can be a stop signal.
@@ -805,6 +889,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::trace::pen::{Pen, capture, open};
 
     /// Run one future, on a runtime that gives the folders real threads.
     fn run_on<F: Future>(future: F) -> F::Output {
@@ -908,6 +993,94 @@ mod tests {
             .into_iter()
             .filter(|line| line.contains(word))
             .collect()
+    }
+
+    // -----------------------------------------------------------------
+    // The log of a sync. (§10.5)
+    // -----------------------------------------------------------------
+
+    /// Run one sync, and give back what its log says.
+    ///
+    /// The subscriber travels on the future, and not on the thread.
+    /// The tests run at the same time, and a thread-local subscriber
+    /// does not reach every task of a sync. (§10.5)
+    fn log_of(store: &Arc<Store>, folders: &[(&str, u32)]) -> String {
+        open();
+
+        let pen = Pen::default();
+        let held = tracing::Dispatch::new(capture(pen.clone()));
+
+        run_on(
+            async {
+                let plan =
+                    folders.iter().fold(Plan::new(), |plan, (name, count)| {
+                        plan.with(a_folder(name, *count))
+                    });
+                let server = FakeServer::start(plan).await.expect("a server");
+                let names: Vec<&str> =
+                    folders.iter().map(|(name, _)| *name).collect();
+                let account = an_account(server.port(), &names);
+
+                sync(store, &a_pool(server.port()), &account, How::default())
+                    .await
+            }
+            .with_subscriber(held),
+        );
+
+        pen.text()
+    }
+
+    /// A reader who watches a sync must see which account, and which
+    /// folder, the work is in. Nothing else says where the time goes.
+    #[test]
+    fn the_log_of_a_sync_names_the_account_and_each_folder() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let log = log_of(&store, &[("INBOX", 3), ("Sent", 2)]);
+
+        // The span of the folder sits inside the span of the account,
+        // so every line says where the work is. (§10.5)
+        assert!(
+            log.contains("account{account=work}:folder{folder=INBOX}:"),
+            "{log}"
+        );
+        assert!(
+            log.contains("account{account=work}:folder{folder=Sent}:"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn the_log_of_a_sync_counts_what_each_folder_kept() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let log = log_of(&store, &[("INBOX", 3)]);
+        let done = log
+            .lines()
+            .find(|line| line.contains("the folder is done"))
+            .unwrap_or_else(|| panic!("no folder ended: {log}"));
+
+        assert!(done.contains("folder=INBOX"), "{done}");
+        assert!(done.contains("kept=3"), "{done}");
+        assert!(done.contains("ms="), "{done}");
+    }
+
+    /// §10.5 says how long a step took, because a reader who waits
+    /// wants to know whether the server or the store is slow.
+    #[test]
+    fn the_log_of_a_sync_says_how_many_folders_it_chose() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let log = log_of(&store, &[("INBOX", 1), ("Sent", 1)]);
+        let listed = log
+            .lines()
+            .find(|line| line.contains("listed the folders"))
+            .unwrap_or_else(|| panic!("no listing: {log}"));
+
+        assert!(listed.contains("chosen=2"), "{listed}");
     }
 
     // -----------------------------------------------------------------

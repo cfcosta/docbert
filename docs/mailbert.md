@@ -142,6 +142,9 @@ mailbert contacts caina              # what `from:caina` resolves to
 mailbert export "tag:todo" ~/mail/todo     # a maildir for your MUA
 mailbert status                      # the counts of the store and the index
 mailbert mcp                         # stdio MCP server
+
+# The log
+mailbert sync --verbose              # say what the work does (§10.5)
 ```
 
 `search` and `ksearch` are two commands, and not one command with a flag, because `ksearch` never loads the ColBERT model. This makes it fast enough for a shell loop or a fuzzy-finder.
@@ -451,6 +454,35 @@ The rendering has four parts:
 `status` gives the counts of the store, the index, and the vectors. It also gives the tags, and one line for each folder. Each folder line shows its `UIDVALIDITY`, its `UIDNEXT`, and the time of the last sync. A folder that no sync marked shows `never`. The `synced` line at the start gives the newest of these times, so you know if a search can find the mail of today. `status` reads only the local data, and it sends no command to the IMAP server.
 
 Each command accepts `--json`. The shape is stable, and it is the same shape that the MCP tools return.
+
+### 10.5 The log
+
+Every command writes what it does to the standard error. The standard output has only the answer, so `--json` and the MCP server of §2.2 read the same as before. The log shows no time of the day. Each slow step gives an `ms` field that shows its time.
+
+`--verbose` changes the level of the three mailbert crates. A reader who wants more gives it two times.
+
+| Flag                  | The mailbert crates | The other crates |
+| --------------------- | ------------------- | ---------------- |
+| none                  | `info`              | `warn`           |
+| `--verbose`           | `debug`             | `warn`           |
+| `--verbose --verbose` | `trace`             | `info`           |
+
+`MAILBERT_LOG` gives the filter directly, and it takes the syntax of `RUST_LOG`. If `MAILBERT_LOG` has a value, the tool obeys it and not the flag. An empty value has no effect, and the tool obeys the flag.
+
+```bash
+mailbert sync --verbose
+MAILBERT_LOG=mailbert_imap=trace mailbert sync
+```
+
+A sync makes one span for each account, and one span for each folder in it. Each line shows the two spans, so a reader always sees where the work is.
+
+```
+ INFO account{account=work}: mailbert::sync: listed the folders listed=48 holding=48 chosen=6
+DEBUG account{account=work}:folder{folder=INBOX}: mailbert_imap::connection: fetched a batch folder="INBOX" asked=64 messages=64 gone=0 bytes=812004 ms=431
+ INFO account{account=work}:folder{folder=INBOX}: mailbert::sync: the folder is done asked=64 kept=64 moved=0 gone=0 broken=0 bytes=812004 ms=1204
+```
+
+The log never shows a credential. `LOGIN` and `AUTHENTICATE` show only their name and `***`. A literal shows the count of its bytes, and not the bytes. The log cuts a command that is longer than 160 characters, and it gives the true length.
 
 ## 11. Crate layout
 

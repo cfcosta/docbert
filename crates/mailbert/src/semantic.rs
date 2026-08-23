@@ -13,6 +13,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use candle_core::Tensor;
@@ -302,7 +303,9 @@ pub fn rebuild(
     plan: &Plan,
     params: PlaidBuildParams,
 ) -> Result<bool> {
-    if db.list_ids()?.is_empty() {
+    let held = db.list_ids()?;
+
+    if held.is_empty() {
         let _ = std::fs::remove_file(at);
         return Ok(false);
     }
@@ -313,14 +316,27 @@ pub fn rebuild(
         .flat_map(|one| one.passages.iter().map(|two| two.key))
         .collect();
 
-    let index = match load(at)? {
-        Some(held) => {
-            update_index_with_chunks(db, held, &upserts, &plan.stale)?
-        }
-        None => build_index_from_embedding_db(db, params)?,
+    // The k-means of a first build reads every embedding, and it can
+    // take minutes. The log says that it started. (§10.5)
+    let start = Instant::now();
+    let (index, first) = match load(at)? {
+        Some(read) => (
+            update_index_with_chunks(db, read, &upserts, &plan.stale)?,
+            false,
+        ),
+        None => (build_index_from_embedding_db(db, params)?, true),
     };
 
     persistence::save(&index, at)?;
+
+    tracing::info!(
+        passages = held.len(),
+        moved = upserts.len(),
+        dropped = plan.stale.len(),
+        first,
+        ms = start.elapsed().as_millis(),
+        "wrote the PLAID index"
+    );
 
     Ok(true)
 }
@@ -412,6 +428,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::trace::pen::{Pen, capture, open};
 
     // -----------------------------------------------------------------
     // Helpers.
@@ -611,6 +628,45 @@ mod tests {
     // -----------------------------------------------------------------
     // The index, and the leg.
     // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // The log of a pass. (§10.5)
+    // -----------------------------------------------------------------
+
+    /// The PLAID build reads every embedding, and it can take minutes.
+    /// A reader who waits must see that it started, and how long it
+    /// took. (§10.5)
+    #[test]
+    fn the_log_of_a_pass_times_the_index_that_it_builds() {
+        open();
+
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let db = open_db(&dir);
+        let at = dir.path().join("plaid.idx");
+        let pen = Pen::default();
+
+        let near = write(&store, "a", "The deposit is due.");
+        write(&store, "b", "The inspection is done.");
+        let made = plan(&store, MODEL).expect("a plan");
+        seed(&store, &db, &made, |id| match *id == near {
+            true => NEAR,
+            false => FAR,
+        });
+
+        tracing::subscriber::with_default(capture(pen.clone()), || {
+            rebuild(&db, &at, &made, small()).expect("a build");
+        });
+
+        let log = pen.text();
+        let line = log
+            .lines()
+            .find(|line| line.contains("wrote the PLAID index"))
+            .unwrap_or_else(|| panic!("no index: {log}"));
+
+        assert!(line.contains("passages=2"), "{line}");
+        assert!(line.contains("ms="), "{line}");
+    }
 
     #[test]
     fn an_empty_database_writes_no_index() {

@@ -813,12 +813,13 @@ mod tests {
     //! | `prop_a_fetch_never_asks_the_server_to_write` | metamorphic | §3 makes mailbert a download-only mirror. `BODY[]` sets `\Seen` on the server, `BODY.PEEK[]` does not. |
 
     use hegel::{TestCase, generators as gs};
+    use tracing::instrument::WithSubscriber;
 
     use super::*;
     use crate::{
         fake::{FakeFolder, FakeMessage, FakeServer, Plan},
         sequence::batches,
-        trace::pen::{Pen, capture},
+        trace::pen::{Pen, capture, open},
     };
 
     // -----------------------------------------------------------------
@@ -970,20 +971,26 @@ mod tests {
 
     /// §3 keeps a credential out of every file that the reader did not
     /// choose, and the log is such a file.
-    #[tokio::test]
-    async fn a_login_writes_no_password_to_the_log() {
-        let pen = Pen::default();
-        let held = tracing::subscriber::set_default(capture(pen.clone()));
-        let server = FakeServer::start(a_plan().with_login("me", "hunter2"))
-            .await
-            .unwrap();
-        let mut connection =
-            Connection::open("127.0.0.1", server.port(), false)
-                .await
-                .unwrap();
+    #[test]
+    fn a_login_writes_no_password_to_the_log() {
+        open();
 
-        connection.login("me", "hunter2").await.unwrap();
-        drop(held);
+        let pen = Pen::default();
+        let held = tracing::Dispatch::new(capture(pen.clone()));
+
+        run(async {
+            let server =
+                FakeServer::start(a_plan().with_login("me", "hunter2"))
+                    .await
+                    .unwrap();
+            let mut connection =
+                Connection::open("127.0.0.1", server.port(), false)
+                    .await
+                    .unwrap();
+
+            connection.login("me", "hunter2").await.unwrap();
+        }
+        .with_subscriber(held));
 
         let log = pen.text();
         assert!(!log.contains("hunter2"), "{log}");
@@ -991,18 +998,23 @@ mod tests {
     }
 
     /// A reader who gives `--verbose` wants to see the conversation.
-    #[tokio::test]
-    async fn a_command_and_its_answer_reach_the_log() {
-        let pen = Pen::default();
-        let held = tracing::subscriber::set_default(capture(pen.clone()));
-        let server = a_server().await;
-        let mut connection =
-            Connection::open("127.0.0.1", server.port(), false)
-                .await
-                .unwrap();
+    #[test]
+    fn a_command_and_its_answer_reach_the_log() {
+        open();
 
-        connection.examine("INBOX").await.unwrap();
-        drop(held);
+        let pen = Pen::default();
+        let held = tracing::Dispatch::new(capture(pen.clone()));
+
+        run(async {
+            let server = a_server().await;
+            let mut connection =
+                Connection::open("127.0.0.1", server.port(), false)
+                    .await
+                    .unwrap();
+
+            connection.examine("INBOX").await.unwrap();
+        }
+        .with_subscriber(held));
 
         let log = pen.text();
         assert!(log.contains("EXAMINE \"INBOX\""), "{log}");

@@ -19,7 +19,6 @@ serde = { version = "1", features = ["derive"] }
 tantivy = "0.26.1"
 thiserror = "2"
 toml = "1"
-tracing = "0.1"
 unicode-normalization = "0.1"
 
 [dev-dependencies]

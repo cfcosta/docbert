@@ -89,10 +89,17 @@ pub fn heard(state: &str, lines: usize) -> String {
 pub(crate) mod pen {
     use std::{
         io,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, Once},
     };
 
-    use tracing::Subscriber;
+    use tracing::{
+        Event,
+        Metadata,
+        Subscriber,
+        level_filters::LevelFilter,
+        span,
+        subscriber::Interest,
+    };
     use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
     /// A writer that keeps every line in memory.
@@ -126,6 +133,55 @@ pub(crate) mod pen {
         fn make_writer(&'a self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    /// A subscriber that answers "maybe" for every callsite.
+    ///
+    /// `tracing` keeps one answer for each callsite, for the whole
+    /// process. A test that touches a callsite first, while no
+    /// subscriber is there, makes that answer "never". Every later
+    /// event of that callsite goes away, and the pen of another test
+    /// stays empty. This subscriber is always there, and it always
+    /// answers "maybe", so the pen of each test gets its events.
+    struct Always;
+
+    impl Subscriber for Always {
+        fn register_callsite(&self, _: &Metadata<'_>) -> Interest {
+            Interest::sometimes()
+        }
+
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn max_level_hint(&self) -> Option<LevelFilter> {
+            Some(LevelFilter::TRACE)
+        }
+
+        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+
+        fn event(&self, _: &Event<'_>) {}
+
+        fn enter(&self, _: &span::Id) {}
+
+        fn exit(&self, _: &span::Id) {}
+    }
+
+    /// Open the answer of every callsite, one time for each run.
+    ///
+    /// A test that reads the log calls this before it makes a pen.
+    pub fn open() {
+        static ONCE: Once = Once::new();
+
+        ONCE.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(Always);
+        });
     }
 
     /// A subscriber that keeps every event, at every level.
