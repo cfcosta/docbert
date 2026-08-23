@@ -19,6 +19,10 @@ pub enum Error {
     #[error(transparent)]
     Core(#[from] mailbert_core::Error),
 
+    #[error("these bytes are not a message: {0}")]
+    #[diagnostic(help("The store may hold a truncated download."))]
+    Mime(#[from] mailbert_core::MimeError),
+
     #[error(transparent)]
     Imap(#[from] mailbert_imap::Error),
 
@@ -63,6 +67,16 @@ pub enum Error {
         "The task list in docs/mailbert-tasks.md says when it lands."
     ))]
     NotYet(&'static str),
+
+    #[error("the identity `{prefix}` names more than one message")]
+    #[diagnostic(help("Give more characters. These match: {}", .ids.join(", ")))]
+    AmbiguousMessage { prefix: String, ids: Vec<String> },
+
+    #[error("I cannot run `gpg`: {0}")]
+    #[diagnostic(help(
+        "Install gpg. `mailbert get` gives the ciphertext without it."
+    ))]
+    NoGpg(String),
 
     #[error("no account is named `{0}`")]
     UnknownAccount(String),

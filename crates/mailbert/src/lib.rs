@@ -11,6 +11,7 @@ pub mod paths;
 pub mod search;
 pub mod semantic;
 pub mod settings;
+pub mod show;
 pub mod sink;
 pub mod sync;
 pub mod tags;
@@ -137,6 +138,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Ksearch(args) => {
             search::command(&tool, args, search::Legs::Words)
         }
+        Command::Get(args) => show::get(&tool, args),
+        Command::View(args) => show::view(&tool, args),
         other => Err(Error::NotYet(other.name())),
     }
 }

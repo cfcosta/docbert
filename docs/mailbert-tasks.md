@@ -130,6 +130,17 @@ The parts that hold a message and find it again.
   - [x] The columns of the text share one width. (§10.1)
   - [x] `--json` writes the query, the legs, and the rows. (§10.4)
   - [x] `crate::clock` gives the local offset that §7.1 reads dates against.
-- [ ] **T23** `get`, and `view` with ANSI. (§10.2, §10.3)
+- [x] **T23** `get`, and `view` with ANSI. (§10.2, §10.3)
+  - [x] `show::resolve` reads a git-style prefix of the identity. (§4.1)
+  - [x] A prefix that names nothing, or names two messages, is an error.
+  - [x] `show::read` gives the headers of §10.2, and the body with its
+        quotes.
+  - [x] The date of the header carries the hour, in the zone of the reader.
+  - [x] `get` writes no escape, and never runs gpg. (§5.4)
+  - [x] `get` gives the armor of an encrypted body, and never a plaintext.
+  - [x] `view` colors the header names, the subject, and the quotes by depth.
+  - [x] `view` colors a fenced block with syntect. (§10.3)
+  - [x] `view` runs gpg on demand, and only for an encrypted body. (§5.4)
+  - [x] `--json` writes the headers and the body together. (§10.4)
 - [ ] **T24** `export` to a maildir. (§4.3)
 - [ ] **T25** The MCP server. (§2.2)
