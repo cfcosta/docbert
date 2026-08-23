@@ -9,10 +9,10 @@
 
 use std::{collections::BTreeMap, io::Write};
 
-use mailbert_core::{Store, config::Config, index::MailIndex};
+use mailbert_core::{Store, config::Config, date::Clock, index::MailIndex};
 use serde::Serialize;
 
-use crate::{Tool, cli, error::Result};
+use crate::{Tool, cli, error::Result, show};
 
 /// The width of the label column of the text. (§10.1)
 const LABEL: usize = 12;
@@ -34,6 +34,11 @@ pub struct Folder {
 
     /// True when the last sync left UIDs that it did not fetch.
     pub pending: bool,
+
+    /// When the last sync marked the folder, in seconds of Unix time.
+    ///
+    /// A zero says that no sync marked it yet.
+    pub synced: i64,
 }
 
 /// What one account of the configuration holds.
@@ -76,6 +81,30 @@ impl Report {
     pub fn behind(&self) -> usize {
         self.messages.saturating_sub(self.indexed)
     }
+
+    /// When the newest sync of any folder ran. (§3.3)
+    ///
+    /// `None` says that no sync marked a folder yet. A zero in the
+    /// record is not a time, and this drops it.
+    pub fn synced(&self) -> Option<i64> {
+        self.accounts
+            .iter()
+            .flat_map(|mailbox| &mailbox.folders)
+            .map(|folder| folder.synced)
+            .filter(|at| *at > 0)
+            .max()
+    }
+}
+
+/// The time of a sync, as §10.1 writes it.
+///
+/// A folder that no sync marked carries a zero, and a zero is not a
+/// time. The reader sees `never` for it.
+fn when(at: i64, clock: Clock) -> String {
+    match at > 0 {
+        true => show::stamp(at, clock.utc_offset()),
+        false => "never".to_string(),
+    }
 }
 
 /// Read the counts of the store, the index, and the configuration.
@@ -99,6 +128,7 @@ pub fn report(
                 uid_validity: state.uid_validity,
                 uid_next: state.uid_next,
                 pending: !state.pending.trim().is_empty(),
+                synced: state.synced_at,
             })
             .collect();
 
@@ -120,14 +150,29 @@ pub fn report(
 
 /// Write the report as lines of text.
 ///
+/// `clock` gives the time zone of the reader. (§10.1)
+///
 /// # Errors
 ///
 /// The function fails if the output does not take the text.
-pub fn write_text(report: &Report, out: &mut dyn Write) -> Result<()> {
+pub fn write_text(
+    report: &Report,
+    clock: Clock,
+    out: &mut dyn Write,
+) -> Result<()> {
     writeln!(out, "{:LABEL$}{}", "messages", report.messages)?;
     writeln!(out, "{:LABEL$}{}", "indexed", report.indexed)?;
     writeln!(out, "{:LABEL$}{}", "embedded", report.embedded)?;
     writeln!(out, "{:LABEL$}{}", "searches", report.searches)?;
+
+    // §10.4 must say how old the mail is. A reader who does not see
+    // this cannot tell an empty search from a store that is behind.
+    writeln!(
+        out,
+        "{:LABEL$}{}",
+        "synced",
+        when(report.synced().unwrap_or(0), clock)
+    )?;
 
     // §3.2 writes the store before the index, so this number is the
     // work that the next sync owes.
@@ -155,8 +200,11 @@ pub fn write_text(report: &Report, out: &mut dyn Write) -> Result<()> {
 
             writeln!(
                 out,
-                "  {:FOLDER$}uidvalidity {}  uidnext {}{owed}",
-                folder.name, folder.uid_validity, folder.uid_next
+                "  {:FOLDER$}uidvalidity {}  uidnext {}  {}{owed}",
+                folder.name,
+                folder.uid_validity,
+                folder.uid_next,
+                when(folder.synced, clock)
             )?;
         }
     }
@@ -189,7 +237,7 @@ pub fn command(tool: &Tool, args: &cli::Status) -> Result<()> {
 
     match args.json {
         true => write_json(&held, &mut out),
-        false => write_text(&held, &mut out),
+        false => write_text(&held, crate::clock(), &mut out),
     }
 }
 
@@ -201,12 +249,14 @@ mod tests {
     //! | --- | --- | --- |
     //! | `prop_the_report_counts_what_the_store_holds` | model-based | A count against a tally. A report that lies about the counts hides a sync that stopped early. |
     //! | `prop_behind_is_never_below_zero` | algebraic | The difference of two counts. An index ahead of the store must give zero, and never a number that wraps. |
+    //! | `prop_the_report_gives_the_newest_time_of_any_folder` | model-based | A maximum against a tally. A report that gives an old time tells the reader that mail is missing when it is there. |
 
     use std::collections::BTreeSet;
 
     use hegel::{TestCase, generators as gs};
     use mailbert_core::{
         config::Account,
+        date::Clock,
         message::{Location, Message},
         mime,
         store::{Embedded, SyncState},
@@ -218,6 +268,11 @@ mod tests {
 
     /// The smallest budget that a Tantivy writer accepts.
     const BUDGET: usize = 15_000_000;
+
+    /// The time that each mark of these tests carries.
+    ///
+    /// 1755820800 is 2025-08-22 00:00 UTC.
+    const SYNCED: i64 = 1_755_820_800;
 
     fn location(uid: u32) -> Location {
         Location {
@@ -312,6 +367,23 @@ mod tests {
             held.id
         }
 
+        /// Mark one folder as a sync of `at` left it.
+        fn mark(&self, account: &str, folder: &str, at: i64) {
+            self.store
+                .mark(
+                    account,
+                    folder,
+                    &SyncState {
+                        uid_validity: 12,
+                        uid_next: 431,
+                        highest_mod_seq: 9,
+                        pending: String::new(),
+                        synced_at: at,
+                    },
+                )
+                .expect("a mark");
+        }
+
         fn report(&self, config: &Config) -> Report {
             super::report(&self.store, &self.index, config).expect("a report")
         }
@@ -319,9 +391,23 @@ mod tests {
 
     fn text_of(report: &Report) -> String {
         let mut out = Vec::new();
-        write_text(report, &mut out).expect("a write");
+        write_text(report, Clock::utc(SYNCED), &mut out).expect("a write");
 
         String::from_utf8(out).expect("the output is text")
+    }
+
+    /// The line of the text that says when the last sync ran.
+    fn sync_line(text: &str) -> &str {
+        text.lines()
+            .find(|line| line.starts_with("synced"))
+            .expect("a line for the sync")
+    }
+
+    fn json_of(report: &Report) -> serde_json::Value {
+        let mut out = Vec::new();
+        write_json(report, &mut out).expect("a write");
+
+        serde_json::from_slice(&out).expect("the output is JSON")
     }
 
     // -----------------------------------------------------------------
@@ -447,6 +533,7 @@ mod tests {
                     uid_next: 431,
                     highest_mod_seq: 9,
                     pending: String::new(),
+                    synced_at: SYNCED,
                 },
             )
             .expect("a mark");
@@ -474,6 +561,7 @@ mod tests {
                     uid_next: 431,
                     highest_mod_seq: 9,
                     pending: "400:430".to_string(),
+                    synced_at: SYNCED,
                 },
             )
             .expect("a mark");
@@ -495,6 +583,65 @@ mod tests {
 
         assert_eq!(report.accounts.len(), 1);
         assert_eq!(report.accounts[0].account, "work");
+    }
+
+    /// §10.4 shows when the last sync ran, so the report must carry
+    /// the time that the mark of §3.3 left.
+    #[test]
+    fn a_folder_carries_the_time_of_the_last_sync() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "INBOX", SYNCED);
+
+        let report = shelf.report(&config_of(&["work"]));
+
+        assert_eq!(report.accounts[0].folders[0].synced, SYNCED);
+    }
+
+    #[test]
+    fn a_folder_that_no_sync_marked_carries_no_time() {
+        let shelf = Shelf::new();
+        shelf
+            .store
+            .mark("work", "INBOX", &SyncState::default())
+            .expect("a mark");
+
+        let report = shelf.report(&config_of(&["work"]));
+
+        assert_eq!(report.accounts[0].folders[0].synced, 0);
+    }
+
+    /// A sync marks each folder at a different moment. The reader wants
+    /// the newest of them, because that says how fresh the store is.
+    #[test]
+    fn the_report_gives_the_newest_time_of_any_folder() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "Archive", SYNCED);
+        shelf.mark("work", "INBOX", SYNCED + 600);
+        shelf.mark("work", "Sent", SYNCED - 600);
+
+        let report = shelf.report(&config_of(&["work"]));
+
+        assert_eq!(report.synced(), Some(SYNCED + 600));
+    }
+
+    #[test]
+    fn a_report_that_no_sync_touched_has_no_time() {
+        let shelf = Shelf::new();
+
+        assert_eq!(shelf.report(&config_of(&["work"])).synced(), None);
+    }
+
+    /// A folder of a mailbert that is older carries a zero. A zero is
+    /// not a time, so it must never stand for one.
+    #[test]
+    fn a_time_of_zero_is_no_time_at_all() {
+        let shelf = Shelf::new();
+        shelf
+            .store
+            .mark("work", "INBOX", &SyncState::default())
+            .expect("a mark");
+
+        assert_eq!(shelf.report(&config_of(&["work"])).synced(), None);
     }
 
     // -----------------------------------------------------------------
@@ -545,6 +692,7 @@ mod tests {
                     uid_next: 9,
                     highest_mod_seq: 0,
                     pending: String::new(),
+                    synced_at: SYNCED,
                 },
             )
             .expect("a mark");
@@ -577,6 +725,88 @@ mod tests {
         assert_eq!(held["accounts"][0]["account"], "work");
     }
 
+    /// §10.4 must say how old the mail is. A reader who cannot see
+    /// the time does not know if a search can find the mail of today.
+    #[test]
+    fn the_text_says_when_the_last_sync_ran() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "Archive", SYNCED);
+        shelf.mark("work", "INBOX", SYNCED + 86_400);
+
+        let held = text_of(&shelf.report(&config_of(&["work"])));
+
+        // The newest of the folders, and not the first of them.
+        assert!(sync_line(&held).contains("2025-08-23 00:00"), "{held}");
+    }
+
+    #[test]
+    fn the_text_of_a_store_that_no_sync_touched_says_never() {
+        let shelf = Shelf::new();
+
+        let held = text_of(&shelf.report(&config_of(&["work"])));
+
+        assert!(sync_line(&held).contains("never"), "{held}");
+    }
+
+    /// The reader gives the time zone. A time in UTC misleads a reader
+    /// who is not in UTC by as much as 14 hours.
+    #[test]
+    fn the_text_shows_the_time_in_the_zone_of_the_reader() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "INBOX", SYNCED);
+        let report = shelf.report(&config_of(&["work"]));
+        let mut out = Vec::new();
+
+        write_text(&report, Clock::new(SYNCED, 7_200), &mut out)
+            .expect("a write");
+
+        let held = String::from_utf8(out).expect("the output is text");
+        assert!(held.contains("2025-08-22 02:00 +0200"), "{held}");
+    }
+
+    #[test]
+    fn the_text_shows_the_time_of_each_folder() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "Archive", SYNCED);
+        shelf.mark("work", "INBOX", SYNCED + 86_400);
+
+        let held = text_of(&shelf.report(&config_of(&["work"])));
+        let line = held
+            .lines()
+            .find(|line| line.contains("Archive"))
+            .expect("a line for the folder");
+
+        assert!(line.contains("2025-08-22 00:00"), "{held}");
+    }
+
+    #[test]
+    fn the_text_of_a_folder_that_no_sync_marked_says_never() {
+        let shelf = Shelf::new();
+        shelf
+            .store
+            .mark("work", "INBOX", &SyncState::default())
+            .expect("a mark");
+
+        let held = text_of(&shelf.report(&config_of(&["work"])));
+        let line = held
+            .lines()
+            .find(|line| line.contains("INBOX"))
+            .expect("a line for the folder");
+
+        assert!(line.contains("never"), "{held}");
+    }
+
+    /// §10.4 keeps the JSON stable, so the field name counts.
+    #[test]
+    fn the_json_carries_the_time_of_each_folder() {
+        let shelf = Shelf::new();
+        shelf.mark("work", "INBOX", SYNCED);
+
+        let held = json_of(&shelf.report(&config_of(&["work"])));
+
+        assert_eq!(held["accounts"][0]["folders"][0]["synced"], SYNCED);
+    }
+
     // -----------------------------------------------------------------
     // Properties of the report.
     // -----------------------------------------------------------------
@@ -601,6 +831,27 @@ mod tests {
         assert_eq!(report.messages, count);
         assert_eq!(report.indexed, wanted);
         assert_eq!(report.behind(), count - wanted);
+    }
+
+    #[hegel::test(test_cases = 30)]
+    fn prop_the_report_gives_the_newest_time_of_any_folder(tc: TestCase) {
+        let times: Vec<i64> = tc.draw(
+            gs::vecs(
+                gs::integers::<i64>().min_value(0).max_value(4_102_444_800),
+            )
+            .min_size(0)
+            .max_size(5),
+        );
+        let shelf = Shelf::new();
+
+        for (at, time) in times.iter().enumerate() {
+            shelf.mark("work", &format!("F{at}"), *time);
+        }
+
+        let report = shelf.report(&config_of(&["work"]));
+        let wanted = times.iter().copied().filter(|time| *time > 0).max();
+
+        assert_eq!(report.synced(), wanted);
     }
 
     #[hegel::test(test_cases = 40)]

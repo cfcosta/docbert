@@ -146,6 +146,12 @@ pub struct SyncState {
 
     /// The UIDs that the sync owes, in the text of a UID set.
     pub pending: String,
+
+    /// When the last sync marked this folder, in seconds of Unix time.
+    ///
+    /// A zero says that no sync marked it yet. §10.4 shows this, so a
+    /// reader knows whether a search can find recent mail.
+    pub synced_at: i64,
 }
 
 /// What one embedding pass gave one message. (§6.2)
@@ -1889,7 +1895,30 @@ mod tests {
             uid_next,
             highest_mod_seq: 900,
             pending: pending.to_string(),
+            synced_at: 1_755_820_800,
         }
+    }
+
+    /// §10.4 shows when the last sync ran, and the mark is the only
+    /// record that knows. A time that the store loses is a time that
+    /// `status` cannot show.
+    #[test]
+    fn the_state_keeps_the_time_of_the_sync() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        store
+            .mark("work", "INBOX", &a_state(400, ""))
+            .expect("a write");
+
+        let found = store.state("work", "INBOX").expect("a read");
+
+        assert_eq!(found.expect("a state").synced_at, 1_755_820_800);
+    }
+
+    #[test]
+    fn a_folder_that_no_sync_marked_has_no_time() {
+        assert_eq!(SyncState::default().synced_at, 0);
     }
 
     #[test]
@@ -2023,6 +2052,9 @@ mod tests {
                 .draw(gs::integers::<u64>().min_value(0).max_value(u64::MAX)),
             pending: tc.draw(
                 gs::text().alphabet("0123456789:,").min_size(0).max_size(20),
+            ),
+            synced_at: tc.draw(
+                gs::integers::<i64>().min_value(0).max_value(4_102_444_800),
             ),
         };
         let folder: String =

@@ -14,7 +14,7 @@ use mailbert_core::{
     Message,
     MessageId,
     Store,
-    date::internal_date,
+    date::{Clock, internal_date},
     message::Location,
     mime,
     store::SyncState,
@@ -71,17 +71,22 @@ pub struct Sink {
     store: Arc<Store>,
     account: String,
     footers: Vec<Regex>,
+    clock: Clock,
     touched: BTreeSet<MessageId>,
     counts: Counts,
 }
 
 /// The record that the store keeps for one folder. (§3.3)
-pub fn keep_state(state: &FolderState) -> SyncState {
+///
+/// `now` is the time of the mark, in seconds of Unix time. §10.4 shows
+/// it, so a reader knows how old the mail of that folder is.
+pub fn keep_state(state: &FolderState, now: i64) -> SyncState {
     SyncState {
         uid_validity: state.uid_validity,
         uid_next: state.uid_next,
         highest_mod_seq: state.highest_mod_seq,
         pending: state.pending.to_string(),
+        synced_at: now,
     }
 }
 
@@ -105,6 +110,7 @@ impl Sink {
             store,
             account: account.to_string(),
             footers: Vec::new(),
+            clock: crate::clock(),
             touched: BTreeSet::new(),
             counts: Counts::default(),
         }
@@ -113,6 +119,13 @@ impl Sink {
     /// Remove these footers from every body that arrives. (§5.2)
     pub fn with_footers(mut self, footers: Vec<Regex>) -> Self {
         self.footers = footers;
+
+        self
+    }
+
+    /// Read the time of each mark from this clock. (§10.4)
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
 
         self
     }
@@ -189,7 +202,11 @@ impl Sink {
 
 impl Keep for Sink {
     async fn mark(&mut self, folder: &str, state: &FolderState) -> Result<()> {
-        self.store.mark(&self.account, folder, &keep_state(state))?;
+        self.store.mark(
+            &self.account,
+            folder,
+            &keep_state(state, self.clock.now()),
+        )?;
 
         Ok(())
     }
@@ -236,7 +253,7 @@ mod tests {
     //! | `prop_the_sink_never_stops_on_bytes_that_are_not_a_message` | invariant | One message that mailbert cannot read must not stop a sync of 100000. |
 
     use hegel::{TestCase, generators as gs};
-    use mailbert_core::query::Flag;
+    use mailbert_core::{date::Clock, query::Flag};
     use mailbert_imap::UidSet;
     use tempfile::{TempDir, tempdir};
 
@@ -281,6 +298,9 @@ mod tests {
         }
     }
 
+    /// The time that the test clock gives.
+    const NOW: i64 = 1_755_820_800;
+
     fn a_state(uid_next: u32) -> FolderState {
         FolderState {
             uid_validity: 3,
@@ -293,6 +313,22 @@ mod tests {
     // -----------------------------------------------------------------
     // Unit tests: what a batch leaves behind.
     // -----------------------------------------------------------------
+
+    /// §10.4 shows when the last sync ran. The mark is where the time
+    /// comes from, so a mark that leaves no time leaves `status` blind.
+    #[tokio::test]
+    async fn a_mark_stamps_the_time_of_the_sync() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let mut sink =
+            Sink::new(store.clone(), "work").with_clock(Clock::new(NOW, 0));
+
+        sink.mark("INBOX", &a_state(8)).await.expect("a mark");
+
+        let kept = store.state("work", "INBOX").expect("a read");
+
+        assert_eq!(kept.expect("a state").synced_at, NOW);
+    }
 
     #[tokio::test]
     async fn a_batch_writes_the_message_and_its_bytes() {
@@ -333,14 +369,15 @@ mod tests {
     async fn a_batch_marks_the_state_of_the_folder() {
         let dir = tempdir().expect("a temporary directory");
         let store = open_at(&dir);
-        let mut sink = Sink::new(store.clone(), "work");
+        let mut sink =
+            Sink::new(store.clone(), "work").with_clock(Clock::new(NOW, 0));
 
         sink.batch("INBOX", batch_of(vec![fetched(7, "one")]), &a_state(8))
             .await
             .expect("a batch");
 
         let kept = store.state("work", "INBOX").expect("a read");
-        assert_eq!(kept, Some(keep_state(&a_state(8))));
+        assert_eq!(kept, Some(keep_state(&a_state(8), NOW)));
     }
 
     #[tokio::test]
@@ -464,14 +501,15 @@ mod tests {
     async fn a_mark_writes_the_state_and_no_message() {
         let dir = tempdir().expect("a temporary directory");
         let store = open_at(&dir);
-        let mut sink = Sink::new(store.clone(), "work");
+        let mut sink =
+            Sink::new(store.clone(), "work").with_clock(Clock::new(NOW, 0));
 
         sink.mark("INBOX", &a_state(8)).await.expect("a mark");
 
         assert!(store.is_empty().expect("a read"));
         assert_eq!(
             store.state("work", "INBOX").expect("a read"),
-            Some(keep_state(&a_state(8)))
+            Some(keep_state(&a_state(8), NOW))
         );
     }
 

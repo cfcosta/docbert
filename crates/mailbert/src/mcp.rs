@@ -575,7 +575,10 @@ impl Server {
     pub async fn status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let report = self.desk.status().map_err(fault)?;
 
-        answer(&report, |out| status::write_text(&report, out)).map_err(fault)
+        answer(&report, |out| {
+            status::write_text(&report, crate::clock(), out)
+        })
+        .map_err(fault)
     }
 }
 

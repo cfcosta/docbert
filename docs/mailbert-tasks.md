@@ -181,6 +181,7 @@ The parts that hold a message and find it again.
   - [x] `status` says how far the index is behind the store. (§3.2)
   - [x] `status` names each folder, its UIDVALIDITY, and its UIDNEXT.
   - [x] `status` never speaks to the IMAP server. (§3.3)
+  - [x] `status` gives the time of the last sync of each folder. (§10.4)
   - [x] `--json` writes the counts and the accounts. (§10.4)
 - [x] **T27** The MCP server. (§2.2)
   - [x] `Desk` holds the store, the index, the configuration, and the model.

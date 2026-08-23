@@ -427,7 +427,9 @@ The rendering has four parts:
 3. Code blocks inside the body highlighted with `syntect`.
 4. HTML rendered as styled text, and not as tags.
 
-### 10.4 JSON
+### 10.4 `status` and JSON
+
+`status` gives the counts of the store, the index, and the vectors. It also gives the tags, and one line for each folder. Each folder line shows its `UIDVALIDITY`, its `UIDNEXT`, and the time of the last sync. A folder that no sync marked shows `never`. The `synced` line at the start gives the newest of these times, so you know if a search can find the mail of today. `status` reads only the local data, and it sends no command to the IMAP server.
 
 Each command accepts `--json`. The shape is stable, and it is the same shape that the MCP tools return.
 
