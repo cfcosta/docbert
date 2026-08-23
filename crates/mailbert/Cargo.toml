@@ -35,6 +35,16 @@ tokio = { version = "1", features = [
 ] }
 xdg = "3.0.0"
 
+[features]
+default = []
+mkl = ["candle-core/mkl", "docbert-core/mkl"]
+accelerate = ["candle-core/accelerate", "docbert-core/accelerate"]
+metal = ["candle-core/metal", "docbert-core/metal"]
+# `cuda` reaches the embedding model through docbert-core, and the
+# k-means and MaxSim kernels of the PLAID index through docbert-plaid.
+# It needs a CUDA toolkit at link time.
+cuda = ["candle-core/cuda", "docbert-core/cuda", "docbert-plaid/cuda"]
+
 [dev-dependencies]
 hegeltest = "0.28"
 tempfile = "3"

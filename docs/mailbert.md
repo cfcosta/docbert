@@ -86,6 +86,25 @@ width  = 100
 
 Three credential fields are available, and mailbert reads them in this order: `password_command`, then `password_file`, then `password`. `password_command` runs a shell command and reads the first line of its output, the same as isync. `password_file` reads a file, and mailbert gives a warning if the mode is not `0600`. `password` holds the value directly, and mailbert always gives a warning.
 
+### 1.3 Build features
+
+mailbert has the four acceleration features of the workspace, and the default is none of them.
+
+| Feature      | What it gives                                         |
+| ------------ | ----------------------------------------------------- |
+| `cuda`       | The model and the PLAID kernels run on an NVIDIA GPU. |
+| `metal`      | The model runs on an Apple GPU.                       |
+| `mkl`        | The CPU math uses Intel MKL.                          |
+| `accelerate` | The CPU math uses the Accelerate framework of macOS.  |
+
+Each feature goes to `docbert-core`. `cuda` also goes to `docbert-plaid`, which holds the k-means and the MaxSim kernels of §6.2.
+
+```bash
+cargo build --release -p mailbert --features cuda
+```
+
+A CUDA build needs the toolkit at link time. The binary links against the driver stub, so the machine must give the true driver at run time. On NixOS you add `/run/opengl-driver/lib` to `LD_LIBRARY_PATH`.
+
 ## 2. User-visible surface
 
 ### 2.1 CLI
