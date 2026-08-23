@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod export;
 pub mod pass;
 pub mod paths;
 pub mod search;
@@ -140,6 +141,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Get(args) => show::get(&tool, args),
         Command::View(args) => show::view(&tool, args),
+        Command::Export(args) => export::command(&tool, args),
         other => Err(Error::NotYet(other.name())),
     }
 }

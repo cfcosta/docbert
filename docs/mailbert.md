@@ -196,7 +196,13 @@ The same rule applies across accounts. A message sent to your work address and y
 
 ### 4.3 Export on demand
 
-The local store is not a maildir, so an MUA cannot read it. `mailbert export <query> <dir>` writes a maildir of symlinks (or of files, with `--copy`) for the messages that match the query. This lets you open a result set in mutt, aerc, or neomutt.
+The local store is not a maildir, so an MUA cannot read it. `mailbert export <query> <dir>` writes a maildir for the messages that a query matches. This lets you open a result set in mutt, aerc, or neomutt.
+
+The export writes the bytes, and not a symlink. §4.2 keeps the bytes in LMDB, so there is no file behind a message to point a link at.
+
+The name of each message is its identity from §4.1, and then `.mailbert:2,` and the flags. A second export of the same query removes the copy that the first one wrote, so the maildir holds one copy of each message. A file that has no `.mailbert:2,` in its name is the mail of another tool, and the export leaves it alone.
+
+The export writes every message that the query matches, and never a page of them. A reader who asks for 300 messages and receives 100 has no way to see that 200 are away.
 
 ## 5. The content pipeline
 

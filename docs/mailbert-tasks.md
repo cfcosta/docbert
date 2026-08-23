@@ -142,5 +142,16 @@ The parts that hold a message and find it again.
   - [x] `view` colors a fenced block with syntect. (§10.3)
   - [x] `view` runs gpg on demand, and only for an encrypted body. (§5.4)
   - [x] `--json` writes the headers and the body together. (§10.4)
-- [ ] **T24** `export` to a maildir. (§4.3)
+- [x] **T24** `export` to a maildir. (§4.3)
+  - [x] `export::make` makes `cur`, `new`, and `tmp`.
+  - [x] `export::name` gives the identity of §4.1, and the flags after it.
+  - [x] The letters of a name are in the order of their bytes.
+  - [x] A tag of §9 never becomes a letter of a maildir.
+  - [x] The bytes go to `tmp` first, and then move to `cur`.
+  - [x] The export writes the bytes of the server, and never one byte more.
+  - [x] The export writes every match, and never a page of them.
+  - [x] A second export leaves one copy of a message whose flags changed.
+  - [x] The export leaves a file that another tool wrote.
+  - [x] A message with no bytes counts, and does not stop the export.
+  - [x] A query that is bad leaves no maildir behind.
 - [ ] **T25** The MCP server. (§2.2)
