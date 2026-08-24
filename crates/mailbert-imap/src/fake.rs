@@ -302,6 +302,8 @@ pub struct Plan {
     pub cut_after: Option<usize>,
     /// Refuse a connection above this count. (§3.1)
     pub max_connections: Option<usize>,
+    /// Answer `NO` to a `UID SEARCH`. (§3.2)
+    pub refuse_search: bool,
 }
 
 impl Default for Plan {
@@ -317,6 +319,7 @@ impl Default for Plan {
             separator: '/',
             cut_after: None,
             max_connections: None,
+            refuse_search: false,
         }
     }
 }
@@ -351,6 +354,15 @@ impl Plan {
     /// Refuse a connection above this count. (§3.1)
     pub fn max_connections(mut self, count: usize) -> Self {
         self.max_connections = Some(count);
+        self
+    }
+
+    /// Answer `NO` to a `UID SEARCH`. (§3.2)
+    ///
+    /// A server can advertise the command and still refuse to run it.
+    /// A sync must then read the folder with the ranges that it has.
+    pub fn refuse_search(mut self) -> Self {
+        self.refuse_search = true;
         self
     }
 
@@ -868,6 +880,25 @@ fn uid(
         return;
     };
 
+    // `UID SEARCH` takes a search key, and `UID FETCH` takes a set.
+    if verb == "SEARCH" {
+        if plan.refuse_search {
+            done(reply, tag, "NO", "this server will not search");
+
+            return;
+        }
+
+        let found: Vec<String> = folder
+            .messages
+            .iter()
+            .map(|message| message.uid.to_string())
+            .collect();
+        line(reply, format!("* SEARCH {}", found.join(" ")).trim_end());
+        done(reply, tag, "OK", "UID SEARCH completed");
+
+        return;
+    }
+
     let Ok(set) = UidSet::parse(&word_of(tokens, 3)) else {
         done(reply, tag, "BAD", "that is not a set of UIDs");
         return;
@@ -876,15 +907,6 @@ fn uid(
 
     match verb.as_str() {
         "FETCH" => fetch(folder, &set, tag, tokens, reply),
-        "SEARCH" => {
-            let found: Vec<String> = folder
-                .messages
-                .iter()
-                .map(|message| message.uid.to_string())
-                .collect();
-            line(reply, &format!("* SEARCH {}", found.join(" ")));
-            done(reply, tag, "OK", "UID SEARCH completed");
-        }
         _ => done(
             reply,
             tag,

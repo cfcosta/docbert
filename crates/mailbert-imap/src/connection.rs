@@ -407,6 +407,44 @@ impl Connection {
         Ok(view)
     }
 
+    /// Ask which UIDs the folder holds. (§3.2)
+    ///
+    /// A plan asks for every UID between the last sync and `UIDNEXT`.
+    /// A folder that lost mail long ago holds a wide range of UIDs and
+    /// little mail, and each batch of that range then costs a round
+    /// trip that brings nothing. `UID SEARCH ALL` names the mail, and
+    /// the plan asks for that alone.
+    ///
+    /// The command reads and never writes. mailbert is a mirror.
+    pub async fn uids(&mut self) -> Result<UidSet> {
+        let answer = self
+            .run(&[
+                Token::Atom("UID".to_string()),
+                Token::Atom("SEARCH".to_string()),
+                Token::Atom("ALL".to_string()),
+            ])
+            .await?
+            .ok()?;
+
+        // A server sends one `SEARCH` line, and an empty folder sends
+        // a line with no number on it. Both read the same way. Only
+        // the numbers count, so the name of the command, and a
+        // `MODSEQ` that RFC 4731 puts at the end, both fall away.
+        let mut held = Vec::new();
+        for line in answer.each("SEARCH") {
+            held.extend(
+                line.iter()
+                    .filter_map(Token::number)
+                    .filter(|number| *number <= u64::from(u32::MAX))
+                    .map(|number| number as u32),
+            );
+        }
+
+        tracing::debug!(held = held.len(), "the server named the mail it has");
+
+        Ok(UidSet::of(&held))
+    }
+
     /// Fetch each message of a set, with the body of it. (§3.2)
     ///
     /// `since` names a `MODSEQ`. With it, the server sends only the
@@ -1265,6 +1303,86 @@ mod tests {
         assert_eq!(batch.messages[1].mod_seq, 9);
         assert!(batch.messages[1].size > 0);
         assert!(batch.messages[1].internal_date.is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // The UIDs that the server holds. (§3.2)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_search_says_which_uids_the_server_holds() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+
+        let held = connection.uids().await.unwrap();
+
+        assert_eq!(held.to_string(), "1:2");
+    }
+
+    /// A folder of 60000 messages with 100 left holds a wide range of
+    /// UIDs and almost no mail. The answer must name the mail alone.
+    #[tokio::test]
+    async fn a_search_names_the_holes_that_a_folder_has() {
+        let folder = FakeFolder::new("Sparse")
+            .with_uid_validity(3)
+            .with(FakeMessage::new(
+                2,
+                "Subject: a
+
+one
+",
+            ))
+            .with(FakeMessage::new(
+                3,
+                "Subject: b
+
+two
+",
+            ))
+            .with(FakeMessage::new(
+                90,
+                "Subject: c
+
+three
+",
+            ));
+        let server = FakeServer::start(Plan::new().with(folder)).await.unwrap();
+        let mut connection = dial(&server).await;
+        connection.examine("Sparse").await.unwrap();
+
+        let held = connection.uids().await.unwrap();
+
+        assert_eq!(held.to_string(), "2:3,90");
+    }
+
+    #[tokio::test]
+    async fn a_search_of_an_empty_folder_gives_nothing() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX/Work").await.unwrap();
+
+        assert!(connection.uids().await.unwrap().is_empty());
+    }
+
+    /// mailbert is a download-only mirror, so the search must read and
+    /// never write. (§3.4)
+    #[tokio::test]
+    async fn a_search_only_reads() {
+        let server = a_server().await;
+        let mut connection = dial(&server).await;
+        connection.examine("INBOX").await.unwrap();
+        connection.uids().await.unwrap();
+
+        let command = server
+            .seen()
+            .commands
+            .into_iter()
+            .find(|line| line.contains("SEARCH"))
+            .unwrap();
+
+        assert!(command.contains("UID SEARCH"), "{command}");
+        assert!(!command.contains("STORE"), "{command}");
     }
 
     #[tokio::test]

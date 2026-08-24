@@ -299,10 +299,48 @@ The parts that hold a message and find it again.
   address space left, and it stopped. The stub of the model writes no
   vector, so one database for the whole run measures the same work.
 
-- [ ] **T33** The server says which UIDs it holds. (§3.2)
-  - [ ] `Connection::uids` asks the server for the UIDs of a folder.
-  - [ ] A plan holds no batch that the server has no mail for.
-  - [ ] A server with no answer falls back to the ranges of today.
+- [x] **T33** The server says which UIDs it holds. (§3.2)
+  - [x] `Connection::uids` asks the server for the UIDs of a folder.
+  - [x] A plan holds no batch that the server has no mail for.
+  - [x] A server with no answer falls back to the ranges of today.
+  - [x] `UidSet::and` gives the UIDs that two sets share.
+  - [x] `Job::only` cuts a plan down to the mail that the server holds.
+  - [x] `Job::mostly_holes` says when the search pays for itself.
+  - [x] The fake server answers a `UID SEARCH`, and can refuse one.
+
+  A plan asks for every UID between the last sync and `UIDNEXT`. A
+  folder that lost mail long ago spans a wide range of UIDs and holds
+  little mail, so most of that range is holes. Each batch of holes
+  costs a round trip and brings no mail.
+
+  `UID SEARCH ALL` names the mail that the folder has. `Job::only`
+  keeps the UIDs that the plan and the answer share, and drops the
+  rest. The place of the folder does not move, because `done` still
+  names the `UIDNEXT` that the server showed. The `CHANGEDSINCE`
+  fetch stays whole, because it asks about the mail that the store
+  holds, and not about what a fetch can bring. (§3.3)
+
+  The search costs a round trip of its own, and its answer names every
+  UID of the folder, so it must not run for the common sync of a few
+  messages. `Job::mostly_holes` compares what the plan asks for with
+  what `EXAMINE` said the folder holds, and asks for the search only
+  when it saves a batch or more.
+
+  A folder of 100 messages over a range of 60000 UIDs, on the fake
+  server:
+
+  | | round trips to fetch | time |
+  | --- | --- | --- |
+  | the ranges of today | 120 | 111.3 ms |
+  | the mail that the server names | 1 | 14.8 ms |
+
+  The fake server answers on loopback, where a round trip costs
+  microseconds. A real server answers in tens of milliseconds, so the
+  119 round trips that this drops are seconds of a sync.
+
+  A server that refuses the search leaves the plan whole. The ranges
+  still hold every UID that the folder has, so the sync reads the same
+  mail, and only pays for the holes.
 
 - [ ] **T34** The socket reads while the store writes. (§3.4)
   - [ ] A fetch of the next batch starts before the sink takes the last.

@@ -115,6 +115,41 @@ impl UidSet {
         }
     }
 
+    /// Each UID that is in this set, and in the other one. (§3.2)
+    ///
+    /// A plan asks for the UIDs that the store owes. The server says
+    /// which UIDs it holds. What the two share is the mail that a
+    /// fetch can bring, and every other UID went away long ago.
+    ///
+    /// Both sets hold their ranges sorted, and no two ranges of one
+    /// set touch, so one walk down the two lists gives the answer.
+    pub fn and(&self, other: &Self) -> Self {
+        let mut ranges = Vec::new();
+        let (mut here, mut there) = (0, 0);
+
+        while here < self.ranges.len() && there < other.ranges.len() {
+            let (low, high) = self.ranges[here];
+            let (their_low, their_high) = other.ranges[there];
+
+            let start = low.max(their_low);
+            let end = high.min(their_high);
+
+            if start <= end {
+                ranges.push((start, end));
+            }
+
+            // The range that ends first can share nothing more, so it
+            // steps and the other one waits for the next range.
+            if high < their_high {
+                here += 1;
+            } else {
+                there += 1;
+            }
+        }
+
+        Self { ranges }
+    }
+
     /// Each UID that is in this set, and not in the other one.
     pub fn without(&self, other: &Self) -> Self {
         let mut ranges = Vec::new();
@@ -304,6 +339,9 @@ mod tests {
     //! | `prop_the_batches_cover_the_range` | model-based | §3.2 fetches every message once. A gap between two batches leaves mail that no later sync finds. |
     //! | `prop_a_batch_never_holds_more_than_its_size` | algebraic | §3.1 keeps each command short, so one slow batch never blocks the rest. |
     //! | `prop_the_batches_run_newest_first` | algebraic | §3.2 wants the newest mail first, so a sync that stops early still gives the mail that matters. |
+    //! | `prop_two_sets_share_the_uids_that_both_hold` | model-based | §3.2 cuts the plan down to the UIDs that the server holds. An answer that is too wide fetches a UID that is not there, and one that is too narrow leaves mail behind. |
+    //! | `prop_the_order_of_two_sets_never_changes_what_they_share` | algebraic | The plan and the answer of the server go in either order. A result that depends on the order is a result that nobody can read. |
+    //! | `prop_what_two_sets_share_is_what_neither_cuts_away` | differential | Two ways to cut a set must give one answer, or one of them is wrong. |
 
     use std::collections::BTreeSet;
 
@@ -710,6 +748,51 @@ mod tests {
         assert_eq!(one.without(&UidSet::new()), one);
     }
 
+    // -----------------------------------------------------------------
+    // The UIDs that two sets share. (§3.2)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn two_sets_share_the_uids_that_are_in_both() {
+        let one = UidSet::parse("1:10,20:30").unwrap();
+        let two = UidSet::parse("5:25").unwrap();
+
+        assert_eq!(one.and(&two).to_string(), "5:10,20:25");
+    }
+
+    #[test]
+    fn two_sets_that_share_nothing_give_nothing() {
+        let one = UidSet::parse("1:5").unwrap();
+        let two = UidSet::parse("6:10").unwrap();
+
+        assert!(one.and(&two).is_empty());
+    }
+
+    /// A server that holds no mail must leave no batch to fetch.
+    #[test]
+    fn a_set_shares_nothing_with_nothing() {
+        let one = UidSet::parse("1:10,20").unwrap();
+
+        assert!(one.and(&UidSet::new()).is_empty());
+        assert!(UidSet::new().and(&one).is_empty());
+    }
+
+    #[test]
+    fn a_set_shares_the_whole_of_itself() {
+        let one = UidSet::parse("1:10,20").unwrap();
+
+        assert_eq!(one.and(&one), one);
+    }
+
+    /// One range of a set can cut another range into two pieces.
+    #[test]
+    fn a_hole_in_one_set_makes_a_hole_in_the_answer() {
+        let one = UidSet::parse("1:20").unwrap();
+        let two = UidSet::parse("1:5,15:20").unwrap();
+
+        assert_eq!(one.and(&two).to_string(), "1:5,15:20");
+    }
+
     #[test]
     fn a_split_gives_the_batches_newest_first() {
         let set = UidSet::parse("1:10").unwrap();
@@ -774,6 +857,40 @@ mod tests {
         for uid in &two {
             assert!(!left.holds(*uid), "the difference kept {uid}");
         }
+    }
+
+    #[hegel::test(test_cases = 150)]
+    fn prop_two_sets_share_the_uids_that_both_hold(tc: TestCase) {
+        let one = tc.draw(some_uids());
+        let two = tc.draw(some_uids());
+        let both = UidSet::of(&one).and(&UidSet::of(&two));
+
+        for uid in one.iter().chain(two.iter()) {
+            assert_eq!(
+                both.holds(*uid),
+                one.contains(uid) && two.contains(uid),
+                "the answer is wrong at {uid}"
+            );
+        }
+    }
+
+    /// Which set comes first must not change the answer.
+    #[hegel::test(test_cases = 100)]
+    fn prop_the_order_of_two_sets_never_changes_what_they_share(tc: TestCase) {
+        let one = UidSet::of(&tc.draw(some_uids()));
+        let two = UidSet::of(&tc.draw(some_uids()));
+
+        assert_eq!(one.and(&two), two.and(&one));
+    }
+
+    /// The two ways to cut a set must agree. `and` exists because it
+    /// says what it means, and not because it can do more.
+    #[hegel::test(test_cases = 100)]
+    fn prop_what_two_sets_share_is_what_neither_cuts_away(tc: TestCase) {
+        let one = UidSet::of(&tc.draw(some_uids()));
+        let two = UidSet::of(&tc.draw(some_uids()));
+
+        assert_eq!(one.and(&two), one.without(&one.without(&two)));
     }
 
     #[hegel::test(test_cases = 100)]

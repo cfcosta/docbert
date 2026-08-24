@@ -31,6 +31,7 @@ use mailbert_imap::{
     Job,
     Pool,
     Server,
+    View,
     plan,
     resume,
     sync::again,
@@ -280,7 +281,7 @@ async fn look(
                 .unwrap_or_default(),
         };
 
-        let job = plan(folder, &saved, &view, BATCH);
+        let job = cut(held, plan(folder, &saved, &view, BATCH), &view).await;
         tracing::debug!(
             folder,
             asked = job.count(),
@@ -291,6 +292,48 @@ async fn look(
     }
 
     Ok((jobs, account.missing_folders(&available)))
+}
+
+/// Cut the plan down to the mail that the server holds. (§3.2)
+///
+/// A plan asks for every UID between the last sync and `UIDNEXT`. A
+/// folder that lost mail long ago spans a wide range of UIDs and holds
+/// little mail, so most of that range is holes. A batch of holes costs
+/// a round trip and brings no mail.
+///
+/// The search costs a round trip of its own, and its answer names
+/// every UID of the folder. [`Job::mostly_holes`] therefore asks for it
+/// only when it saves a batch or more.
+///
+/// A server that refuses the search leaves the plan whole. The ranges
+/// still hold every UID that the folder has, so the sync reads the
+/// same mail, and only pays for the holes.
+async fn cut(held: &mut Held<'_>, job: Job, view: &View) -> Job {
+    if !job.mostly_holes(view.exists) {
+        return job;
+    }
+
+    match held.uids().await {
+        Ok(there) => {
+            tracing::debug!(
+                folder = view.name,
+                asked = job.count(),
+                held = there.count(),
+                "the server named the mail it holds"
+            );
+
+            job.only(&there)
+        }
+        Err(problem) => {
+            tracing::debug!(
+                folder = view.name,
+                %problem,
+                "the server would not say which UIDs it holds"
+            );
+
+            job
+        }
+    }
 }
 
 /// Run every job, and join what the sinks wrote.
@@ -1317,6 +1360,95 @@ mod tests {
     // -----------------------------------------------------------------
     // The second sync. (§3.3)
     // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // The server says which UIDs it holds. (§3.2)
+    // -----------------------------------------------------------------
+
+    /// A folder that lost mail long ago, with 100 messages at the top
+    /// of a range of 60000 UIDs.
+    fn a_folder_of_holes(name: &str) -> FakeFolder {
+        (59_901..=60_000).fold(FakeFolder::new(name), |folder, uid| {
+            folder.with(FakeMessage::new(uid, &raw(uid)))
+        })
+    }
+
+    /// A plan of 60000 UIDs over 100 messages is 120 batches, and 119
+    /// of them bring no mail. The server names the mail it holds, and
+    /// one batch then reads the folder.
+    #[test]
+    fn a_folder_of_holes_asks_the_server_which_uids_it_holds() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let (kept, searches, fetches) = run_on(async {
+            let server =
+                FakeServer::start(Plan::new().with(a_folder_of_holes("INBOX")))
+                    .await
+                    .expect("a server");
+            let account = an_account(server.port(), &["INBOX"]);
+
+            let kept =
+                sync(&store, &a_pool(server.port()), &account, How::default())
+                    .await;
+
+            (
+                kept,
+                saw(&server, "UID SEARCH").len(),
+                saw(&server, "UID FETCH").len(),
+            )
+        });
+
+        assert_eq!(searches, 1, "the sync never asked which UIDs are there");
+        assert_eq!(kept.counts.kept, 100);
+        assert_eq!(store.all().expect("a read").len(), 100);
+        assert!(fetches <= 2, "{fetches} fetches for one batch of mail");
+    }
+
+    /// The common sync owes a few messages. The search would name
+    /// every UID of the folder, and save no batch.
+    #[test]
+    fn a_folder_that_owes_a_little_never_asks_for_a_search() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let searches = run_on(async {
+            let server =
+                FakeServer::start(Plan::new().with(a_folder("INBOX", 3)))
+                    .await
+                    .expect("a server");
+            let account = an_account(server.port(), &["INBOX"]);
+
+            sync(&store, &a_pool(server.port()), &account, How::default())
+                .await;
+
+            saw(&server, "UID SEARCH").len()
+        });
+
+        assert_eq!(searches, 0, "the sync paid for a search it did not need");
+    }
+
+    /// A server that refuses the search leaves the plan whole, and the
+    /// sync reads the folder with the ranges of today. (§3.2)
+    #[test]
+    fn a_server_that_will_not_search_still_reads_the_whole_folder() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let kept = run_on(async {
+            let server = FakeServer::start(
+                Plan::new().with(a_folder_of_holes("INBOX")).refuse_search(),
+            )
+            .await
+            .expect("a server");
+            let account = an_account(server.port(), &["INBOX"]);
+
+            sync(&store, &a_pool(server.port()), &account, How::default()).await
+        });
+
+        assert_eq!(kept.counts.kept, 100);
+        assert_eq!(store.all().expect("a read").len(), 100);
+    }
 
     #[test]
     fn a_second_sync_asks_the_server_for_nothing() {

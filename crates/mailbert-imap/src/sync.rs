@@ -59,6 +59,28 @@ impl Job {
         self.batches.is_empty() && self.changed.is_none()
     }
 
+    /// True when the plan asks for far more UIDs than the folder has.
+    /// (§3.2)
+    ///
+    /// The plan asks for every UID between the last sync and `UIDNEXT`.
+    /// `exists` is what `EXAMINE` said the folder holds, so the plan
+    /// asks for at least `count() - exists` UIDs that went away long
+    /// ago. Those UIDs are holes, and a batch of holes costs a round
+    /// trip and brings no mail.
+    ///
+    /// [`Connection::uids`] names the mail and cuts the holes away, but
+    /// it costs a round trip of its own, and the answer names every UID
+    /// of the folder. It therefore only pays when it saves a batch or
+    /// more. The common sync owes a few messages and no batch of holes,
+    /// and it must not pay for a search.
+    ///
+    /// [`Connection::uids`]: crate::Connection::uids
+    pub fn mostly_holes(&self, exists: u32) -> bool {
+        let holes = self.count().saturating_sub(u64::from(exists));
+
+        holes >= u64::from(self.size)
+    }
+
     /// How many messages the job must fetch.
     pub fn count(&self) -> u64 {
         self.batches.iter().map(UidSet::count).sum()
@@ -81,6 +103,41 @@ impl Job {
             uid_next: self.done.uid_next,
             highest_mod_seq: self.done.highest_mod_seq,
         }
+    }
+
+    /// Ask only for the UIDs that the server says it holds. (§3.2)
+    ///
+    /// A plan asks for every UID between the last sync and `UIDNEXT`.
+    /// A folder that lost mail long ago spans a wide range of UIDs and
+    /// holds little mail, so most of that range is holes. A batch of
+    /// holes costs a round trip and brings nothing.
+    ///
+    /// `held` comes from [`Connection::uids`]. It is a filter, and
+    /// never a source of work: a UID that the plan never wanted stays
+    /// out of it.
+    ///
+    /// The place of the folder does not move. `done` still names the
+    /// `UIDNEXT` that the server showed, so the next sync starts from
+    /// there and not from the last UID that this one read. (§3.4)
+    ///
+    /// `changed` stays whole. It asks which flags moved on the mail
+    /// that the store already holds, and that question is about the
+    /// store, and not about what a fetch can bring. (§3.3)
+    pub fn only(mut self, held: &UidSet) -> Self {
+        let owed = self.start.pending.and(held);
+
+        // A plan that the cut left empty is a folder that is done.
+        // `run` marks `start` and runs no batch, so `start` must
+        // carry the place that the server showed, exactly as a plan
+        // that owed nothing from the beginning does. (§3.3)
+        if owed.is_empty() {
+            self.start.highest_mod_seq = self.done.highest_mod_seq;
+        }
+
+        self.batches = owed.split(self.size);
+        self.start.pending = owed;
+
+        self
     }
 
     /// The state to keep after this batch arrived. (§3.4)
@@ -334,6 +391,8 @@ mod tests {
     //! | `prop_a_uid_validity_that_changed_asks_for_the_whole_folder` | metamorphic | RFC 3501 §2.3.1.1 makes the old UIDs meaningless. A plan that keeps them reads the wrong mail. |
     //! | `prop_a_folder_only_finishes_when_every_batch_arrived` | model-based | §3.4 resumes from the state on disk. A state that finishes early loses every batch that never came. |
     //! | `prop_a_sync_that_stops_anywhere_still_reads_every_message` | metamorphic | §3.4 promises that a sync which stops continues. A message that a failure hides is a message the user never sees. |
+    //! | `prop_a_cut_plan_asks_for_every_uid_that_the_server_holds` | model-based | §3.2 cuts the plan down to the mail that the server has. A cut that drops a UID the server holds loses mail, and one that keeps a UID the server lost pays for a round trip that brings nothing. |
+    //! | `prop_cutting_a_plan_twice_is_cutting_it_one_time` | algebraic | A plan that shrinks each time somebody reads it loses mail after a retry. |
 
     use hegel::{TestCase, generators as gs};
 
@@ -487,6 +546,204 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    // -----------------------------------------------------------------
+    // The plan, cut down to the mail that the server holds. (§3.2)
+    // -----------------------------------------------------------------
+
+    /// The point of T33. A folder that lost most of its mail spans a
+    /// wide range of UIDs, and a batch of the holes costs a round trip
+    /// that brings nothing.
+    #[test]
+    fn a_plan_asks_only_for_the_uids_that_the_server_holds() {
+        let held = UidSet::parse("2:3,90").unwrap();
+        let job =
+            plan("INBOX", &FolderState::default(), &a_view(77, 100, 9), 2)
+                .only(&held);
+
+        assert_eq!(whole(&job.batches), held);
+        assert_eq!(job.count(), 3);
+        assert_eq!(job.start.pending, held);
+    }
+
+    /// The state must still say where the folder got to, or the next
+    /// sync reads the whole folder again. (§3.4)
+    #[test]
+    fn a_plan_that_was_cut_down_keeps_the_place_of_the_folder() {
+        let whole_plan =
+            plan("INBOX", &FolderState::default(), &a_view(77, 100, 9), SIZE);
+        let job = whole_plan.clone().only(&UidSet::parse("2:3").unwrap());
+
+        assert_eq!(job.done, whole_plan.done);
+        assert_eq!(job.start.uid_next, whole_plan.start.uid_next);
+        assert_eq!(job.start.uid_validity, whole_plan.start.uid_validity);
+        assert_eq!(job.restart, whole_plan.restart);
+    }
+
+    #[test]
+    fn a_server_that_holds_nothing_leaves_no_batch() {
+        let job =
+            plan("INBOX", &FolderState::default(), &a_view(77, 100, 9), SIZE)
+                .only(&UidSet::new());
+
+        assert!(job.is_empty());
+        assert_eq!(job.count(), 0);
+        assert!(job.start.pending.is_empty());
+    }
+
+    /// A plan that the server cut down to nothing is a folder that is
+    /// done. `run` marks `start` and never runs a batch, so `start`
+    /// must carry the place that the server showed. A folder that
+    /// keeps the old `MODSEQ` asks the same question every sync. (§3.3)
+    #[test]
+    fn a_plan_cut_down_to_nothing_says_the_folder_is_done() {
+        let saved = FolderState {
+            uid_validity: 77,
+            uid_next: 11,
+            highest_mod_seq: 9,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &a_view(77, 14, 20), SIZE)
+            .only(&UidSet::new());
+
+        // The job still asks which flags moved, so it is not empty.
+        // It fetches no body, and `run` marks `start` as it is.
+        assert!(job.batches.is_empty());
+        assert_eq!(
+            job.start.highest_mod_seq, job.done.highest_mod_seq,
+            "the folder never moves past this MODSEQ"
+        );
+    }
+
+    /// A plan that still holds a batch must not move ahead of it.
+    #[test]
+    fn a_plan_that_still_owes_a_batch_keeps_the_old_place() {
+        let saved = FolderState {
+            uid_validity: 77,
+            uid_next: 11,
+            highest_mod_seq: 9,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &a_view(77, 14, 20), SIZE)
+            .only(&UidSet::parse("12").unwrap());
+
+        assert!(!job.batches.is_empty());
+        assert_eq!(job.start.highest_mod_seq, 9);
+    }
+
+    /// A folder that lost most of its mail is the one case that pays
+    /// for the search. (§3.2)
+    #[test]
+    fn a_folder_of_holes_is_worth_a_search() {
+        // 60000 UIDs, and 100 messages left.
+        let job = plan(
+            "INBOX",
+            &FolderState::default(),
+            &a_view(77, 60_001, 9),
+            500,
+        );
+
+        assert!(job.mostly_holes(100));
+    }
+
+    /// The common sync owes a few messages, and the search would cost
+    /// more than the batches that it saves.
+    #[test]
+    fn a_folder_that_owes_a_little_is_not_worth_a_search() {
+        let saved = FolderState {
+            uid_validity: 77,
+            uid_next: 11,
+            highest_mod_seq: 9,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &a_view(77, 14, 9), 500);
+
+        assert!(!job.mostly_holes(13));
+    }
+
+    /// A first sync of a folder that lost nothing has no holes, so the
+    /// search would name every UID and change no batch.
+    #[test]
+    fn a_folder_with_no_holes_is_not_worth_a_search() {
+        let job = plan(
+            "INBOX",
+            &FolderState::default(),
+            &a_view(77, 60_001, 9),
+            500,
+        );
+
+        assert!(!job.mostly_holes(60_000));
+    }
+
+    /// The saving must be a batch or more, or the search pays nothing.
+    #[test]
+    fn a_folder_with_a_few_holes_is_not_worth_a_search() {
+        let job =
+            plan("INBOX", &FolderState::default(), &a_view(77, 1_001, 9), 500);
+
+        assert!(!job.mostly_holes(900));
+
+        // Exactly one batch of holes pays for the search.
+        assert!(job.mostly_holes(500));
+        assert!(job.mostly_holes(400));
+    }
+
+    /// A server that says a folder holds nothing leaves the plan whole
+    /// only when the plan is already empty.
+    #[test]
+    fn an_empty_plan_is_not_worth_a_search() {
+        let job =
+            plan("INBOX", &FolderState::default(), &a_view(77, 1, 0), 500);
+
+        assert!(!job.mostly_holes(0));
+    }
+
+    /// A server that holds every UID must leave the plan alone.
+    #[test]
+    fn a_server_that_holds_everything_changes_no_plan() {
+        let job =
+            plan("INBOX", &FolderState::default(), &a_view(77, 11, 9), SIZE);
+        let cut = job.clone().only(&UidSet::parse("1:10").unwrap());
+
+        assert_eq!(whole(&cut.batches), whole(&job.batches));
+        assert_eq!(cut.start.pending, job.start.pending);
+    }
+
+    /// A UID that the plan never wanted must not join it. The answer
+    /// of the server is a filter, and never a source of work.
+    #[test]
+    fn a_uid_that_the_plan_never_wanted_stays_out() {
+        let saved = FolderState {
+            uid_validity: 77,
+            uid_next: 11,
+            highest_mod_seq: 9,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &a_view(77, 14, 9), SIZE)
+            .only(&UidSet::parse("1:13").unwrap());
+
+        assert_eq!(whole(&job.batches), UidSet::parse("11:13").unwrap());
+    }
+
+    /// §3.3 reads the flags of the mail that the store already holds.
+    /// That question is about the store, and not about what a fetch
+    /// can bring, so a cut plan must still ask it.
+    #[test]
+    fn a_cut_plan_still_asks_which_flags_moved() {
+        let saved = FolderState {
+            uid_validity: 77,
+            uid_next: 11,
+            highest_mod_seq: 9,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &a_view(77, 14, 20), SIZE);
+        let cut = job
+            .clone()
+            .only(&UidSet::parse("13".to_string().as_str()).unwrap());
+
+        assert_eq!(cut.changed, job.changed);
+        assert_eq!(cut.since, job.since);
     }
 
     // -----------------------------------------------------------------
@@ -843,6 +1100,56 @@ mod tests {
 
         assert_eq!(asked, owed);
         assert_eq!(job.start.pending, owed);
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_a_cut_plan_asks_for_every_uid_that_the_server_holds(tc: TestCase) {
+        let (saved, view, size) = tc.draw(a_state());
+        let some: Vec<u32> = tc.draw(
+            gs::vecs(gs::integers::<u32>().min_value(1).max_value(120))
+                .min_size(0)
+                .max_size(20),
+        );
+        let held = UidSet::of(&some);
+
+        let job = plan("INBOX", &saved, &view, size);
+        let owed = job.start.pending.clone();
+        let cut = job.only(&held);
+        let asked = whole(&cut.batches);
+
+        for uid in 1..view.uid_next {
+            let wanted = owed.holds(uid) && held.holds(uid);
+
+            assert_eq!(asked.holds(uid), wanted, "the cut is wrong at {uid}");
+        }
+        assert_eq!(cut.start.pending, asked, "the state lost a UID");
+    }
+
+    /// A cut of a cut must give the same plan as one cut of both. A
+    /// plan that shrinks each time it is read loses mail. (§3.2)
+    #[hegel::test(test_cases = 150)]
+    fn prop_cutting_a_plan_twice_is_cutting_it_one_time(tc: TestCase) {
+        let (saved, view, size) = tc.draw(a_state());
+        let one = UidSet::of(
+            &tc.draw(
+                gs::vecs(gs::integers::<u32>().min_value(1).max_value(120))
+                    .min_size(0)
+                    .max_size(20),
+            ),
+        );
+        let two = UidSet::of(
+            &tc.draw(
+                gs::vecs(gs::integers::<u32>().min_value(1).max_value(120))
+                    .min_size(0)
+                    .max_size(20),
+            ),
+        );
+
+        let twice = plan("INBOX", &saved, &view, size).only(&one).only(&two);
+        let once = plan("INBOX", &saved, &view, size).only(&one.and(&two));
+
+        assert_eq!(twice.start, once.start);
+        assert_eq!(whole(&twice.batches), whole(&once.batches));
     }
 
     #[hegel::test(test_cases = 200)]
