@@ -292,7 +292,7 @@ The parts that hold a message and find it again.
   takes 115 ms, and not 8.31 s. No one stage holds it now. The download,
   the index pass, and the embed walk each take about a quarter of it.
   Eight folders still take two times the time of one folder, because
-  eight tasks wait for the one writer. T35 takes that.
+  eight tasks each commit their own transactions. T35 took that.
 
   The bench opened one database of embeddings for each iteration, and
   docbert keeps every environment that it opens. The run then had no
@@ -309,7 +309,7 @@ The parts that hold a message and find it again.
   - [ ] The mark of a folder still follows the write of its batch.
   - [ ] A sync that stops loses only the batches that are in the air.
 
-- [ ] **T35** One writer takes the mail of every folder. (§4.2)
+- [x] **T35** One writer takes the mail of every folder. (§4.2)
 
   The bench of T31 says why. `MAILBERT_BENCH_FOLDERS` sweeps the fan-out
   across folders, with 500 messages every time.
@@ -330,9 +330,42 @@ The parts that hold a message and find it again.
   commit one time. The mail and the state of a folder must go in one
   transaction, because §3.4 asks that the state never runs ahead of the
   mail. One transaction gives that, and it costs one flush and not two.
-  - [ ] The folders give their batches to one writer.
-  - [ ] The writer holds no lock against another folder.
-  - [ ] Each folder still reports what it kept.
+  - [x] `Store::apply` writes the change of every folder in one transaction.
+  - [x] The mail and the state of a folder go in that same transaction.
+  - [x] The folders give their batches to one writer.
+  - [x] The writer takes every change that already waits behind it.
+  - [x] The writer holds no lock against another folder.
+  - [x] Each folder still reports what it kept.
+  - [x] A folder learns when its mail did not land.
+
+  `Store::apply` takes a group of changes. It writes the bytes of the
+  whole group in one transaction, and then the mail, the copies that
+  went away, and the state of each folder in one more. Two flushes
+  serve the group, and not two for each folder.
+
+  `writer::Writer` gives every folder one handle. It takes the change
+  that waits, and every change behind it, up to 64 of them, and gives
+  the group to `Store::apply`. A folder that arrives while a commit
+  runs joins the next group. Nothing waits for a timer, and the queue
+  never grows without bound.
+
+  The sink now sends one change for each batch. It sent three writes
+  before: the mail, then one for each copy that went away, then the
+  state of the folder.
+
+  The bench ran both, one after the other, on one machine.
+
+  | Folders | a transaction for each folder | one writer |
+  | ------- | ----------------------------- | ---------- |
+  | 1       | 34.0 ms                       | 17.4 ms    |
+  | 4       | 150.3 ms                      | 40.5 ms    |
+  | 8       | 237.3 ms                      | 50.9 ms    |
+  | 16      | 318.7 ms                      | 89.4 ms    |
+
+  Eight folders are 4.7 times as fast. The cost for each folder is
+  gone: eight folders took seven times one folder before, and they now
+  take three times. One folder is two times as fast, because the mail
+  and the state of a batch now go in one transaction.
 
 - [ ] **T36** Every connection reads the same folder. (§3.1)
   - [ ] A plan gives its batches to a queue that each connection drains.

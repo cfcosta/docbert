@@ -22,6 +22,7 @@ pub mod sync;
 pub mod tags;
 pub mod thread;
 pub mod trace;
+pub mod writer;
 
 use std::{
     future::Future,

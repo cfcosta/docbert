@@ -17,7 +17,7 @@ use mailbert_core::{
     date::{Clock, internal_date},
     message::Location,
     mime,
-    store::SyncState,
+    store::{Applied, Change, SyncState},
 };
 use mailbert_imap::{
     Batch,
@@ -27,6 +27,8 @@ use mailbert_imap::{
     sync::{FolderState, Keep},
 };
 use regex::Regex;
+
+use crate::writer::Writer;
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -66,9 +68,12 @@ impl Counts {
 /// The sink of one account.
 ///
 /// The sink holds the store behind an [`Arc`], because a sync gives one
-/// sink to each folder and runs the folders at the same time.
+/// sink to each folder and runs the folders at the same time. It reads
+/// from the store, and writes through the [`Writer`] that every folder
+/// of the sync shares. (§4.2)
 pub struct Sink {
     store: Arc<Store>,
+    writer: Writer,
     account: String,
     footers: Vec<Regex>,
     clock: Clock,
@@ -105,8 +110,15 @@ pub fn sync_state(kept: &SyncState) -> FolderState {
 
 impl Sink {
     /// Make the sink of one account.
+    ///
+    /// The sink starts a writer of its own. A sync that runs many
+    /// folders gives them one writer with [`with_writer`], so the
+    /// whole sync pays for one flush of the disk at a time. (§4.2)
+    ///
+    /// The writer runs as a task, so a runtime must already run here.
     pub fn new(store: Arc<Store>, account: &str) -> Self {
         Self {
+            writer: Writer::new(Arc::clone(&store)),
             store,
             account: account.to_string(),
             footers: Vec::new(),
@@ -119,6 +131,16 @@ impl Sink {
     /// Remove these footers from every body that arrives. (§5.2)
     pub fn with_footers(mut self, footers: Vec<Regex>) -> Self {
         self.footers = footers;
+
+        self
+    }
+
+    /// Write through this writer, and not through one of its own.
+    ///
+    /// Every folder of a sync takes a handle on one writer, so the
+    /// changes of the folders that wait go into one transaction. (§4.2)
+    pub fn with_writer(mut self, writer: Writer) -> Self {
+        self.writer = writer;
 
         self
     }
@@ -199,15 +221,33 @@ impl Sink {
 
         Ok(Some((message, fetched.body)))
     }
+
+    /// Give the change of this folder to the writer. (§4.2)
+    ///
+    /// The writer takes this change, and every change of another folder
+    /// that already waits, and writes the whole group at one time.
+    async fn send(
+        &self,
+        folder: &str,
+        writes: Vec<(Message, Vec<u8>)>,
+        gone: Vec<u32>,
+        state: &FolderState,
+    ) -> Result<Applied> {
+        let change = Change {
+            account: self.account.clone(),
+            folder: folder.to_string(),
+            writes,
+            gone,
+            state: Some(keep_state(state, self.clock.now())),
+        };
+
+        Ok(self.writer.send(change).await?)
+    }
 }
 
 impl Keep for Sink {
     async fn mark(&mut self, folder: &str, state: &FolderState) -> Result<()> {
-        self.store.mark(
-            &self.account,
-            folder,
-            &keep_state(state, self.clock.now()),
-        )?;
+        self.send(folder, Vec::new(), Vec::new(), state).await?;
 
         Ok(())
     }
@@ -231,22 +271,21 @@ impl Keep for Sink {
             }
         }
 
-        for kept in self.store.put_all(&writes)? {
+        // The mail, the copies that went away, and the state of the
+        // folder go in one transaction. The state therefore never runs
+        // ahead of the mail that the store holds. (§3.4)
+        let done = self.send(folder, writes, batch.gone, state).await?;
+
+        for kept in done.kept {
             self.touched.insert(kept.id);
         }
 
         // mailbert is a mirror, so a copy that went away leaves the
         // message behind. A message with no copy answers `is:gone`.
-        for uid in batch.gone {
-            if let Some(id) = self.store.vanish(&self.account, folder, uid)? {
-                self.touched.insert(id);
-                self.counts.gone += 1;
-            }
-        }
+        self.counts.gone += done.vanished.len() as u64;
+        self.touched.extend(done.vanished);
 
-        // The mark goes last, so the state on disk never runs ahead of
-        // the mail that the store holds. (§3.4)
-        self.mark(folder, state).await
+        Ok(())
     }
 
     async fn state(&mut self, folder: &str) -> Result<FolderState> {
@@ -322,6 +361,62 @@ mod tests {
             highest_mod_seq: 77,
             pending: UidSet::parse("4:9").expect("a set"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // The writer that the folders share. (§4.2)
+    // -----------------------------------------------------------------
+
+    /// A sync gives one writer to every folder, so the changes that
+    /// wait go into one transaction. Each folder must still land.
+    #[tokio::test]
+    async fn the_folders_that_share_a_writer_all_land() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let writer = Writer::new(Arc::clone(&store));
+        let names = ["INBOX", "Sent", "Drafts"];
+
+        for (at, name) in names.iter().enumerate() {
+            let mut sink = Sink::new(Arc::clone(&store), "work")
+                .with_writer(writer.clone());
+            let uid = at as u32 + 1;
+
+            sink.batch(name, batch_of(vec![fetched(uid, name)]), &a_state(9))
+                .await
+                .expect("a batch");
+
+            assert_eq!(sink.counts().kept, 1, "{name} lost its mail");
+        }
+
+        assert_eq!(store.len().expect("a read"), names.len());
+        for name in names {
+            assert!(
+                store.state("work", name).expect("a read").is_some(),
+                "the sync lost the state of {name}"
+            );
+        }
+    }
+
+    /// The sink must write through the writer that it was given, and
+    /// never through one of its own. A sink that keeps its own writer
+    /// takes a transaction of its own, and the sync pays for a flush
+    /// of the disk for each folder.
+    #[tokio::test]
+    async fn the_sink_writes_through_the_writer_that_it_was_given() {
+        let mine = tempdir().expect("a temporary directory");
+        let mine = open_at(&mine);
+        let shared = tempdir().expect("a temporary directory");
+        let shared = open_at(&shared);
+
+        let mut sink = Sink::new(Arc::clone(&mine), "work")
+            .with_writer(Writer::new(Arc::clone(&shared)));
+
+        sink.batch("INBOX", batch_of(vec![fetched(1, "one")]), &a_state(9))
+            .await
+            .expect("a batch");
+
+        assert_eq!(shared.len().expect("a read"), 1, "the mail went nowhere");
+        assert_eq!(mine.len().expect("a read"), 0, "the sink kept a writer");
     }
 
     // -----------------------------------------------------------------
@@ -647,7 +742,6 @@ mod tests {
 
         let dir = tempdir().expect("a temporary directory");
         let store = open_at(&dir);
-        let mut sink = Sink::new(store.clone(), "work");
 
         let messages: Vec<Fetched> = unique
             .iter()
@@ -655,12 +749,21 @@ mod tests {
             .map(|(step, key)| fetched(step as u32 + 1, key))
             .collect();
 
-        crate::block_on(sink.batch(
-            "INBOX",
-            batch_of(messages),
-            &a_state(unique.len() as u32 + 1),
-        ))
-        .expect("a batch");
+        // The sink holds a writer, and a writer is a task, so the sink
+        // must live inside the runtime that runs it.
+        let sink = crate::block_on(async {
+            let mut sink = Sink::new(store.clone(), "work");
+
+            sink.batch(
+                "INBOX",
+                batch_of(messages),
+                &a_state(unique.len() as u32 + 1),
+            )
+            .await
+            .expect("a batch");
+
+            sink
+        });
 
         assert_eq!(store.len().expect("a read"), unique.len());
         assert_eq!(sink.counts().kept, unique.len() as u64);
@@ -689,10 +792,13 @@ mod tests {
 
         let dir = tempdir().expect("a temporary directory");
         let store = open_at(&dir);
-        let mut sink = Sink::new(store.clone(), "work");
 
-        crate::block_on(sink.mark("INBOX", &state)).expect("a mark");
-        let found = crate::block_on(sink.state("INBOX")).expect("a read");
+        let found = crate::block_on(async {
+            let mut sink = Sink::new(store.clone(), "work");
+
+            sink.mark("INBOX", &state).await.expect("a mark");
+            sink.state("INBOX").await.expect("a read")
+        });
 
         assert_eq!(found, state, "the state changed on the way to disk");
     }
@@ -704,18 +810,18 @@ mod tests {
 
         let dir = tempdir().expect("a temporary directory");
         let store = open_at(&dir);
-        let mut sink = Sink::new(store.clone(), "work");
 
         let carried = Fetched {
             body: body.into_bytes(),
             ..fetched(7, "one")
         };
 
-        let answer = crate::block_on(sink.batch(
-            "INBOX",
-            batch_of(vec![carried]),
-            &a_state(8),
-        ));
+        let answer = crate::block_on(async {
+            let mut sink = Sink::new(store.clone(), "work");
+
+            sink.batch("INBOX", batch_of(vec![carried]), &a_state(8))
+                .await
+        });
 
         assert!(answer.is_ok(), "bytes that are not mail stopped the sync");
     }

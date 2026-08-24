@@ -19,6 +19,10 @@ pub enum Error {
     #[error("store error: {0}")]
     Store(#[from] heed::Error),
 
+    /// The one writer of a sync could not write. (§4.2)
+    #[error("the writer of the sync could not write: {0}")]
+    Write(String),
+
     #[error("stored record error: {0}")]
     Record(#[from] rkyv::rancor::Error),
 

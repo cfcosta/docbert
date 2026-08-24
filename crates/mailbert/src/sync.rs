@@ -48,6 +48,7 @@ use crate::{
     semantic::{Brain, Embedded},
     settings,
     sink::{Counts, Sink, sync_state},
+    writer::Writer,
 };
 
 /// How many UIDs one `FETCH` asks for. (§3.2)
@@ -295,9 +296,10 @@ async fn look(
 /// Run every job, and join what the sinks wrote.
 ///
 /// Each folder takes its own sink and its own connection, so a slow
-/// folder never holds up another one. The store takes the writes in
-/// the order that they arrive, because one write transaction runs at
-/// a time. (§4.2)
+/// folder never holds up another one. Every folder writes through one
+/// writer, which takes the changes that wait together and gives them
+/// to the store in one transaction. Eight folders that commit on their
+/// own pay for eight flushes of the disk, and this pays for one. (§4.2)
 async fn work(
     store: &Arc<Store>,
     pool: &Arc<Pool>,
@@ -307,12 +309,14 @@ async fn work(
     back: Backoff,
 ) -> Result<(Counts, BTreeSet<MessageId>)> {
     let mut tasks = JoinSet::new();
+    let writer = Writer::new(Arc::clone(store));
 
     for job in jobs {
         let store = Arc::clone(store);
         let pool = Arc::clone(pool);
         let name = account.name.clone();
         let footers = footers.to_vec();
+        let writer = writer.clone();
         let span = tracing::info_span!("folder", folder = %job.folder);
 
         // The span and the subscriber both travel with the task. A
@@ -322,7 +326,9 @@ async fn work(
             async move {
                 let start = Instant::now();
                 let asked = job.count();
-                let mut sink = Sink::new(store, &name).with_footers(footers);
+                let mut sink = Sink::new(store, &name)
+                    .with_writer(writer)
+                    .with_footers(footers);
                 let ended = resume(&pool, &job, &mut sink, back).await;
                 let counts = sink.counts();
 
