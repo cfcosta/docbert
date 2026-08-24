@@ -410,6 +410,88 @@ impl Store {
         Ok(merged)
     }
 
+    /// Write a whole batch of messages. (§4.2)
+    ///
+    /// This is [`put`] for many messages, and it makes the same store.
+    /// The difference is the cost. `put` commits two transactions for
+    /// each message, and LMDB lets one writer into a database at a
+    /// time, so a fetch of 500 messages waits for 1000 commits. This
+    /// takes one transaction of each database for the whole batch.
+    ///
+    /// The answers come back in the order of `batch`. A batch that
+    /// holds one message twice gives two answers, and the second one
+    /// absorbed the first, exactly as two calls of `put` would.
+    ///
+    /// [`put`]: Self::put
+    ///
+    /// # Errors
+    ///
+    /// The function fails if either database refuses the write. A
+    /// failure leaves the batch out, because neither transaction
+    /// commits.
+    pub fn put_all(
+        &self,
+        batch: &[(Message, Vec<u8>)],
+    ) -> Result<Vec<Message>> {
+        if batch.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // The bytes go first, as in `put`. A stop between the two
+        // commits leaves blobs that the next sync writes over, and
+        // never an entry that has no bytes behind it.
+        let mut wtxn = self.blobs.write_txn()?;
+        for (message, raw) in batch {
+            let key = message.id.full_hex();
+
+            if !raw.is_empty() && self.db.raw.get(&wtxn, &key)?.is_none() {
+                self.db.raw.put(&mut wtxn, &key, raw)?;
+            }
+        }
+        wtxn.commit()?;
+
+        let mut wtxn = self.meta.write_txn()?;
+        let mut kept = Vec::with_capacity(batch.len());
+
+        for (message, _) in batch {
+            let key = message.id.full_hex();
+
+            // The read sees what this transaction already wrote, so a
+            // message that comes twice in one batch absorbs itself.
+            let held: Option<Message> =
+                self.db.messages.get(&wtxn, &key)?.map(decode).transpose()?;
+
+            // A folder that gave the message a new UID leaves the old
+            // key behind, so the places go before the merge does.
+            if let Some(held) = &held {
+                for at in &held.locations {
+                    let old = place_key(&at.account, &at.folder, at.uid);
+                    self.db.places.delete(&mut wtxn, &old)?;
+                }
+            }
+
+            let merged = match held {
+                Some(mut held) => {
+                    held.absorb(message.clone());
+                    held
+                }
+                None => message.clone(),
+            };
+
+            for at in &merged.locations {
+                let place = place_key(&at.account, &at.folder, at.uid);
+                self.db.places.put(&mut wtxn, &place, &key)?;
+            }
+
+            self.db.messages.put(&mut wtxn, &key, &encode(&merged)?)?;
+            kept.push(merged);
+        }
+
+        wtxn.commit()?;
+
+        Ok(kept)
+    }
+
     /// Read one message.
     pub fn get(&self, id: &MessageId) -> Result<Option<Message>> {
         let rtxn = self.meta.read_txn()?;
@@ -1027,6 +1109,8 @@ mod tests {
     //! | `prop_a_vanish_never_moves_another_folder` | invariant | A UID that took the wrong copy loses mail that the server still holds. |
     //! | `prop_a_pass_leaves_one_owner_for_each_key_that_it_kept` | invariant | §6.2 keys every passage. An owner that stays behind answers a search with a message that no longer holds that text. |
     //! | `prop_a_reflag_says_what_the_copies_say` | invariant | The flags of a message are the flags of its copies. A set that drifts answers `is:unread` for mail that the user read. |
+    //! | `prop_a_batch_writes_what_single_writes_write` | differential | §4.2. A batch takes one transaction, and single writes take two for each message. The two paths must leave one store. |
+    //! | `prop_a_batch_gives_back_what_it_wrote` | round-trip | The sink counts what the store kept. An answer that does not match the store counts the wrong mail. |
 
     use hegel::{TestCase, generators as gs};
     use tempfile::{TempDir, tempdir};
@@ -1822,6 +1906,187 @@ mod tests {
             .collect::<BTreeSet<u64>>()
             .into_iter()
             .collect()
+    }
+
+    // -----------------------------------------------------------------
+    // A batch write. (§4.2)
+    // -----------------------------------------------------------------
+
+    /// Mail for a batch: a key, a folder, and a UID for each message.
+    ///
+    /// The keys and the folders are few, so a batch holds one message
+    /// twice, and holds one message in two folders.
+    #[hegel::composite]
+    fn some_mail(tc: TestCase) -> Vec<(String, String, u32)> {
+        let count: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+        let mut mail = Vec::new();
+
+        for _ in 0..count {
+            mail.push((
+                tc.draw(gs::sampled_from(vec![
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string(),
+                ])),
+                tc.draw(gs::sampled_from(vec![
+                    "INBOX".to_string(),
+                    "Sent".to_string(),
+                ])),
+                tc.draw(gs::integers::<u32>().min_value(1).max_value(3)),
+            ));
+        }
+
+        mail
+    }
+
+    /// The batch that `mail` names.
+    fn a_batch(mail: &[(String, String, u32)]) -> Vec<(Message, Vec<u8>)> {
+        mail.iter()
+            .map(|(key, folder, uid)| {
+                (
+                    message_at(key, "work", folder, *uid),
+                    raw_bytes(key, "The deposit is due."),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_keeps_every_message_that_it_was_given() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let batch = a_batch(&[
+            ("a".to_string(), "INBOX".to_string(), 1),
+            ("b".to_string(), "INBOX".to_string(), 2),
+            ("c".to_string(), "Sent".to_string(), 3),
+        ]);
+
+        let kept = store.put_all(&batch).expect("a batch write");
+
+        assert_eq!(kept.len(), 3);
+        assert_eq!(store.all().expect("a read").len(), 3);
+    }
+
+    /// The store keys a message by its bytes. A batch that holds one
+    /// message twice, from two folders, keeps one entry of two places.
+    #[test]
+    fn a_batch_that_repeats_a_message_keeps_one_entry() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let batch = a_batch(&[
+            ("a".to_string(), "INBOX".to_string(), 1),
+            ("a".to_string(), "Sent".to_string(), 2),
+        ]);
+
+        store.put_all(&batch).expect("a batch write");
+        let all = store.all().expect("a read");
+
+        assert_eq!(all.len(), 1, "the batch made two entries of one message");
+        assert_eq!(all[0].locations.len(), 2, "the batch lost a place");
+    }
+
+    /// The bytes of a batch reach the blob database, and read back.
+    #[test]
+    fn a_batch_writes_the_raw_bytes() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let batch = a_batch(&[("a".to_string(), "INBOX".to_string(), 1)]);
+
+        let kept = store.put_all(&batch).expect("a batch write");
+
+        assert_eq!(
+            store.raw(&kept[0].id).expect("a read"),
+            Some(batch[0].1.clone())
+        );
+    }
+
+    #[test]
+    fn a_batch_of_nothing_writes_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+
+        assert!(store.put_all(&[]).expect("a batch write").is_empty());
+        assert!(store.all().expect("a read").is_empty());
+    }
+
+    /// §4.2. A batch takes one transaction of each database, and the
+    /// single writes take two for each message. A sync of 100000
+    /// messages must not read one store and write another.
+    #[hegel::test(test_cases = 60)]
+    fn prop_a_batch_writes_what_single_writes_write(tc: TestCase) {
+        let mail = tc.draw(some_mail());
+        let batch = a_batch(&mail);
+
+        let one = tempdir().expect("a directory");
+        let single = open_at(&one);
+        for (found, raw) in &batch {
+            single.put(found, raw).expect("a write");
+        }
+
+        let both = tempdir().expect("a directory");
+        let together = open_at(&both);
+        together.put_all(&batch).expect("a batch write");
+
+        assert_eq!(
+            single.all().expect("a read"),
+            together.all().expect("a read"),
+            "the batch and the single writes left two stores"
+        );
+
+        // The entries alone do not say everything. A UID that moved
+        // leaves an old place behind, and only `placed` shows it.
+        let folders: BTreeSet<&String> =
+            mail.iter().map(|(_, folder, _)| folder).collect();
+
+        for folder in folders {
+            for uid in 1..=4 {
+                assert_eq!(
+                    single.placed("work", folder, uid).expect("a read"),
+                    together.placed("work", folder, uid).expect("a read"),
+                    "the stores put a different message at {folder}/{uid}"
+                );
+            }
+        }
+    }
+
+    /// The sink counts the mail that the store kept, and names it for
+    /// the index. An answer that the store does not hold counts mail
+    /// that no search can find.
+    #[hegel::test(test_cases = 60)]
+    fn prop_a_batch_gives_back_what_it_wrote(tc: TestCase) {
+        let mail = tc.draw(some_mail());
+        let batch = a_batch(&mail);
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+
+        let kept = store.put_all(&batch).expect("a batch write");
+
+        assert_eq!(kept.len(), batch.len(), "the batch lost an answer");
+
+        // Every answer names mail that the store holds.
+        for one in &kept {
+            assert!(
+                store.get(&one.id).expect("a read").is_some(),
+                "the batch named a message that the store lacks"
+            );
+        }
+
+        // A batch that holds one message twice answers twice, and the
+        // second answer absorbed the first. The last answer of each
+        // identity is therefore what the store now holds.
+        let mut last: BTreeMap<MessageId, &Message> = BTreeMap::new();
+        for one in &kept {
+            last.insert(one.id, one);
+        }
+
+        for (id, one) in last {
+            assert_eq!(
+                store.get(&id).expect("a read").as_ref(),
+                Some(one),
+                "the last answer does not say what the store holds"
+            );
+        }
     }
 
     // -----------------------------------------------------------------

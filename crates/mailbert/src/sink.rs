@@ -140,13 +140,16 @@ impl Sink {
         &self.touched
     }
 
-    /// Keep one copy of one message.
-    fn keep_one(
+    /// Read one copy of one message, ready for the store. (§4.2)
+    ///
+    /// The answer is `None` when the copy needs no write: a fetch that
+    /// brought only the flags, or bytes that mailbert cannot read.
+    fn read_one(
         &mut self,
         folder: &str,
         uid_validity: u32,
         fetched: Fetched,
-    ) -> Result<()> {
+    ) -> Result<Option<(Message, Vec<u8>)>> {
         // A fetch that asks only for the flags brings no body. The copy
         // is in the store, and only what the server says about it moved.
         if fetched.body.is_empty() {
@@ -162,7 +165,7 @@ impl Sink {
                 self.counts.moved += 1;
             }
 
-            return Ok(());
+            return Ok(None);
         }
 
         // A body that mailbert cannot read must not stop a sync of
@@ -171,7 +174,7 @@ impl Sink {
         else {
             self.counts.broken += 1;
 
-            return Ok(());
+            return Ok(None);
         };
 
         let received = fetched
@@ -190,13 +193,11 @@ impl Sink {
         };
 
         let message = Message::new(parsed, location, &fetched.flags);
-        let kept = self.store.put(&message, &fetched.body)?;
 
-        self.touched.insert(kept.id);
         self.counts.kept += 1;
         self.counts.bytes += fetched.body.len() as u64;
 
-        Ok(())
+        Ok(Some((message, fetched.body)))
     }
 }
 
@@ -217,8 +218,21 @@ impl Keep for Sink {
         batch: Batch,
         state: &FolderState,
     ) -> Result<()> {
+        // The whole batch goes to the store in one write. A write for
+        // each message would commit two transactions for each of them,
+        // and every folder of the sync would wait behind them. (§4.2)
+        let mut writes = Vec::with_capacity(batch.messages.len());
+
         for fetched in batch.messages {
-            self.keep_one(folder, state.uid_validity, fetched)?;
+            if let Some(write) =
+                self.read_one(folder, state.uid_validity, fetched)?
+            {
+                writes.push(write);
+            }
+        }
+
+        for kept in self.store.put_all(&writes)? {
+            self.touched.insert(kept.id);
         }
 
         // mailbert is a mirror, so a copy that went away leaves the
@@ -349,6 +363,14 @@ mod tests {
             store.raw(&found[0].id).expect("a read"),
             Some(raw_bytes("one"))
         );
+
+        // `mailbert sync` shows this number, and §10.4 reads it to say
+        // how fast the download ran.
+        assert_eq!(
+            sink.counts().bytes,
+            raw_bytes("one").len() as u64,
+            "the sync counted the wrong number of bytes"
+        );
     }
 
     #[tokio::test]
@@ -448,6 +470,40 @@ mod tests {
         assert_eq!(sink.counts().broken, 1);
         assert_eq!(sink.counts().kept, 1);
         assert_eq!(store.len().expect("a read"), 1);
+    }
+
+    /// One folder holds one message at two UIDs, and one fetch brings
+    /// both. The store keys a message by its bytes, and one folder
+    /// gives a message one place, so the later UID speaks. The earlier
+    /// UID must leave, or a message answers to a UID that is gone.
+    #[tokio::test]
+    async fn a_batch_that_holds_one_message_twice_keeps_one_entry() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let mut sink = Sink::new(store.clone(), "work");
+
+        let both = batch_of(vec![fetched(7, "one"), fetched(9, "one")]);
+        sink.batch("INBOX", both, &a_state(10))
+            .await
+            .expect("a batch");
+
+        let found = store.all().expect("a read");
+
+        assert_eq!(found.len(), 1, "one message became two entries");
+        assert_eq!(found[0].locations.len(), 1, "one folder gave two places");
+        assert_eq!(found[0].locations[0].uid, 9, "the older UID speaks");
+        assert_eq!(sink.counts().kept, 2, "the count lost a copy");
+        assert_eq!(sink.touched().len(), 1, "the index takes one message");
+        assert_eq!(
+            store.placed("work", "INBOX", 9).expect("a read"),
+            Some(found[0].id),
+            "the message does not answer to the UID that it holds"
+        );
+        assert_eq!(
+            store.placed("work", "INBOX", 7).expect("a read"),
+            None,
+            "the message still answers to a UID that it left"
+        );
     }
 
     #[tokio::test]

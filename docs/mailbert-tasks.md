@@ -245,11 +245,29 @@ The parts that hold a message and find it again.
   are the store alone, at 4.2 ms for each message. The index pass and the
   plan together take less than one percent.
 
-- [ ] **T32** One write for each batch, and not one for each message. (§4.2)
-  - [ ] `Store::put_all` writes a batch in one transaction of each database.
-  - [ ] A batch that holds one message two times keeps one entry.
-  - [ ] A batch write leaves the store as many single writes do.
-  - [ ] The sink gives the whole batch to the store.
+- [x] **T32** One write for each batch, and not one for each message. (§4.2)
+  - [x] `Store::put_all` writes a batch in one transaction of each database.
+  - [x] A batch that holds one message two times keeps one entry.
+  - [x] A batch write leaves the store as many single writes do.
+  - [x] The sink gives the whole batch to the store.
+
+  The same run, after the batch write. The download of one folder is now
+  396 times as fast.
+
+  | Stage                   | one folder | eight folders |
+  | ----------------------- | ---------- | ------------- |
+  | download                | 15.8 ms    | 170 ms        |
+  | index pass              | 25.0 ms    | 25.5 ms       |
+  | plan                    | 6.1 ms     | 6.4 ms        |
+  | embed walk, with a stub | 2.17 s     | 2.09 s        |
+  | the whole pipeline      | 2.24 s     | 2.57 s        |
+
+  The download no longer holds the pipeline. The store commits two
+  transactions for each batch, and not two for each message, so 1000
+  commits became 4. The embed walk is now 93 percent of the whole,
+  because `semantic::record` still writes one message at a time. Eight
+  folders now take more time than one, because eight tasks wait for the
+  one writer. T35 and T37 take these two.
 
 - [ ] **T33** The server says which UIDs it holds. (§3.2)
   - [ ] `Connection::uids` asks the server for the UIDs of a folder.
