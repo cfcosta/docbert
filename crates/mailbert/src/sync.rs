@@ -707,7 +707,11 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
     })
 }
 
-/// Sync each account, one after another. (§2.1)
+/// Sync every account at the same time. (§2.1)
+///
+/// Each account holds a pool of its own, so no account waits for the
+/// connections of another one. A mailbox of four accounts costs what
+/// the slowest of the four costs, and not the sum of all four.
 ///
 /// The function owns the feed, so the feed goes away when the last
 /// account ends. The model then reads the last batch and stops. A
@@ -715,26 +719,51 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
 ///
 /// # Errors
 ///
-/// The function fails on the first account that fails.
+/// The function fails if an account fails, and it gives the first
+/// error. Every account runs to its end before that, so a server that
+/// refuses one account never holds back the mail of another.
 async fn every(
     store: &Arc<Store>,
     watched: &[Watched<'_>],
     how: How,
     feed: Feed,
 ) -> Result<Vec<Report>> {
-    let mut reports = Vec::with_capacity(watched.len());
+    let mut tasks = JoinSet::new();
 
-    for account in watched {
-        reports.push(
-            one(
-                Arc::clone(store),
-                Arc::clone(&account.pool),
-                account.account,
-                how,
-                Some(&feed),
-            )
-            .await?,
+    for (at, account) in watched.iter().enumerate() {
+        let store = Arc::clone(store);
+        let pool = Arc::clone(&account.pool);
+        let account = account.account.clone();
+        let feed = feed.clone();
+
+        // `one` opens a span of its own, and the subscriber does not
+        // cross a `spawn` on its own. It travels with the task. (§10.5)
+        tasks.spawn(
+            async move {
+                (at, one(store, pool, &account, how, Some(&feed)).await)
+            }
+            .with_current_subscriber(),
         );
+    }
+
+    let mut ended: Vec<Option<Result<Report>>> =
+        watched.iter().map(|_| None).collect();
+
+    // Every account joins, even after one of them failed, so the mail
+    // that the other accounts read still reaches the store. (§2.1)
+    while let Some(joined) = tasks.join_next().await {
+        let (at, one) = joined.expect("the account did not panic");
+
+        ended[at] = Some(one);
+    }
+
+    let mut reports = Vec::with_capacity(ended.len());
+
+    // The accounts come back in the order of the configuration, and
+    // not in the order that the servers answered. A reader sees the
+    // same lines each run, and a failure names the same account. (§2.2)
+    for one in ended.into_iter().flatten() {
+        reports.push(one?);
     }
 
     Ok(reports)
@@ -1514,6 +1543,218 @@ mod tests {
 
         assert_eq!(wrote, Wrote::default());
         assert_eq!(embedded, Embedded::default());
+    }
+
+    // -----------------------------------------------------------------
+    // The accounts sync at the same time. (§2.1)
+    // -----------------------------------------------------------------
+
+    /// How long each fetch of the many-account tests waits.
+    ///
+    /// The delay must sit well above the noise of a busy machine, and
+    /// low enough to keep the tests quick.
+    const SLOWLY: Duration = Duration::from_millis(120);
+
+    /// The account of one fake server, under a name of its own.
+    fn named(port: u16, name: &str) -> Account {
+        Account {
+            name: name.to_string(),
+            ..an_account(port, &["INBOX"])
+        }
+    }
+
+    /// A server that answers each fetch slowly. (§3.4)
+    async fn a_slow_server() -> FakeServer {
+        FakeServer::start(Plan::new().with(a_folder("INBOX", 3)).slow(SLOWLY))
+            .await
+            .expect("a server")
+    }
+
+    /// A server that answers at once.
+    async fn a_quick_server() -> FakeServer {
+        FakeServer::start(Plan::new().with(a_folder("INBOX", 3)))
+            .await
+            .expect("a server")
+    }
+
+    /// A feed that no model listens to.
+    fn heard_by_no_one() -> Feed {
+        let (feed, take) = Feed::new(semantic::AHEAD);
+
+        drop(take);
+
+        feed
+    }
+
+    /// One pass over `count` slow accounts, and how long it took.
+    ///
+    /// Each account reads a server of its own, and each pass writes
+    /// into a new store. A store that already holds the mail asks the
+    /// server for nothing, and the clock then measures nothing. (§3.3)
+    fn every_takes(count: usize) -> Duration {
+        run_on(async move {
+            let dir = tempdir().expect("a temporary directory");
+            let store = open_at(&dir);
+            let mut servers = Vec::with_capacity(count);
+
+            for _ in 0..count {
+                servers.push(a_slow_server().await);
+            }
+
+            let accounts: Vec<Account> = servers
+                .iter()
+                .enumerate()
+                .map(|(at, server)| named(server.port(), &format!("a{at}")))
+                .collect();
+            let watched: Vec<Watched<'_>> = accounts
+                .iter()
+                .map(|account| Watched {
+                    account,
+                    pool: a_pool(account.port),
+                })
+                .collect();
+
+            let start = Instant::now();
+            every(&store, &watched, quickly(), heard_by_no_one())
+                .await
+                .expect("the fake servers answer");
+
+            start.elapsed()
+        })
+    }
+
+    /// §2.1: two accounts that wait on two servers must wait together.
+    /// A pass that runs them one after another costs the sum of the
+    /// two, and a mailbox of many accounts then syncs many times over.
+    #[test]
+    fn the_accounts_sync_at_the_same_time() {
+        let one = every_takes(1);
+        let two = every_takes(2);
+
+        // Two accounts together cost what one account costs. Two
+        // accounts in turn cost twice as much. The bound sits between.
+        assert!(
+            two.as_millis() * 2 < one.as_millis() * 3,
+            "one account took {one:?}, and two took {two:?}"
+        );
+    }
+
+    /// §2.1: an account that cannot log in tells the reader so, and it
+    /// leaves the mail of every other account in the store. A pass
+    /// that stops at the first error loses the accounts behind it.
+    #[test]
+    fn one_account_that_fails_never_stops_another() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let ended = run_on(async {
+            let locked = FakeServer::start(
+                Plan::new()
+                    .with(a_folder("INBOX", 3))
+                    .with_login("me", "other"),
+            )
+            .await
+            .expect("a server");
+
+            // The account that fails comes first, and it fails at
+            // once. The account behind it is slow, so a pass that
+            // stops at the first error drops the work of a live one.
+            let open_to_us = a_slow_server().await;
+            let bad = named(locked.port(), "bad");
+            let good = named(open_to_us.port(), "good");
+            let watched = vec![
+                Watched {
+                    account: &bad,
+                    pool: a_pool(locked.port()),
+                },
+                Watched {
+                    account: &good,
+                    pool: a_pool(open_to_us.port()),
+                },
+            ];
+
+            every(&store, &watched, quickly(), heard_by_no_one()).await
+        });
+
+        assert!(ended.is_err(), "the locked account looked well");
+        assert_eq!(
+            store.all().expect("a read").len(),
+            3,
+            "the good account lost its mail"
+        );
+    }
+
+    /// §2.2: the report names the accounts in the order of the
+    /// configuration. The servers answer in the order that they like,
+    /// and a reader must still see the same lines each run.
+    #[test]
+    fn the_reports_hold_the_order_of_the_configuration() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let names = run_on(async {
+            // The first account waits on each fetch, so the second
+            // account ends well before it.
+            let slow = a_slow_server().await;
+            let quick = a_quick_server().await;
+            let first = named(slow.port(), "a0");
+            let second = named(quick.port(), "a1");
+            let watched = vec![
+                Watched {
+                    account: &first,
+                    pool: a_pool(slow.port()),
+                },
+                Watched {
+                    account: &second,
+                    pool: a_pool(quick.port()),
+                },
+            ];
+
+            let reports = every(&store, &watched, quickly(), heard_by_no_one())
+                .await
+                .expect("the fake servers answer");
+
+            reports
+                .into_iter()
+                .map(|report| report.account)
+                .collect::<Vec<String>>()
+        });
+
+        assert_eq!(names, ["a0", "a1"]);
+    }
+
+    /// §10.5: a reader must see which account each line is in. Each
+    /// account runs on a task of its own now, and a subscriber does
+    /// not cross a `spawn` on its own.
+    #[test]
+    fn the_log_of_a_pass_names_every_account() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        open();
+
+        let pen = Pen::default();
+        let held = tracing::Dispatch::new(capture(pen.clone()));
+
+        run_on(
+            async {
+                let server = a_quick_server().await;
+                let account = named(server.port(), "a0");
+                let watched = vec![Watched {
+                    account: &account,
+                    pool: a_pool(server.port()),
+                }];
+
+                every(&store, &watched, quickly(), heard_by_no_one())
+                    .await
+                    .expect("the fake server answers")
+            }
+            .with_subscriber(held),
+        );
+
+        let log = pen.text();
+
+        assert!(log.contains("account{account=a0}"), "{log}");
     }
 
     /// §3: mailbert is a download-only mirror. It writes nothing.

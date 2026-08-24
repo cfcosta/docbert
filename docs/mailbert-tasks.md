@@ -531,9 +531,32 @@ The parts that hold a message and find it again.
   a real one. On a real mailbox the download and the model take a
   similar time, which is the middle row of the table.
 
-- [ ] **T38** The accounts sync at the same time. (§2.1)
-  - [ ] Each account takes its own pool, and they run together.
-  - [ ] One account that fails does not stop another.
+- [x] **T38** The accounts sync at the same time. (§2.1)
+  - [x] Each account takes its own pool, and they run together.
+  - [x] One account that fails does not stop another.
+  - [x] The report names the accounts in the order of the configuration.
+  - [x] The log says which account each line is in.
+
+  A pass spawns one task for each account, and it joins them all. Each
+  account holds a pool of its own, so no account waits for the
+  connections of another one. A mailbox of four accounts costs what the
+  slowest of the four costs, and not the sum of all four.
+
+  Every account runs to its end, even after another one failed. A
+  server that refuses one account then never holds back the mail of
+  the accounts behind it. The pass gives the first error of the
+  configuration, and not the first error that landed, so a run says
+  the same thing each time.
+
+  The reports come back in the order of the configuration, because a
+  reader must see the same lines whichever server answered first.
+
+  Two accounts on two servers that wait 120 ms on each fetch:
+
+  | accounts | one after another | at the same time |
+  | -------- | ----------------- | ---------------- |
+  | 1        | 133 ms            | 137 ms           |
+  | 2        | 312 ms            | 139 ms           |
 
 - [ ] **T39** A folder takes the connections that another folder gave
       back. (§3.1)

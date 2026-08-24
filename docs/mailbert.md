@@ -185,6 +185,7 @@ Speed is the design goal for this component. The first sync of a 60,000-message 
 3. **Pipelining.** mailbert sends the next command before the previous response arrives. This is where offlineimap loses most of its time.
 4. **Batched `UID FETCH`.** Messages come in ranges of a few hundred, and not one at a time.
 5. **`CONDSTORE` and `QRESYNC`** when the server announces them. These make the second sync a small delta and not a full UID scan.
+6. **The accounts sync at the same time.** Each account holds a pool of its own. A sync of four accounts costs what the slowest account costs, and not the sum of the four.
 
 ### 3.2 Fetch order
 
