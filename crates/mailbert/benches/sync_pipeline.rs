@@ -1,9 +1,13 @@
 //! The pipeline of a sync, measured against the fake server. (§10.5)
 //!
-//! The sync of today runs its stages one after the other. It downloads
-//! every folder, then it writes the index, then it plans the model, and
-//! then it embeds. This bench gives each stage its own number, so the
-//! work of §10.5 can show which stage it moved.
+//! The bench gives each stage of a sync its own number, so the work of
+//! §10.5 can show which stage it moved. The stages are the download,
+//! the index write, the plan of the model, and the walk of that plan.
+//!
+//! Two more groups say what the pipeline of §6.2 saves. `apart` waits
+//! for the last byte of the last folder before the model reads one
+//! message. `along` gives the model each batch as it lands. The two do
+//! the same work, and the difference is what the sync hides.
 //!
 //! Two shapes of mailbox run, because the two accounts of a real
 //! configuration have a different shape:
@@ -21,11 +25,18 @@
 //!
 //! `MAILBERT_BENCH_MESSAGES` and `MAILBERT_BENCH_SIZE` change how much
 //! mail the fake server holds. `MAILBERT_BENCH_FOLDERS` changes across
-//! how many folders it spreads.
+//! how many folders it spreads. `MAILBERT_BENCH_MODEL_US` changes what
+//! one message costs the stub of the model.
+//!
+//! A fake server on the same machine answers far faster than a real
+//! one. `MAILBERT_BENCH_MODEL_US` must therefore come down as well, or
+//! the model is the only stage that the number shows.
 
 use std::{
+    collections::BTreeSet,
     hint::black_box,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use criterion::{
@@ -38,11 +49,12 @@ use criterion::{
 };
 use docbert_core::EmbeddingDb;
 use mailbert::{
+    error::Result,
     pass,
-    semantic,
+    semantic::{self, Embedded, Embeds, Feed},
     sync::{self, How},
 };
-use mailbert_core::{Store, config::Account, index::MailIndex};
+use mailbert_core::{MessageId, Store, config::Account, index::MailIndex};
 use mailbert_imap::{
     Pool,
     Server,
@@ -60,6 +72,15 @@ const SIZE: usize = 4096;
 
 /// How many folders the mailbox of the `many_folders` shape holds.
 const FOLDERS: u32 = 8;
+
+/// How long the stub of the model takes for one message.
+///
+/// No bench loads a model, so the stub sleeps in its place. A real
+/// model on a GPU costs far more than the network does, and the
+/// pipeline of §6.2 then hides the whole download behind it.
+///
+/// `MAILBERT_BENCH_MODEL_US` changes the cost.
+const MODEL_US: u64 = 200;
 
 /// How many connections one account opens.
 const CONNECTIONS: usize = 8;
@@ -197,6 +218,7 @@ async fn download(bed: &Bed) -> usize {
         Arc::clone(&bed.pool),
         &bed.account,
         How::default(),
+        None,
     )
     .await
     .expect("the sync reads the fake server");
@@ -258,6 +280,92 @@ fn embed(bed: &Bed, plan: &semantic::Plan) -> usize {
     assert!(passages > 0, "the walk gave the model no passage");
 
     passages
+}
+
+/// A model that costs time and writes nothing. (§6.2)
+///
+/// The sleep stands in for a real model, so the bench shows what the
+/// pipeline hides and never what a GPU does.
+struct Slow {
+    /// How long one message costs.
+    each: Duration,
+
+    /// How many messages the stub read.
+    read: usize,
+}
+
+impl Slow {
+    fn new() -> Self {
+        Self {
+            each: Duration::from_micros(from_env(
+                "MAILBERT_BENCH_MODEL_US",
+                MODEL_US,
+            )),
+            read: 0,
+        }
+    }
+}
+
+impl Embeds for Slow {
+    fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded> {
+        std::thread::sleep(self.each * u32::try_from(names.len()).unwrap_or(1));
+        self.read += names.len();
+
+        Ok(Embedded {
+            messages: names.len(),
+            passages: names.len(),
+            dropped: 0,
+        })
+    }
+}
+
+/// Download every folder, and then give the whole mailbox to the model.
+///
+/// This is the sync of §10.5 before the pipeline. The model waits for
+/// the last byte of the last folder before it reads one message.
+async fn apart(bed: &Bed) -> usize {
+    let report = sync::one(
+        Arc::clone(&bed.store),
+        Arc::clone(&bed.pool),
+        &bed.account,
+        How::default(),
+        None,
+    )
+    .await
+    .expect("the sync reads the fake server");
+
+    let mut model = Slow::new();
+    model.embed(&report.touched).expect("the stub never fails");
+
+    model.read
+}
+
+/// Download every folder, with the model reading each batch as it
+/// lands. (§6.2)
+async fn along(bed: &Bed) -> usize {
+    let (feed, take) = Feed::new(semantic::AHEAD);
+
+    let syncing = async move {
+        let report = sync::one(
+            Arc::clone(&bed.store),
+            Arc::clone(&bed.pool),
+            &bed.account,
+            How::default(),
+            Some(&feed),
+        )
+        .await
+        .expect("the sync reads the fake server");
+
+        // The feed goes away here, and the model then stops.
+        drop(feed);
+
+        report
+    };
+
+    let (_, (model, _)) =
+        tokio::join!(syncing, semantic::along(take, Some(Slow::new())));
+
+    model.expect("the stub gives itself back").read
 }
 
 /// The four stages, each measured on its own, for one shape of mailbox.
@@ -339,7 +447,7 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
     let mut group = c.benchmark_group(format!("whole/{shape}"));
     group.throughput(Throughput::Elements(u64::from(count)));
     group.sample_size(10);
-    group.bench_with_input(name, &count, |b, _| {
+    group.bench_with_input(name.clone(), &count, |b, _| {
         b.iter_batched(
             || rt.block_on(fresh(folders, count, size)),
             |bed| {
@@ -352,6 +460,26 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
         );
     });
     group.finish();
+
+    // What the pipeline of §6.2 saves. `apart` waits for the last
+    // folder before the model reads one message, and `along` gives the
+    // model each batch as it lands.
+    for (label, pipelined) in [("apart", false), ("along", true)] {
+        let mut group = c.benchmark_group(format!("{label}/{shape}"));
+        group.throughput(Throughput::Elements(u64::from(count)));
+        group.sample_size(10);
+        group.bench_with_input(name.clone(), &count, |b, _| {
+            b.iter_batched(
+                || rt.block_on(fresh(folders, count, size)),
+                |bed| match pipelined {
+                    true => rt.block_on(along(black_box(&bed))),
+                    false => rt.block_on(apart(black_box(&bed))),
+                },
+                BatchSize::PerIteration,
+            );
+        });
+        group.finish();
+    }
 }
 
 /// Every message in one folder. One connection does the whole download.

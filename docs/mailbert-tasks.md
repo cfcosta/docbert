@@ -491,10 +491,45 @@ The parts that hold a message and find it again.
   gain stops at 1.8 times, because the work is then the parse of 10 MB
   and not the wait.
 
-- [ ] **T37** The model reads the mail as it arrives. (§6.2)
-  - [ ] The writer names the messages that a batch added.
-  - [ ] The model embeds those messages while the sync goes on.
-  - [ ] A sync that embeds nothing still ends well.
+- [x] **T37** The model reads the mail as it arrives. (§6.2)
+  - [x] The writer names the messages that a batch added.
+  - [x] The model embeds those messages while the sync goes on.
+  - [x] A sync that embeds nothing still ends well.
+  - [x] A scoped plan asks for the same work as a plan of the whole store.
+  - [x] A model that falls behind never holds up the download.
+  - [x] The report adds what the model read to what the sweep read.
+
+  Every sink holds a `Feed`. The sink names the messages of each batch
+  to the model, and the model reads them while the connections read the
+  batch that follows. `Store::embedding` reads the fingerprint of one
+  message, so `semantic::plan_for` plans a batch without a walk over the
+  whole store.
+
+  The feed drops a name when the model falls behind. That costs nothing,
+  because the sweep at the end of the sync walks the whole store and
+  finds every message that the model did not read. The two counts go
+  into one report.
+
+  The `apart` and `along` groups of the bench measure what this saves.
+  Both do the same work, on 4000 messages of 2 KiB. `apart` gives the
+  whole mailbox to the model after the last folder. `along` gives the
+  model each batch as it lands. The stub of the model sleeps, because
+  no bench loads a model.
+
+  | folders | download | model  | apart  | along  | gain  |
+  | ------- | -------- | ------ | ------ | ------ | ----- |
+  | 1       | 135 ms   | 60 ms  | 199 ms | 201 ms | 1.00x |
+  | 1       | 135 ms   | 200 ms | 354 ms | 236 ms | 1.50x |
+  | 1       | 135 ms   | 600 ms | 769 ms | 621 ms | 1.24x |
+  | 8       | 65 ms    | 200 ms | 279 ms | 260 ms | 1.07x |
+
+  A sync hides at most the smaller of the two stages, so the gain rises
+  as the model cost meets the download cost, and falls again after it.
+  A model that costs less than the download hides behind nothing.
+
+  A fake server on the same machine answers about 100 times faster than
+  a real one. On a real mailbox the download and the model take a
+  similar time, which is the middle row of the table.
 
 - [ ] **T38** The accounts sync at the same time. (§2.1)
   - [ ] Each account takes its own pool, and they run together.
@@ -508,6 +543,15 @@ The parts that hold a message and find it again.
   T36 fixes the count of connections of a folder when that folder
   starts. Every folder asks at the same time, so each one takes a
   single connection, and none of them can take a second.
+
+- [ ] **T40** The model keeps up with the batches that land. (§6.2)
+  - [ ] The bench says where the time of a round goes.
+  - [ ] A round costs no more than the model that it holds.
+
+  T37 hides less than the download that it runs behind. The table of
+  T37 shows 1.50x where the shape of the work allows 1.68x, and the
+  first row shows no gain at all. A round of the model costs more than
+  the model alone, and the bench must say what that cost is.
 
   The small folders of a mailbox end first. Their connections go back
   to the pool, and the big folder does not ask again. That folder reads

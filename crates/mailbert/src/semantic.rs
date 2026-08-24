@@ -13,6 +13,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -35,6 +36,7 @@ use mailbert_core::{
     embed::{self, Passage},
     message::Message,
 };
+use tokio::sync::mpsc;
 
 use crate::error::Result;
 
@@ -176,6 +178,212 @@ pub struct Embedded {
 
     /// The passages that left the index.
     pub dropped: usize,
+}
+
+impl Embedded {
+    /// What two passes did, as one count. (§6.2)
+    ///
+    /// A sync embeds the mail of each batch, and then it embeds what
+    /// the batches missed. The report shows one number for the two.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        Self {
+            messages: self.messages + other.messages,
+            passages: self.passages + other.passages,
+            dropped: self.dropped + other.dropped,
+        }
+    }
+}
+
+/// How many batches of names wait for the model before the sync
+/// drops one.
+///
+/// A dropped name costs nothing. The pass at the end of the sync walks
+/// the whole store, and it finds every message that the model did not
+/// read.
+pub const AHEAD: usize = 64;
+
+/// What the sync tells the model, as each batch lands. (§6.2)
+///
+/// Every folder of a sync holds one of these. The model reads the mail
+/// of a batch while the connections read the batch that follows, so
+/// the sync no longer waits for the whole download before it embeds.
+#[derive(Clone)]
+pub struct Feed {
+    give: mpsc::Sender<BTreeSet<MessageId>>,
+}
+
+impl Feed {
+    /// Make a feed, and the end that the model takes from.
+    pub fn new(ahead: usize) -> (Self, mpsc::Receiver<BTreeSet<MessageId>>) {
+        let (give, take) = mpsc::channel(ahead.max(1));
+
+        (Self { give }, take)
+    }
+
+    /// Name the messages that a batch added. (§6.2)
+    ///
+    /// A full queue drops the names, and the sync goes on. The model
+    /// is slower than the network, so a sync that waits for it reads
+    /// no mail while it waits. The pass at the end finds what the
+    /// model missed.
+    pub fn tell(&self, ids: BTreeSet<MessageId>) {
+        if ids.is_empty() {
+            return;
+        }
+
+        if self.give.try_send(ids).is_err() {
+            tracing::debug!("the model is behind, so the pass takes these");
+        }
+    }
+}
+
+/// What reads the mail that the sync names. (§6.2)
+///
+/// [`Along`] is the model. A test gives a double, because a model
+/// takes a GPU and half a gigabyte of weights.
+pub trait Embeds: Send + 'static {
+    /// Embed these messages, and build no index.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the store, or the model, refuses the work.
+    fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded>;
+}
+
+/// The model and the store, as a running sync uses them. (§6.2)
+pub struct Along {
+    /// The mail that the sync writes.
+    pub store: Arc<Store>,
+
+    /// The model, and the passages that it wrote.
+    pub brain: Brain,
+}
+
+impl Embeds for Along {
+    fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded> {
+        let plan = plan_for(&self.store, self.brain.model.model_id(), names)?;
+
+        // The PLAID index is built whole, and a sync writes mail for as
+        // long as it runs. The pass at the end builds it once. (§6.2)
+        apply(
+            &self.store,
+            &self.brain.db,
+            &mut self.brain.model,
+            &plan,
+            |_| {},
+        )
+    }
+}
+
+/// Embed the mail that the sync names, while the sync reads. (§6.2)
+///
+/// The model reads the mail of the batches that landed while the
+/// connections read the batches that follow. The function ends when
+/// the last [`Feed`] goes away, and it gives back the model.
+///
+/// A sync that holds no model ends at once, and it reports nothing.
+///
+/// An error never stops the sync. The pass at the end of the sync
+/// walks the whole store, and it embeds what this loop missed.
+pub async fn along<E: Embeds>(
+    mut take: mpsc::Receiver<BTreeSet<MessageId>>,
+    how: Option<E>,
+) -> (Option<E>, Embedded) {
+    let mut done = Embedded::default();
+
+    let Some(mut how) = how else {
+        return (None, done);
+    };
+
+    while let Some(first) = take.recv().await {
+        let mut names = first;
+
+        // The model is slower than the network, so the names pile up
+        // behind it. One round over all of them costs one plan and one
+        // batch of the model. (§6.2)
+        while let Ok(more) = take.try_recv() {
+            names.extend(more);
+        }
+
+        let read = tokio::task::spawn_blocking(move || {
+            let one = how.embed(&names);
+
+            (how, one)
+        })
+        .await;
+
+        let (back, one) = match read {
+            Ok(pair) => pair,
+            Err(problem) => {
+                tracing::warn!(%problem, "the model stopped");
+
+                return (None, done);
+            }
+        };
+
+        how = back;
+
+        match one {
+            Ok(one) => done = done.and(one),
+            Err(problem) => {
+                tracing::warn!(%problem, "the model read no batch");
+            }
+        }
+    }
+
+    (Some(how), done)
+}
+
+/// What a pass must do, for the messages that a batch named. (§6.2)
+///
+/// A sync embeds the mail as it arrives, so it asks about the messages
+/// of one batch. [`plan`] reads every message of the store, and a
+/// mailbox of 100000 messages therefore costs 100000 reads for each
+/// batch.
+///
+/// The plan holds no stale passage. A stale passage belongs to a
+/// message that the store let go, and only a walk over the whole store
+/// finds those. The pass at the end of the sync does that walk.
+///
+/// A name that the store no longer holds gives no work. A batch can
+/// name a message that a later batch moved away.
+///
+/// # Errors
+///
+/// The function fails if the store refuses a read.
+pub fn plan_for(
+    store: &Store,
+    model: &str,
+    ids: &BTreeSet<MessageId>,
+) -> Result<Plan> {
+    let mut work = Vec::new();
+
+    for id in ids {
+        let Some(message) = store.get(id)? else {
+            continue;
+        };
+
+        let passages = embed::passages(&message, embed::SIZE, embed::OVERLAP);
+        let digest = embed::digest(model, &passages);
+
+        // The fingerprint holds the name of the model, so a model that
+        // changed sends every message to the new one.
+        if store.embedding(id)? == Some(digest) {
+            continue;
+        }
+
+        work.push(Work {
+            id: *id,
+            passages,
+            digest,
+        });
+    }
+
+    Ok(Plan {
+        work,
+        stale: Vec::new(),
+    })
 }
 
 /// What a pass must do, for the messages that `store` holds. (§6.2)
@@ -442,10 +650,11 @@ mod tests {
     //! | --- | --- | --- |
     //! | `prop_a_second_plan_asks_for_nothing` | metamorphic | §6.2 embeds every message. A pass that asks again sends a whole mailbox to the model for one new letter. |
     //! | `prop_a_plan_covers_every_message_of_the_store` | model-based | A message that no plan names is a message that the semantic leg can never find. |
+    //! | `prop_a_plan_for_every_message_agrees_with_the_whole_plan` | metamorphic | The sync embeds a batch while it reads the next one. A scoped plan that disagrees with the whole plan sends the wrong mail to the model. |
     //! | `prop_a_message_that_went_away_takes_its_passages` | invariant | A passage of a message that is gone answers a search with text that the store no longer holds. |
     //! | `prop_the_leg_keeps_what_the_filter_allows` | invariant | §8.2 gates the leg before it ranks. A message that the filter refuses must never reach the fusion. |
 
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, sync::Mutex};
 
     use candle_core::Device;
     use hegel::{TestCase, generators as gs};
@@ -453,7 +662,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
-    use crate::trace::pen::{Pen, capture, open};
+    use crate::{
+        error::Error,
+        trace::pen::{Pen, capture, open},
+    };
 
     // -----------------------------------------------------------------
     // Helpers.
@@ -648,6 +860,248 @@ mod tests {
 
         assert!(!behind(&store, MODEL).expect("a plan"));
         assert_eq!(covered(&store).expect("a read").len(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // The feed of a sync. (§6.2)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_feed_gives_the_names_that_it_took() {
+        let (feed, mut take) = Feed::new(4);
+        let named = BTreeSet::from([
+            MessageId::from_message_id("<a@x.test>").expect("an id"),
+            MessageId::from_message_id("<b@x.test>").expect("an id"),
+        ]);
+
+        feed.tell(named.clone());
+
+        assert_eq!(take.try_recv().expect("the names"), named);
+    }
+
+    #[tokio::test]
+    async fn a_feed_of_no_room_still_takes_a_name() {
+        let (feed, mut take) = Feed::new(0);
+
+        feed.tell(BTreeSet::from([
+            MessageId::from_message_id("<a@x.test>").expect("an id")
+        ]));
+
+        assert!(take.try_recv().is_ok(), "a feed of no room lost the name");
+    }
+
+    // -----------------------------------------------------------------
+    // The model reads the mail as it arrives. (§6.2)
+    // -----------------------------------------------------------------
+
+    /// A model that writes down what it was asked to read.
+    #[derive(Default)]
+    struct Told {
+        rounds: Arc<Mutex<Vec<BTreeSet<MessageId>>>>,
+        fails: bool,
+    }
+
+    impl Embeds for Told {
+        fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded> {
+            self.rounds.lock().expect("a lock").push(names.clone());
+
+            if self.fails {
+                return Err(Error::NoMessages);
+            }
+
+            Ok(Embedded {
+                messages: names.len(),
+                passages: names.len(),
+                dropped: 0,
+            })
+        }
+    }
+
+    fn an_id(key: &str) -> MessageId {
+        MessageId::from_message_id(&format!("<{key}@x.test>")).expect("an id")
+    }
+
+    #[tokio::test]
+    async fn the_model_reads_the_mail_that_the_feed_names() {
+        let (feed, take) = Feed::new(8);
+        let told = Told::default();
+        let rounds = Arc::clone(&told.rounds);
+
+        feed.tell(BTreeSet::from([an_id("a")]));
+        drop(feed);
+
+        let (_, done) = along(take, Some(told)).await;
+
+        assert_eq!(
+            *rounds.lock().expect("a lock"),
+            vec![BTreeSet::from([an_id("a")])]
+        );
+        assert_eq!(done.messages, 1);
+    }
+
+    /// The model is slower than the network, so names pile up behind
+    /// it. One round over all of them costs one plan and one batch of
+    /// the model, and not one of each for every batch. (§6.2)
+    #[tokio::test]
+    async fn the_model_takes_every_batch_that_already_waits() {
+        let (feed, take) = Feed::new(8);
+        let told = Told::default();
+        let rounds = Arc::clone(&told.rounds);
+
+        for key in ["a", "b", "c"] {
+            feed.tell(BTreeSet::from([an_id(key)]));
+        }
+        drop(feed);
+
+        along(take, Some(told)).await;
+
+        let seen = rounds.lock().expect("a lock").clone();
+        assert_eq!(seen.len(), 1, "the model read {} times", seen.len());
+        assert_eq!(seen[0].len(), 3);
+    }
+
+    /// The pass at the end of the sync reads every message, so a model
+    /// that fails here loses nothing. A sync that stops loses the
+    /// mail. (§6.2)
+    #[tokio::test]
+    async fn a_model_that_fails_never_stops_the_sync() {
+        let (feed, take) = Feed::new(8);
+        let told = Told {
+            fails: true,
+            ..Told::default()
+        };
+
+        feed.tell(BTreeSet::from([an_id("a")]));
+        drop(feed);
+
+        let (back, done) = along(take, Some(told)).await;
+
+        assert!(back.is_some(), "the model went away");
+        assert_eq!(done, Embedded::default());
+    }
+
+    /// A batch that lands while the model reads is a round of its
+    /// own. The report must show the mail of every round. (§6.2)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_rounds_of_one_sync_add_up() {
+        let (feed, take) = Feed::new(8);
+        let told = Told::default();
+        let rounds = Arc::clone(&told.rounds);
+
+        feed.tell(BTreeSet::from([an_id("a")]));
+        let reading = tokio::spawn(along(take, Some(told)));
+
+        // The second name goes out after the model took the first, so
+        // the greedy round never holds the two together.
+        while rounds.lock().expect("a lock").is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        feed.tell(BTreeSet::from([an_id("b")]));
+        drop(feed);
+
+        let (_, done) = reading.await.expect("the loop");
+
+        assert_eq!(rounds.lock().expect("a lock").len(), 2);
+        assert_eq!(done.messages, 2);
+    }
+
+    #[tokio::test]
+    async fn a_sync_with_no_model_still_ends_well() {
+        let (feed, take) = Feed::new(1);
+
+        feed.tell(BTreeSet::from([an_id("a")]));
+        feed.tell(BTreeSet::from([an_id("b")]));
+        drop(feed);
+
+        let (back, done) = along::<Told>(take, None).await;
+
+        assert!(back.is_none());
+        assert_eq!(done, Embedded::default());
+    }
+
+    #[test]
+    fn what_two_rounds_embedded_adds_up() {
+        let first = Embedded {
+            messages: 1,
+            passages: 2,
+            dropped: 3,
+        };
+        let second = Embedded {
+            messages: 10,
+            passages: 20,
+            dropped: 30,
+        };
+
+        assert_eq!(
+            first.and(second),
+            Embedded {
+                messages: 11,
+                passages: 22,
+                dropped: 33,
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // A plan for the messages that a batch named. (§6.2)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_plan_for_no_message_asks_for_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        write(&store, "a", "hello");
+
+        let made = plan_for(&store, MODEL, &BTreeSet::new()).expect("a plan");
+
+        assert!(made.is_empty(), "a plan for nothing asked for something");
+    }
+
+    #[test]
+    fn a_plan_for_one_message_names_only_that_message() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let first = write(&store, "a", "hello");
+        write(&store, "b", "goodbye");
+
+        let made =
+            plan_for(&store, MODEL, &BTreeSet::from([first])).expect("a plan");
+
+        assert_eq!(
+            made.work.iter().map(|one| one.id).collect::<Vec<_>>(),
+            vec![first]
+        );
+    }
+
+    #[test]
+    fn a_plan_for_a_message_that_a_pass_read_asks_for_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = write(&store, "a", "hello");
+        let named = BTreeSet::from([id]);
+
+        let first = plan_for(&store, MODEL, &named).expect("a plan");
+        for work in &first.work {
+            record(&store, work).expect("a record");
+        }
+
+        assert!(plan_for(&store, MODEL, &named).expect("a plan").is_empty());
+    }
+
+    /// A batch can name a message that a later batch moved away. The
+    /// pass at the end of the sync takes its passages out. (§6.2)
+    #[test]
+    fn a_plan_for_a_message_that_the_store_lost_names_no_work() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = write(&store, "a", "hello");
+        store.remove(&id).expect("a delete");
+
+        let made =
+            plan_for(&store, MODEL, &BTreeSet::from([id])).expect("a plan");
+
+        assert!(made.is_empty(), "the plan asked for mail that is gone");
     }
 
     // -----------------------------------------------------------------
@@ -1101,6 +1555,32 @@ mod tests {
         }
 
         assert!(plan(&store, MODEL).expect("a plan").is_empty());
+    }
+
+    /// The sync embeds the mail of a batch while it reads the next
+    /// one. That must ask the model for exactly the work that one
+    /// pass over the whole store would ask for. (§6.2)
+    #[hegel::test(test_cases = 40)]
+    fn prop_a_plan_for_every_message_agrees_with_the_whole_plan(tc: TestCase) {
+        let bodies: Vec<String> = tc.draw(a_mailbox());
+
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let mut every = BTreeSet::new();
+        for (at, body) in bodies.iter().enumerate() {
+            every.insert(write(&store, &format!("m{at}"), body));
+        }
+
+        let whole = plan(&store, MODEL).expect("a plan");
+        let named = plan_for(&store, MODEL, &every).expect("a plan");
+
+        let order = |made: &Plan| {
+            let mut work = made.work.clone();
+            work.sort_by_key(|one| one.id);
+            work
+        };
+
+        assert_eq!(order(&whole), order(&named));
     }
 
     #[hegel::test(test_cases = 40)]

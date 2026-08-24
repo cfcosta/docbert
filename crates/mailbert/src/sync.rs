@@ -46,7 +46,7 @@ use crate::{
     cli,
     error::{Error, Result},
     pass::{self, Wrote},
-    semantic::{Brain, Embedded},
+    semantic::{self, Along, Brain, Embedded, Embeds, Feed},
     settings,
     sink::{Counts, Sink, sync_state},
     writer::Writer,
@@ -136,6 +136,7 @@ pub async fn one(
     pool: Arc<Pool>,
     account: &Account,
     how: How,
+    feed: Option<&Feed>,
 ) -> Result<Report> {
     let start = Instant::now();
     let footers = account.footer_patterns()?;
@@ -156,7 +157,7 @@ pub async fn one(
     }
 
     let (counts, touched) =
-        work(&store, &pool, account, jobs, &footers, how.back).await?;
+        work(&store, &pool, account, jobs, &footers, how.back, feed).await?;
     report.counts = counts;
     report.touched = touched;
 
@@ -350,6 +351,7 @@ async fn work(
     jobs: Vec<Job>,
     footers: &[Regex],
     back: Backoff,
+    feed: Option<&Feed>,
 ) -> Result<(Counts, BTreeSet<MessageId>)> {
     let mut tasks = JoinSet::new();
     let writer = Writer::new(Arc::clone(store));
@@ -360,6 +362,7 @@ async fn work(
         let name = account.name.clone();
         let footers = footers.to_vec();
         let writer = writer.clone();
+        let feed = feed.cloned();
         let span = tracing::info_span!("folder", folder = %job.folder);
 
         // The span and the subscriber both travel with the task. A
@@ -372,6 +375,12 @@ async fn work(
                 let mut sink = Sink::new(store, &name)
                     .with_writer(writer)
                     .with_footers(footers);
+
+                // The model hears about each batch as it lands. (§6.2)
+                if let Some(feed) = feed {
+                    sink = sink.with_feed(feed);
+                }
+
                 let ended = resume(&pool, &job, &mut sink, back).await;
                 let counts = sink.counts();
 
@@ -470,7 +479,32 @@ pub struct Books<'a> {
     pub index: &'a MailIndex,
 
     /// The model, the embeddings, and the PLAID index of §6.2.
-    pub brain: Option<&'a mut Brain>,
+    ///
+    /// The sync gives the model away while it runs, so the model reads
+    /// the mail of each batch on a thread of its own. (§6.2)
+    pub brain: Option<Brain>,
+}
+
+impl Books<'_> {
+    /// The model, ready to read the mail as a sync writes it. (§6.2)
+    ///
+    /// A dry run writes no mail, so the model hears nothing. [`one`]
+    /// gives back its report before it opens one folder.
+    fn along(&mut self) -> Option<Along> {
+        self.brain.take().map(|brain| Along {
+            store: Arc::clone(self.store),
+            brain,
+        })
+    }
+
+    /// Take the model back, after a round gave it away. (§6.2)
+    ///
+    /// The write is total. A book that keeps its old model would hold
+    /// one that a round already read with, and the sweep would then
+    /// embed the same mail again.
+    fn back(&mut self, along: Option<Along>) {
+        self.brain = along.map(|along| along.brain);
+    }
 }
 
 /// Sync again each time a server says that something changed. (§3.1)
@@ -499,31 +533,14 @@ pub async fn watching<S: Future<Output = ()>>(
     tokio::pin!(stop);
 
     loop {
-        let mut reports = Vec::with_capacity(watched.len());
-        let mut folders = Vec::with_capacity(watched.len());
-        let mut touched = BTreeSet::new();
+        let along = books.along();
+        let (reports, back, early) =
+            round(books.store, watched, how, along).await;
+        books.back(back);
+        let reports = reports?;
 
-        for one in watched {
-            let report = self::one(
-                Arc::clone(books.store),
-                Arc::clone(&one.pool),
-                one.account,
-                how,
-            )
-            .await?;
-
-            touched.extend(report.touched.iter().copied());
-            folders.push(inbox(&report));
-            reports.push(report);
-        }
-
-        let (wrote, embedded) = match how.dry {
-            true => (Wrote::default(), Embedded::default()),
-            false => (
-                pass::after_sync(books.store, books.index, &touched)?,
-                sweep(books.store, books.brain.as_deref_mut(), out)?,
-            ),
-        };
+        let folders: Vec<Option<String>> = reports.iter().map(inbox).collect();
+        let (wrote, embedded) = finish(books, &reports, how, early, out)?;
         rounds += 1;
 
         say(&reports, wrote, embedded, how.dry, false, out)?;
@@ -645,7 +662,7 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
 
     // A dry run asks the server for nothing, so it embeds nothing and
     // needs no model. (§2.1)
-    let mut brain = match args.dry_run {
+    let brain = match args.dry_run {
         true => None,
         false => Some(tool.brain()?),
     };
@@ -661,7 +678,7 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
         let mut books = Books {
             store: &store,
             index: &index,
-            brain: brain.as_mut(),
+            brain,
         };
 
         let ended = match args.watch {
@@ -690,6 +707,71 @@ pub fn command(tool: &Tool, args: &cli::Sync) -> Result<()> {
     })
 }
 
+/// Sync each account, one after another. (§2.1)
+///
+/// The function owns the feed, so the feed goes away when the last
+/// account ends. The model then reads the last batch and stops. A
+/// feed that outlives the sync holds the model open for ever.
+///
+/// # Errors
+///
+/// The function fails on the first account that fails.
+async fn every(
+    store: &Arc<Store>,
+    watched: &[Watched<'_>],
+    how: How,
+    feed: Feed,
+) -> Result<Vec<Report>> {
+    let mut reports = Vec::with_capacity(watched.len());
+
+    for account in watched {
+        reports.push(
+            one(
+                Arc::clone(store),
+                Arc::clone(&account.pool),
+                account.account,
+                how,
+                Some(&feed),
+            )
+            .await?,
+        );
+    }
+
+    Ok(reports)
+}
+
+/// One pass over every account, with the model behind it. (§6.2)
+///
+/// The model embeds the mail of each batch while the connections read
+/// the batch that follows. The two end together, because the last
+/// [`Feed`] goes away when the last folder does.
+///
+/// The function gives the model back, and with it the count of the
+/// mail that it read on the way.
+async fn round<E: Embeds>(
+    store: &Arc<Store>,
+    watched: &[Watched<'_>],
+    how: How,
+    along: Option<E>,
+) -> (Result<Vec<Report>>, Option<E>, Embedded) {
+    let (feed, take) = Feed::new(semantic::AHEAD);
+
+    let (reports, (back, early)) = tokio::join!(
+        every(store, watched, how, feed),
+        semantic::along(take, along)
+    );
+
+    if early.messages > 0 {
+        tracing::info!(
+            messages = early.messages,
+            passages = early.passages,
+            "the model read the mail as it arrived"
+        );
+    }
+
+    (reports, back, early)
+}
+
 /// One pass over every account, and the index write after it. (§2.1)
 async fn once(
     books: &mut Books<'_>,
@@ -698,8 +780,6 @@ async fn once(
     json: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let mut reports = Vec::with_capacity(watched.len());
-
     tracing::info!(
         accounts = watched.len(),
         full = how.full,
@@ -707,43 +787,59 @@ async fn once(
         "the sync starts"
     );
 
-    for account in watched {
-        reports.push(
-            one(
-                Arc::clone(books.store),
-                Arc::clone(&account.pool),
-                account.account,
-                how,
-            )
-            .await?,
-        );
-    }
+    let along = books.along();
+    let (reports, back, early) = round(books.store, watched, how, along).await;
+    books.back(back);
+    let reports = reports?;
 
-    // A dry run asks for nothing, so no thread moves and the index
-    // stays as it was. (§2.1)
-    let (wrote, embedded) = match how.dry {
-        true => (Wrote::default(), Embedded::default()),
-        false => {
-            let touched: BTreeSet<MessageId> = reports
-                .iter()
-                .flat_map(|report| report.touched.iter().copied())
-                .collect();
-
-            let start = Instant::now();
-            let wrote = pass::after_sync(books.store, books.index, &touched)?;
-            tracing::info!(
-                touched = touched.len(),
-                messages = wrote.messages,
-                threads = wrote.threads,
-                ms = start.elapsed().as_millis(),
-                "wrote the index"
-            );
-
-            (wrote, sweep(books.store, books.brain.as_deref_mut(), out)?)
-        }
-    };
+    let (wrote, embedded) = finish(books, &reports, how, early, out)?;
 
     say(&reports, wrote, embedded, how.dry, json, out)
+}
+
+/// Write the index of the mail that a pass moved, and embed what the
+/// model missed while the sync ran. (§6.2)
+///
+/// `early` is the mail that the model read as each batch landed. The
+/// sweep reads the rest, and the two counts go into one report. A
+/// sweep that answers on its own hides the early work.
+///
+/// A dry run asks the server for nothing, so no thread moves and the
+/// index stays as it was. (§2.1)
+///
+/// # Errors
+///
+/// The function fails if the store or the index refuses a write.
+fn finish(
+    books: &mut Books<'_>,
+    reports: &[Report],
+    how: How,
+    early: Embedded,
+    out: &mut dyn Write,
+) -> Result<(Wrote, Embedded)> {
+    if how.dry {
+        return Ok((Wrote::default(), Embedded::default()));
+    }
+
+    let touched: BTreeSet<MessageId> = reports
+        .iter()
+        .flat_map(|report| report.touched.iter().copied())
+        .collect();
+
+    let start = Instant::now();
+    let wrote = pass::after_sync(books.store, books.index, &touched)?;
+
+    tracing::info!(
+        touched = touched.len(),
+        messages = wrote.messages,
+        threads = wrote.threads,
+        ms = start.elapsed().as_millis(),
+        "wrote the index"
+    );
+
+    let late = sweep(books.store, books.brain.as_mut(), out)?;
+
+    Ok((wrote, early.and(late)))
 }
 
 /// Embed what a sync changed, and write the PLAID index. (§6.2)
@@ -938,7 +1034,7 @@ mod tests {
     //! | A second sync asks for nothing | The count of the report | An incremental sync is what makes 100k messages work. (§3.3) |
     //! | A sync never writes to the server | `FakeServer::writes` | mailbert is a download-only mirror. (§3) |
 
-    use std::{future::Future, time::Duration};
+    use std::{future::Future, sync::Mutex, time::Duration};
 
     use hegel::{TestCase, generators as gs};
     use mailbert_core::{config::Account, index::MailIndex};
@@ -1038,7 +1134,7 @@ mod tests {
         account: &Account,
         how: How,
     ) -> Report {
-        one(Arc::clone(store), Arc::clone(pool), account, how)
+        one(Arc::clone(store), Arc::clone(pool), account, how, None)
             .await
             .expect("the fake server answers")
     }
@@ -1184,6 +1280,240 @@ mod tests {
                 assert_eq!(at.account, "work", "{:?}", message.id);
             }
         }
+    }
+
+    /// The sink of every folder names its mail to the model, so the
+    /// model reads one batch while the connections read the batch
+    /// after it. (§6.2)
+    #[test]
+    fn a_sync_names_the_mail_that_it_read_to_the_model() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let (named, report) = run_on(async {
+            let server =
+                FakeServer::start(Plan::new().with(a_folder("INBOX", 3)))
+                    .await
+                    .expect("a server");
+            let account = an_account(server.port(), &["INBOX"]);
+            let (feed, mut take) = Feed::new(semantic::AHEAD);
+
+            let report = one(
+                Arc::clone(&store),
+                a_pool(server.port()),
+                &account,
+                How::default(),
+                Some(&feed),
+            )
+            .await
+            .expect("the fake server answers");
+
+            // The sync holds the last feed until here, so the model
+            // reads for as long as the sync does. (§6.2)
+            drop(feed);
+
+            let mut named = BTreeSet::new();
+            while let Some(ids) = take.recv().await {
+                named.extend(ids);
+            }
+
+            (named, report)
+        });
+
+        assert_eq!(named.len(), 3, "the model heard about {named:?}");
+        assert_eq!(named, report.touched);
+    }
+
+    // -----------------------------------------------------------------
+    // The model reads the mail as it arrives. (§6.2)
+    // -----------------------------------------------------------------
+
+    /// A model that writes down the mail that a round gave it.
+    #[derive(Default)]
+    struct Heard {
+        ids: Arc<Mutex<BTreeSet<MessageId>>>,
+    }
+
+    impl Embeds for Heard {
+        fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded> {
+            self.ids
+                .lock()
+                .expect("a lock")
+                .extend(names.iter().copied());
+
+            Ok(Embedded {
+                messages: names.len(),
+                passages: names.len(),
+                dropped: 0,
+            })
+        }
+    }
+
+    /// What one round did.
+    struct Round {
+        /// The mail that the model heard about.
+        heard: BTreeSet<MessageId>,
+
+        /// True when the round gave the model back.
+        gave_back: bool,
+
+        /// What the model read while the sync ran.
+        early: Embedded,
+
+        /// The mail that the sync wrote.
+        touched: BTreeSet<MessageId>,
+    }
+
+    /// Run one round over one fake account, with a model behind it.
+    fn round_on(
+        store: &Arc<Store>,
+        folders: &[(&str, u32)],
+        how: How,
+    ) -> Round {
+        run_on(async {
+            let plan =
+                folders.iter().fold(Plan::new(), |plan, (name, count)| {
+                    plan.with(a_folder(name, *count))
+                });
+            let server = FakeServer::start(plan).await.expect("a server");
+            let names: Vec<&str> =
+                folders.iter().map(|(name, _)| *name).collect();
+            let account = an_account(server.port(), &names);
+            let watched = vec![Watched {
+                account: &account,
+                pool: a_pool(server.port()),
+            }];
+
+            let model = Heard::default();
+            let heard = Arc::clone(&model.ids);
+
+            let (reports, back, early) =
+                round(store, &watched, how, Some(model)).await;
+            let reports = reports.expect("the fake server answers");
+
+            Round {
+                heard: heard.lock().expect("a lock").clone(),
+                gave_back: back.is_some(),
+                early,
+                touched: reports
+                    .iter()
+                    .flat_map(|report| report.touched.iter().copied())
+                    .collect(),
+            }
+        })
+    }
+
+    #[test]
+    fn a_round_gives_the_mail_of_the_sync_to_the_model() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let done =
+            round_on(&store, &[("INBOX", 3), ("Sent", 2)], How::default());
+
+        // The two folders hold one copy of `m1` and `m2` each, and one
+        // message is one message wherever it sits. (§4.1)
+        assert_eq!(done.heard.len(), 3, "the model heard {:?}", done.heard);
+        assert_eq!(done.heard, done.touched);
+    }
+
+    /// The count of the report holds the mail of both passes, so the
+    /// line that a sync prints never loses the early work. (§6.2)
+    #[test]
+    fn a_round_counts_the_mail_that_the_model_read() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let done = round_on(&store, &[("INBOX", 4)], How::default());
+
+        assert_eq!(done.early.messages, 4);
+    }
+
+    /// The pass at the end of the sync needs the model again. A round
+    /// that keeps it leaves the PLAID index unbuilt. (§6.2)
+    #[test]
+    fn a_round_gives_the_model_back() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let done = round_on(&store, &[("INBOX", 1)], How::default());
+
+        assert!(done.gave_back, "the round kept the model");
+    }
+
+    /// A dry run writes no mail, so there is none to embed. (§2.1)
+    #[test]
+    fn a_dry_round_gives_the_model_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+
+        let done = round_on(
+            &store,
+            &[("INBOX", 3)],
+            How {
+                dry: true,
+                ..How::default()
+            },
+        );
+
+        assert!(done.heard.is_empty(), "the model heard {:?}", done.heard);
+        assert!(done.gave_back, "the round kept the model");
+    }
+
+    /// The report holds the mail of both passes. A report that shows
+    /// only the sweep hides what the model read on the way. (§6.2)
+    #[test]
+    fn the_report_adds_what_the_model_read_while_the_sync_ran() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let index = MailIndex::open_in_ram().expect("an index");
+        let mut out = Vec::new();
+        let early = Embedded {
+            messages: 7,
+            passages: 9,
+            dropped: 1,
+        };
+
+        // A test has no model, so the sweep at the end reads nothing.
+        let (_, embedded) = finish(
+            &mut books(&store, &index),
+            &[],
+            How::default(),
+            early,
+            &mut out,
+        )
+        .expect("a store that takes a read");
+
+        assert_eq!(embedded, early);
+    }
+
+    /// §2.1: a dry run asks the server for nothing, so no thread moves
+    /// and the index stays as it was.
+    #[test]
+    fn a_dry_run_writes_no_index_and_embeds_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let index = MailIndex::open_in_ram().expect("an index");
+        let mut out = Vec::new();
+
+        let (wrote, embedded) = finish(
+            &mut books(&store, &index),
+            &[],
+            How {
+                dry: true,
+                ..How::default()
+            },
+            Embedded {
+                messages: 7,
+                passages: 9,
+                dropped: 1,
+            },
+            &mut out,
+        )
+        .expect("a dry run that reads nothing");
+
+        assert_eq!(wrote, Wrote::default());
+        assert_eq!(embedded, Embedded::default());
     }
 
     /// §3: mailbert is a download-only mirror. It writes nothing.
@@ -2273,9 +2603,14 @@ mod tests {
             let pool = a_pool(server.port());
 
             // The first sync may break in the middle of the folder.
-            let _ =
-                one(Arc::clone(&store), Arc::clone(&pool), &account, quickly())
-                    .await;
+            let _ = one(
+                Arc::clone(&store),
+                Arc::clone(&pool),
+                &account,
+                quickly(),
+                None,
+            )
+            .await;
 
             server.change(|plan| plan.cut_after = None);
 

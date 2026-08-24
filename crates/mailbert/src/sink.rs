@@ -28,7 +28,7 @@ use mailbert_imap::{
 };
 use regex::Regex;
 
-use crate::writer::Writer;
+use crate::{semantic::Feed, writer::Writer};
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,6 +78,9 @@ pub struct Sink {
     footers: Vec<Regex>,
     clock: Clock,
     touched: BTreeSet<MessageId>,
+
+    /// What the model hears, as each batch lands. (§6.2)
+    feed: Option<Feed>,
     counts: Counts,
 }
 
@@ -124,8 +127,20 @@ impl Sink {
             footers: Vec::new(),
             clock: crate::clock(),
             touched: BTreeSet::new(),
+            feed: None,
             counts: Counts::default(),
         }
+    }
+
+    /// Name the mail of each batch to the model, as it lands. (§6.2)
+    ///
+    /// The model then reads the mail while the connections read the
+    /// batch that follows. A sink with no feed embeds nothing, and the
+    /// pass at the end of the sync reads every message.
+    pub fn with_feed(mut self, feed: Feed) -> Self {
+        self.feed = Some(feed);
+
+        self
     }
 
     /// Remove these footers from every body that arrives. (§5.2)
@@ -276,8 +291,14 @@ impl Keep for Sink {
         // ahead of the mail that the store holds. (§3.4)
         let done = self.send(folder, writes, batch.gone, state).await?;
 
-        for kept in done.kept {
-            self.touched.insert(kept.id);
+        let added: BTreeSet<MessageId> =
+            done.kept.iter().map(|kept| kept.id).collect();
+        self.touched.extend(added.iter().copied());
+
+        // The model reads this batch while the connections read the
+        // one that follows. (§6.2)
+        if let Some(feed) = &self.feed {
+            feed.tell(added);
         }
 
         // mailbert is a mirror, so a copy that went away leaves the
@@ -684,6 +705,74 @@ mod tests {
         let found = sink.state("INBOX").await.expect("a read");
 
         assert!(found.is_new());
+    }
+
+    #[tokio::test]
+    async fn the_sink_names_the_messages_that_a_batch_added() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let (feed, mut take) = Feed::new(4);
+        let mut sink = Sink::new(store.clone(), "work").with_feed(feed);
+
+        sink.batch("INBOX", batch_of(vec![fetched(7, "one")]), &a_state(8))
+            .await
+            .expect("a batch");
+
+        let found = store.all().expect("a read");
+        let told = take.try_recv().expect("the sink told the model");
+        assert_eq!(told, BTreeSet::from([found[0].id]));
+    }
+
+    /// A batch of a folder that gained nothing must not wake the
+    /// model. (§6.2)
+    #[tokio::test]
+    async fn a_batch_that_adds_no_message_tells_the_model_nothing() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let (feed, mut take) = Feed::new(4);
+        let mut sink = Sink::new(store.clone(), "work").with_feed(feed);
+
+        sink.batch("INBOX", batch_of(Vec::new()), &a_state(1))
+            .await
+            .expect("a batch");
+
+        assert!(take.try_recv().is_err(), "the model heard about nothing");
+    }
+
+    /// The model is slower than the network. A sync that waits for it
+    /// reads no mail while it waits. (§6.2)
+    #[tokio::test]
+    async fn a_feed_that_nobody_reads_never_holds_up_the_sink() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let (feed, take) = Feed::new(1);
+        let mut sink = Sink::new(store.clone(), "work").with_feed(feed);
+
+        for uid in 1..=8u32 {
+            sink.batch(
+                "INBOX",
+                batch_of(vec![fetched(uid, &format!("m{uid}"))]),
+                &a_state(uid + 1),
+            )
+            .await
+            .expect("a batch");
+        }
+
+        drop(take);
+        assert_eq!(store.all().expect("a read").len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_sink_with_no_feed_still_takes_a_batch() {
+        let dir = tempdir().expect("a temporary directory");
+        let store = open_at(&dir);
+        let mut sink = Sink::new(store.clone(), "work");
+
+        sink.batch("INBOX", batch_of(vec![fetched(7, "one")]), &a_state(8))
+            .await
+            .expect("a batch");
+
+        assert_eq!(store.all().expect("a read").len(), 1);
     }
 
     #[tokio::test]

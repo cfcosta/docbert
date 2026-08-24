@@ -1242,6 +1242,27 @@ impl Store {
         Ok(dropped)
     }
 
+    /// The fingerprint that the last embedding pass left on one
+    /// message, if a pass ever read it. (§6.2)
+    ///
+    /// A sync embeds the mail as it arrives, so it asks about the
+    /// messages of one batch and not about the whole mailbox.
+    /// [`Store::embeddings`] reads every fingerprint that there is,
+    /// and a mailbox of 100000 messages holds 100000 of them.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the database refuses the read.
+    pub fn embedding(&self, id: &MessageId) -> Result<Option<[u8; 32]>> {
+        let rtxn = self.meta.read_txn()?;
+        let found = self.db.embeds.get(&rtxn, &id.full_hex())?;
+
+        Ok(match found {
+            Some(bytes) => Some(decode::<Embedded>(bytes)?.digest),
+            None => None,
+        })
+    }
+
     /// Every message that the store holds, and the fingerprint of the
     /// last embedding pass over it.
     ///
@@ -1994,6 +2015,59 @@ mod tests {
         assert_eq!(dropped, vec![10, 11]);
         assert_eq!(store.owner(10).expect("a read"), None);
         assert!(store.embeddings().expect("a read").is_empty());
+    }
+
+    #[test]
+    fn the_fingerprint_of_one_message_reads_back_on_its_own() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        let done = embedded(7, &[10, 11]);
+        store.mark_embedded(&id, &done).unwrap();
+
+        assert_eq!(store.embedding(&id).expect("a read"), Some(done.digest));
+    }
+
+    #[test]
+    fn a_message_that_no_pass_read_has_no_fingerprint_of_its_own() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+
+        assert_eq!(store.embedding(&id).expect("a read"), None);
+    }
+
+    /// A pass over a mailbox of 100000 messages must not read every
+    /// fingerprint to learn about one message. (§6.2)
+    #[test]
+    fn the_fingerprint_of_one_message_agrees_with_the_whole_map() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let first = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        let second = store
+            .put(&message("b", "work", "INBOX"), b"raw")
+            .unwrap()
+            .id;
+        store.mark_embedded(&first, &embedded(7, &[10])).unwrap();
+        store.mark_embedded(&second, &embedded(9, &[11])).unwrap();
+
+        let whole = store.embeddings().expect("a read");
+
+        for id in [first, second] {
+            assert_eq!(
+                store.embedding(&id).expect("a read"),
+                whole.get(&id).copied()
+            );
+        }
     }
 
     #[test]
