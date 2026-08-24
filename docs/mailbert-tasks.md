@@ -310,6 +310,26 @@ The parts that hold a message and find it again.
   - [ ] A sync that stops loses only the batches that are in the air.
 
 - [ ] **T35** One writer takes the mail of every folder. (§4.2)
+
+  The bench of T31 says why. `MAILBERT_BENCH_FOLDERS` sweeps the fan-out
+  across folders, with 500 messages every time.
+
+  | Folders | with `fsync` | without `fsync` |
+  | ------- | ------------ | --------------- |
+  | 1       | 18.9 ms      | 11.3 ms         |
+  | 8       | 168.7 ms     | 4.6 ms          |
+
+  Without `fsync`, eight folders are 2.4 times as fast as one folder,
+  so the work across folders already runs at the same time. With
+  `fsync`, eight folders take nine times the time. Each folder commits
+  its own transactions, and the disk does the flushes one after the
+  other. A sink writes three transactions for each batch: the bytes,
+  the mail, and then the state of the folder.
+
+  One writer must take the batch of every folder, merge what waits, and
+  commit one time. The mail and the state of a folder must go in one
+  transaction, because §3.4 asks that the state never runs ahead of the
+  mail. One transaction gives that, and it costs one flush and not two.
   - [ ] The folders give their batches to one writer.
   - [ ] The writer holds no lock against another folder.
   - [ ] Each folder still reports what it kept.

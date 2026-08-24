@@ -20,7 +20,8 @@
 //! measures the store and the plan alone.
 //!
 //! `MAILBERT_BENCH_MESSAGES` and `MAILBERT_BENCH_SIZE` change how much
-//! mail the fake server holds.
+//! mail the fake server holds. `MAILBERT_BENCH_FOLDERS` changes across
+//! how many folders it spreads.
 
 use std::{
     hint::black_box,
@@ -359,8 +360,15 @@ fn one_folder(c: &mut Criterion) {
 }
 
 /// The mail across eight folders. Eight connections read at one time.
+///
+/// `MAILBERT_BENCH_FOLDERS` changes how many folders hold the mail. A
+/// sweep of it says what the fan-out across folders costs.
 fn many_folders(c: &mut Criterion) {
-    stages(c, "many_folders", FOLDERS);
+    stages(
+        c,
+        "many_folders",
+        from_env("MAILBERT_BENCH_FOLDERS", FOLDERS),
+    );
 }
 
 criterion_group!(benches, one_folder, many_folders);
