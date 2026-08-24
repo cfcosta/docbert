@@ -111,6 +111,104 @@ impl FakeMessage {
     }
 }
 
+/// The words that the body of a message in bulk holds.
+///
+/// Real prose makes the passages of §6.2 look like the passages of a
+/// mailbox, so a benchmark of the model reads a true number.
+const WORDS: [&str; 16] = [
+    "invoice", "deposit", "report", "meeting", "review", "release", "account",
+    "payment", "schedule", "summary", "question", "answer", "project",
+    "October", "attached", "thanks",
+];
+
+/// Mail in bulk, for a benchmark. (§10.5)
+///
+/// The messages take the UIDs from 1 to `count`. Each one holds its own
+/// `Message-ID`, so the store keeps one entry for each of them, and a
+/// benchmark of 10000 messages measures 10000 writes.
+///
+/// `size` is about how many bytes one whole message takes. A message
+/// never comes out shorter than that, and never more than 512 bytes
+/// longer. A `size` below the header gives the header and one line.
+///
+/// # Examples
+///
+/// ```
+/// use mailbert_imap::fake::bulk;
+///
+/// let mail = bulk(3, 1024);
+///
+/// assert_eq!(mail.len(), 3);
+/// assert_eq!(mail[0].uid, 1);
+/// assert!(mail[0].raw.len() >= 1024);
+/// ```
+pub fn bulk(count: u32, size: usize) -> Vec<FakeMessage> {
+    bulk_from(1, count, size)
+}
+
+/// Mail in bulk, from the UID `first`. (§10.5)
+///
+/// The UID also names the message, so two folders that start apart
+/// hold no message together. A benchmark that spreads mail across
+/// folders needs that, because the store keeps one entry for one set
+/// of bytes.
+///
+/// # Examples
+///
+/// ```
+/// use mailbert_imap::fake::bulk_from;
+///
+/// let mail = bulk_from(500, 2, 128);
+///
+/// assert_eq!(mail[0].uid, 500);
+/// assert_eq!(mail[1].uid, 501);
+/// ```
+pub fn bulk_from(first: u32, count: u32, size: usize) -> Vec<FakeMessage> {
+    (first..first + count)
+        .map(|uid| FakeMessage::new(uid, &one_mail(uid, size)))
+        .collect()
+}
+
+/// The next number of the sequence that gives the words of a body.
+///
+/// Two messages that start from a different number keep a different
+/// body, because this mixes every bit of the number that it takes.
+fn mix(seed: u64) -> u64 {
+    let mut next = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    next ^= next >> 33;
+    next = next.wrapping_mul(0xff51afd7ed558ccd);
+    next ^ (next >> 29)
+}
+
+/// One message of [`bulk`], about `size` bytes long.
+fn one_mail(uid: u32, size: usize) -> String {
+    let mut mail = format!(
+        "From: Alice Smith <alice{uid}@example.test>\r\n\
+         To: bob@example.test\r\n\
+         Subject: The report of {uid}\r\n\
+         Date: Fri, 14 Aug 2026 09:30:00 +0000\r\n\
+         Message-ID: <{uid}@bulk.example.test>\r\n\
+         \r\n\
+         Here is the report of {uid}.\r\n"
+    );
+
+    let mut seed = uid as u64;
+    let mut written = 0usize;
+    while mail.len() < size {
+        seed = mix(seed);
+        mail.push_str(WORDS[(seed % WORDS.len() as u64) as usize]);
+        written += 1;
+
+        match written % 12 {
+            0 => mail.push_str("\r\n"),
+            _ => mail.push(' '),
+        }
+    }
+    mail.push_str("\r\n");
+
+    mail
+}
+
 /// One folder on the fake server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeFolder {
@@ -131,6 +229,29 @@ impl FakeFolder {
             messages: Vec::new(),
             gone: Vec::new(),
             attributes: Vec::new(),
+        }
+    }
+
+    /// A folder that holds `count` messages of about `size` bytes.
+    ///
+    /// This is what a benchmark opens. See [`bulk`].
+    pub fn filled(name: &str, count: u32, size: usize) -> Self {
+        Self::filled_from(name, 1, count, size)
+    }
+
+    /// A folder of `count` messages, from the UID `first`.
+    ///
+    /// Two folders that start apart hold no message together. See
+    /// [`bulk_from`].
+    pub fn filled_from(
+        name: &str,
+        first: u32,
+        count: u32,
+        size: usize,
+    ) -> Self {
+        Self {
+            messages: bulk_from(first, count, size),
+            ..Self::new(name)
         }
     }
 
@@ -944,7 +1065,13 @@ mod tests {
     //! | `prop_a_star_pattern_names_every_folder` | algebraic | `LIST "" "*"` is how a sync finds the folders. A pattern that drops one folder hides all of its mail. |
     //! | `prop_a_percent_never_crosses_the_separator` | model-based | RFC 3501 §6.3.8 gives `%` one level. A `%` that goes deeper lists a folder twice. |
 
+    use std::collections::BTreeSet;
+
     use hegel::{TestCase, generators as gs};
+    use mailbert_core::{
+        message_id::MessageId,
+        threading::{ThreadInput, thread},
+    };
     use tokio::io::AsyncWriteExt;
 
     use super::*;
@@ -1461,6 +1588,175 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Mail in bulk, for a benchmark. (§10.5)
+    // -----------------------------------------------------------------
+
+    /// A benchmark of 10000 messages must not write 10000 literals.
+    #[test]
+    fn bulk_gives_as_many_messages_as_it_is_asked_for() {
+        assert_eq!(bulk(2500, 1024).len(), 2500);
+    }
+
+    /// A plan reads UIDs from 1, so the first message must hold UID 1.
+    #[test]
+    fn bulk_numbers_the_uids_from_one() {
+        let messages = bulk(4, 64);
+        let uids: Vec<u32> = messages.iter().map(|one| one.uid).collect();
+
+        assert_eq!(uids, vec![1, 2, 3, 4]);
+    }
+
+    /// The store keys a message by its bytes. Messages that share their
+    /// bytes become one entry, and a benchmark of 10000 would measure 1.
+    #[test]
+    fn every_message_of_bulk_has_its_own_identity() {
+        let messages = bulk(500, 512);
+        let seen: BTreeSet<Vec<u8>> =
+            messages.iter().map(|one| one.raw.clone()).collect();
+        let bodies: BTreeSet<String> = messages
+            .iter()
+            .map(|one| {
+                mailbert_core::mime::parse(&one.raw)
+                    .expect("bulk gives a message that parses")
+                    .text
+                    .lines()
+                    .skip(1)
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(seen.len(), 500, "two messages share their bytes");
+        let senders: BTreeSet<String> = messages
+            .iter()
+            .map(|one| {
+                mailbert_core::mime::parse(&one.raw)
+                    .expect("bulk gives a message that parses")
+                    .from
+                    .first()
+                    .expect("bulk gives a message that has a sender")
+                    .address
+                    .clone()
+            })
+            .collect();
+
+        assert!(
+            bodies.len() > 400,
+            "the prose of the mail says the same thing"
+        );
+        assert_eq!(senders.len(), 500, "one person wrote the whole mailbox");
+    }
+
+    /// The size of a message decides how much the socket carries. A
+    /// benchmark that asks for 4 KiB must not get 40 bytes.
+    /// A thread comes from the `Message-ID` of a message. If every
+    /// message of a benchmark holds the same one, the whole mailbox
+    /// becomes one thread, and the index pass measures the wrong shape.
+    #[test]
+    fn every_message_of_bulk_has_its_own_message_id() {
+        let ids: BTreeSet<String> = bulk(500, 512)
+            .iter()
+            .map(|one| {
+                mailbert_core::mime::parse(&one.raw)
+                    .expect("bulk gives a message that parses")
+                    .message_id
+                    .expect("bulk gives a message that has an identity")
+            })
+            .collect();
+
+        assert_eq!(ids.len(), 500);
+    }
+
+    #[test]
+    fn bulk_from_numbers_the_uids_from_where_it_was_told() {
+        let uids: Vec<u32> =
+            bulk_from(500, 3, 128).iter().map(|one| one.uid).collect();
+
+        assert_eq!(uids, vec![500, 501, 502]);
+    }
+
+    /// A benchmark that spreads mail across folders needs each folder
+    /// to hold its own mail. The store keeps one entry for one set of
+    /// bytes, so two folders of one mail would measure half the work.
+    #[test]
+    fn two_folders_that_start_apart_share_no_message() {
+        let mine = FakeFolder::filled_from("A", 1, 10, 256);
+        let yours = FakeFolder::filled_from("B", 11, 10, 256);
+
+        let seen: BTreeSet<Vec<u8>> =
+            mine.messages.iter().map(|one| one.raw.clone()).collect();
+
+        assert!(
+            yours.messages.iter().all(|one| !seen.contains(&one.raw)),
+            "the two folders hold the same mail"
+        );
+    }
+
+    /// The threading of §4.1 merges two messages that share a subject,
+    /// a participant, and a day. Mail in bulk shares its reader and its
+    /// date. A shared subject would make the whole mailbox one thread,
+    /// and the index pass of a benchmark would read the wrong number.
+    #[test]
+    fn the_mail_of_bulk_does_not_fall_into_one_thread() {
+        let inputs: Vec<ThreadInput> = bulk(200, 512)
+            .iter()
+            .map(|one| {
+                let mail = mailbert_core::mime::parse(&one.raw)
+                    .expect("bulk gives a message that parses");
+                let header = mail
+                    .message_id
+                    .clone()
+                    .expect("bulk gives a message that has an identity");
+                let id = MessageId::from_message_id(&header)
+                    .expect("the header holds a whole identity");
+                let who = mail
+                    .from
+                    .iter()
+                    .chain(mail.to.iter())
+                    .map(|one| one.address.clone())
+                    .collect();
+
+                ThreadInput::new(id, &mail.subject, mail.date.unwrap_or(0))
+                    .with_message_id(header)
+                    .with_participants(who)
+            })
+            .collect();
+
+        assert_eq!(thread(&inputs).len(), 200, "the mail became few threads");
+    }
+
+    #[test]
+    fn a_message_of_bulk_is_about_as_long_as_it_asked_for() {
+        let one = &bulk(1, 4096)[0];
+
+        assert!(
+            (4096..4096 + 512).contains(&one.raw.len()),
+            "a 4096 byte message came out {} bytes long",
+            one.raw.len()
+        );
+    }
+
+    /// A body shorter than the header is still a message that parses.
+    #[test]
+    fn bulk_gives_a_message_that_mailbert_can_read() {
+        let one = &bulk(1, 0)[0];
+
+        mailbert_core::mime::parse(&one.raw).expect("a message");
+    }
+
+    /// A folder that holds mail in bulk is what a benchmark opens.
+    #[test]
+    fn a_filled_folder_holds_the_mail_that_it_was_given() {
+        let folder = FakeFolder::filled("INBOX", 12, 2048);
+
+        assert_eq!(folder.messages.len(), 12);
+        assert_eq!(folder.uid_next(), 13);
+        assert!(
+            folder.messages.iter().all(|one| one.raw.len() >= 2048),
+            "a folder gave shorter mail than it was asked for"
+        );
+    }
+
+    // -----------------------------------------------------------------
     // Properties.
     // -----------------------------------------------------------------
 
@@ -1478,5 +1774,23 @@ mod tests {
             tc.draw(gs::text().alphabet("ab/.").min_size(0).max_size(10));
 
         assert_eq!(matches("%", &name, '/'), !name.contains('/'));
+    }
+
+    /// A benchmark measures one message for each message that it asked
+    /// for. Two messages that share their bytes become one entry in the
+    /// store, so the count that the bench reports would be a lie.
+    #[hegel::test(test_cases = 60)]
+    fn prop_bulk_gives_one_identity_for_each_message(tc: TestCase) {
+        let count: u32 =
+            tc.draw(gs::integers::<u32>().min_value(1).max_value(60));
+        let size: usize =
+            tc.draw(gs::integers::<usize>().min_value(0).max_value(2048));
+
+        let messages = bulk(count, size);
+        let seen: BTreeSet<Vec<u8>> =
+            messages.iter().map(|one| one.raw.clone()).collect();
+
+        assert_eq!(messages.len(), count as usize);
+        assert_eq!(seen.len(), count as usize);
     }
 }

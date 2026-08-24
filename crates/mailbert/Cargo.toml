@@ -48,5 +48,12 @@ metal = ["candle-core/metal", "docbert-core/metal"]
 cuda = ["candle-core/cuda", "docbert-core/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 hegeltest = "0.28"
 tempfile = "3"
+
+# The pipeline of §10.5. The bench measures the download, the index
+# pass, and the plan of the model, against the fake server.
+[[bench]]
+name = "sync_pipeline"
+harness = false

@@ -3258,6 +3258,7 @@ dependencies = [
  "candle-core",
  "clap",
  "clap_complete",
+ "criterion",
  "docbert-core",
  "docbert-plaid",
  "hegeltest",

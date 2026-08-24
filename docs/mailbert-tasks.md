@@ -216,3 +216,66 @@ The parts that hold a message and find it again.
   - [x] A name in `exclude` keeps the meaning that it has now.
   - [x] `look` carries the attributes of each folder to the choice.
   - [x] The gmail account of the user leaves `\Trash` out.
+
+## Phase 8: the pipeline does more at one time
+
+- [x] **T31** A benchmark of the pipeline, against the fake server. (§10.5)
+  - [x] The fixture builds a server with many small messages.
+  - [x] The bench measures the download, the index pass, and the plan.
+  - [x] The embedding seam takes a stub, so no bench needs a model.
+  - [x] Each run starts from an empty store, so a number means one pass.
+  - [x] Each folder holds its own mail, so no two folders make one entry.
+  - [x] Two shapes run: one folder, and eight folders.
+
+  The first numbers, from 500 messages of 4096 bytes on 8 connections.
+  Run the bench again with `cargo bench -p mailbert --bench sync_pipeline`.
+
+  | Stage                   | one folder | eight folders |
+  | ----------------------- | ---------- | ------------- |
+  | download                | 6.26 s     | 4.61 s        |
+  | index pass              | 26.5 ms    | 27.0 ms       |
+  | plan                    | 7.1 ms     | 6.8 ms        |
+  | embed walk, with a stub | 2.09 s     | 2.33 s        |
+  | the whole pipeline      | 8.31 s     | 6.75 s        |
+
+  The numbers say where the time goes. The download takes 75 percent of
+  the whole on one folder. Eight connections make the download only 1.36
+  times as fast, and not 8 times, because each of them waits for the one
+  writer of the store. The embed walk holds no model, so its 2.1 seconds
+  are the store alone, at 4.2 ms for each message. The index pass and the
+  plan together take less than one percent.
+
+- [ ] **T32** One write for each batch, and not one for each message. (§4.2)
+  - [ ] `Store::put_all` writes a batch in one transaction of each database.
+  - [ ] A batch that holds one message two times keeps one entry.
+  - [ ] A batch write leaves the store as many single writes do.
+  - [ ] The sink gives the whole batch to the store.
+
+- [ ] **T33** The server says which UIDs it holds. (§3.2)
+  - [ ] `Connection::uids` asks the server for the UIDs of a folder.
+  - [ ] A plan holds no batch that the server has no mail for.
+  - [ ] A server with no answer falls back to the ranges of today.
+
+- [ ] **T34** The socket reads while the store writes. (§3.4)
+  - [ ] A fetch of the next batch starts before the sink takes the last.
+  - [ ] The mark of a folder still follows the write of its batch.
+  - [ ] A sync that stops loses only the batches that are in the air.
+
+- [ ] **T35** One writer takes the mail of every folder. (§4.2)
+  - [ ] The folders give their batches to one writer.
+  - [ ] The writer holds no lock against another folder.
+  - [ ] Each folder still reports what it kept.
+
+- [ ] **T36** Every connection reads the same folder. (§3.1)
+  - [ ] A plan gives its batches to a queue that each connection drains.
+  - [ ] A folder of 60000 messages uses every connection of the pool.
+  - [ ] The state of the folder moves only when each batch arrived.
+
+- [ ] **T37** The model reads the mail as it arrives. (§6.2)
+  - [ ] The writer names the messages that a batch added.
+  - [ ] The model embeds those messages while the sync goes on.
+  - [ ] A sync that embeds nothing still ends well.
+
+- [ ] **T38** The accounts sync at the same time. (§2.1)
+  - [ ] Each account takes its own pool, and they run together.
+  - [ ] One account that fails does not stop another.
