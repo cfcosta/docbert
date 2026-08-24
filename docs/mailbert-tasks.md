@@ -574,15 +574,83 @@ The parts that hold a message and find it again.
   spare a connection, and it takes the first of the two. A folder that
   reached the count that it wants only waits for its readers.
 
-- [ ] **T40** The model keeps up with the batches that land. (§6.2)
-  - [ ] The bench says where the time of a round goes.
-  - [ ] A round costs no more than the model that it holds.
+- [x] **T40** The model keeps up with the batches that land. (§6.2)
+  - [x] The bench says where the time of a round goes.
+  - [x] A round costs no more than the model that it holds.
 
-  T37 hides less than the download that it runs behind. The table of
-  T37 shows 1.50x where the shape of the work allows 1.68x, and the
-  first row shows no gain at all. A round of the model costs more than
-  the model alone, and the bench must say what that cost is.
+  The `round` group of the bench cuts one round into its two parts. The
+  plan reads each message, chunks it, and takes a fingerprint of it.
+  The write tells the store which messages the model saw. No part holds
+  a model, and each part gets a number for five sizes of round.
 
-  The small folders of a mailbox end first. Their connections go back
-  to the pool, and the big folder does not ask again. That folder reads
-  the rest of its mail on one connection.
+  The numbers of T37 measured more than they say. Criterion drops the
+  input of a routine inside the measurement, and that input held the
+  store, the server, and the directory of the run. That teardown costs
+  about 3 ms. Each routine now gives its input back, so criterion drops
+  it after the clock stops.
+
+  One round, with 4000 messages of 2 KiB in the store:
+
+  | names | plan    | write   | both     |
+  | ----- | ------- | ------- | -------- |
+  | 1     | 20.6 µs | 3.98 ms | 3.88 ms  |
+  | 8     | 67.7 µs | 3.92 ms | 4.01 ms  |
+  | 64    | 394 µs  | 4.06 ms | 4.35 ms  |
+  | 256   | 2.19 ms | 4.93 ms | 6.35 ms  |
+  | 512   | 3.57 ms | 9.34 ms | 12.18 ms |
+
+  The plan grows with the round, at about 7 µs for each message. The
+  write does not grow with it. `semantic::run` writes one time for each
+  256 messages, and each write is a commit of the store. A commit costs
+  about 3.9 ms, because the store writes it to the disk before it comes
+  back. A round of one name pays the same 3.9 ms as a round of 256.
+
+  A small round is therefore the problem, and a big round is cheap.
+  `semantic::along` takes every name that waits, and not only the first
+  one, so the rounds stay big. A sync of 4000 messages makes these
+  rounds:
+
+  | model for each message | the rounds that it makes |
+  | ---------------------- | ------------------------ |
+  | 15 µs                  | 500 x 8                  |
+  | 50 µs                  | 500, 500, 1000, 2000     |
+  | 150 µs                 | 500, 2000, 1500          |
+
+  The smallest round holds 500 names. A slower model makes fewer rounds
+  and bigger ones, because more names arrive while it runs. The
+  pipeline needs nothing more to keep its rounds big.
+
+  A round of 512 names costs 12.18 ms beside the model, which is 24 µs
+  for each message. The round costs less than the model when the model
+  costs more than that. A real model reads a message in some
+  milliseconds, and that is a hundred times more than the round. The
+  first row of the table below is below the crossing point, and the
+  other three rows are above it.
+
+  The stub of the model in T37 only slept. It hid the cost of a round,
+  and that cost is what `apart` and `along` differ by. The stub now
+  does the work of a round, and it sleeps only in the place of the
+  model. The gains of T37 were therefore too high:
+
+  | folders | download | model  | apart  | along  | gain  |
+  | ------- | -------- | ------ | ------ | ------ | ----- |
+  | 1       | 152 ms   | 60 ms  | 389 ms | 331 ms | 1.17x |
+  | 1       | 188 ms   | 200 ms | 534 ms | 420 ms | 1.27x |
+  | 1       | 103 ms   | 600 ms | 898 ms | 797 ms | 1.13x |
+  | 8       | 79 ms    | 200 ms | 431 ms | 414 ms | 1.04x |
+
+  Each row comes from one run of the bench. A fake server on a busy
+  desktop answers a download in 77 ms one time and in 205 ms the next.
+  A reader must therefore compare `apart` against `along` of the same
+  row.
+
+  The pipeline hides at most the download, and the download is now the
+  small part of the work. The second row saves 114 ms of a download of
+  188 ms. The last round of a sync holds the most names, and no
+  download runs behind it, so the pipeline hides none of that round.
+
+  A difference of some tens of milliseconds is left. The store takes
+  one writer for each environment. The commit of a round waits for the
+  writer of the sync. The sync then waits for the commit. A later task
+  must measure that wait, and give the model an environment of its own
+  if the wait is big.

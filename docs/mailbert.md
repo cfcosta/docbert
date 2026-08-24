@@ -334,6 +334,8 @@ mailbert embeds each message, and this includes bulk mail. At 10,000 to 100,000 
 
 The chunking uses `docbert_core::chunking`. Each chunk gets a header preamble (`From: X | Subject: Y | Date: Z`) before the text of the chunk. This lets a query such as "the invoice from my landlord" match on the sender, and not only on the body.
 
+A sync gives the model the names of each batch that lands, and the model reads them in rounds. One round holds every name that waits. A round writes to the store one time for each 256 messages, and each write is a commit. A commit costs some milliseconds, so a round of one name costs almost what a round of 256 costs. The rounds must therefore stay big, and a round of a real sync holds 500 names or more.
+
 ## 7. The query language
 
 ### 7.1 Grammar

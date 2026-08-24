@@ -85,6 +85,15 @@ const MODEL_US: u64 = 200;
 /// How many connections one account opens.
 const CONNECTIONS: usize = 8;
 
+/// How many messages one round of the model holds.
+///
+/// A sync gives the model the names of the batches that land. The
+/// model is slower than the network, so the names pile up and a round
+/// holds many of them. A round of one message pays the same
+/// book-keeping as a round of many, and this sweep says what that
+/// book-keeping costs. (§6.2)
+const ROUNDS: [usize; 5] = [1, 8, 64, 256, 512];
+
 /// The model that a plan names. No bench loads it, because the plan
 /// only reads the name to make its fingerprint. (§6.2)
 const MODEL: &str = "lightonai/GTE-ModernColBERT-v1";
@@ -101,6 +110,12 @@ fn from_env<T: std::str::FromStr>(name: &str, fallback: T) -> T {
 ///
 /// The directory comes last, because it must drop after the store and
 /// after the databases that hold its files open.
+///
+/// Criterion drops what the routine takes inside the measurement, and
+/// what the routine gives back outside of it. Each routine here gives
+/// the bed back, because the drop of a bed closes an LMDB environment
+/// and removes a directory. That teardown costs some milliseconds, and
+/// a round of one message costs less than that.
 struct Bed {
     /// How many messages the server holds. Every stage must meet it.
     count: u32,
@@ -282,12 +297,24 @@ fn embed(bed: &Bed, plan: &semantic::Plan) -> usize {
     passages
 }
 
-/// A model that costs time and writes nothing. (§6.2)
+/// A round of the model, with a sleep in the place of the model.
 ///
-/// The sleep stands in for a real model, so the bench shows what the
-/// pipeline hides and never what a GPU does.
+/// The stub does the work of a round that is not the model: it reads
+/// each message, chunks it, takes the fingerprint of it, and writes to
+/// the store what it learned. Only the model is a sleep. A stub that
+/// slept alone would hide the cost of a round, and that cost is what
+/// `apart` and `along` differ by. (§6.2)
+///
+/// The number holds no write of the embedding database, because the
+/// stub makes no vector to write.
 struct Slow {
-    /// How long one message costs.
+    /// The mail that the round reads.
+    store: Arc<Store>,
+
+    /// Where a real model would write.
+    db: &'static EmbeddingDb,
+
+    /// How long one message costs the model.
     each: Duration,
 
     /// How many messages the stub read.
@@ -295,8 +322,10 @@ struct Slow {
 }
 
 impl Slow {
-    fn new() -> Self {
+    fn new(bed: &Bed) -> Self {
         Self {
+            store: Arc::clone(&bed.store),
+            db: bed.db,
             each: Duration::from_micros(from_env(
                 "MAILBERT_BENCH_MODEL_US",
                 MODEL_US,
@@ -307,15 +336,32 @@ impl Slow {
 }
 
 impl Embeds for Slow {
+    // The trait gives the error of the crate back, and the closure
+    // below must give the same one. The lint asks for a box that the
+    // trait cannot take.
+    #[allow(clippy::result_large_err)]
     fn embed(&mut self, names: &BTreeSet<MessageId>) -> Result<Embedded> {
-        std::thread::sleep(self.each * u32::try_from(names.len()).unwrap_or(1));
-        self.read += names.len();
+        let plan = semantic::plan_for(&self.store, MODEL, names)?;
 
-        Ok(Embedded {
-            messages: names.len(),
-            passages: names.len(),
-            dropped: 0,
-        })
+        // `run` reports after each batch that it wrote. The sleep of
+        // that batch stands in for the model of it, so the stub costs
+        // the same for one round of many batches as for many rounds.
+        let each = self.each;
+        let mut before = 0;
+        let report = |done: usize| {
+            std::thread::sleep(
+                each * u32::try_from(done - before).unwrap_or(1),
+            );
+            before = done;
+        };
+
+        let mut give = |batch: Vec<(u64, String)>| Ok(batch.len());
+        let done =
+            semantic::run(&self.store, self.db, &plan, report, &mut give)?;
+
+        self.read += done.messages;
+
+        Ok(done)
     }
 }
 
@@ -334,7 +380,7 @@ async fn apart(bed: &Bed) -> usize {
     .await
     .expect("the sync reads the fake server");
 
-    let mut model = Slow::new();
+    let mut model = Slow::new(bed);
     model.embed(&report.touched).expect("the stub never fails");
 
     model.read
@@ -344,6 +390,7 @@ async fn apart(bed: &Bed) -> usize {
 /// lands. (§6.2)
 async fn along(bed: &Bed) -> usize {
     let (feed, take) = Feed::new(semantic::AHEAD);
+    let model = Slow::new(bed);
 
     let syncing = async move {
         let report = sync::one(
@@ -363,7 +410,7 @@ async fn along(bed: &Bed) -> usize {
     };
 
     let (_, (model, _)) =
-        tokio::join!(syncing, semantic::along(take, Some(Slow::new())));
+        tokio::join!(syncing, semantic::along(take, Some(model)));
 
     model.expect("the stub gives itself back").read
 }
@@ -385,7 +432,7 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
     group.bench_with_input(name.clone(), &count, |b, _| {
         b.iter_batched(
             || rt.block_on(fresh(folders, count, size)),
-            |bed| rt.block_on(download(black_box(&bed))),
+            |bed| (rt.block_on(download(black_box(&bed))), bed),
             BatchSize::PerIteration,
         );
     });
@@ -403,7 +450,7 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
                 rt.block_on(download(&bed));
                 bed
             },
-            |bed| index_pass(black_box(&bed)),
+            |bed| (index_pass(black_box(&bed)), bed),
             BatchSize::PerIteration,
         );
     });
@@ -419,7 +466,7 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
                 rt.block_on(download(&bed));
                 bed
             },
-            |bed| plan(black_box(&bed)),
+            |bed| (plan(black_box(&bed)), bed),
             BatchSize::PerIteration,
         );
     });
@@ -436,7 +483,7 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
                 let work = plan(&bed);
                 (bed, work)
             },
-            |(bed, work)| embed(black_box(&bed), black_box(&work)),
+            |(bed, work)| (embed(black_box(&bed), black_box(&work)), bed),
             BatchSize::PerIteration,
         );
     });
@@ -454,7 +501,9 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
                 rt.block_on(download(&bed));
                 index_pass(&bed);
                 let work = plan(&bed);
-                embed(&bed, &work)
+                let walked = embed(&bed, &work);
+
+                (walked, bed)
             },
             BatchSize::PerIteration,
         );
@@ -471,13 +520,153 @@ fn stages(c: &mut Criterion, shape: &str, folders: u32) {
         group.bench_with_input(name.clone(), &count, |b, _| {
             b.iter_batched(
                 || rt.block_on(fresh(folders, count, size)),
-                |bed| match pipelined {
-                    true => rt.block_on(along(black_box(&bed))),
-                    false => rt.block_on(apart(black_box(&bed))),
+                |bed| {
+                    let read = match pipelined {
+                        true => rt.block_on(along(black_box(&bed))),
+                        false => rt.block_on(apart(black_box(&bed))),
+                    };
+
+                    (read, bed)
                 },
                 BatchSize::PerIteration,
             );
         });
+        group.finish();
+    }
+}
+
+/// The names of the first `hold` messages that the store holds.
+fn names(bed: &Bed, hold: usize) -> BTreeSet<MessageId> {
+    bed.store
+        .all()
+        .expect("the store reads")
+        .iter()
+        .take(hold)
+        .map(|one| one.id)
+        .collect()
+}
+
+/// Which part of a round the bench measures.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    /// Read each message, chunk it, and take the fingerprint of it.
+    Plan,
+
+    /// Write to the store what the round learned.
+    Write,
+
+    /// The two together. This is what a round costs beside the model.
+    Both,
+}
+
+impl Part {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Write => "write",
+            Self::Both => "both",
+        }
+    }
+}
+
+/// One round over `names`, or one part of one. (§6.2)
+///
+/// No part holds a model. The number is what the round costs beside
+/// the model, and a reader compares it against what the model of the
+/// same round would cost.
+// The stub gives no error back, so the size of the error of the crate
+// never reaches a caller. The lint cannot see that.
+#[allow(clippy::result_large_err)]
+fn round(
+    bed: &Bed,
+    names: &BTreeSet<MessageId>,
+    ready: Option<&semantic::Plan>,
+    part: Part,
+) -> usize {
+    let made;
+    let plan = match ready {
+        Some(plan) => plan,
+        None => {
+            made = semantic::plan_for(&bed.store, MODEL, names)
+                .expect("the store reads");
+
+            &made
+        }
+    };
+
+    assert_eq!(plan.work.len(), names.len(), "the round holds fewer names");
+
+    if part == Part::Plan {
+        return plan.work.len();
+    }
+
+    let mut give = |batch: Vec<(u64, String)>| Ok(batch.len());
+    let done = semantic::run(&bed.store, bed.db, plan, |_| {}, &mut give)
+        .expect("the plan walks");
+
+    done.messages
+}
+
+/// Where the time of one round goes. (§6.2)
+///
+/// A round reads the store, chunks each message, takes a fingerprint,
+/// and writes what it learned. The model comes after that. Each part
+/// gets a number for each size of round, so a reader sees which part
+/// grows with the round and which part does not.
+fn rounds(c: &mut Criterion) {
+    let count: u32 = from_env("MAILBERT_BENCH_MESSAGES", MESSAGES);
+    let size: usize = from_env("MAILBERT_BENCH_SIZE", SIZE);
+    let rt = Runtime::new().expect("a runtime");
+
+    for part in [Part::Plan, Part::Write, Part::Both] {
+        let mut group = c.benchmark_group(format!("round/{}", part.name()));
+        group.sample_size(10);
+
+        for hold in ROUNDS {
+            let hold = hold.min(count as usize);
+
+            group.throughput(Throughput::Elements(hold as u64));
+            group.bench_with_input(
+                BenchmarkId::from_parameter(hold),
+                &hold,
+                |b, &hold| {
+                    b.iter_batched(
+                        || {
+                            let bed = rt.block_on(fresh(1, count, size));
+                            rt.block_on(download(&bed));
+                            let names = names(&bed, hold);
+
+                            // The write of a round needs a plan, and
+                            // only the walk of it belongs to the
+                            // number. The plan costs nothing to make
+                            // two times, because it writes nothing.
+                            let ready = match part {
+                                Part::Write => Some(
+                                    semantic::plan_for(
+                                        &bed.store, MODEL, &names,
+                                    )
+                                    .expect("the store reads"),
+                                ),
+                                _ => None,
+                            };
+
+                            (bed, names, ready)
+                        },
+                        |(bed, names, ready)| {
+                            let done = round(
+                                black_box(&bed),
+                                black_box(&names),
+                                ready.as_ref(),
+                                part,
+                            );
+
+                            (done, bed)
+                        },
+                        BatchSize::PerIteration,
+                    );
+                },
+            );
+        }
         group.finish();
     }
 }
@@ -499,5 +688,5 @@ fn many_folders(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, one_folder, many_folders);
+criterion_group!(benches, one_folder, many_folders, rounds);
 criterion_main!(benches);
