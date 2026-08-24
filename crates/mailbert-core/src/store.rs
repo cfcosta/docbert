@@ -171,6 +171,38 @@ pub struct Embedded {
     pub keys: Vec<u64>,
 }
 
+/// The change that one folder of one account brings. (§4.2)
+///
+/// [`Store::apply`] takes a group of these, and writes the whole group
+/// in one transaction of each database.
+#[derive(Debug, Clone, Default)]
+pub struct Change {
+    /// Which account the folder belongs to.
+    pub account: String,
+
+    /// Which folder the change belongs to.
+    pub folder: String,
+
+    /// The mail that arrived, with the bytes of each message.
+    pub writes: Vec<(Message, Vec<u8>)>,
+
+    /// The UIDs that the folder no longer holds.
+    pub gone: Vec<u32>,
+
+    /// The state of the folder after the change. `None` marks nothing.
+    pub state: Option<SyncState>,
+}
+
+/// What one [`Change`] left in the store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The messages that the store now holds, in the order they came.
+    pub kept: Vec<Message>,
+
+    /// The messages that lost a copy, one for each UID that answered.
+    pub vanished: Vec<MessageId>,
+}
+
 /// The character that holds an account name apart from a folder name.
 ///
 /// An IMAP folder name never holds a control character, so this makes
@@ -429,6 +461,150 @@ impl Store {
     /// The function fails if either database refuses the write. A
     /// failure leaves the batch out, because neither transaction
     /// commits.
+    /// Keep one message inside a transaction that is already open.
+    ///
+    /// The read sees what the same transaction already wrote, so a
+    /// message that comes twice absorbs itself.
+    fn keep_one(
+        &self,
+        wtxn: &mut heed::RwTxn<'_>,
+        message: &Message,
+    ) -> Result<Message> {
+        let key = message.id.full_hex();
+        let held: Option<Message> =
+            self.db.messages.get(wtxn, &key)?.map(decode).transpose()?;
+
+        // A folder that gave the message a new UID leaves the old key
+        // behind, so the places go before the merge does.
+        if let Some(held) = &held {
+            for at in &held.locations {
+                let old = place_key(&at.account, &at.folder, at.uid);
+                self.db.places.delete(wtxn, &old)?;
+            }
+        }
+
+        let merged = match held {
+            Some(mut held) => {
+                held.absorb(message.clone());
+                held
+            }
+            None => message.clone(),
+        };
+
+        for at in &merged.locations {
+            let place = place_key(&at.account, &at.folder, at.uid);
+            self.db.places.put(wtxn, &place, &key)?;
+        }
+
+        self.db.messages.put(wtxn, &key, &encode(&merged)?)?;
+
+        Ok(merged)
+    }
+
+    /// Take one copy away inside a transaction that is already open.
+    fn drop_one(
+        &self,
+        wtxn: &mut heed::RwTxn<'_>,
+        account: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<MessageId>> {
+        let place = place_key(account, folder, uid);
+
+        let Some(hex) = self.db.places.get(wtxn, &place)?.map(str::to_string)
+        else {
+            return Ok(None);
+        };
+
+        let Some(mut message) = self
+            .db
+            .messages
+            .get(wtxn, &hex)?
+            .map(decode::<Message>)
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+
+        message.remove_location(account, folder);
+        self.db.places.delete(wtxn, &place)?;
+        self.db.messages.put(wtxn, &hex, &encode(&message)?)?;
+
+        Ok(Some(message.id))
+    }
+
+    /// Write the change of every folder in one transaction. (§4.2)
+    ///
+    /// A sync runs a folder for each connection, and every one of them
+    /// writes. LMDB lets one writer into a database at a time, and a
+    /// commit asks the disk for a flush, so eight folders that commit
+    /// on their own pay for eight flushes. This takes the group that
+    /// waits and pays for one.
+    ///
+    /// The mail and the state of a folder go in one transaction, so a
+    /// stop never leaves a state that runs ahead of the mail. (§3.4)
+    /// The answers come back in the order of `group`.
+    pub fn apply(&self, group: &[Change]) -> Result<Vec<Applied>> {
+        if group.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // The bytes go first, as in `put`. A stop between the two
+        // commits leaves blobs that the next sync writes over, and
+        // never an entry that has no bytes behind it.
+        let mut wtxn = self.blobs.write_txn()?;
+        for change in group {
+            for (message, raw) in &change.writes {
+                let key = message.id.full_hex();
+
+                if !raw.is_empty() && self.db.raw.get(&wtxn, &key)?.is_none() {
+                    self.db.raw.put(&mut wtxn, &key, raw)?;
+                }
+            }
+        }
+        wtxn.commit()?;
+
+        let mut wtxn = self.meta.write_txn()?;
+        let mut done = Vec::with_capacity(group.len());
+
+        for change in group {
+            let mut one = Applied::default();
+
+            for (message, _) in &change.writes {
+                one.kept.push(self.keep_one(&mut wtxn, message)?);
+            }
+
+            // mailbert is a mirror, so a copy that went away leaves the
+            // message behind. A message with no copy answers `is:gone`.
+            for uid in &change.gone {
+                if let Some(id) = self.drop_one(
+                    &mut wtxn,
+                    &change.account,
+                    &change.folder,
+                    *uid,
+                )? {
+                    one.vanished.push(id);
+                }
+            }
+
+            // The state goes last, and in this same transaction, so it
+            // never runs ahead of the mail of the folder. (§3.4)
+            if let Some(state) = &change.state {
+                self.db.state.put(
+                    &mut wtxn,
+                    &state_key(&change.account, &change.folder),
+                    &encode(state)?,
+                )?;
+            }
+
+            done.push(one);
+        }
+
+        wtxn.commit()?;
+
+        Ok(done)
+    }
+
     pub fn put_all(
         &self,
         batch: &[(Message, Vec<u8>)],
@@ -454,37 +630,7 @@ impl Store {
         let mut kept = Vec::with_capacity(batch.len());
 
         for (message, _) in batch {
-            let key = message.id.full_hex();
-
-            // The read sees what this transaction already wrote, so a
-            // message that comes twice in one batch absorbs itself.
-            let held: Option<Message> =
-                self.db.messages.get(&wtxn, &key)?.map(decode).transpose()?;
-
-            // A folder that gave the message a new UID leaves the old
-            // key behind, so the places go before the merge does.
-            if let Some(held) = &held {
-                for at in &held.locations {
-                    let old = place_key(&at.account, &at.folder, at.uid);
-                    self.db.places.delete(&mut wtxn, &old)?;
-                }
-            }
-
-            let merged = match held {
-                Some(mut held) => {
-                    held.absorb(message.clone());
-                    held
-                }
-                None => message.clone(),
-            };
-
-            for at in &merged.locations {
-                let place = place_key(&at.account, &at.folder, at.uid);
-                self.db.places.put(&mut wtxn, &place, &key)?;
-            }
-
-            self.db.messages.put(&mut wtxn, &key, &encode(&merged)?)?;
-            kept.push(merged);
+            kept.push(self.keep_one(&mut wtxn, message)?);
         }
 
         wtxn.commit()?;
@@ -896,30 +1042,11 @@ impl Store {
         folder: &str,
         uid: u32,
     ) -> Result<Option<MessageId>> {
-        let place = place_key(account, folder, uid);
-
         let mut wtxn = self.meta.write_txn()?;
-        let Some(hex) = self.db.places.get(&wtxn, &place)?.map(str::to_string)
-        else {
-            return Ok(None);
-        };
-
-        let Some(mut message) = self
-            .db
-            .messages
-            .get(&wtxn, &hex)?
-            .map(decode::<Message>)
-            .transpose()?
-        else {
-            return Ok(None);
-        };
-
-        message.remove_location(account, folder);
-        self.db.places.delete(&mut wtxn, &place)?;
-        self.db.messages.put(&mut wtxn, &hex, &encode(&message)?)?;
+        let gone = self.drop_one(&mut wtxn, account, folder, uid)?;
         wtxn.commit()?;
 
-        Ok(Some(message.id))
+        Ok(gone)
     }
 
     /// Give one copy the flags that the server now reports (§3.3).
@@ -1163,6 +1290,7 @@ mod tests {
     //! | `prop_a_batch_writes_what_single_writes_write` | differential | §4.2. A batch takes one transaction, and single writes take two for each message. The two paths must leave one store. |
     //! | `prop_a_batch_gives_back_what_it_wrote` | round-trip | The sink counts what the store kept. An answer that does not match the store counts the wrong mail. |
     //! | `prop_a_batch_mark_matches_single_marks` | differential | §6.2. The walk of a plan marks a whole group in one transaction. A batch that drops another key leaves a passage that no message owns. |
+    //! | `prop_one_write_leaves_what_a_write_for_each_folder_leaves` | differential | §4.2. One writer takes the mail of every folder, so the sync pays for one flush of the disk and not one for each folder. A group that leaves another store loses mail, or a place, or a state. |
 
     use hegel::{TestCase, generators as gs};
     use tempfile::{TempDir, tempdir};
@@ -2138,6 +2266,183 @@ mod tests {
                 Some(one),
                 "the last answer does not say what the store holds"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // One write for many folders. (§4.2)
+    // -----------------------------------------------------------------
+
+    /// The change that one folder brings: some mail, and a new state.
+    fn a_change(
+        account: &str,
+        folder: &str,
+        mail: &[(&str, u32)],
+        state: Option<SyncState>,
+    ) -> Change {
+        Change {
+            account: account.to_string(),
+            folder: folder.to_string(),
+            writes: mail
+                .iter()
+                .map(|(key, uid)| {
+                    (
+                        message_at(key, account, folder, *uid),
+                        raw_bytes(key, "The deposit is due."),
+                    )
+                })
+                .collect(),
+            gone: Vec::new(),
+            state,
+        }
+    }
+
+    #[test]
+    fn one_write_takes_the_mail_of_every_folder() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+
+        let done = store
+            .apply(&[
+                a_change("work", "INBOX", &[("a", 1), ("b", 2)], None),
+                a_change("work", "Sent", &[("c", 5)], None),
+                a_change("home", "INBOX", &[("d", 9)], None),
+            ])
+            .expect("a write");
+
+        assert_eq!(done.len(), 3, "an answer went missing");
+        assert_eq!(done[0].kept.len(), 2);
+        assert_eq!(done[1].kept.len(), 1);
+        assert_eq!(store.all().expect("a read").len(), 4);
+        assert!(store.placed("work", "INBOX", 1).expect("a read").is_some());
+        assert!(store.placed("work", "Sent", 5).expect("a read").is_some());
+        assert!(store.placed("home", "INBOX", 9).expect("a read").is_some());
+        assert!(store.raw(&done[0].kept[0].id).expect("a read").is_some());
+    }
+
+    #[test]
+    fn one_write_keeps_the_state_of_every_folder_that_gave_one() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+
+        store
+            .apply(&[
+                a_change("work", "INBOX", &[("a", 1)], Some(a_state(2, ""))),
+                a_change("work", "Sent", &[("b", 5)], Some(a_state(6, "3"))),
+                a_change("home", "INBOX", &[("c", 9)], None),
+            ])
+            .expect("a write");
+
+        assert_eq!(
+            store.state("work", "INBOX").expect("a read"),
+            Some(a_state(2, ""))
+        );
+        assert_eq!(
+            store.state("work", "Sent").expect("a read"),
+            Some(a_state(6, "3"))
+        );
+        assert_eq!(
+            store.state("home", "INBOX").expect("a read"),
+            None,
+            "a folder that gave no state got one"
+        );
+    }
+
+    #[test]
+    fn one_write_drops_the_copies_that_went_away() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let held = store
+            .apply(&[a_change("work", "INBOX", &[("a", 1), ("b", 2)], None)])
+            .expect("the first write");
+        let first = held[0].kept[0].id;
+
+        let mut gone = a_change("work", "INBOX", &[], Some(a_state(3, "")));
+        gone.gone = vec![1];
+        let done = store.apply(&[gone]).expect("a write");
+
+        assert_eq!(done[0].vanished, vec![first], "the write lost the copy");
+        assert_eq!(store.placed("work", "INBOX", 1).expect("a read"), None);
+        assert!(store.placed("work", "INBOX", 2).expect("a read").is_some());
+        assert!(
+            store
+                .get(&first)
+                .expect("a read")
+                .expect("the mail")
+                .is_gone(),
+            "a message with no copy does not answer `is:gone`"
+        );
+    }
+
+    #[test]
+    fn one_write_of_nothing_writes_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+
+        assert!(store.apply(&[]).expect("a write").is_empty());
+        assert!(store.all().expect("a read").is_empty());
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_one_write_leaves_what_a_write_for_each_folder_leaves(tc: TestCase) {
+        let mail: Vec<(String, String, u32)> = tc.draw(some_mail());
+
+        let together = tempdir().expect("a directory");
+        let together = open_at(&together);
+        let apart = tempdir().expect("a directory");
+        let apart = open_at(&apart);
+
+        // One change for each folder, in the order that the folders
+        // first appear.
+        let mut folders: Vec<String> = Vec::new();
+        for (_, folder, _) in &mail {
+            if !folders.contains(folder) {
+                folders.push(folder.clone());
+            }
+        }
+
+        let group: Vec<Change> = folders
+            .iter()
+            .enumerate()
+            .map(|(at, folder)| {
+                let held: Vec<(&str, u32)> = mail
+                    .iter()
+                    .filter(|(_, name, _)| name == folder)
+                    .map(|(key, _, uid)| (key.as_str(), *uid))
+                    .collect();
+
+                a_change(
+                    "work",
+                    folder,
+                    &held,
+                    Some(a_state(at as u32 + 1, folder)),
+                )
+            })
+            .collect();
+
+        together.apply(&group).expect("one write");
+        for change in &group {
+            apart.apply(std::slice::from_ref(change)).expect("a write");
+        }
+
+        assert_eq!(
+            together.all().expect("a read"),
+            apart.all().expect("a read"),
+            "one write left another store"
+        );
+        for folder in &folders {
+            assert_eq!(
+                together.state("work", folder).expect("a read"),
+                apart.state("work", folder).expect("a read"),
+                "one write left another state"
+            );
+            for uid in 1..=3 {
+                assert_eq!(
+                    together.placed("work", folder, uid).expect("a read"),
+                    apart.placed("work", folder, uid).expect("a read"),
+                    "one write left another place"
+                );
+            }
         }
     }
 
