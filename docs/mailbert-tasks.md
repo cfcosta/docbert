@@ -558,14 +558,21 @@ The parts that hold a message and find it again.
   | 1        | 133 ms            | 137 ms           |
   | 2        | 312 ms            | 139 ms           |
 
-- [ ] **T39** A folder takes the connections that another folder gave
+- [x] **T39** A folder takes the connections that another folder gave
       back. (§3.1)
-  - [ ] A folder asks for a connection again while it still has batches.
-  - [ ] A folder that ends gives its connections to the folders that run.
+  - [x] A folder asks for a connection again while it still has batches.
+  - [x] A folder that ends gives its connections to the folders that run.
+  - [x] A folder that failed reads no more batches.
 
   T36 fixes the count of connections of a folder when that folder
   starts. Every folder asks at the same time, so each one takes a
   single connection, and none of them can take a second.
+
+  `spread` now keeps a set of readers that grows. Each reader owns its
+  connection and gives it back when the queue is empty. A folder that
+  still owes batches waits for a reader to end, or for the pool to
+  spare a connection, and it takes the first of the two. A folder that
+  reached the count that it wants only waits for its readers.
 
 - [ ] **T40** The model keeps up with the batches that land. (§6.2)
   - [ ] The bench says where the time of a round goes.

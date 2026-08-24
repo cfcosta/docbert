@@ -186,6 +186,7 @@ Speed is the design goal for this component. The first sync of a 60,000-message 
 4. **Batched `UID FETCH`.** Messages come in ranges of a few hundred, and not one at a time.
 5. **`CONDSTORE` and `QRESYNC`** when the server announces them. These make the second sync a small delta and not a full UID scan.
 6. **The accounts sync at the same time.** Each account holds a pool of its own. A sync of four accounts costs what the slowest account costs, and not the sum of the four.
+7. **A folder asks for a connection again.** A folder takes one connection and starts. It asks for more while it still has batches, and it takes the connections that the folders which ended gave back. Gmail keeps every message in `All Mail`, so the folder that reads longest gets the pool to itself at the end.
 
 ### 3.2 Fetch order
 
