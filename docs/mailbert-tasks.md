@@ -269,6 +269,36 @@ The parts that hold a message and find it again.
   folders now take more time than one, because eight tasks wait for the
   one writer. T35 and T37 take these two.
 
+- [x] **T32b** One write for each group of the embed walk. (§6.2)
+  - [x] `Store::mark_all_embedded` marks a batch in one transaction.
+  - [x] A batch that marks one message two times keeps the last record.
+  - [x] A batch mark leaves the store as many single marks do.
+  - [x] The walk of the plan marks the whole group one time.
+  - [x] The bench shares one database of embeddings, and leaks no environment.
+
+  T32 found this one. The bench said the embed walk takes 2.1 s of the
+  2.24 s of the pipeline, and it holds no model, so the time was the
+  store alone.
+
+  | Stage                   | one folder | eight folders |
+  | ----------------------- | ---------- | ------------- |
+  | download                | 37.3 ms    | 166 ms        |
+  | index pass              | 28.4 ms    | 28.7 ms       |
+  | plan                    | 6.0 ms     | 6.9 ms        |
+  | embed walk, with a stub | 15.7 ms    | 17.1 ms       |
+  | the whole pipeline      | 115 ms     | 211 ms        |
+
+  The embed walk is 138 times as fast. The pipeline of 500 messages now
+  takes 115 ms, and not 8.31 s. No one stage holds it now. The download,
+  the index pass, and the embed walk each take about a quarter of it.
+  Eight folders still take two times the time of one folder, because
+  eight tasks wait for the one writer. T35 takes that.
+
+  The bench opened one database of embeddings for each iteration, and
+  docbert keeps every environment that it opens. The run then had no
+  address space left, and it stopped. The stub of the model writes no
+  vector, so one database for the whole run measures the same work.
+
 - [ ] **T33** The server says which UIDs it holds. (§3.2)
   - [ ] `Connection::uids` asks the server for the UIDs of a folder.
   - [ ] A plan holds no batch that the server has no mail for.

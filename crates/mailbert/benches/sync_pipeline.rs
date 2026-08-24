@@ -22,7 +22,10 @@
 //! `MAILBERT_BENCH_MESSAGES` and `MAILBERT_BENCH_SIZE` change how much
 //! mail the fake server holds.
 
-use std::{hint::black_box, sync::Arc};
+use std::{
+    hint::black_box,
+    sync::{Arc, OnceLock},
+};
 
 use criterion::{
     BatchSize,
@@ -81,11 +84,33 @@ struct Bed {
     count: u32,
     store: Arc<Store>,
     index: MailIndex,
-    db: EmbeddingDb,
+    db: &'static EmbeddingDb,
     account: Account,
     pool: Arc<Pool>,
     _server: FakeServer,
     _dir: TempDir,
+}
+
+/// One database of embeddings for the whole run.
+///
+/// The stub of the model writes no vector, so this database stays
+/// empty, and no measurement reads it. One database for each iteration
+/// leaks an LMDB environment, because docbert keeps every environment
+/// that it opens, and a long run then has no address space left.
+fn shared_db() -> &'static EmbeddingDb {
+    static DB: OnceLock<EmbeddingDb> = OnceLock::new();
+
+    DB.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = EmbeddingDb::open(&dir.path().join("embeddings.db"))
+            .expect("a database of embeddings");
+
+        // The environment maps the file, and the run needs it to the
+        // end, so the directory must outlive this call.
+        std::mem::forget(dir);
+
+        db
+    })
 }
 
 /// A store with no message, and a server that holds `count` of them.
@@ -96,8 +121,7 @@ async fn fresh(folders: u32, count: u32, size: usize) -> Bed {
     let dir = tempfile::tempdir().expect("a directory");
     let store = Arc::new(Store::open(dir.path()).expect("a store"));
     let index = MailIndex::open_in_ram().expect("an index");
-    let db = EmbeddingDb::open(&dir.path().join("embeddings.db"))
-        .expect("a database of embeddings");
+    let db = shared_db();
 
     // Each folder takes its own range of UIDs, so no two folders hold
     // one message. The store keeps one entry for one set of bytes, and
@@ -227,7 +251,7 @@ fn embed(bed: &Bed, plan: &semantic::Plan) -> usize {
         Ok(batch.len())
     };
 
-    semantic::run(&bed.store, &bed.db, plan, |_| {}, &mut give)
+    semantic::run(&bed.store, bed.db, plan, |_| {}, &mut give)
         .expect("the plan walks");
 
     assert!(passages > 0, "the walk gave the model no passage");

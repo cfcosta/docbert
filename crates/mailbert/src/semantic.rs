@@ -226,6 +226,28 @@ pub fn record(store: &Store, work: &Work) -> Result<Vec<u64>> {
     Ok(store.mark_embedded(&work.id, &embedded)?)
 }
 
+/// Mark a whole group as read by the model. (§6.2)
+///
+/// This is [`record`] for a group, in one write of the store. The walk
+/// of a plan calls it one time for each group, and not one time for
+/// each message, because the store commits a transaction for each call.
+pub fn record_all(store: &Store, group: &[Work]) -> Result<Vec<u64>> {
+    let batch: Vec<_> = group
+        .iter()
+        .map(|work| {
+            (
+                work.id,
+                mailbert_core::store::Embedded {
+                    digest: work.digest,
+                    keys: work.passages.iter().map(|one| one.key).collect(),
+                },
+            )
+        })
+        .collect();
+
+    Ok(store.mark_all_embedded(&batch)?)
+}
+
 /// Run the plan: embed what changed, and forget what went away.
 ///
 /// The embeddings go into `db`, and the store learns what each message
@@ -268,16 +290,19 @@ pub fn run(
     db.batch_remove(&plan.stale)?;
 
     for group in plan.work.chunks(BATCH) {
+        // The store learns first. A stop after the model wrote and
+        // before the store did would leave a passage that no message
+        // owns, and the next pass would never find it.
+        //
+        // The whole group goes in one write. A write for each message
+        // commits a transaction for each of them, and the walk waits
+        // for all of them. (§6.2)
+        let dropped = record_all(store, group)?;
+        db.batch_remove(&dropped)?;
+        done.dropped += dropped.len();
+
         let mut texts = Vec::new();
-
         for work in group {
-            // The store learns first. A stop after the model wrote and
-            // before the store did would leave a passage that no
-            // message owns, and the next pass would never find it.
-            let dropped = record(store, work)?;
-            db.batch_remove(&dropped)?;
-            done.dropped += dropped.len();
-
             texts.extend(
                 work.passages.iter().map(|one| (one.key, one.text.clone())),
             );
@@ -810,13 +835,62 @@ mod tests {
         let dir = tempdir().expect("a directory");
         let store = open_at(&dir);
         let db = open_db(&dir);
+        // More than one message, and they go in one group. A pass that
+        // marks only the first of them leaves the rest for the next
+        // pass, and the model reads that mail again and again.
         write(&store, "a", "The deposit is due.");
+        write(&store, "b", "The inspection is done.");
+        write(&store, "c", &"invoice ".repeat(600));
 
         let made = plan(&store, MODEL).expect("a plan");
+        assert_eq!(made.work.len(), 3, "the plan lost a message");
         run(&store, &db, &made, |_| {}, &mut fake(&db, &mut Vec::new()))
             .expect("a pass");
 
         assert!(plan(&store, MODEL).expect("a plan").is_empty());
+    }
+
+    /// A message gives fewer passages than the pass before it wrote,
+    /// because the size of a chunk changed. The keys that it no longer
+    /// holds must leave the embedding database with it. (§6.2)
+    #[test]
+    fn a_pass_drops_the_keys_that_a_message_no_longer_holds() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let db = open_db(&dir);
+        write(&store, "a", &"invoice ".repeat(600));
+
+        let made = plan(&store, MODEL).expect("a plan");
+        let keys: Vec<u64> =
+            made.work[0].passages.iter().map(|one| one.key).collect();
+        assert!(keys.len() > 1, "the long message gave one passage");
+        run(&store, &db, &made, |_| {}, &mut fake(&db, &mut Vec::new()))
+            .expect("the first pass");
+
+        // The same message, cut into one passage and no more.
+        let mut shorter = made.work[0].clone();
+        shorter.passages.truncate(1);
+        shorter.digest = [9u8; 32];
+        let next = Plan {
+            work: vec![shorter],
+            stale: Vec::new(),
+        };
+
+        let done = run(&store, &db, &next, |_| {}, &mut fake(&db, &mut vec![]))
+            .expect("the second pass");
+
+        assert_eq!(done.dropped, keys.len() - 1, "the pass kept a dead key");
+        assert!(
+            db.load(keys[0]).expect("a read").is_some(),
+            "the pass dropped the passage that the message still holds"
+        );
+        for key in &keys[1..] {
+            assert!(
+                db.load(*key).expect("a read").is_none(),
+                "a passage that no message owns stayed in the database"
+            );
+            assert_eq!(store.owner(*key).expect("a read"), None);
+        }
     }
 
     #[test]
@@ -844,6 +918,53 @@ mod tests {
                 db.load(*key).expect("a read").is_none(),
                 "the embedding of a message that is gone stayed behind"
             );
+        }
+    }
+
+    /// The walk marks a whole group in one write of the store. The
+    /// store that it leaves must be the store that a mark for each
+    /// message leaves. (§6.2)
+    #[test]
+    fn a_group_marks_what_a_mark_for_each_message_marks() {
+        let one = tempdir().expect("a directory");
+        let batched = open_at(&one);
+        let other = tempdir().expect("a directory");
+        let single = open_at(&other);
+
+        for store in [&batched, &single] {
+            write(store, "a", "The deposit is due.");
+            write(store, "b", &"invoice ".repeat(600));
+        }
+
+        let group = plan(&batched, MODEL).expect("a plan").work;
+        let same = plan(&single, MODEL).expect("a plan").work;
+        assert_eq!(group.len(), 2, "the plan lost a message");
+
+        let from_group = record_all(&batched, &group).expect("a write");
+        let from_each: Vec<u64> = same
+            .iter()
+            .flat_map(|work| record(&single, work).expect("a write"))
+            .collect();
+
+        assert_eq!(from_group, from_each, "the group dropped other keys");
+        for work in &group {
+            assert_eq!(
+                batched.embedded(&work.id).expect("a read"),
+                single.embedded(&work.id).expect("a read"),
+                "the group left another record"
+            );
+            assert!(
+                batched.embedded(&work.id).expect("a read").is_some(),
+                "the group marked no record for a message"
+            );
+
+            for passage in &work.passages {
+                assert_eq!(
+                    batched.owner(passage.key).expect("a read"),
+                    Some(work.id),
+                    "the group left a passage with no owner"
+                );
+            }
         }
     }
 

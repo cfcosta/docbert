@@ -970,6 +970,57 @@ impl Store {
     /// more. The caller must drop those keys from the embedding
     /// database and from the PLAID index, or they answer a search with
     /// text that no message carries.
+    /// Mark a whole batch of messages as read by the model. (§6.2)
+    ///
+    /// This is [`mark_embedded`] for many messages, and it leaves the
+    /// same store. The difference is the cost. `mark_embedded` commits
+    /// one transaction for each message, so a group of the walk of a
+    /// plan waits for one commit for each message that it holds.
+    ///
+    /// The keys come back in the order of `batch`, and hold what every
+    /// message dropped. A batch that names one message two times reads
+    /// its own first write, exactly as two calls do.
+    pub fn mark_all_embedded(
+        &self,
+        batch: &[(MessageId, Embedded)],
+    ) -> Result<Vec<u64>> {
+        if batch.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut wtxn = self.meta.write_txn()?;
+        let mut dropped = Vec::new();
+
+        for (id, embedded) in batch {
+            let key = id.full_hex();
+            // The read sees what this transaction already wrote.
+            let before: Option<Embedded> =
+                self.db.embeds.get(&wtxn, &key)?.map(decode).transpose()?;
+
+            let kept: BTreeSet<u64> = embedded.keys.iter().copied().collect();
+            let gone: Vec<u64> = before
+                .map(|old| old.keys)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|one| !kept.contains(one))
+                .collect();
+
+            for one in &gone {
+                self.db.owners.delete(&mut wtxn, &owner_key(*one))?;
+            }
+            for one in &kept {
+                self.db.owners.put(&mut wtxn, &owner_key(*one), &key)?;
+            }
+
+            self.db.embeds.put(&mut wtxn, &key, &encode(embedded)?)?;
+            dropped.extend(gone);
+        }
+
+        wtxn.commit()?;
+
+        Ok(dropped)
+    }
+
     pub fn mark_embedded(
         &self,
         id: &MessageId,
@@ -1111,6 +1162,7 @@ mod tests {
     //! | `prop_a_reflag_says_what_the_copies_say` | invariant | The flags of a message are the flags of its copies. A set that drifts answers `is:unread` for mail that the user read. |
     //! | `prop_a_batch_writes_what_single_writes_write` | differential | §4.2. A batch takes one transaction, and single writes take two for each message. The two paths must leave one store. |
     //! | `prop_a_batch_gives_back_what_it_wrote` | round-trip | The sink counts what the store kept. An answer that does not match the store counts the wrong mail. |
+    //! | `prop_a_batch_mark_matches_single_marks` | differential | §6.2. The walk of a plan marks a whole group in one transaction. A batch that drops another key leaves a passage that no message owns. |
 
     use hegel::{TestCase, generators as gs};
     use tempfile::{TempDir, tempdir};
@@ -2085,6 +2137,187 @@ mod tests {
                 store.get(&id).expect("a read").as_ref(),
                 Some(one),
                 "the last answer does not say what the store holds"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // A batch mark. (§6.2)
+    // -----------------------------------------------------------------
+
+    /// Mail for a batch mark: which message, and the keys that it holds.
+    ///
+    /// The keys are few, so one message takes a key that another one
+    /// held. The names are few, so a batch marks one message two times.
+    #[hegel::composite]
+    fn some_marks(tc: TestCase) -> Vec<(String, Vec<u64>)> {
+        let count: usize =
+            tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+        let mut marks = Vec::new();
+
+        for _ in 0..count {
+            marks.push((
+                tc.draw(gs::sampled_from(vec![
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string(),
+                ])),
+                tc.draw(a_key_set()),
+            ));
+        }
+
+        marks
+    }
+
+    /// Put the mail that `marks` names, and give back the batch.
+    fn a_mark_batch(
+        store: &Store,
+        marks: &[(String, Vec<u64>)],
+    ) -> Vec<(MessageId, Embedded)> {
+        marks
+            .iter()
+            .enumerate()
+            .map(|(at, (key, keys))| {
+                let id = store
+                    .put(&message(key, "work", "INBOX"), b"raw")
+                    .expect("the store writes")
+                    .id;
+
+                (id, embedded(at as u8, keys))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_marks_every_message_that_it_was_given() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let marks = vec![
+            ("a".to_string(), vec![10, 11]),
+            ("b".to_string(), vec![20]),
+            ("c".to_string(), vec![30, 31, 32]),
+        ];
+        let batch = a_mark_batch(&store, &marks);
+
+        let dropped = store.mark_all_embedded(&batch).expect("a write");
+
+        assert!(dropped.is_empty(), "a fresh batch dropped a key");
+        for (id, record) in &batch {
+            assert_eq!(
+                store.embedded(id).expect("a read").as_ref(),
+                Some(record),
+                "the batch lost the record of a message"
+            );
+        }
+        for key in [10, 11, 20, 30, 31, 32] {
+            assert!(
+                store.owner(key).expect("a read").is_some(),
+                "the batch left the key {key} with no owner"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_gives_back_every_key_that_it_dropped() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let batch = a_mark_batch(
+            &store,
+            &[("a".to_string(), vec![10, 11]), ("b".to_string(), vec![20])],
+        );
+        store.mark_all_embedded(&batch).expect("the first pass");
+
+        // The second pass gives each message one key less.
+        let next = vec![
+            (batch[0].0, embedded(9, &[10])),
+            (batch[1].0, embedded(9, &[])),
+        ];
+        let dropped = store.mark_all_embedded(&next).expect("a write");
+
+        assert_eq!(dropped, vec![11, 20], "the batch lost a dropped key");
+        assert_eq!(store.owner(11).expect("a read"), None);
+        assert_eq!(store.owner(20).expect("a read"), None);
+        assert_eq!(store.owner(10).expect("a read"), Some(batch[0].0));
+    }
+
+    #[test]
+    fn a_batch_that_marks_one_message_two_times_keeps_the_last() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .expect("the store writes")
+            .id;
+
+        let dropped = store
+            .mark_all_embedded(&[
+                (id, embedded(1, &[10, 11])),
+                (id, embedded(2, &[11, 12])),
+            ])
+            .expect("a write");
+
+        // The second mark of the batch reads what the first one wrote,
+        // exactly as a second call of `mark_embedded` does.
+        assert_eq!(dropped, vec![10], "the batch did not read its own write");
+        assert_eq!(
+            store.embedded(&id).expect("a read"),
+            Some(embedded(2, &[11, 12]))
+        );
+        assert_eq!(store.owner(10).expect("a read"), None);
+        assert_eq!(store.owner(11).expect("a read"), Some(id));
+        assert_eq!(store.owner(12).expect("a read"), Some(id));
+    }
+
+    #[test]
+    fn a_batch_of_no_mark_writes_nothing() {
+        let dir = tempdir().expect("a directory");
+        let store = open_at(&dir);
+        let id = store
+            .put(&message("a", "work", "INBOX"), b"raw")
+            .expect("the store writes")
+            .id;
+
+        let dropped = store.mark_all_embedded(&[]).expect("a write");
+
+        assert!(dropped.is_empty());
+        assert_eq!(store.embedded(&id).expect("a read"), None);
+    }
+
+    #[hegel::test(test_cases = 40)]
+    fn prop_a_batch_mark_matches_single_marks(tc: TestCase) {
+        let marks: Vec<(String, Vec<u64>)> = tc.draw(some_marks());
+
+        let batched = tempdir().expect("a directory");
+        let batched = open_at(&batched);
+        let single = tempdir().expect("a directory");
+        let single = open_at(&single);
+
+        let one = a_mark_batch(&batched, &marks);
+        let other = a_mark_batch(&single, &marks);
+
+        let from_batch = batched.mark_all_embedded(&one).expect("a write");
+        let from_loop: Vec<u64> = other
+            .iter()
+            .flat_map(|(id, record)| {
+                single.mark_embedded(id, record).expect("a write")
+            })
+            .collect();
+
+        assert_eq!(from_batch, from_loop, "the batch dropped other keys");
+
+        // Both stores must hold the same records, and the same owners.
+        for ((id, _), (same, _)) in one.iter().zip(&other) {
+            assert_eq!(
+                batched.embedded(id).expect("a read"),
+                single.embedded(same).expect("a read"),
+                "the batch left another record"
+            );
+        }
+        for key in 1..=8u64 {
+            assert_eq!(
+                batched.owner(key).expect("a read").is_some(),
+                single.owner(key).expect("a read").is_some(),
+                "the batch left another owner for the key {key}"
             );
         }
     }
