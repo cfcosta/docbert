@@ -132,6 +132,37 @@ impl Pool {
         }
     }
 
+    /// Take a connection, but only one that waits now. (§3.1)
+    ///
+    /// A folder of many batches asks for every connection that is
+    /// free, so the whole pool reads one folder. It must never take a
+    /// connection that another folder needs, so it asks and does not
+    /// wait. `None` says that the pool is busy, and never that
+    /// something went wrong.
+    pub async fn try_take(&self) -> Result<Option<Held<'_>>> {
+        let Ok(permit) = self.room.try_acquire() else {
+            return Ok(None);
+        };
+
+        if let Some(connection) = hold(&self.idle).pop() {
+            return Ok(Some(self.give(connection, permit)));
+        }
+
+        match self.open().await {
+            Ok(connection) => Ok(Some(self.give(connection, permit))),
+            // A server that refuses a connection wants fewer of them.
+            // The folder has the connections that it has, and it does
+            // not need this one to finish. (§3.1)
+            Err(error) if crowded(&error) => {
+                permit.forget();
+                self.narrow();
+
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Say goodbye on each connection that waits.
     pub async fn close(&self) {
         let waiting: Vec<Connection> = hold(&self.idle).drain(..).collect();
@@ -349,6 +380,47 @@ mod tests {
     // -----------------------------------------------------------------
     // Take, and give back.
     // -----------------------------------------------------------------
+
+    /// A folder that owes many batches asks for every connection that
+    /// waits. It must never take one from a folder that needs it, so
+    /// it asks and does not wait. (§3.1)
+    #[tokio::test]
+    async fn a_pool_gives_a_connection_that_waits_without_a_wait() {
+        let server = FakeServer::start(a_plan()).await.unwrap();
+        let pool = a_pool(&server, 2);
+
+        let first = pool.try_take().await.expect("a free connection");
+        let second = pool.try_take().await.expect("a free connection");
+
+        assert!(first.is_some());
+        assert!(second.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_pool_with_no_connection_free_gives_nothing() {
+        let server = FakeServer::start(a_plan()).await.unwrap();
+        let pool = a_pool(&server, 1);
+
+        let held = pool.try_take().await.expect("a free connection");
+        assert!(held.is_some());
+
+        let none = pool.try_take().await.expect("no error, and no wait");
+        assert!(
+            none.is_none(),
+            "the pool gave a connection it does not have"
+        );
+    }
+
+    /// A connection that goes back is free again for the next folder.
+    #[tokio::test]
+    async fn a_connection_that_went_back_is_free_to_ask_for() {
+        let server = FakeServer::start(a_plan()).await.unwrap();
+        let pool = a_pool(&server, 1);
+
+        drop(pool.try_take().await.expect("a free connection"));
+
+        assert!(pool.try_take().await.expect("no error").is_some());
+    }
 
     #[tokio::test]
     async fn a_pool_opens_a_connection_and_logs_in() {

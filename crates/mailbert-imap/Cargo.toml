@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 description = "IMAP client for mailbert — parallel fetch, incremental sync, and a fake server for tests"
 
 [dependencies]
+# `join_all` runs every connection of a folder at the same time. (§3.1)
+futures-util = { version = "0.3", default-features = false, features = [
+  "alloc",
+] }
 mailbert-core = { path = "../mailbert-core" }
 rustls = { version = "0.23", default-features = false, features = [
   "ring",

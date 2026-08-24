@@ -5,16 +5,27 @@
 //! server has and the store does not. That last set is what makes a
 //! sync that stops continue where it stopped. (§3.4)
 
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
-use tokio::time::sleep;
+use futures_util::future::join_all;
+use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
     connection::{Batch, Connection, View},
     error::{Error, Result},
-    pool::Pool,
+    pool::{Held, Pool},
     sequence::UidSet,
 };
+
+/// Hold the queue of batches. A lock that broke means a task died with
+/// the queue open, and no connection can trust the queue after that.
+fn hold(queue: &Mutex<VecDeque<usize>>) -> MutexGuard<'_, VecDeque<usize>> {
+    queue.lock().unwrap_or_else(|held| held.into_inner())
+}
 
 /// What mailbert keeps for one folder of one account. (§3.3)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -301,6 +312,167 @@ pub async fn run<K: Keep>(
     Ok(state)
 }
 
+/// Run a job on every connection that the pool can spare. (§3.1)
+///
+/// One folder of a mailbox can hold most of its mail. Gmail keeps
+/// every message in `All Mail`, so a sync of eight folders on eight
+/// connections leaves seven of them idle while one reads 60000
+/// messages. The batches of a plan are independent, so any connection
+/// can read any of them.
+///
+/// The connections take batches from one queue, and send what they
+/// read back to this task. This task owns the state of the folder, and
+/// it is the only one that writes. The batches therefore land in the
+/// order that the servers answer, and the state still moves one batch
+/// at a time. `Job::after` takes the UIDs of a batch out of the debt,
+/// and that does not depend on the order.
+///
+/// One connection is enough. It reads the next batch while this task
+/// writes the last one, exactly as [`run`] does. (§3.4)
+///
+/// `hands` is a wish. The folder takes one connection and waits for
+/// it, because a folder with no connection can do nothing. It asks for
+/// the rest and does not wait, because a connection that another
+/// folder needs is not free. (§3.1)
+pub async fn spread<K: Keep>(
+    pool: &Pool,
+    job: &Job,
+    keep: &mut K,
+    hands: usize,
+) -> Result<FolderState> {
+    let mut state = job.start.clone();
+    keep.mark(&job.folder, &state).await?;
+
+    // A connection with no batch to read is a connection that another
+    // folder needs. (§3.1)
+    let want = hands.min(job.batches.len()).max(1);
+
+    let mut held = vec![pool.take().await?];
+    while held.len() < want {
+        match pool.try_take().await {
+            Ok(Some(one)) => held.push(one),
+            Ok(None) => break,
+            Err(problem) => {
+                tracing::debug!(%problem, "the pool spared no connection");
+                break;
+            }
+        }
+    }
+
+    tracing::debug!(
+        folder = job.folder,
+        hands = held.len(),
+        wanted = want,
+        batches = job.batches.len(),
+        "spread a folder over the connections"
+    );
+
+    let queue = Mutex::new((0..job.batches.len()).collect::<VecDeque<usize>>());
+    let (give, mut take) = mpsc::channel::<Result<(usize, Batch)>>(held.len());
+
+    let reading = join_all(held.iter_mut().map(|one| {
+        let give = give.clone();
+        let queue = &queue;
+
+        async move {
+            loop {
+                // The lock never crosses an await, so a connection that
+                // waits for the server holds up no other one.
+                let next = hold(queue).pop_front();
+                let Some(at) = next else {
+                    break;
+                };
+
+                match hand(one, &job.folder, &job.batches[at], None).await {
+                    Ok(batch) => {
+                        if give.send(Ok((at, batch))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(problem) => {
+                        // The answer stopped in the middle, so bytes
+                        // that belong to no command may be on the
+                        // socket. It never goes back to the pool.
+                        one.retire();
+                        let _ = give.send(Err(problem)).await;
+
+                        break;
+                    }
+                }
+            }
+        }
+    }));
+    drop(give);
+
+    let writing = async {
+        let mut state = job.start.clone();
+
+        while let Some(got) = take.recv().await {
+            let problem = match got {
+                Err(problem) => Some(problem),
+                Ok((at, batch)) => {
+                    // The state names the batches that landed, and
+                    // never one that a connection is still reading.
+                    // (§3.4)
+                    state = job.after(&state, &job.batches[at]);
+                    keep.batch(&job.folder, batch, &state).await.err()
+                }
+            };
+
+            let Some(problem) = problem else {
+                continue;
+            };
+
+            // Nothing will take another batch. The connections must
+            // learn that, or they wait for a reader that never comes.
+            // The batches that already arrived go nowhere, and the
+            // folder owes them again. (§3.4)
+            take.close();
+            while take.recv().await.is_some() {}
+
+            return Err(problem);
+        }
+
+        Ok::<FolderState, Error>(state)
+    };
+
+    let (_, wrote) = tokio::join!(reading, writing);
+    state = wrote?;
+
+    // The messages that the store holds already: a flag that changed,
+    // or a message that went away. One connection is enough, because
+    // the plan asks this one time. (§3.3)
+    if let (Some(changed), Some(since)) = (&job.changed, job.since) {
+        let one = &mut held[0];
+        let batch = match hand(one, &job.folder, changed, Some(since)).await {
+            Ok(batch) => batch,
+            Err(problem) => {
+                one.retire();
+
+                return Err(problem);
+            }
+        };
+
+        keep.batch(&job.folder, batch, &state).await?;
+    }
+
+    Ok(state)
+}
+
+/// Read one set on one connection, and open the folder if it is not.
+async fn hand(
+    one: &mut Held<'_>,
+    folder: &str,
+    set: &UidSet,
+    since: Option<u64>,
+) -> Result<Batch> {
+    if one.selected() != Some(folder) {
+        one.examine(folder).await?;
+    }
+
+    one.fetch(set, since).await
+}
+
 /// Read one set, while the store writes the batch that waits. (§3.4)
 ///
 /// The two run at the same time, and both run to the end. A write that
@@ -412,18 +584,12 @@ async fn once<K: Keep>(
     job: &Job,
     keep: &mut K,
 ) -> Result<FolderState> {
-    let mut held = pool.take().await?;
-
-    match run(&mut held, job, keep).await {
-        Ok(state) => Ok(state),
-        Err(error) => {
-            // A connection that broke in the middle of an answer holds
-            // bytes that belong to no command. It never goes back.
-            held.retire();
-
-            Err(error)
-        }
-    }
+    // The folder asks for the whole pool, and takes what is free. A
+    // mailbox that keeps its mail in one folder then reads that folder
+    // on every connection. A mailbox of many folders gives one
+    // connection to each, because each folder asks first and the pool
+    // is empty when the next one asks. (§3.1)
+    spread(pool, job, keep, pool.limit()).await
 }
 
 #[cfg(test)]
@@ -440,6 +606,7 @@ mod tests {
     //! | `prop_a_sync_that_stops_anywhere_still_reads_every_message` | metamorphic | §3.4 promises that a sync which stops continues. A message that a failure hides is a message the user never sees. |
     //! | `prop_a_cut_plan_asks_for_every_uid_that_the_server_holds` | model-based | §3.2 cuts the plan down to the mail that the server has. A cut that drops a UID the server holds loses mail, and one that keeps a UID the server lost pays for a round trip that brings nothing. |
     //! | `prop_cutting_a_plan_twice_is_cutting_it_one_time` | algebraic | A plan that shrinks each time somebody reads it loses mail after a retry. |
+    //! | `prop_the_order_of_the_batches_never_changes_the_state` | algebraic | §3.1 gives one folder to every connection, so the batches land in the order that the server answers. A fold that depends on that order would leave a different state each run. |
     //! | `prop_the_state_after_a_batch_never_moves_again` | algebraic | §3.4 reads the next batch while the store writes this one, so the state of a batch is computed once and carried. A state that moved when somebody read it twice would land on the wrong batch. |
 
     use hegel::{TestCase, generators as gs};
@@ -1213,6 +1380,301 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------
+    // Every connection reads the same folder. (§3.1)
+    // -----------------------------------------------------------------
+
+    /// A folder of 40 messages, in batches of 4, is ten batches. One
+    /// connection reads them one at a time, and four read them four at
+    /// a time.
+    async fn a_spread(
+        server: &FakeServer,
+        hands: usize,
+    ) -> (Pool, Job, Recorder) {
+        let pool = a_pool_of(server, hands);
+        let mut held = pool.take().await.unwrap();
+        let view = held.examine("INBOX").await.unwrap();
+        drop(held);
+
+        let job = plan("INBOX", &FolderState::default(), &view, SIZE);
+
+        (pool, job, Recorder::default())
+    }
+
+    fn a_pool_of(server: &FakeServer, connections: usize) -> Pool {
+        Pool::new(
+            Server::at("127.0.0.1", server.port(), false)
+                .with_login("me", "secret")
+                .with_connections(connections),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_reads_every_message() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 4).await;
+        assert_eq!(job.batches.len(), 10, "the test wants many batches");
+
+        let state = spread(&pool, &job, &mut keep, 4).await.unwrap();
+
+        let mut uids: Vec<u32> = keep
+            .batches
+            .iter()
+            .flat_map(|batch| batch.messages.iter().map(|held| held.uid))
+            .collect();
+        uids.sort_unstable();
+
+        assert_eq!(uids, (1..=40).collect::<Vec<u32>>());
+        assert_eq!(state, job.done, "the folder never finished");
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_reads_on_every_connection() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 4).await;
+
+        spread(&pool, &job, &mut keep, 4).await.unwrap();
+
+        assert_eq!(
+            server.seen().most_open,
+            4,
+            "the folder left connections idle"
+        );
+    }
+
+    /// The state must move only for a batch that landed, whatever
+    /// order the connections answer in. (§3.1)
+    #[tokio::test]
+    async fn a_folder_that_spreads_owes_every_batch_that_never_landed() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, _) = a_spread(&server, 4).await;
+
+        let mut keep = Recorder {
+            stop_after: Some(3),
+            ..Recorder::default()
+        };
+        assert!(spread(&pool, &job, &mut keep, 4).await.is_err());
+
+        let last = keep.states.last().unwrap().clone();
+        let wrote: Vec<u32> = keep
+            .batches
+            .iter()
+            .flat_map(|batch| batch.messages.iter().map(|held| held.uid))
+            .collect();
+
+        for uid in 1..=40 {
+            assert_eq!(
+                !last.pending.holds(uid),
+                wrote.contains(&uid),
+                "the state and the store disagree about {uid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_marks_its_start_one_time() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 4).await;
+
+        spread(&pool, &job, &mut keep, 4).await.unwrap();
+
+        assert_eq!(keep.marks.len(), 1);
+        assert_eq!(keep.marks[0], job.start);
+    }
+
+    /// A folder that asks for more connections than the pool holds
+    /// takes what there is, and still reads every message. (§3.1)
+    #[tokio::test]
+    async fn a_folder_that_spreads_takes_the_connections_that_there_are() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 2).await;
+
+        spread(&pool, &job, &mut keep, 8).await.unwrap();
+
+        assert_eq!(server.seen().most_open, 2, "the pool holds two");
+        assert_eq!(
+            keep.batches
+                .iter()
+                .map(|batch| batch.messages.len())
+                .sum::<usize>(),
+            40
+        );
+    }
+
+    /// One connection must still read the next batch while the store
+    /// writes the last one. A fan-out of one is a pipeline. (§3.4)
+    #[tokio::test]
+    async fn one_connection_that_spreads_still_reads_while_the_store_writes() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, _) = a_spread(&server, 1).await;
+
+        let mut keep = Overlapping {
+            server: &server,
+            writes: 0,
+            of: job.batches.len(),
+        };
+
+        spread(&pool, &job, &mut keep, 1).await.expect(
+            "the socket never asked for a batch while the store wrote one",
+        );
+    }
+
+    /// Cut the connection of the pool at its first fetch. (§3.1)
+    ///
+    /// The connection is open and holds INBOX already, so the fetch is
+    /// the next command that it sends. The count of the plan is the
+    /// count of one connection, and only one is open here.
+    fn cut_at_the_first_fetch(server: &FakeServer) {
+        let sent = server.seen().commands.len();
+        server.change(|plan| plan.cut_after = Some(sent + 1));
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_gives_the_error_of_a_broken_connection() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 1).await;
+        cut_at_the_first_fetch(&server);
+
+        let problem = spread(&pool, &job, &mut keep, 1).await;
+
+        assert!(problem.is_err(), "the sync hid a connection that broke");
+    }
+
+    /// The answer stopped in the middle, so bytes that belong to no
+    /// command may be on the socket. The next command to read them
+    /// would take the wrong answer. (§3.1)
+    #[tokio::test]
+    async fn a_spread_that_broke_leaves_no_connection_in_the_pool() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 1).await;
+        cut_at_the_first_fetch(&server);
+
+        spread(&pool, &job, &mut keep, 1).await.unwrap_err();
+
+        assert_eq!(pool.idle(), 0, "a connection that broke waits in the pool");
+    }
+
+    /// A store that gives an error takes no more batches. The
+    /// connections must stop, because a batch that nobody takes is a
+    /// round trip that brings nothing. (§3.1)
+    /// The pool holds eight, and the folder asks for two. The other
+    /// six belong to the folders that did not ask yet. (§3.1)
+    #[tokio::test]
+    async fn a_folder_that_spreads_takes_no_more_hands_than_it_asked_for() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let (pool, job, mut keep) = a_spread(&server, 8).await;
+        assert_eq!(job.batches.len(), 10, "the test wants a batch for each");
+
+        spread(&pool, &job, &mut keep, 2).await.unwrap();
+
+        assert_eq!(server.seen().most_open, 2, "the folder took too many");
+    }
+
+    /// A sync of one folder must use the pool, and not one connection
+    /// of it. This is what [`spread`] is for. (§3.1)
+    #[tokio::test]
+    async fn a_folder_that_resumes_reads_on_every_connection() {
+        let server = FakeServer::start(Plan::new().with(a_folder(40)))
+            .await
+            .unwrap();
+        let pool = a_pool_of(&server, 4);
+        let mut held = pool.take().await.unwrap();
+        let view = held.examine("INBOX").await.unwrap();
+        drop(held);
+
+        let job = plan("INBOX", &FolderState::default(), &view, SIZE);
+        let mut store = Store::default();
+        resume(&pool, &job, &mut store, quick()).await.unwrap();
+
+        assert_eq!(server.seen().most_open, 4, "the sync left a hand idle");
+        assert_eq!(store.uids.len(), 40, "the sync lost a message");
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_stops_reading_when_the_store_stops() {
+        let server = FakeServer::start(Plan::new().with(a_folder(160)))
+            .await
+            .unwrap();
+        let (pool, job, _) = a_spread(&server, 2).await;
+        assert_eq!(job.batches.len(), 40, "the test wants many batches");
+        assert_eq!(fetches(&server), 0, "the plan asked for no mail yet");
+
+        let mut keep = Recorder {
+            stop_after: Some(3),
+            ..Recorder::default()
+        };
+        spread(&pool, &job, &mut keep, 2).await.unwrap_err();
+
+        // Two connections and a queue of two hold a few batches more
+        // than the store took. They never hold forty.
+        let asked = fetches(&server);
+        assert!(
+            asked < job.batches.len(),
+            "the connections read {asked} batches after the store stopped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_spreads_reads_the_flags_that_changed() {
+        let server = FakeServer::start(Plan::new().with(a_folder(6)))
+            .await
+            .unwrap();
+        let pool = a_pool_of(&server, 2);
+        let mut held = pool.take().await.unwrap();
+        let view = held.examine("INBOX").await.unwrap();
+        drop(held);
+
+        let saved = FolderState {
+            uid_validity: view.uid_validity,
+            uid_next: 5,
+            highest_mod_seq: 2,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &view, SIZE);
+        assert!(!job.batches.is_empty() && job.changed.is_some());
+
+        let mut keep = Recorder::default();
+        spread(&pool, &job, &mut keep, 2).await.unwrap();
+
+        let uids: Vec<u32> = keep
+            .batches
+            .iter()
+            .flat_map(|batch| batch.messages.iter().map(|held| held.uid))
+            .collect();
+
+        for uid in [5, 6] {
+            assert!(uids.contains(&uid), "the new message {uid} never landed");
+        }
+
+        // The flags of UIDs 3 and 4 moved after the sequence 2, and the
+        // flags of 1 and 2 did not. A fetch that forgets `CHANGEDSINCE`
+        // brings all four, and the sync then writes mail it has. (§3.3)
+        for uid in [3, 4] {
+            assert!(uids.contains(&uid), "the flags of {uid} never landed");
+        }
+        for uid in [1, 2] {
+            assert!(!uids.contains(&uid), "the flags of {uid} never moved");
+        }
+    }
+
     /// A folder can hold new mail and changed flags at the same time.
     /// The read of the changed set runs while the store writes the
     /// last batch of new mail, so that batch must still land. (§3.4)
@@ -1248,6 +1710,16 @@ mod tests {
 
         for uid in [5, 6] {
             assert!(uids.contains(&uid), "the new message {uid} never landed");
+        }
+
+        // The flags of UIDs 3 and 4 moved after the sequence 2, and the
+        // flags of 1 and 2 did not. A fetch that forgets `CHANGEDSINCE`
+        // brings all four, and the sync then writes mail it has. (§3.3)
+        for uid in [3, 4] {
+            assert!(uids.contains(&uid), "the flags of {uid} never landed");
+        }
+        for uid in [1, 2] {
+            assert!(!uids.contains(&uid), "the flags of {uid} never moved");
         }
     }
 
@@ -1423,6 +1895,45 @@ mod tests {
 
         assert!(again.is_empty(), "{again:?}");
         assert_eq!(again.count(), 0);
+    }
+
+    /// Many connections read one folder, so the batches land in the
+    /// order that the server answers, and not in the order of the
+    /// plan. The state must not depend on that order. (§3.1)
+    #[hegel::test(test_cases = 200)]
+    fn prop_the_order_of_the_batches_never_changes_the_state(tc: TestCase) {
+        let (saved, view, size) = tc.draw(a_state());
+        let job = plan("INBOX", &saved, &view, size);
+
+        if job.batches.is_empty() {
+            return;
+        }
+
+        let fold = |order: &[usize]| {
+            order.iter().fold(job.start.clone(), |state, at| {
+                job.after(&state, &job.batches[*at])
+            })
+        };
+
+        let straight: Vec<usize> = (0..job.batches.len()).collect();
+        let mut mixed = straight.clone();
+        let steps = tc.draw(gs::integers::<usize>().min_value(0).max_value(8));
+        for _ in 0..steps {
+            let here = tc.draw(
+                gs::integers::<usize>()
+                    .min_value(0)
+                    .max_value(mixed.len() - 1),
+            );
+            let there = tc.draw(
+                gs::integers::<usize>()
+                    .min_value(0)
+                    .max_value(mixed.len() - 1),
+            );
+            mixed.swap(here, there);
+        }
+
+        assert_eq!(fold(&straight), fold(&mixed), "the order moved the state");
+        assert_eq!(fold(&straight), job.done);
     }
 
     /// `run` reads the next batch while the store writes this one, so

@@ -436,10 +436,60 @@ The parts that hold a message and find it again.
   take three times. One folder is two times as fast, because the mail
   and the state of a batch now go in one transaction.
 
-- [ ] **T36** Every connection reads the same folder. (§3.1)
-  - [ ] A plan gives its batches to a queue that each connection drains.
-  - [ ] A folder of 60000 messages uses every connection of the pool.
-  - [ ] The state of the folder moves only when each batch arrived.
+- [x] **T36** Every connection reads the same folder. (§3.1)
+  - [x] A plan gives its batches to a queue that each connection drains.
+  - [x] A folder of many batches uses every connection of the pool.
+  - [x] The state of the folder moves only when each batch arrived.
+  - [x] A folder takes no connection that it has no batch for.
+  - [x] The pool gives a connection that waits, and never waits itself.
+  - [x] A connection that broke never goes back to the pool.
+
+  One folder of a mailbox can hold most of its mail. Gmail keeps every
+  message in `All Mail`, so a sync of eight folders on eight
+  connections leaves seven of them idle. One connection then reads
+  60000 messages, and the other seven wait.
+
+  The batches of a plan are independent, so any connection can read any
+  of them. `spread` puts the batches in one queue, and every connection
+  takes from it. The connections send what they read to one task. That
+  task owns the state of the folder, and it is the only one that
+  writes.
+
+  The batches therefore land in the order that the server answers, and
+  not in the order of the plan. `Job::after` takes the UIDs of a batch
+  out of the debt, and that does not depend on the order. A property
+  test mixes the order of the batches and shows that the state is the
+  same.
+
+  `hands` is a wish. The folder takes one connection and waits for it,
+  because a folder with no connection can do nothing. It asks for the
+  rest with `Pool::try_take`, which gives only a connection that waits
+  now. A connection that another folder needs is therefore safe.
+
+  A folder asks for no more connections than it has batches. A folder
+  that is not there has one batch, and it must not open the whole pool
+  before it fails.
+
+  One connection is enough to keep the pipeline of T34. That connection
+  reads the next batch while the task writes the last one.
+
+  A store that gives an error takes no more batches. The task then
+  closes the queue, so every connection stops. A batch that nobody
+  takes is a round trip that brings nothing.
+
+  The bench uses `Plan::slow`, as T34 does. 5000 messages of 2 KiB in
+  one folder is ten batches of 500, and the pool holds eight:
+
+  | round trip | 1 hand | 2 hands | 4 hands | 8 hands |
+  | ---------- | ------ | ------- | ------- | ------- |
+  | 5 ms       | 128 ms | 82 ms   | 72 ms   | 72 ms   |
+  | 20 ms      | 283 ms | 158 ms  | 113 ms  | 87 ms   |
+  | 50 ms      | 586 ms | 307 ms  | 204 ms  | 141 ms  |
+
+  A slow link gains the most. At 50 ms, eight connections are 4.2 times
+  as fast, because ten batches take two rounds and not ten. At 5 ms the
+  gain stops at 1.8 times, because the work is then the parse of 10 MB
+  and not the wait.
 
 - [ ] **T37** The model reads the mail as it arrives. (§6.2)
   - [ ] The writer names the messages that a batch added.
@@ -449,3 +499,16 @@ The parts that hold a message and find it again.
 - [ ] **T38** The accounts sync at the same time. (§2.1)
   - [ ] Each account takes its own pool, and they run together.
   - [ ] One account that fails does not stop another.
+
+- [ ] **T39** A folder takes the connections that another folder gave
+      back. (§3.1)
+  - [ ] A folder asks for a connection again while it still has batches.
+  - [ ] A folder that ends gives its connections to the folders that run.
+
+  T36 fixes the count of connections of a folder when that folder
+  starts. Every folder asks at the same time, so each one takes a
+  single connection, and none of them can take a second.
+
+  The small folders of a mailbox end first. Their connections go back
+  to the pool, and the big folder does not ask again. That folder reads
+  the rest of its mail on one connection.
