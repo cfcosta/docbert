@@ -11,6 +11,7 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 use tokio::{
@@ -304,6 +305,8 @@ pub struct Plan {
     pub max_connections: Option<usize>,
     /// Answer `NO` to a `UID SEARCH`. (§3.2)
     pub refuse_search: bool,
+    /// Wait this long before the answer to a fetch. (§3.4)
+    pub slow: Option<Duration>,
 }
 
 impl Default for Plan {
@@ -320,6 +323,7 @@ impl Default for Plan {
             cut_after: None,
             max_connections: None,
             refuse_search: false,
+            slow: None,
         }
     }
 }
@@ -363,6 +367,20 @@ impl Plan {
     /// A sync must then read the folder with the ranges that it has.
     pub fn refuse_search(mut self) -> Self {
         self.refuse_search = true;
+        self
+    }
+
+    /// Wait this long before the answer to a fetch. (§3.4)
+    ///
+    /// This server listens on a local socket, and it answers in
+    /// microseconds. A real server answers over a network, and a fetch
+    /// there costs tens of milliseconds. A bench of the pipeline needs
+    /// that cost, because the pipeline exists to hide it.
+    ///
+    /// Only a fetch waits. The commands that open a folder run one
+    /// time, and a delay on them measures nothing.
+    pub fn slow(mut self, wait: Duration) -> Self {
+        self.slow = Some(wait);
         self
     }
 
@@ -594,10 +612,20 @@ async fn talk(
             continue;
         }
 
-        let (reply, after) = {
+        let (reply, after, slow) = {
             let plan = hold(plan);
-            answer(&plan, &mut session, &tokens)
+            let (reply, after) = answer(&plan, &mut session, &tokens);
+
+            (reply, after, plan.slow)
         };
+
+        // A real server answers a fetch over a network. (§3.4)
+        if let Some(wait) = slow
+            && word(&tokens, 2) == "FETCH"
+        {
+            tokio::time::sleep(wait).await;
+        }
+
         writer.write_all(&reply).await?;
 
         if matches!(after, After::Stop) {
@@ -1097,7 +1125,7 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::*;
-    use crate::wire::Tags;
+    use crate::{Connection, UidSet, wire::Tags};
 
     // -----------------------------------------------------------------
     // Helpers.
@@ -1814,5 +1842,37 @@ mod tests {
 
         assert_eq!(messages.len(), count as usize);
         assert_eq!(seen.len(), count as usize);
+    }
+
+    /// A real server answers over a network, and a fetch there costs
+    /// tens of milliseconds. A bench of the pipeline needs that cost,
+    /// because the point of the pipeline is to hide it. (§3.4)
+    #[tokio::test]
+    async fn a_slow_server_makes_a_fetch_wait() {
+        let wait = Duration::from_millis(40);
+        let server = FakeServer::start(
+            Plan::new()
+                .with(FakeFolder::filled("INBOX", 2, 16))
+                .slow(wait),
+        )
+        .await
+        .expect("a server");
+
+        let mut connection =
+            Connection::open("127.0.0.1", server.port(), false)
+                .await
+                .expect("a connection");
+        connection.login("me", "secret").await.expect("a login");
+        connection.examine("INBOX").await.expect("a folder");
+
+        let start = std::time::Instant::now();
+        let batch = connection
+            .fetch(&UidSet::parse("1:2").expect("a set"), None)
+            .await
+            .expect("a batch");
+        let taken = start.elapsed();
+
+        assert_eq!(batch.messages.len(), 2, "the mail still arrives");
+        assert!(taken >= wait, "the fetch took {taken:?}, and not {wait:?}");
     }
 }

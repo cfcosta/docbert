@@ -329,10 +329,10 @@ The parts that hold a message and find it again.
   A folder of 100 messages over a range of 60000 UIDs, on the fake
   server:
 
-  | | round trips to fetch | time |
-  | --- | --- | --- |
-  | the ranges of today | 120 | 111.3 ms |
-  | the mail that the server names | 1 | 14.8 ms |
+  |                                | round trips to fetch | time     |
+  | ------------------------------ | -------------------- | -------- |
+  | the ranges of today            | 120                  | 111.3 ms |
+  | the mail that the server names | 1                    | 14.8 ms  |
 
   The fake server answers on loopback, where a round trip costs
   microseconds. A real server answers in tens of milliseconds, so the
@@ -342,10 +342,41 @@ The parts that hold a message and find it again.
   still hold every UID that the folder has, so the sync reads the same
   mail, and only pays for the holes.
 
-- [ ] **T34** The socket reads while the store writes. (§3.4)
-  - [ ] A fetch of the next batch starts before the sink takes the last.
-  - [ ] The mark of a folder still follows the write of its batch.
-  - [ ] A sync that stops loses only the batches that are in the air.
+- [x] **T34** The socket reads while the store writes. (§3.4)
+  - [x] A fetch of the next batch starts before the sink takes the last.
+  - [x] The mark of a folder still follows the write of its batch.
+  - [x] A sync that stops loses only the batches that are in the air.
+  - [x] The fake server can answer a fetch slowly, as a real one does.
+
+  `run` read a batch, gave it to the sink, and waited. The socket then
+  did nothing while the store spoke to the disk, and the disk did
+  nothing while the socket read the batch that followed.
+
+  `run` now holds one batch back. It reads the next batch and writes
+  the one that waits at the same time, and both run to the end. A write
+  that fails therefore leaves no bytes of a half-read answer on the
+  socket, and the connection stays whole for the pool.
+
+  The state of a batch travels with that batch. A read that runs ahead
+  must not carry the state ahead with it, or the store would say that
+  it holds mail that is still in the air. (§3.4)
+
+  This server listens on a local socket, and it answers in
+  microseconds. A real server answers over a network. `Plan::slow`
+  gives a fetch the cost of a round trip, because the pipeline exists
+  to hide that cost. 5000 messages of 2 KiB in one folder is ten
+  batches of 500:
+
+  | round trip | one after the other | read while writing | saved |
+  | ---------- | ------------------- | ------------------ | ----- |
+  | 5 ms       | 172.9 ms            | 116.9 ms           | 32%   |
+  | 20 ms      | 319.8 ms            | 247.1 ms           | 23%   |
+  | 50 ms      | 624.3 ms            | 548.6 ms           | 12%   |
+
+  The time that this saves settles at about 75 ms, which is what the
+  store takes to write nine batches. The pipeline hides the smaller of
+  the two costs behind the larger one. A fast link hides the read
+  behind the write, and a slow link hides the write behind the read.
 
 - [x] **T35** One writer takes the mail of every folder. (§4.2)
 

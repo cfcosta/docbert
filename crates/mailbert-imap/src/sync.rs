@@ -268,20 +268,67 @@ pub async fn run<K: Keep>(
     let mut state = job.start.clone();
     keep.mark(&job.folder, &state).await?;
 
+    // The batch that the store has not taken yet. The socket reads the
+    // batch that follows while the store writes this one, so the disk
+    // and the server never wait for each other. (§3.4)
+    let mut waiting: Option<(Batch, FolderState)> = None;
+
     for set in &job.batches {
-        let batch = connection.fetch(set, None).await?;
         state = job.after(&state, set);
-        keep.batch(&job.folder, batch, &state).await?;
+
+        let batch =
+            read(connection, keep, &job.folder, set, None, waiting).await?;
+
+        // The state travels with its own batch, and not with the batch
+        // that the socket read ahead. (§3.4)
+        waiting = Some((batch, state.clone()));
     }
 
     // The messages that the store holds already: a flag that changed,
     // or a message that went away. (§3.3)
     if let (Some(changed), Some(since)) = (&job.changed, job.since) {
-        let batch = connection.fetch(changed, Some(since)).await?;
-        keep.batch(&job.folder, batch, &state).await?;
+        let batch =
+            read(connection, keep, &job.folder, changed, Some(since), waiting)
+                .await?;
+
+        waiting = Some((batch, state.clone()));
+    }
+
+    if let Some((batch, at)) = waiting {
+        keep.batch(&job.folder, batch, &at).await?;
     }
 
     Ok(state)
+}
+
+/// Read one set, while the store writes the batch that waits. (§3.4)
+///
+/// The two run at the same time, and both run to the end. A write that
+/// fails therefore never leaves bytes of a half-read answer on the
+/// socket, and the connection stays whole for the pool.
+///
+/// The write goes first when it fails, because a batch that the store
+/// refused is a batch that the folder still owes. The mail that the
+/// read brought is then dropped, and the next sync asks for it again.
+async fn read<K: Keep>(
+    connection: &mut Connection,
+    keep: &mut K,
+    folder: &str,
+    set: &UidSet,
+    since: Option<u64>,
+    waiting: Option<(Batch, FolderState)>,
+) -> Result<Batch> {
+    let Some((batch, at)) = waiting else {
+        return connection.fetch(set, since).await;
+    };
+
+    let (got, wrote) = tokio::join!(
+        connection.fetch(set, since),
+        keep.batch(folder, batch, &at),
+    );
+    wrote?;
+
+    got
 }
 
 /// How long a sync waits before it tries again. (§3.4)
@@ -393,6 +440,7 @@ mod tests {
     //! | `prop_a_sync_that_stops_anywhere_still_reads_every_message` | metamorphic | §3.4 promises that a sync which stops continues. A message that a failure hides is a message the user never sees. |
     //! | `prop_a_cut_plan_asks_for_every_uid_that_the_server_holds` | model-based | §3.2 cuts the plan down to the mail that the server has. A cut that drops a UID the server holds loses mail, and one that keeps a UID the server lost pays for a round trip that brings nothing. |
     //! | `prop_cutting_a_plan_twice_is_cutting_it_one_time` | algebraic | A plan that shrinks each time somebody reads it loses mail after a retry. |
+    //! | `prop_the_state_after_a_batch_never_moves_again` | algebraic | §3.4 reads the next batch while the store writes this one, so the state of a batch is computed once and carried. A state that moved when somebody read it twice would land on the wrong batch. |
 
     use hegel::{TestCase, generators as gs};
 
@@ -1004,6 +1052,205 @@ mod tests {
         assert_eq!(whole(&next.batches), UidSet::parse("1:6").unwrap());
     }
 
+    // -----------------------------------------------------------------
+    // The socket reads while the store writes. (§3.4)
+    // -----------------------------------------------------------------
+
+    /// How many batches the server was asked for.
+    fn fetches(server: &FakeServer) -> usize {
+        server
+            .seen()
+            .commands
+            .iter()
+            .filter(|line| line.contains("UID FETCH"))
+            .count()
+    }
+
+    /// A sink that will not finish a write before the socket asked for
+    /// the batch that follows. (§3.4)
+    ///
+    /// A sync that reads and writes one after the other can never
+    /// satisfy it. The fetch waits for the write, and the write waits
+    /// for the fetch. The sink gives up after a moment, and `run` then
+    /// gives an error.
+    struct Overlapping<'a> {
+        server: &'a FakeServer,
+        writes: usize,
+        of: usize,
+    }
+
+    impl Keep for Overlapping<'_> {
+        async fn mark(
+            &mut self,
+            _folder: &str,
+            _state: &FolderState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn batch(
+            &mut self,
+            _folder: &str,
+            _batch: Batch,
+            _state: &FolderState,
+        ) -> Result<()> {
+            self.writes += 1;
+
+            // No read follows the last write, so it waits for nothing.
+            if self.writes >= self.of {
+                return Ok(());
+            }
+
+            let want = self.writes + 1;
+            for _ in 0..400 {
+                if fetches(self.server) >= want {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+
+            Err(Error::Closed)
+        }
+
+        async fn state(&mut self, _folder: &str) -> Result<FolderState> {
+            Ok(FolderState::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_reads_the_next_batch_while_the_store_writes_the_last() {
+        let server = FakeServer::start(Plan::new().with(a_folder(10)))
+            .await
+            .unwrap();
+        let pool = a_pool(&server).await;
+        let mut held = pool.take().await.unwrap();
+
+        let view = held.examine("INBOX").await.unwrap();
+        let job = plan("INBOX", &FolderState::default(), &view, SIZE);
+        assert_eq!(job.batches.len(), 3, "the test wants more than one batch");
+
+        let mut keep = Overlapping {
+            server: &server,
+            writes: 0,
+            of: job.batches.len(),
+        };
+
+        run(&mut held, &job, &mut keep).await.expect(
+            "the socket never asked for a batch while the store wrote one",
+        );
+    }
+
+    /// The state that lands with a batch must be the state after that
+    /// batch, and never the state after the batch that follows. A read
+    /// that runs ahead must not carry the state ahead with it. (§3.4)
+    #[tokio::test]
+    async fn the_state_that_lands_with_a_batch_names_that_batch() {
+        let server = FakeServer::start(Plan::new().with(a_folder(10)))
+            .await
+            .unwrap();
+        let pool = a_pool(&server).await;
+        let mut held = pool.take().await.unwrap();
+
+        let view = held.examine("INBOX").await.unwrap();
+        let job = plan("INBOX", &FolderState::default(), &view, SIZE);
+        let mut keep = Recorder::default();
+        run(&mut held, &job, &mut keep).await.unwrap();
+
+        for (at, batch) in keep.batches.iter().enumerate() {
+            let state = &keep.states[at];
+
+            for message in &batch.messages {
+                assert!(
+                    !state.pending.holds(message.uid),
+                    "the state still owes {} of its own batch",
+                    message.uid
+                );
+            }
+
+            for later in &keep.batches[at + 1..] {
+                for message in &later.messages {
+                    assert!(
+                        state.pending.holds(message.uid),
+                        "the state gave up {} before it arrived",
+                        message.uid
+                    );
+                }
+            }
+        }
+    }
+
+    /// A sync that stops loses only what was in the air. The mail that
+    /// the store wrote is out of the debt for good. (§3.4)
+    #[tokio::test]
+    async fn a_job_that_stops_never_asks_again_for_what_the_store_wrote() {
+        let server = FakeServer::start(Plan::new().with(a_folder(10)))
+            .await
+            .unwrap();
+        let pool = a_pool(&server).await;
+        let mut held = pool.take().await.unwrap();
+
+        let view = held.examine("INBOX").await.unwrap();
+        let job = plan("INBOX", &FolderState::default(), &view, SIZE);
+
+        let mut keep = Recorder {
+            stop_after: Some(2),
+            ..Recorder::default()
+        };
+        assert!(run(&mut held, &job, &mut keep).await.is_err());
+        assert_eq!(keep.batches.len(), 2, "the store took two batches");
+
+        let last = keep.states.last().unwrap().clone();
+        let asks = whole(&plan("INBOX", &last, &view, SIZE).batches);
+
+        for batch in &keep.batches {
+            for message in &batch.messages {
+                assert!(
+                    !asks.holds(message.uid),
+                    "the sync asks again for {}, and the store has it",
+                    message.uid
+                );
+            }
+        }
+    }
+
+    /// A folder can hold new mail and changed flags at the same time.
+    /// The read of the changed set runs while the store writes the
+    /// last batch of new mail, so that batch must still land. (§3.4)
+    #[tokio::test]
+    async fn a_job_reads_the_new_mail_and_the_flags_that_changed() {
+        let server = FakeServer::start(Plan::new().with(a_folder(6)))
+            .await
+            .unwrap();
+        let pool = a_pool(&server).await;
+        let mut held = pool.take().await.unwrap();
+        let view = held.examine("INBOX").await.unwrap();
+
+        // UIDs 5 and 6 are new, and the flags of 1 thru 4 may have
+        // moved since the sequence 2.
+        let saved = FolderState {
+            uid_validity: view.uid_validity,
+            uid_next: 5,
+            highest_mod_seq: 2,
+            pending: UidSet::new(),
+        };
+        let job = plan("INBOX", &saved, &view, SIZE);
+        assert!(!job.batches.is_empty(), "the test wants new mail");
+        assert!(job.changed.is_some(), "the test wants a changed set");
+
+        let mut keep = Recorder::default();
+        run(&mut held, &job, &mut keep).await.unwrap();
+
+        let uids: Vec<u32> = keep
+            .batches
+            .iter()
+            .flat_map(|batch| batch.messages.iter().map(|held| held.uid))
+            .collect();
+
+        for uid in [5, 6] {
+            assert!(uids.contains(&uid), "the new message {uid} never landed");
+        }
+    }
+
     #[tokio::test]
     async fn a_job_reads_the_messages_that_changed() {
         let server = FakeServer::start(Plan::new().with(a_folder(6)))
@@ -1176,6 +1423,24 @@ mod tests {
 
         assert!(again.is_empty(), "{again:?}");
         assert_eq!(again.count(), 0);
+    }
+
+    /// `run` reads the next batch while the store writes this one, so
+    /// it computes the state of a batch one time and carries it to the
+    /// write. That is only safe while the state holds still. (§3.4)
+    #[hegel::test(test_cases = 200)]
+    fn prop_the_state_after_a_batch_never_moves_again(tc: TestCase) {
+        let (saved, view, size) = tc.draw(a_state());
+        let job = plan("INBOX", &saved, &view, size);
+        let mut state = job.start.clone();
+
+        for batch in &job.batches {
+            let once = job.after(&state, batch);
+            let twice = job.after(&once, batch);
+
+            assert_eq!(once, twice, "the state moved on the second read");
+            state = once;
+        }
     }
 
     #[hegel::test(test_cases = 200)]
