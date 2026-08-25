@@ -6,7 +6,7 @@
 //!
 //! `tag` is the only tool that writes. It writes to mailbert's own tag
 //! table, and never to the IMAP server, because §3.3 makes mailbert a
-//! download-only mirror. No tool runs gpg, because §5.4 decrypts only
+//! download-only mirror. No tool decrypts, because §5.4 opens a body only
 //! for `view`.
 
 use std::{
@@ -254,7 +254,7 @@ impl Desk {
 
     /// The headers and the body of one message. (§10.2)
     ///
-    /// §5.4 never runs gpg here, so an encrypted body reaches the
+    /// §5.4 never decrypts here, so an encrypted body reaches the
     /// caller as ciphertext.
     ///
     /// # Errors
@@ -1000,7 +1000,7 @@ mod tests {
         assert!(result.is_err(), "{result:?}");
     }
 
-    /// §5.4 runs gpg for `view` alone. The index and its backups are
+    /// §5.4 decrypts for `view` alone. The index and its backups are
     /// plaintext files, and an MCP tool that decrypts would put the
     /// plaintext into the reply of a model that logs it.
     #[test]

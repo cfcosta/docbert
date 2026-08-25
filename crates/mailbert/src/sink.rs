@@ -6,7 +6,7 @@
 //! that stops loses only the batch that was in the air. (§3.4)
 //!
 //! The sink never decrypts. An encrypted body reaches the store as the
-//! ciphertext that arrived, and `view` gives it to gpg on demand.
+//! ciphertext that arrived, and `view` opens it on demand.
 
 use std::{collections::BTreeSet, sync::Arc};
 

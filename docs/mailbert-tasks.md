@@ -33,7 +33,7 @@ The parts that hold a message and find it again.
 - [x] **T11** The store, the tags, and the saved searches. (§9)
   - [x] Two LMDB files: `meta.db` and `blobs.db`. (§1.1)
   - [x] Write a message, and absorb a copy in another folder. (§4.2)
-  - [x] Keep the raw bytes unchanged, for gpg and for export. (§4.3, §5.4)
+  - [x] Keep the raw bytes unchanged, for `view` and for export. (§4.3, §5.4)
   - [x] Resolve a git-style prefix with a key scan. (§4.1)
   - [x] Tags on the identity, so a re-sync keeps them. (§9)
   - [x] Saved searches, by name. (§9)
@@ -136,11 +136,11 @@ The parts that hold a message and find it again.
   - [x] `show::read` gives the headers of §10.2, and the body with its
         quotes.
   - [x] The date of the header carries the hour, in the zone of the reader.
-  - [x] `get` writes no escape, and never runs gpg. (§5.4)
+  - [x] `get` writes no escape, and never decrypts. (§5.4)
   - [x] `get` gives the armor of an encrypted body, and never a plaintext.
   - [x] `view` colors the header names, the subject, and the quotes by depth.
   - [x] `view` colors a fenced block with syntect. (§10.3)
-  - [x] `view` runs gpg on demand, and only for an encrypted body. (§5.4)
+  - [x] `view` decrypts on demand, and only for an encrypted body. (§5.4)
   - [x] `--json` writes the headers and the body together. (§10.4)
 - [x] **T24** `export` to a maildir. (§4.3)
   - [x] `export::make` makes `cur`, `new`, and `tmp`.
@@ -190,7 +190,7 @@ The parts that hold a message and find it again.
   - [x] `bm25_search` never loads the model.
   - [x] A count gives 10 rows by default, and 100 at the most.
   - [x] `get` and `thread` take a git-style prefix. (§4.1)
-  - [x] `get` never runs `gpg`, so an encrypted body stays ciphertext. (§5.4)
+  - [x] `get` never decrypts, so an encrypted body stays ciphertext. (§5.4)
   - [x] `contacts` resolves a name to addresses. (§5.6)
   - [x] `tag` is the only tool that writes, and it writes to mailbert alone.
   - [x] `status` gives the counts of the store and the index. (§10.4)
@@ -654,3 +654,36 @@ The parts that hold a message and find it again.
   writer of the sync. The sync then waits for the commit. A later task
   must measure that wait, and give the model an environment of its own
   if the wait is big.
+
+- [x] **T41** `view` opens an encrypted body itself. (§5.4)
+  - [x] `mime::ciphertext` takes the ciphertext out of PGP/MIME and out
+        of inline armor, and names S/MIME as one it cannot open.
+  - [x] sequoia reads the message, and gpg-agent unwraps the session key.
+  - [x] The public certificates map a key ID to a keygrip of the agent.
+  - [x] `pubring.kbx` and `pubring.gpg` both read.
+  - [x] No `gpg` is spawned, and no secret key reaches this process.
+
+  `view` used to write the whole message to a `gpg` on a pipe and read
+  the plaintext back. That works only where a `gpg` is on `$PATH`, it
+  hands the ciphertext to another process, and its failures arrive as
+  whatever text that version of gpg happened to print.
+
+  mailbert now reads the OpenPGP message itself. The one operation that
+  needs a secret key is the unwrapping of the session key, and gpg-agent
+  does that over its socket, so every secret stays where GnuPG put it,
+  behind whatever passphrase or smartcard guards it.
+
+  The agent addresses a key by its keygrip, and a message names its
+  recipient by key ID. Nothing in the agent maps one to the other, so
+  `pgp::certs` reads the public certificates of the GnuPG home. GnuPG
+  2.1 writes them into a keybox, and a keybox is a run of blobs rather
+  than a stream of packets, so `pgp::keyblocks` walks the blobs and
+  gives sequoia the keyblock of each. A blob whose keyblock runs past
+  its own end ends the walk: a file that a crash cut short still opens
+  the mail of the keys that came before the cut.
+
+  The errors now say which of five things went wrong: the body carries
+  no ciphertext, the body is S/MIME, no certificate names a key of the
+  agent, the agent is not running, or the agent refused. The connection
+  to the agent is made before the message is read, so "the agent is not
+  running" never arrives as "no key opens this message".

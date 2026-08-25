@@ -83,9 +83,15 @@ recency_half_life_days = 180
 [view]
 theme  = "base16-ocean.dark"
 width  = 100
+
+[pgp]
+home  = "~/.gnupg"                         # default $GNUPGHOME, then ~/.gnupg
+certs = "~/.gnupg/pubring.kbx"             # default: the keyring of `home`
 ```
 
 **A folder that an attribute names.** An entry of `folders` or of `exclude` that starts with a backslash names an attribute of RFC 6154, and not a folder name. The server gives these attributes in its `LIST` answer, and the usual ones are `\All`, `\Trash`, `\Junk`, `\Sent`, and `\Drafts`. mailbert ignores the case of an attribute. This is necessary for Gmail, because Gmail gives `[Gmail]/All Mail` a different name in each language, and the attribute stays the same. A name never reads as an attribute, and an attribute never reads as a name.
+
+**The `[pgp]` table.** Both fields are optional, and the defaults find what GnuPG installs, so a working GnuPG needs no `[pgp]` table at all. `home` is the GnuPG home whose agent holds the secret keys; without it mailbert reads `$GNUPGHOME`, and then `~/.gnupg`. `certs` names the file of public certificates that §5.4 maps a key ID to a keygrip with; without it mailbert reads the keyring of `home`. Neither field ever names a secret key, because mailbert holds none.
 
 Three credential fields are available, and mailbert reads them in this order: `password_command`, then `password_file`, then `password`. `password_command` runs a shell command and reads the first line of its output, the same as isync. `password_file` reads a file, and mailbert gives a warning if the mode is not `0600`. `password` holds the value directly, and mailbert always gives a warning.
 
@@ -172,7 +178,7 @@ Each tool gives its answer two times. The text is what the CLI writes, and the f
 
 A search gives 10 rows when the caller asks for no count, and never more than 100. A larger answer fills the context of the model.
 
-No tool runs `gpg`. §5.4 decrypts for `view` alone, so `get` gives an encrypted body as its ciphertext.
+No tool decrypts. §5.4 opens an encrypted body for `view` alone, so `get` gives one as its ciphertext.
 
 ## 3. The IMAP downloader
 
@@ -268,9 +274,17 @@ mailbert keeps each attachment, because an offline mirror that is missing its at
 
 ### 5.4 Encrypted mail
 
-mailbert never decrypts during indexing. An encrypted body stays as its ciphertext, mailbert marks the message `is:encrypted`, and only the headers are searchable. `mailbert view` runs `gpg` when you open the message.
+mailbert never decrypts during indexing. An encrypted body stays as its ciphertext, mailbert marks the message `is:encrypted`, and only the headers are searchable. `mailbert view` opens the message when you ask for it, and nothing it reads reaches the store, the index, or a temporary file.
 
 This is deliberate. The index is a plaintext file, and its backup is also a plaintext file. If mailbert indexed the decrypted text, it would defeat the encryption for each message that your correspondents chose to encrypt.
+
+mailbert holds no secret key, and spawns no `gpg`. It reads the OpenPGP message itself, and for the one operation that needs a secret — unwrapping the session key of the message — it asks **gpg-agent** over the agent's socket. The secrets stay where GnuPG put them, behind whatever passphrase, smartcard, or YubiKey guards them, and `view` works the same for each.
+
+The agent addresses a key by its _keygrip_, and a message names its recipient by _key ID_. Nothing in the agent maps one to the other, so mailbert reads the public certificates of the GnuPG home to make the map. It reads both shapes that a home holds them in: the keybox (`pubring.kbx`) that GnuPG 2.1 introduced, and the keyring (`pubring.gpg`) that came before it.
+
+`view` opens OpenPGP, whether PGP/MIME (RFC 3156) or inline armor. It does not open S/MIME, and says so rather than failing obscurely; `mailbert get` gives the ciphertext, and `gpgsm` opens it.
+
+`view` opens a message. It does not judge a signature on one.
 
 ### 5.5 Threading
 

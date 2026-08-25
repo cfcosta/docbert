@@ -16,7 +16,7 @@
 //!
 //! The store keeps the raw bytes exactly as the server gave them. It
 //! never decrypts, and it never rewrites. `mailbert view` gives the
-//! bytes of an encrypted message to gpg on demand (§5.4), and
+//! bytes of an encrypted message to the agent on demand (§5.4), and
 //! `mailbert export` writes them to a maildir (§4.3). Both need the
 //! bytes unchanged.
 
@@ -651,7 +651,7 @@ impl Store {
 
     /// Read the raw bytes of one message, as the server gave them.
     ///
-    /// `view` gives these bytes to gpg (§5.4), and `export` writes them
+    /// `view` gives these bytes to the agent (§5.4), and `export` writes them
     /// to a maildir (§4.3). Neither works if one byte moves.
     pub fn raw(&self, id: &MessageId) -> Result<Option<Vec<u8>>> {
         let rtxn = self.blobs.read_txn()?;
@@ -1293,7 +1293,7 @@ mod tests {
     //! | Property | Oracle | Why it matters |
     //! | --- | --- | --- |
     //! | `prop_a_message_survives_the_store` | round-trip | The store is the only copy of a message. An entry that reads back wrong is mail that is gone. |
-    //! | `prop_the_raw_bytes_never_change` | round-trip | `view` gives these bytes to gpg, and `export` writes them to a maildir. One changed byte breaks both. |
+    //! | `prop_the_raw_bytes_never_change` | round-trip | `view` gives these bytes to the agent, and `export` writes them to a maildir. One changed byte breaks both. |
     //! | `prop_the_store_agrees_with_collate` | differential | The store and the in-memory join must give one answer, whatever order the sync writes in. |
     //! | `prop_a_second_write_changes_nothing` | algebraic | Every re-sync writes each message again, and must not move it. |
     //! | `prop_the_identity_resolves_to_the_message` | model-based | `mailbert get <id>` must find the message that the identity names. |
@@ -1556,7 +1556,7 @@ mod tests {
 
         assert!(read.is_encrypted());
         assert_eq!(read.text, "");
-        // The ciphertext is still there for gpg, and only there.
+        // The ciphertext is still there for `view`, and only there.
         assert_eq!(store.raw(&wrote.id).expect("a read"), Some(raw));
     }
 
