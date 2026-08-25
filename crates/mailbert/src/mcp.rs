@@ -4,10 +4,11 @@
 //! long time. This removes the cold start that the CLI pays for each
 //! hybrid search.
 //!
-//! `tag` is the only tool that writes. It writes to mailbert's own tag
-//! table, and never to the IMAP server, because §3.3 makes mailbert a
-//! download-only mirror. No tool decrypts, because §5.4 opens a body only
-//! for `view`.
+//! Two tools write. `tag` writes to mailbert's own tag table, and
+//! `send` writes one message out through a submission server and files
+//! the copy locally. Neither writes to the IMAP server, because §3.3
+//! makes mailbert a download-only mirror. No tool decrypts, because
+//! §5.4 opens a body only for `view`.
 
 use std::{
     io::Write,
@@ -40,6 +41,7 @@ use crate::{
     paths::Paths,
     search,
     semantic::Brain,
+    send,
     show,
     status,
     tags,
@@ -310,6 +312,25 @@ impl Desk {
         tags::apply(&self.store, &self.index, &tags::split(words)?)
     }
 
+    /// Write one message out, and file the copy. (§11)
+    ///
+    /// This is the tool that reaches past the machine. It hands the
+    /// message to the submission server of the account, and files the
+    /// copy in mailbert's own store; §3.3 still holds, so nothing of
+    /// it is written to the IMAP server.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if no account can send, if the letter names
+    /// no recipient or a bad address, if the server refuses the
+    /// message, or if the store refuses the copy.
+    pub async fn send(
+        &self,
+        letter: &send::Letter,
+    ) -> error::Result<send::Answer> {
+        send::run(&self.store, &self.index, &self.config, letter).await
+    }
+
     /// The counts of the store, the index, and the vectors. (§10.4)
     ///
     /// # Errors
@@ -360,6 +381,9 @@ fn asked(problem: &error::Error) -> bool {
             | Bad::NoMessages
             | Bad::LateEdit(_)
             | Bad::UnknownAccount(_)
+            | Bad::BadAddress(_)
+            | Bad::NoRecipient
+            | Bad::ManySenders(_)
             | Bad::Core(
                 Core::Query(_)
                     | Core::BadGlob(_)
@@ -369,6 +393,7 @@ fn asked(problem: &error::Error) -> bool {
                     | Core::UnknownSearch(_)
                     | Core::EmptySearch(_)
                     | Core::UnknownMessage(_)
+                    | Core::NoSmtp(_)
             )
     )
 }
@@ -565,6 +590,27 @@ impl Server {
         answer(&done, |out| tags::write_text(&done, out)).map_err(fault)
     }
 
+    /// One message out through the submission server. (§11)
+    #[tool(
+        name = "send",
+        description = "Send one message, and file the copy in mailbert. Give \
+                       `to`, `subject`, and `body`, or give `reply_to` with \
+                       the identity of a message to answer and take its \
+                       sender, its subject, and its thread. `reply_all` \
+                       answers everyone it named. This is the one tool that \
+                       reaches past the machine, and what it sends cannot be \
+                       taken back, so read the message to the person first \
+                       unless they asked you to send it outright."
+    )]
+    pub async fn send(
+        &self,
+        params: Parameters<send::Letter>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let sent = self.desk.send(&params.0).await.map_err(fault)?;
+
+        answer(&sent, |out| send::write_text(&sent, out)).map_err(fault)
+    }
+
     /// The counts of the store and the index. (§10.4)
     #[tool(
         name = "status",
@@ -598,8 +644,11 @@ impl ServerHandler for Server {
                  the words of the mail. Both take from:, to:, subject:, tag:, \
                  date:, is:, has:, and AND/OR/NOT. Turn a name into an \
                  address with contacts first. Read one message with get, and \
-                 the whole conversation with thread. tag is the only tool \
-                 that writes, and it writes to mailbert alone.",
+                 the whole conversation with thread. tag writes to mailbert \
+                 alone. send is the one tool that leaves the machine: it \
+                 hands a message to the submission server and files the copy \
+                 locally, and neither it nor tag ever writes to the mail \
+                 server.",
             )
     }
 }
@@ -1142,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn the_server_gives_the_seven_tools_of_the_design() {
+    fn the_server_gives_the_eight_tools_of_the_design() {
         let shelf = Shelf::new();
 
         assert_eq!(
@@ -1152,6 +1201,7 @@ mod tests {
                 "contacts",
                 "get",
                 "search",
+                "send",
                 "status",
                 "tag",
                 "thread",
@@ -1173,11 +1223,12 @@ mod tests {
         }
     }
 
-    /// §2.2 tells the model that `tag` writes to mailbert alone. A
-    /// model that thinks the tag reaches the server writes to the mail
-    /// of the reader, which §3.3 never allows.
+    /// §2.2 tells the model where each write goes. A model that thinks
+    /// a tag reaches the server writes to the mail of the reader,
+    /// which §3.3 never allows, and a model that does not know `send`
+    /// leaves the machine sends mail it should have shown first.
     #[test]
-    fn the_instructions_say_where_a_tag_goes() {
+    fn the_instructions_say_where_each_write_goes() {
         let shelf = Shelf::new();
         let told = shelf
             .server()
@@ -1185,7 +1236,15 @@ mod tests {
             .instructions
             .expect("the server tells the model how to work");
 
-        assert!(told.contains("tag is the only tool that writes"), "{told}");
+        assert!(told.contains("tag writes to mailbert alone"), "{told}");
+        assert!(
+            told.contains("send is the one tool that leaves the machine"),
+            "{told}"
+        );
+        assert!(
+            told.contains("neither it nor tag ever writes to the mail server"),
+            "{told}"
+        );
     }
 
     #[tokio::test]

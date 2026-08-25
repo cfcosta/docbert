@@ -731,3 +731,35 @@ The parts that hold a message and find it again.
   of spaces come back with the run gone, because RFC 2047 has a reader
   drop the whitespace between two adjacent encoded words. One space
   survives, and the property test says so with one space.
+
+- [x] **T43** `send` reaches an agent, and a `Message-ID` reaches the
+      world. (§2.2, §11.2)
+  - [x] `send::Letter` is what both doors take, and the CLI fills it
+        from its flags and the standard input.
+  - [x] The MCP server gives `send` as its eighth tool, and its
+        instructions say which writes leave the machine.
+  - [x] A letter that names no recipient is refused before anything is
+        composed.
+  - [x] The `Message-ID` takes the domain that sent the message, and
+        not the name of the machine.
+
+  The first send from this machine went out as
+  `<...@battlecruiser>`, which is the name of a laptop. lettre asks the
+  operating system for a hostname when the caller names no identity,
+  and RFC 5322 §3.6.4 wants the right side to be unique in the world.
+  Two people who both call their laptop `battlecruiser` mint the same
+  domain, and §4.1 makes that identity the message, so `send` now
+  writes a random token and the domain the mail was sent from. Every
+  receiver can resolve it, and no two senders share it.
+
+  The MCP tool is the same work through a different door. `Letter`
+  holds what a message says before an account is picked, the CLI fills
+  it from flags and the standard input, and `send::run` takes it from
+  there for both. The one part that is not shared is the recipient
+  check: clap enforces it for the CLI, and nothing enforces it for a
+  model, so `draft` refuses a letter that names nobody.
+
+  `send` is the only tool of the server whose effect leaves the
+  machine, and mail that has left cannot be recalled. The tool
+  description and the server instructions both say so, so a model that
+  was not told to send outright shows the message first.

@@ -199,9 +199,12 @@ The MCP server holds the model in memory, because the process is long-lived. Thi
 | `thread`      | Each message of one thread, in order.       |
 | `contacts`    | Address resolution for a name.              |
 | `tag`         | Add or remove tags on a message.            |
+| `send`        | Write one message out, and file the copy.   |
 | `status`      | Index health.                               |
 
-`tag` is the only tool that writes. It writes to mailbert's own tag table, and never to the IMAP server.
+Two tools write. `tag` writes to mailbert's own tag table. `send` hands one message to the submission server of §11 and files the copy in the local store. Neither writes to the IMAP server, so §3.3 holds for an agent exactly as it holds for you.
+
+`send` is the one tool whose effect leaves the machine, and mail that has left cannot be recalled. Its description says so, and the server's instructions say so again, so a model that has not been told to send outright reads the message to you first.
 
 Each tool gives its answer two times. The text is what the CLI writes, and the fields are what `--json` writes. The text costs the model less to read. The fields carry what the text leaves out, such as the score.
 
@@ -554,7 +557,7 @@ The body is `--body`, or the whole standard input when that flag is absent. mail
 
 `--dry-run` writes the message to the standard output, and stops there. Nothing goes on the wire, nothing is filed, and no password is read, so it is also how you check what a credential command would be asked for before it is asked.
 
-There is no MCP tool for this. §2.2 gives an agent the tools that read, and `tag`, which writes to mailbert's own tag table. Mail that leaves the machine leaves because a person at a terminal asked for it.
+§2.2 gives this to an agent as the `send` tool, with the same arguments under the same names, and the same account rules. It is the one tool of the server whose effect leaves the machine.
 
 ### 11.1 Submission
 
@@ -567,6 +570,8 @@ An account with no `[account.smtp]` cannot send, and the error names the account
 mailbert writes `From`, `To`, `Cc`, `Subject`, `Date`, `Message-ID`, and a `User-Agent` that names its own version. `Bcc` rides on the envelope alone, and no header names it, so a blind copy stays blind.
 
 `From` is the account's `from` when it has one, and the submission user when it does not.
+
+The `Message-ID` is a random token, then the domain the message is sent from. RFC 5322 §3.6.4 wants a right side that is unique in the world, and the name of the machine — which is what a mail library reaches for by default — is unique to that machine and to nothing else. §4.1 makes this identity the message, and §11.3 leans on it, so it has to hold up against every other message on earth.
 
 `--reply-to <id>` takes the identity of §4.1, in its short form or in full, and the answer inherits from that message:
 

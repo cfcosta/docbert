@@ -138,6 +138,13 @@ pub enum Error {
     ))]
     BadAddress(String),
 
+    #[error("the message names no recipient")]
+    #[diagnostic(help(
+        "Give at least one of `to`, `cc`, or `bcc`, or answer a message \
+         with `reply_to` and take its sender."
+    ))]
+    NoRecipient,
+
     #[error("no account can send")]
     #[diagnostic(help(
         "Give one account an [account.smtp] table. See §11 of \
