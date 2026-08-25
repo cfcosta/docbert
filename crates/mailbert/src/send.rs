@@ -26,6 +26,7 @@ use lettre::{
     transport::smtp::authentication::Credentials,
 };
 use mailbert_core::{
+    MessageId,
     Store,
     address,
     config::{Account, Config, Tls},
@@ -41,6 +42,7 @@ use crate::{
     cli,
     error::{Error, Result},
     pass,
+    semantic::{Brain, Embedded},
     settings,
     show,
 };
@@ -213,7 +215,13 @@ pub fn command(tool: &Tool, args: &cli::Send) -> Result<()> {
     }
 
     let index = tool.index()?;
+
+    // The embeddings open before the message goes out, so a database
+    // that will not open is known before the send and not after it.
+    let mut brain = mind(tool);
     let answer = crate::block_on(run(&store, &index, &config, &letter))?;
+
+    learn(&store, brain.as_mut(), &answer);
 
     match args.json {
         true => write_json(&answer, &mut out),
@@ -586,6 +594,75 @@ pub fn file(
     pass::after_sync(store, index, &BTreeSet::from([stored.id]))?;
 
     Ok(stored)
+}
+
+/// The model that reads the copy, or nothing when it will not open.
+///
+/// A `send` that cannot embed is still a `send`, so this warns and
+/// gives nothing back rather than failing the command.
+fn mind(tool: &Tool) -> Option<Brain> {
+    match tool.brain() {
+        Ok(brain) => Some(brain),
+        Err(problem) => {
+            tracing::warn!(
+                %problem,
+                "the embeddings did not open, so the copy waits for a sync"
+            );
+
+            None
+        }
+    }
+}
+
+/// Give the copy that [`file`] wrote to the model. (§6.2, §11.3)
+///
+/// [`pass::after_sync`] writes the lexical index alone, so a message
+/// that only went through it is one that `ksearch` finds and `search`
+/// does not. The copy therefore goes to the model as it is filed,
+/// rather than waiting for the next sync to notice it.
+///
+/// Nothing here fails the command. The server already took the
+/// message, and a `send` that reported a failure after that would say
+/// something untrue about a message that is on its way. A model that
+/// will not read the copy costs a line on the log instead: the store
+/// and the lexical index hold it either way, and the next sync embeds
+/// it.
+pub fn learn(
+    store: &Store,
+    brain: Option<&mut Brain>,
+    answer: &Answer,
+) -> Embedded {
+    let nothing = Embedded::default();
+
+    let Some(brain) = brain else {
+        return nothing;
+    };
+
+    // The report carries the full hex of §4.1, which is the key that
+    // the store files the message under.
+    let Some(id) = MessageId::from_hex(&answer.id) else {
+        return nothing;
+    };
+
+    match brain.learn(store, &BTreeSet::from([id])) {
+        Ok(done) => {
+            tracing::info!(
+                passages = done.passages,
+                "the model read the message that went out"
+            );
+
+            done
+        }
+        Err(problem) => {
+            tracing::warn!(
+                %problem,
+                "the model did not read the message that went out, so \
+                 `search` finds it after the next sync"
+            );
+
+            nothing
+        }
+    }
 }
 
 /// Write the JSON of §10.4.
@@ -1091,6 +1168,64 @@ it weaves algebraic patterns
         assert_eq!(merged.id, filed.id);
         assert_eq!(box_.store.len().expect("a count"), 1);
         assert_eq!(merged.locations.len(), 2);
+    }
+
+    /// §11.3 files the copy so that a search finds it. The lexical
+    /// index is only half of a `search`, and this is the other half:
+    /// the message that `file` wrote must be work that the model has
+    /// not done, or nothing would ever embed it.
+    #[test]
+    fn the_copy_that_went_out_is_work_the_model_has_not_read() {
+        let box_ = Mailbox::open();
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let index = MailIndex::open(&dir.path().join("index")).expect("index");
+        let draft = Draft {
+            from: "me@example.test".to_string(),
+            to: vec!["grace@example.test".to_string()],
+            subject: "Punch cards".to_string(),
+            body: "they weave patterns\n".to_string(),
+            ..Draft::default()
+        };
+        let raw = compose(&draft).expect("a message").formatted();
+        let filed = file(&box_.store, &index, &sender(), &raw, 1_700_000_000)
+            .expect("a write");
+
+        let named = crate::semantic::plan_for(
+            &box_.store,
+            "a/model",
+            &BTreeSet::from([filed.id]),
+        )
+        .expect("a plan");
+
+        assert_eq!(named.work.len(), 1);
+        assert_eq!(named.work[0].id, filed.id);
+        assert!(named.passages() > 0, "the copy cut no passage");
+        assert!(
+            box_.store.embedding(&filed.id).expect("a read").is_none(),
+            "the copy came out of `file` already embedded"
+        );
+    }
+
+    /// The message is on its way before the model is asked for
+    /// anything, so a machine with no model still sends mail.
+    #[test]
+    fn a_send_with_no_model_behind_it_still_stands() {
+        let box_ = Mailbox::open();
+        let answer = Answer {
+            id: MessageId::from_message_id("<x@example.test>")
+                .expect("an identity")
+                .full_hex(),
+            message_id: "x@example.test".to_string(),
+            account: "work".to_string(),
+            from: "me@example.test".to_string(),
+            to: vec!["alice@example.test".to_string()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Hi".to_string(),
+            folder: "Sent".to_string(),
+        };
+
+        assert_eq!(learn(&box_.store, None, &answer), Embedded::default());
     }
 
     #[test]

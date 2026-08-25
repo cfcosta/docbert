@@ -763,3 +763,33 @@ The parts that hold a message and find it again.
   machine, and mail that has left cannot be recalled. The tool
   description and the server instructions both say so, so a model that
   was not told to send outright shows the message first.
+
+- [x] **T44** The model reads the message as it goes out. (§11.3, §6.2)
+  - [x] `Brain::learn` embeds the messages that a caller names, and
+        writes the PLAID index before it returns.
+  - [x] Both doors of `send` give the filed copy to the model.
+  - [x] A model that will not read the copy warns and does not fail a
+        message that already left.
+
+  §11.3 said that a `send` was findable as soon as the command
+  returned, and half of that was true: `pass::after_sync` writes the
+  threading and the lexical index, and nothing wrote the embeddings. A
+  `search` right after a `send` therefore fell back to `ksearch`, and
+  the message stayed out of the semantic leg until the next sync swept
+  the whole store.
+
+  `Brain::sweep` is the wrong tool for one message. It plans over every
+  message the store holds, which is 100000 reads to find the one that
+  just went out. `Brain::learn` plans over the names it is given, and
+  both share the pass that follows: the model reads what the plan
+  names, the PLAID index takes what moved. The index is written here
+  and not left for later, because nothing follows a `send` the way the
+  pass follows a sync.
+
+  The step is deliberately unable to fail the command. The submission
+  server has the message before the model is asked for anything, so a
+  `send` that returned an error after that would report a failure about
+  a message that is on its way to its recipients. `send::learn` gives
+  back what the model read and logs what it could not, and the CLI door
+  opens the embedding database before the message goes out so that a
+  database that will not open is known beforehand.

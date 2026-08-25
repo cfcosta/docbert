@@ -582,7 +582,9 @@ The `Message-ID` is a random token, then the domain the message is sent from. RF
 
 ### 11.3 The local copy
 
-The sent message goes into mailbert's own store, in the account's `sent` folder, flagged `\Seen`, because a message you wrote is one you have read. The same pass that a sync runs indexes it, so `search` finds it as soon as the command returns.
+The sent message goes into mailbert's own store, in the account's `sent` folder, flagged `\Seen`, because a message you wrote is one you have read. The same pass that a sync runs indexes it, and then the model reads it, so both legs of §8.1 hold the message before the command returns and `search` finds it and not `ksearch` alone.
+
+The model is the slow half, and it never fails the command. The submission server has the message by the time the model is asked for anything, so a `send` that reported a failure after that would say something untrue about a message that is already on its way. A machine that cannot embed says so on the log and leaves the copy standing: the store and the lexical index hold it either way, and the next sync reads it the way it reads any message the model has not seen (§6.2).
 
 It never goes up over IMAP. Non-goal 2 holds for `send` as it holds for a sync, so mailbert files no message in the server's `Sent` folder and sets no flag there.
 

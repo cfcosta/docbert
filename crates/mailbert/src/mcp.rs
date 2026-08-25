@@ -328,7 +328,24 @@ impl Desk {
         &self,
         letter: &send::Letter,
     ) -> error::Result<send::Answer> {
-        send::run(&self.store, &self.index, &self.config, letter).await
+        let answer =
+            send::run(&self.store, &self.index, &self.config, letter).await?;
+
+        // The model reads the copy once the message is gone, so the
+        // desk takes its lock here and never holds it over the wire.
+        // A model that will not read the copy does not fail the send,
+        // which is why neither arm of this asks. (§11.3)
+        match self.mind() {
+            Ok(mut mind) => {
+                send::learn(&self.store, mind.as_mut(), &answer);
+            }
+            Err(problem) => tracing::warn!(
+                %problem,
+                "the embeddings did not open, so the copy waits for a sync"
+            ),
+        }
+
+        Ok(answer)
     }
 
     /// The counts of the store, the index, and the vectors. (§10.4)

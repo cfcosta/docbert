@@ -121,12 +121,51 @@ impl Brain {
     ) -> Result<Embedded> {
         let plan = plan(store, self.model.model_id())?;
 
+        self.pass(store, &plan, report)
+    }
+
+    /// Embed the messages that `ids` names, and write the PLAID index.
+    ///
+    /// [`Brain::sweep`] reads every message of the store to find what
+    /// changed, and a mailbox of 100000 messages pays 100000 reads for
+    /// it. A caller that already knows what it wrote names it here and
+    /// pays one read. (§6.2)
+    ///
+    /// The index is written before this returns, because nothing
+    /// follows this the way the pass follows a sync. A `send` therefore
+    /// leaves the message ranked, and the next `search` finds it.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the model, the store, or either index
+    /// refuses the work.
+    pub fn learn(
+        &mut self,
+        store: &Store,
+        ids: &BTreeSet<MessageId>,
+    ) -> Result<Embedded> {
+        let plan = plan_for(store, self.model.model_id(), ids)?;
+
+        self.pass(store, &plan, |_| {})
+    }
+
+    /// Do one pass: the model reads the plan, the index takes what
+    /// moved.
+    ///
+    /// A plan with nothing in it asks for no model, which is what
+    /// keeps a sync of a mailbox that did not change free. (§6.2)
+    fn pass(
+        &mut self,
+        store: &Store,
+        plan: &Plan,
+        report: impl FnMut(usize),
+    ) -> Result<Embedded> {
         if plan.is_empty() {
             return Ok(Embedded::default());
         }
 
-        let done = apply(store, &self.db, &mut self.model, &plan, report)?;
-        rebuild(&self.db, &self.at, &plan, self.params)?;
+        let done = apply(store, &self.db, &mut self.model, plan, report)?;
+        rebuild(&self.db, &self.at, plan, self.params)?;
 
         Ok(done)
     }
@@ -557,7 +596,32 @@ pub fn rebuild(
             update_index_with_chunks(db, read, &upserts, &plan.stale)?,
             false,
         ),
-        None => (build_index_from_embedding_db(db, params)?, true),
+        None => {
+            // PLAID trains one centroid over each cluster of tokens,
+            // and a corpus with fewer tokens than centroids has
+            // nothing to train on. A mailbox that small waits: the
+            // embeddings are written either way, and the pass that
+            // carries it over the line builds the index over all of
+            // them. This is what a `send` from an empty machine meets,
+            // because one message is not a corpus. (§6.2, §11.3)
+            let tokens: usize = db
+                .list_shapes()?
+                .iter()
+                .map(|(_, count, _)| *count as usize)
+                .sum();
+
+            if tokens < params.k_centroids {
+                tracing::debug!(
+                    tokens,
+                    centroids = params.k_centroids,
+                    "too few tokens for an index, so the mail waits"
+                );
+
+                return Ok(false);
+            }
+
+            (build_index_from_embedding_db(db, params)?, true)
+        }
     };
 
     persistence::save(&index, at)?;
@@ -1465,6 +1529,33 @@ mod tests {
             Some(ABSENT),
         )
         .expect("a brain")
+    }
+
+    /// §11.3: a `send` from a machine that has never synced embeds one
+    /// message, and PLAID cannot train 256 centroids over the tokens of
+    /// one letter. The build waits instead of failing, so the message
+    /// that went out keeps its embeddings and the next pass ranks it.
+    #[test]
+    fn a_corpus_too_small_to_train_on_writes_no_index() {
+        let dir = tempdir().expect("a directory");
+        let db = open_db(&dir);
+        let at = dir.path().join("plaid.idx");
+
+        // One token, and `small` asks for two centroids.
+        db.store(1, 1, DIM, &[1.0, 0.0]).expect("an embedding");
+
+        let plan = Plan {
+            work: vec![Work {
+                id: MessageId::from_message_id("<one@example.test>")
+                    .expect("an identity"),
+                passages: Vec::new(),
+                digest: [0; 32],
+            }],
+            stale: Vec::new(),
+        };
+
+        assert!(!rebuild(&db, &at, &plan, small()).expect("a build"));
+        assert!(!at.exists(), "an index came out of one token");
     }
 
     #[test]
