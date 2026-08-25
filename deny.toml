@@ -129,6 +129,11 @@ exceptions = [
 
   # The LLVM exception only widens Apache-2.0, which is allowed above.
   { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "ar_archive_writer" },
+
+  # lettre encodes a message body with this, for the submission server
+  # of §11. 0BSD asks for nothing at all, not even the notice that the
+  # BSD licences above ask for.
+  { allow = ["0BSD"], crate = "quoted_printable" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

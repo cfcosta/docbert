@@ -12,6 +12,15 @@ clap_complete = "4.6"
 docbert-core = { path = "../docbert-core" }
 docbert-plaid = { path = "../docbert-plaid" }
 jiff = "0.2"
+lettre = { version = "0.11", default-features = false, features = [
+  "builder",
+  "hostname",
+  "ring",
+  "smtp-transport",
+  "tokio1",
+  "tokio1-rustls",
+  "webpki-roots",
+] }
 mailbert-core = { path = "../mailbert-core" }
 mailbert-imap = { path = "../mailbert-imap" }
 miette = { version = "7.6.0", features = ["fancy"] }
