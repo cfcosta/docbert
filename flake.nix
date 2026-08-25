@@ -130,7 +130,7 @@
 
               # Builds one workspace binary as a Nix package.
               #
-              # Defaults are tuned to the two binaries we ship today:
+              # Defaults are tuned to the binaries we ship today:
               # - `cargoPackage` defaults to the part of `name` before
               #   the first `-`, so `docbert`, `docbert-cuda`, and
               #   `docbert-metal` all build the same `docbert` workspace
@@ -138,11 +138,12 @@
               # - `bundleUi` and `shellCompletions` default to `true`
               #   for `cargoPackage == "docbert"` because that's the
               #   binary that embeds the React UI and exposes a
-              #   `completions` subcommand. Other binaries (rustbert
-              #   today, hypothetical future ones) opt in explicitly.
+              #   `completions` subcommand. Other binaries opt in
+              #   explicitly — mailbert takes `shellCompletions` and
+              #   leaves the UI behind, rustbert takes neither.
               #
               # Override any default by passing it explicitly. Adding a
-              # third workspace binary with its own quirks (different
+              # fourth workspace binary with its own quirks (different
               # main program, different bundling) is just another set
               # of arguments here, no new helper required.
               mkPackage =
@@ -268,6 +269,7 @@
           # final derivation; partial-applying it once per crate here
           # keeps the variant call sites short.
           docbert = callPackage ./crates/docbert;
+          mailbert = callPackage ./crates/mailbert;
           rustbert = callPackage ./crates/rustbert;
         in
         {
@@ -286,6 +288,22 @@
 
           docbert-metal = docbert {
             name = "docbert-metal";
+            buildFeatures = [ "metal" ];
+          };
+
+          mailbert = mailbert { };
+
+          mailbert-cuda = mailbert {
+            name = "mailbert-cuda";
+            buildFeatures = [ "cuda" ];
+            nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
+            buildInputs = cudaBuildInputs;
+            extraEnv = cudaforgeEnv;
+            extraPreBuild = cudaforgePreBuild;
+          };
+
+          mailbert-metal = mailbert {
+            name = "mailbert-metal";
             buildFeatures = [ "metal" ];
           };
 
