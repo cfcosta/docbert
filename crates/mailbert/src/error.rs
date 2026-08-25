@@ -123,6 +123,32 @@ pub enum Error {
     #[diagnostic(help("Run the command yourself, and read what it says."))]
     CommandFailed { command: String, status: i32 },
 
+    #[error("the submission server refused the message: {0}")]
+    #[diagnostic(help(
+        "Check the host, the port, and the login of [account.smtp]."
+    ))]
+    Smtp(#[from] lettre::transport::smtp::Error),
+
+    #[error("I cannot build that message: {0}")]
+    Compose(#[from] lettre::error::Error),
+
+    #[error("`{0}` is not an address")]
+    #[diagnostic(help(
+        "Write `someone@example.com`, or `Name <someone@example.com>`."
+    ))]
+    BadAddress(String),
+
+    #[error("no account can send")]
+    #[diagnostic(help(
+        "Give one account an [account.smtp] table. See §11 of \
+         docs/mailbert.md."
+    ))]
+    NoSender,
+
+    #[error("more than one account can send")]
+    #[diagnostic(help("Name one with --account. These can send: {}", .0.join(", ")))]
+    ManySenders(Vec<String>),
+
     #[error("the credential of account `{0}` is empty")]
     #[diagnostic(help(
         "The command, or the file, must write the password on its first line."

@@ -18,12 +18,13 @@ The primary use is: **"find that message, when I remember what it was about but 
 4. mailbert resolves a sender name to an address with a contacts table that it builds during sync. `from:caina` finds `Cainã Costa <me@cfcosta.com>`.
 5. mailbert groups the results into threads, but it ranks messages.
 6. mailbert gives local tags and saved searches. IMAP folders cannot do this.
-7. mailbert is one binary with a CLI and an MCP server.
+7. mailbert sends mail through a submission server, and files the copy in its own store, so a search finds what you sent before the server hands it back. See §11.
+8. mailbert is one binary with a CLI and an MCP server.
 
 ## Functions not included
 
-1. **mailbert does not send mail.** It is a search tool and a downloader. Use your MUA to write mail.
-2. **mailbert does not write to the IMAP server.** The sync is a download-only mirror. mailbert never sets a flag, never moves a message, and never expunges. As a result, a defect in mailbert cannot delete your mail.
+1. **mailbert does not compose mail.** `send` takes a message that its flags and the standard input already hold, and puts it on the wire. It opens no editor, keeps no drafts, and gives no interface for writing one. Your editor writes the body, and a pipe carries it. See §11.
+2. **mailbert does not write to the IMAP server.** The sync is a download-only mirror. mailbert never sets a flag, never moves a message, and never expunges. As a result, a defect in mailbert cannot delete your mail. This holds for `send` too: the copy of §11.3 goes into the local store, and never up into the server's `Sent`.
 3. **mailbert does not support OAuth2.** Accounts that refuse a password are not supported. This keeps the initial version small.
 4. **mailbert does not keep a maildir.** The local store is its own. The `export` command makes a maildir when an MUA must read the mail. See §4.3.
 5. **mailbert does not decrypt encrypted mail during indexing.** See §5.4.
@@ -59,22 +60,37 @@ The configuration is a TOML file at `$XDG_CONFIG_HOME/mailbert/config.toml`. Acc
 
 ```toml
 [[account]]
-name             = "work"
+name    = "work"
+folders = ["INBOX", "Archive", "Sent"]
+exclude = ["Trash", "Junk"]
+from    = "Ada Lovelace <me@work.example>"   # the From that `send` writes
+
+[account.imap]
 host             = "imap.fastmail.com"
 port             = 993                       # default 993
 user             = "me@work.example"
 password_command = "pass show mail/work"     # or password_file, or password
-folders          = ["INBOX", "Archive", "Sent"]
-exclude          = ["Trash", "Junk"]
 connections      = 8                         # parallel IMAP connections
 
+[account.smtp]
+host = "smtp.fastmail.com"
+port = 465                                   # default 465
+# user and password default to the imap ones
+
 [[account]]
-name          = "personal"
+name        = "personal"
+all_folders = true
+exclude     = ["\\Trash"]                    # an attribute, and not a name
+
+[account.imap]
 host          = "imap.gmail.com"
 user          = "me@gmail.com"
 password_file = "~/.secrets/gmail"
-all_folders   = true
-exclude       = ["\\Trash"]                # an attribute, and not a name
+
+[account.smtp]
+host = "smtp.gmail.com"
+port = 587
+tls  = "start"                               # implicit on 465, start on 587
 
 [search]
 count         = 20
@@ -93,7 +109,13 @@ certs = "~/.gnupg/pubring.kbx"             # default: the keyring of `home`
 
 **The `[pgp]` table.** Both fields are optional, and the defaults find what GnuPG installs, so a working GnuPG needs no `[pgp]` table at all. `home` is the GnuPG home whose agent holds the secret keys; without it mailbert reads `$GNUPGHOME`, and then `~/.gnupg`. `certs` names the file of public certificates that §5.4 maps a key ID to a keygrip with; without it mailbert reads the keyring of `home`. Neither field ever names a secret key, because mailbert holds none.
 
-Three credential fields are available, and mailbert reads them in this order: `password_command`, then `password_file`, then `password`. `password_command` runs a shell command and reads the first line of its output, the same as isync. `password_file` reads a file, and mailbert gives a warning if the mode is not `0600`. `password` holds the value directly, and mailbert always gives a warning.
+**The two servers.** An account holds two of them, in two tables, because they are two machines with two ports and often two logins. `[account.imap]` is required, and holds the server the mail arrives from. `[account.smtp]` is optional, and holds the server the mail leaves through; an account without it syncs like any other, and `send` refuses it by name. Every field of `[account.smtp]` but `host` has a default, and the defaults are the IMAP ones: `user` and the three credential fields fall back to `[account.imap]`, because one provider almost always takes one login on both machines. The port defaults to 465.
+
+**The `tls` field.** `implicit` is the default, and opens TLS on the first byte, which is the submission port 465 of RFC 8314. `start` opens in plaintext and issues `STARTTLS`, which is what the older port 587 wants. `none` opens in plaintext and stays there; mailbert gives a warning for it on every run, and it exists for a relay on the loopback and for nothing else.
+
+**The `from` and `sent` fields.** `from` is the `From` header that `send` writes for the account, and it is the one place a display name can live: without it mailbert writes the submission user, which is an address and carries no name. `sent` names the folder that the local copy of a sent message goes into, and the default is `Sent`. Neither field changes what a sync downloads. See §11.
+
+Three credential fields are available in each of the two tables, and mailbert reads them in this order: `password_command`, then `password_file`, then `password`. `password_command` runs a shell command and reads the first line of its output, the same as isync. `password_file` reads a file, and mailbert gives a warning if the mode is not `0600`. `password` holds the value directly, and mailbert always gives a warning.
 
 ### 1.3 Build features
 
@@ -138,6 +160,13 @@ mailbert search "..." --json
 mailbert get a3f9                    # decoded text of one message
 mailbert view a3f9                   # rendered, with color
 mailbert thread a3f9                 # each message of the thread
+
+# Send
+mailbert send --to alice@example.com --subject "Deposit" --body "on its way"
+echo "on its way" | mailbert send --to alice@example.com --subject "Deposit"
+mailbert send --reply-to a3f9                        # answer one message
+mailbert send --reply-to a3f9 --reply-all            # and everyone it named
+mailbert send --to bob@ex.com --subject Hi --dry-run # the bytes, and no wire
 
 # Tags and saved searches
 mailbert tag +todo a3f9
@@ -507,7 +536,66 @@ DEBUG account{account=work}:folder{folder=INBOX}: mailbert_imap::connection: fet
 
 The log never shows a credential. `LOGIN` and `AUTHENTICATE` show only their name and `***`. A literal shows the count of its bytes, and not the bytes. The log cuts a command that is longer than 160 characters, and it gives the true length.
 
-## 11. Crate layout
+## 11. Sending
+
+`send` is the one command that writes outward. It takes the message from its flags and the standard input, hands it to the submission server of §1.2, and files a copy in the local store.
+
+```bash
+$ mailbert send --to alice@example.com --subject "Deposit" --body "on its way"
+sent to 1 recipient, filed as 4f2a1c9
+
+$ mailbert search "from:me and subject:Deposit"
+4f2a1c9  2026-08-25  [1/1]  me@work.example  Deposit                      (sent)
+```
+
+The body is `--body`, or the whole standard input when that flag is absent. mailbert composes nothing itself, which is non-goal 1: your editor writes the text, and a pipe carries it here.
+
+`--account` names the account to send through. Without it, the one account that has an `[account.smtp]` speaks. With two such accounts and no name, `send` stops and lists them, because a guess would put the wrong address in `From`.
+
+`--dry-run` writes the message to the standard output, and stops there. Nothing goes on the wire, nothing is filed, and no password is read, so it is also how you check what a credential command would be asked for before it is asked.
+
+There is no MCP tool for this. §2.2 gives an agent the tools that read, and `tag`, which writes to mailbert's own tag table. Mail that leaves the machine leaves because a person at a terminal asked for it.
+
+### 11.1 Submission
+
+The connection is what `tls` says: `implicit` opens TLS on the first byte, `start` opens in plaintext and issues `STARTTLS`, and `none` opens in plaintext. The login is the `user` and the password of `[account.smtp]`, each falling back to the IMAP one, and mailbert reads the password by the order of §1.2. As with a sync, the log never shows it.
+
+An account with no `[account.smtp]` cannot send, and the error names the account and the table it needs.
+
+### 11.2 The headers
+
+mailbert writes `From`, `To`, `Cc`, `Subject`, `Date`, `Message-ID`, and a `User-Agent` that names its own version. `Bcc` rides on the envelope alone, and no header names it, so a blind copy stays blind.
+
+`From` is the account's `from` when it has one, and the submission user when it does not.
+
+`--reply-to <id>` takes the identity of §4.1, in its short form or in full, and the answer inherits from that message:
+
+- `To` is the answered `From`, unless `--to` says otherwise.
+- `--reply-all` adds everyone the answered message named in `To` and in `Cc`, less every address of the sending account. An answer never goes back to you.
+- The subject is the answered subject carrying exactly one `Re: `, however many it arrived with, unless `--subject` says otherwise.
+- `In-Reply-To` is the `Message-ID` of the answered message, and `References` is its chain with that message appended. This is what makes §5.5 thread the answer, here and in every other mail program.
+
+### 11.3 The local copy
+
+The sent message goes into mailbert's own store, in the account's `sent` folder, flagged `\Seen`, because a message you wrote is one you have read. The same pass that a sync runs indexes it, so `search` finds it as soon as the command returns.
+
+It never goes up over IMAP. Non-goal 2 holds for `send` as it holds for a sync, so mailbert files no message in the server's `Sent` folder and sets no flag there.
+
+Most submission servers file their own copy, and a later sync brings it down. That copy is not a second message: §4.1 gives it the same identity, because it carries the same `Message-ID`, and §4.2 lands it as another location of the entry that is already there. One message, two locations — the local one with a UID of zero, because no server gave one, and the server's with the UID it did give. A server that files nothing leaves the local copy standing alone, which reads and searches the same.
+
+### 11.4 Output
+
+The text is one line, and it says how many recipients took the message and where the copy went:
+
+```text
+sent to 3 recipients, filed as 4f2a1c9
+```
+
+The identity is the short form of §4.1, so it is ready for `get`, `view`, `thread`, or `tag` without another search.
+
+`--json` gives the fields: `id`, `message_id`, `account`, `from`, `to`, `cc`, `bcc`, `subject`, and `folder`. `bcc` is there because the message itself does not carry it, and this is the only record of who else took a copy.
+
+## 12. Crate layout
 
 ```text
 crates/mailbert/          # the binary: CLI, MCP server, rendering
@@ -517,9 +605,9 @@ crates/mailbert-core/     # store, MIME pipeline, threading, index, query langua
 
 The IMAP client is a separate crate because it is the component that has the most risk, and it must be testable against a fake server without the rest of the tool.
 
-New dependencies: `mail-parser` (MIME), `chumsky` (parser), `miette` (errors), `syntect` (highlighting), `html2text` (conversion), and an IMAP client. `blake3` for the identities.
+New dependencies: `mail-parser` (MIME), `chumsky` (parser), `miette` (errors), `syntect` (highlighting), `html2text` (conversion), `lettre` (the message builder and the submission of §11), and an IMAP client. `blake3` for the identities.
 
-## 12. Open questions
+## 13. Open questions
 
 1. **Which IMAP crate?** The `imap` crate is synchronous and its maintenance is intermittent. `async-imap` is more recent. Neither has the pipelining that §3.1 needs. It is possible that mailbert must build on `imap-codec` or `imap-proto` and write its own connection layer. This is the largest unknown in the schedule, and it must be a prototype before the rest of the work starts.
 2. **What is the true speed target?** "Faster than offlineimap" is not a number. A measurement of the current tools on a real account gives the baseline.

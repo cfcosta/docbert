@@ -15,6 +15,7 @@ pub mod pgp;
 pub mod saved;
 pub mod search;
 pub mod semantic;
+pub mod send;
 pub mod settings;
 pub mod show;
 pub mod sink;
@@ -141,6 +142,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     match &cli.command {
         Command::Sync(args) => sync::command(&tool, args),
+        Command::Send(args) => send::command(&tool, args),
         Command::Search(args) => {
             search::command(&tool, args, search::Legs::Both)
         }
@@ -253,7 +255,7 @@ mod tests {
         let path = temp.path().join("config.toml");
         std::fs::write(
             &path,
-            "[[account]]\nname = \"work\"\nhost = \"a\"\nuser = \"b\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\nuser = \"b\"\n\
              password_command = \"true\"\n",
         )
         .expect("the file is writable");

@@ -43,6 +43,9 @@ pub enum Command {
     /// Download the new mail of each account
     Sync(Sync),
 
+    /// Write one message to a submission server
+    Send(Send),
+
     /// Search the mail with both legs
     Search(Find),
 
@@ -89,6 +92,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Sync(_) => "sync",
+            Self::Send(_) => "send",
             Self::Search(_) => "search",
             Self::Ksearch(_) => "ksearch",
             Self::Get(_) => "get",
@@ -108,6 +112,7 @@ impl Command {
     pub fn wants_json(&self) -> bool {
         match self {
             Self::Sync(sync) => sync.json,
+            Self::Send(send) => send.json,
             Self::Search(find) | Self::Ksearch(find) => find.json,
             Self::Get(one) | Self::Thread(one) => one.json,
             Self::Contacts(who) => who.json,
@@ -293,6 +298,50 @@ impl Saved {
             Self::Add { .. } | Self::Remove { .. } => false,
         }
     }
+}
+
+/// `mailbert send --to <address> --subject <text>` (§11)
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct Send {
+    /// A recipient. Give it once for each.
+    #[arg(long, required_unless_present = "reply_to")]
+    pub to: Vec<String>,
+
+    /// A carbon copy
+    #[arg(long)]
+    pub cc: Vec<String>,
+
+    /// A blind carbon copy, which no header names
+    #[arg(long)]
+    pub bcc: Vec<String>,
+
+    /// The subject
+    #[arg(long, required_unless_present = "reply_to")]
+    pub subject: Option<String>,
+
+    /// The body. Without it, the body comes from the standard input.
+    #[arg(long)]
+    pub body: Option<String>,
+
+    /// Answer this message: its thread, its subject, its sender
+    #[arg(long, value_name = "ID")]
+    pub reply_to: Option<String>,
+
+    /// Answer everyone that the message named, not only its sender
+    #[arg(long, requires = "reply_to")]
+    pub reply_all: bool,
+
+    /// Send from this account
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Write the message on the standard output, and submit nothing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Write JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `mailbert contacts <name>`

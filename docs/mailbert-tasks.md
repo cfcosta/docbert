@@ -15,7 +15,7 @@ A task is complete when all of these are true:
 
 The types that every later phase speaks in. This phase is complete.
 
-- [x] **T1** Scaffold `mailbert-core` and its error type. (§11)
+- [x] **T1** Scaffold `mailbert-core` and its error type. (§12)
 - [x] **T2** Message identity, and git-style prefixes. (§4.1)
 - [x] **T3** The configuration file, and the credential order. (§1.2)
 - [x] **T4** Remove the quotes and the signatures from a body. (§5.2)
@@ -687,3 +687,47 @@ The parts that hold a message and find it again.
   agent, the agent is not running, or the agent refused. The connection
   to the agent is made before the message is read, so "the agent is not
   running" never arrives as "no key opens this message".
+
+- [x] **T42** `send` puts a message on the wire. (§11)
+  - [x] An account holds `[account.imap]` and `[account.smtp]`, and the
+        submission login falls back to the IMAP one.
+  - [x] lettre builds the message and submits it, with TLS implicit on
+        465 and started on 587.
+  - [x] `--reply-to` inherits the recipients, one `Re: `, and the whole
+        `References` chain.
+  - [x] The sent message is filed locally, and a later sync of the
+        server's `Sent` joins it instead of doubling it.
+  - [x] `--dry-run` writes the bytes and sends nothing.
+
+  mailbert used to say it did not send mail. It said so because it is a
+  mirror that only reads, and sending sounded like the first step
+  toward writing to the server. It is not: the message goes to the
+  submission server, which is a different machine with a different
+  protocol, and the IMAP side stays exactly as read-only as it was.
+
+  The account grew a second table because the two servers were never
+  one. `[account.imap]` and `[account.smtp]` are symmetric, and every
+  field of the second but `host` falls back to the first, so an account
+  at one provider adds two lines and no login. Every existing
+  `config.toml` has to move its `host` and `user` under
+  `[account.imap]`, which is the one breaking change of this task.
+
+  The copy is the part worth explaining. A `send` that only wrote to
+  the server would leave the message unfindable until the server handed
+  it back down, which is minutes on a good day and never on a server
+  that files nothing in `Sent`. So `send` writes the copy into the
+  store itself. That is not a write to the server, so non-goal 2 lives.
+  And when the server's own copy does come down, §4.1 has already
+  decided that a message is its `Message-ID`, so the copy lands as a
+  second location of the entry that is there. The test for this files a
+  message and then puts the same bytes again from a server folder, and
+  asserts one message with two locations.
+
+  lettre does the SMTP. Writing it by hand would have been a fourth
+  protocol implementation in this workspace, and the one part of it
+  that is genuinely hard — the TLS, the SASL, the encoded words of RFC
+  2047 — is the part that is already written. Its encoding is honest
+  about one thing worth knowing: two non-ASCII words separated by a run
+  of spaces come back with the run gone, because RFC 2047 has a reader
+  drop the whitespace between two adjacent encoded words. One space
+  survives, and the property test says so with one space.
