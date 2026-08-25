@@ -46,6 +46,9 @@ pub struct Config {
     #[serde(default)]
     pub view: ViewConfig,
 
+    #[serde(default)]
+    pub pgp: PgpConfig,
+
     /// Written as `[[account]]`, so the TOML key is singular.
     #[serde(
         default,
@@ -109,6 +112,30 @@ pub struct SearchConfig {
 
     #[serde(default = "default_half_life")]
     pub recency_half_life_days: f64,
+}
+
+/// Where `view` looks for the keys of an encrypted message. (§5.4)
+///
+/// Both fields are optional, because the defaults find what GnuPG
+/// installs. mailbert never holds a secret key: gpg-agent keeps every
+/// secret, and these paths only name the public certificates that say
+/// which key of the agent a message was encrypted to.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgpConfig {
+    /// The GnuPG home. Defaults to `$GNUPGHOME`, then `~/.gnupg`.
+    ///
+    /// mailbert reads the agent socket and the public certificates
+    /// from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<PathBuf>,
+
+    /// A file of public certificates, which overrides `home`.
+    ///
+    /// A keybox (`pubring.kbx`), a legacy keyring (`pubring.gpg`), and
+    /// an armored export all work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certs: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -577,6 +604,7 @@ mod tests {
         Config {
             search: SearchConfig::default(),
             view: ViewConfig::default(),
+            pgp: PgpConfig::default(),
             accounts,
         }
     }
