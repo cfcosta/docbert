@@ -45,16 +45,37 @@ pub struct Answer {
 
 /// The addresses that belong to you.
 ///
-/// The `user` of an account is its IMAP login. A login that holds an
-/// `@` is an address, and a login that does not is a bare name that
-/// says nothing about direction.
+/// An account speaks under three names at most: its IMAP login, its
+/// submission login, and the `from` it writes on the mail it sends.
+/// Each is an address only when it holds an `@`; a login without one is
+/// a bare name that says nothing about direction.
 pub fn mine(config: &Config) -> BTreeSet<String> {
     config
         .accounts
         .iter()
-        .map(|account| account.user.trim().to_lowercase())
-        .filter(|user| user.contains('@'))
+        .flat_map(|account| {
+            let smtp = account.smtp.as_ref().and_then(|smtp| smtp.user.clone());
+
+            [Some(account.imap.user.clone()), smtp, account.from.clone()]
+        })
+        .flatten()
+        .filter_map(|name| address(&name))
         .collect()
+}
+
+/// The address inside a name, lowercased.
+///
+/// A `from` carries a display name, so `Ada <ada@example.test>` has to
+/// give up `ada@example.test` and not the whole line.
+fn address(name: &str) -> Option<String> {
+    let inner = match (name.rfind('<'), name.rfind('>')) {
+        (Some(open), Some(close)) if open < close => &name[open + 1..close],
+        _ => name,
+    };
+
+    let inner = inner.trim().to_lowercase();
+
+    inner.contains('@').then_some(inner)
 }
 
 /// Build the contact book from the store. (§5.6)
@@ -177,7 +198,7 @@ mod tests {
 
     use hegel::{TestCase, generators as gs};
     use mailbert_core::{
-        config::Account,
+        config::{Account, ImapConfig},
         message::{Location, Message},
         mime,
     };
@@ -259,17 +280,15 @@ mod tests {
             .enumerate()
             .map(|(at, user)| Account {
                 name: format!("a{at}"),
-                host: "mail.example.test".to_string(),
-                user: (*user).to_string(),
-                port: 993,
-                password_command: None,
-                password_file: None,
-                password: Some("secret".to_string()),
-                folders: Vec::new(),
-                exclude: Vec::new(),
-                footers: Vec::new(),
+                imap: ImapConfig {
+                    host: "mail.example.test".to_string(),
+                    user: (*user).to_string(),
+                    password: Some("secret".to_string()),
+                    connections: 1,
+                    ..ImapConfig::default()
+                },
                 all_folders: true,
-                connections: 1,
+                ..Account::default()
             })
             .collect();
 

@@ -3,14 +3,23 @@
 //! mailbert reads TOML from `$XDG_CONFIG_HOME/mailbert/config.toml`.
 //! Accounts are an array of tables. See `docs/mailbert.md` §1.2.
 //!
+//! An account names two servers, because mail arrives at one and
+//! leaves through the other. `[account.smtp]` is optional, and an
+//! account without one syncs but cannot send.
+//!
 //! ```toml
 //! [[account]]
-//! name             = "work"
+//! name    = "work"
+//! folders = ["INBOX", "Archive"]
+//! exclude = ["Trash"]
+//!
+//! [account.imap]
 //! host             = "imap.fastmail.com"
 //! user             = "me@work.example"
 //! password_command = "pass show mail/work"
-//! folders          = ["INBOX", "Archive"]
-//! exclude          = ["Trash"]
+//!
+//! [account.smtp]
+//! host = "smtp.fastmail.com"
 //! ```
 
 use std::{collections::HashSet, path::PathBuf};
@@ -22,6 +31,11 @@ use crate::error::{Error, Result};
 
 /// The IMAPS port. mailbert does not speak cleartext IMAP.
 pub const DEFAULT_PORT: u16 = 993;
+
+/// The submission port of RFC 8314, which wants TLS from the first
+/// byte. The older port 587 wants STARTTLS, and `tls = "start"` with
+/// `port = 587` is how an account says so.
+pub const DEFAULT_SMTP_PORT: u16 = 465;
 
 /// Parallel IMAP connections for each account. Gmail permits 15, and
 /// some servers permit 4, so this is configurable.
@@ -35,6 +49,9 @@ pub const DEFAULT_HALF_LIFE_DAYS: f64 = 180.0;
 
 /// The name that RFC 3501 makes case-insensitive.
 const INBOX: &str = "INBOX";
+
+/// The folder that a sent message is filed into. (§11.3)
+const SENT: &str = "Sent";
 
 /// The whole configuration file.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -58,29 +75,31 @@ pub struct Config {
     pub accounts: Vec<Account>,
 }
 
-/// One IMAP account.
+/// One account: the server its mail arrives from, and the server its
+/// mail leaves through.
+///
+/// The two servers are separate tables because they are separate
+/// machines with separate ports, and often separate logins. Only
+/// `[account.imap]` is required: an account without `[account.smtp]`
+/// syncs like any other, and `send` refuses it by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
     pub name: String,
-    pub host: String,
-    pub user: String,
 
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// The server that the mail arrives from.
+    pub imap: ImapConfig,
 
-    /// A shell command whose first line of output is the password. This
-    /// is the isync convention, and it keeps the secret off disk.
+    /// The server that the mail leaves through. (§11)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password_command: Option<String>,
+    pub smtp: Option<SmtpConfig>,
 
-    /// A file whose first line is the password.
+    /// The `From` header that `send` writes, with a display name.
+    ///
+    /// Without it `send` writes the SMTP user, which is an address and
+    /// carries no name. `from = "Ada Lovelace <ada@example.test>"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password_file: Option<PathBuf>,
-
-    /// The password itself. mailbert always warns about this one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    pub from: Option<String>,
 
     /// Folders to sync. Ignored when `all_folders` is set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -100,8 +119,98 @@ pub struct Account {
     #[serde(default, skip_serializing_if = "is_false")]
     pub all_folders: bool,
 
+    /// The folder that `send` files a sent message into, locally.
+    ///
+    /// This never reaches the server: §11.3 writes the copy into
+    /// mailbert's own store, so that a search finds what you sent
+    /// before the server's own copy comes back down.
+    #[serde(default = "default_sent", skip_serializing_if = "is_sent")]
+    pub sent: String,
+}
+
+/// The server that an account's mail arrives from. (§3)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImapConfig {
+    pub host: String,
+    pub user: String,
+
+    #[serde(default = "default_port")]
+    pub port: u16,
+
+    /// A shell command whose first line of output is the password. This
+    /// is the isync convention, and it keeps the secret off disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_command: Option<String>,
+
+    /// A file whose first line is the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<PathBuf>,
+
+    /// The password itself. mailbert always warns about this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+
+    /// Parallel connections for this account. (§3.1)
     #[serde(default = "default_connections")]
     pub connections: usize,
+}
+
+/// The server that an account's mail leaves through. (§11)
+///
+/// Every field but `host` has a default, and the defaults are the
+/// credentials of `[account.imap]`, because one provider almost always
+/// takes the same login on both machines. An account that submits under
+/// a different user says so, and says nothing otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpConfig {
+    pub host: String,
+
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+
+    /// The submission user. Defaults to the IMAP user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+
+    /// A shell command whose first line of output is the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_command: Option<String>,
+
+    /// A file whose first line is the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<PathBuf>,
+
+    /// The password itself. mailbert always warns about this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+
+    /// How TLS starts on the connection.
+    #[serde(default)]
+    pub tls: Tls,
+}
+
+/// When TLS starts on a submission connection.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Tls {
+    /// TLS from the first byte, on port 465. This is what RFC 8314
+    /// wants, and it is the default.
+    #[default]
+    Implicit,
+
+    /// Cleartext, and then STARTTLS, on port 587.
+    Start,
+
+    /// No TLS at all.
+    ///
+    /// The password crosses the wire in the clear, so mailbert warns
+    /// about this the way it warns about a password in the file. It is
+    /// here for a submission server on the loopback, and for tests.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +261,18 @@ fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+fn default_smtp_port() -> u16 {
+    DEFAULT_SMTP_PORT
+}
+
+fn default_sent() -> String {
+    SENT.to_string()
+}
+
+fn is_sent(name: &str) -> bool {
+    name == SENT
+}
+
 fn default_connections() -> usize {
     DEFAULT_CONNECTIONS
 }
@@ -194,6 +315,55 @@ impl Default for ViewConfig {
     }
 }
 
+// The three impls below hold exactly what serde fills in for a field
+// the file leaves out, so `..Default::default()` in Rust and an absent
+// key in TOML mean the same thing. A required field defaults to empty,
+// which [`Config::validate`] then rejects by name.
+
+impl Default for Account {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            imap: ImapConfig::default(),
+            smtp: None,
+            from: None,
+            folders: Vec::new(),
+            exclude: Vec::new(),
+            footers: Vec::new(),
+            all_folders: false,
+            sent: default_sent(),
+        }
+    }
+}
+
+impl Default for ImapConfig {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            user: String::new(),
+            port: default_port(),
+            password_command: None,
+            password_file: None,
+            password: None,
+            connections: default_connections(),
+        }
+    }
+}
+
+impl Default for SmtpConfig {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            port: default_smtp_port(),
+            user: None,
+            password_command: None,
+            password_file: None,
+            password: None,
+            tls: Tls::default(),
+        }
+    }
+}
+
 /// Where an account's password comes from.
 ///
 /// The variants are ordered by the precedence that [`Account::credential`]
@@ -206,6 +376,26 @@ pub enum Credential {
     File(PathBuf),
     /// Use the value from the config file directly.
     Literal(String),
+}
+
+/// The credential that three optional sources give, in precedence.
+///
+/// The order is the one that §1.2 promises: `password_command`, then
+/// `password_file`, then `password`.
+fn pick(
+    command: &Option<String>,
+    file: &Option<PathBuf>,
+    literal: &Option<String>,
+) -> Option<Credential> {
+    if let Some(command) = command {
+        return Some(Credential::Command(command.clone()));
+    }
+
+    if let Some(path) = file {
+        return Some(Credential::File(path.clone()));
+    }
+
+    literal.clone().map(Credential::Literal)
 }
 
 /// Compare two IMAP folder names.
@@ -297,14 +487,20 @@ impl Config {
     ///     r#"
     ///     [[account]]
     ///     name = "work"
+    ///
+    ///     [account.imap]
     ///     host = "imap.example.com"
     ///     user = "me@example.com"
     ///     password_command = "pass show mail/work"
+    ///
+    ///     [account.smtp]
+    ///     host = "smtp.example.com"
     /// "#,
     /// )
     /// .unwrap();
     ///
     /// assert_eq!(config.accounts.len(), 1);
+    /// assert_eq!(config.accounts[0].smtp_user().unwrap(), "me@example.com");
     /// ```
     pub fn parse(toml_text: &str) -> Result<Self> {
         let config: Self = toml::from_str(toml_text)?;
@@ -317,7 +513,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`Error::EmptyAccountName`], [`Error::EmptyField`],
-    /// [`Error::MissingCredential`], or [`Error::DuplicateAccount`].
+    /// [`Error::MissingCredential`], [`Error::InvalidFooter`], or
+    /// [`Error::DuplicateAccount`].
     pub fn validate(&self) -> Result<()> {
         let mut seen: HashSet<&str> = HashSet::new();
 
@@ -326,10 +523,14 @@ impl Config {
                 return Err(Error::EmptyAccountName);
             }
 
-            for (field, value) in
-                [("host", &account.host), ("user", &account.user)]
-            {
-                if value.is_empty() {
+            let smtp_host = account.smtp.as_ref().map(|smtp| &smtp.host);
+
+            for (field, value) in [
+                ("imap.host", Some(&account.imap.host)),
+                ("imap.user", Some(&account.imap.user)),
+                ("smtp.host", smtp_host),
+            ] {
+                if value.is_some_and(String::is_empty) {
                     return Err(Error::EmptyField {
                         account: account.name.clone(),
                         field,
@@ -341,6 +542,12 @@ impl Config {
             // already waited for a connection.
             account.credential()?;
             account.footer_patterns()?;
+
+            // A `send` that only finds out at the socket that it has no
+            // password has already asked the user for a message.
+            if account.smtp.is_some() {
+                account.smtp_credential()?;
+            }
 
             if !seen.insert(account.name.as_str()) {
                 return Err(Error::DuplicateAccount(account.name.clone()));
@@ -357,7 +564,7 @@ impl Config {
 }
 
 impl Account {
-    /// Resolve which credential source to use.
+    /// Resolve which credential source the IMAP server takes.
     ///
     /// Precedence is `password_command`, then `password_file`, then
     /// `password`.
@@ -366,27 +573,78 @@ impl Account {
     ///
     /// Returns [`Error::MissingCredential`] when all three are absent.
     pub fn credential(&self) -> Result<Credential> {
-        if let Some(command) = &self.password_command {
-            return Ok(Credential::Command(command.clone()));
-        }
-
-        if let Some(path) = &self.password_file {
-            return Ok(Credential::File(path.clone()));
-        }
-
-        if let Some(password) = &self.password {
-            return Ok(Credential::Literal(password.clone()));
-        }
-
-        Err(Error::MissingCredential(self.name.clone()))
+        pick(
+            &self.imap.password_command,
+            &self.imap.password_file,
+            &self.imap.password,
+        )
+        .ok_or_else(|| Error::MissingCredential(self.name.clone()))
     }
 
-    /// Whether this account stores its password in the config file.
+    /// Resolve which credential source the submission server takes.
+    ///
+    /// An `[account.smtp]` that names no password takes the IMAP one,
+    /// because one provider almost always takes the same login on both
+    /// machines. It is only when the SMTP table names a password source
+    /// of its own that the IMAP one is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSmtp`] when the account has no `[account.smtp]`,
+    /// and [`Error::MissingCredential`] when neither table names a
+    /// password.
+    pub fn smtp_credential(&self) -> Result<Credential> {
+        let smtp = self.smtp()?;
+
+        pick(&smtp.password_command, &smtp.password_file, &smtp.password)
+            .map_or_else(|| self.credential(), Ok)
+    }
+
+    /// The submission user: the SMTP one, or the IMAP one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSmtp`] when the account has no `[account.smtp]`.
+    pub fn smtp_user(&self) -> Result<&str> {
+        Ok(self
+            .smtp()?
+            .user
+            .as_deref()
+            .unwrap_or(self.imap.user.as_str()))
+    }
+
+    /// The submission server of this account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSmtp`] when the account has no `[account.smtp]`.
+    pub fn smtp(&self) -> Result<&SmtpConfig> {
+        self.smtp
+            .as_ref()
+            .ok_or_else(|| Error::NoSmtp(self.name.clone()))
+    }
+
+    /// The `From` header that `send` writes for this account. (§11.2)
+    ///
+    /// `from` of the configuration wins, because only it can carry a
+    /// display name. Without it the submission user speaks, and an
+    /// account with no submission server falls back to the IMAP user so
+    /// that the header is never empty.
+    pub fn sender(&self) -> String {
+        if let Some(from) = &self.from {
+            return from.clone();
+        }
+
+        self.smtp_user().unwrap_or(&self.imap.user).to_string()
+    }
+
+    /// Whether this account stores a password in the config file.
     ///
     /// The CLI warns when it does. A literal that precedence never
     /// reaches is not reported, because mailbert does not read it.
     pub fn has_plaintext_password(&self) -> bool {
         matches!(self.credential(), Ok(Credential::Literal(_)))
+            || matches!(self.smtp_credential(), Ok(Credential::Literal(_)))
     }
 
     /// The folders to sync, given what the server listed.
@@ -482,6 +740,8 @@ mod tests {
     //! | `prop_all_folders_selects_the_complement` | differential | `all_folders` must equal `available` minus `exclude`, exactly. |
     //! | `prop_folder_eq_is_an_equivalence` | algebraic | Reflexive, symmetric, transitive. Used to compare server names to config names. |
     //! | `prop_duplicate_names_always_rejected` | invariant | Two accounts with one name make `mailbert sync work` ambiguous. |
+    //! | `prop_submission_falls_back_to_the_imap_login` | model-based | §11.1 promises that an `[account.smtp]` that says nothing about a password takes the IMAP one. A wrong fallback submits under the wrong login, or under none. |
+    //! | `prop_a_sender_is_never_empty` | invariant | Every message carries a `From`, and an account that gives an empty one writes a message that no server takes. |
 
     use hegel::{TestCase, generators as gs};
 
@@ -561,17 +821,11 @@ mod tests {
 
         let account = Account {
             name: "acct".to_string(),
-            host: "imap.example.com".to_string(),
-            user: "me@example.com".to_string(),
-            port: DEFAULT_PORT,
-            password_command: Some("true".to_string()),
-            password_file: None,
-            password: None,
+            imap: imap("imap.example.com", "me@example.com"),
             folders,
             exclude,
-            footers: vec![],
             all_folders,
-            connections: DEFAULT_CONNECTIONS,
+            ..Account::default()
         };
 
         (account, available)
@@ -587,17 +841,19 @@ mod tests {
         let accounts = (0..count)
             .map(|i| Account {
                 name: format!("acct{i}"),
-                host: format!("imap{i}.example.com"),
-                user: format!("me{i}@example.com"),
-                port: DEFAULT_PORT,
-                password_command: Some(format!("pass show mail/{i}")),
-                password_file: None,
-                password: None,
+                imap: ImapConfig {
+                    password_command: Some(format!("pass show mail/{i}")),
+                    ..imap(
+                        &format!("imap{i}.example.com"),
+                        &format!("me{i}@example.com"),
+                    )
+                },
+                // Every other account can send, so a round trip sees
+                // both an account with `[account.smtp]` and one without.
+                smtp: (i % 2 == 0)
+                    .then(|| smtp(&format!("smtp{i}.example.com"))),
                 folders: vec!["INBOX".to_string()],
-                exclude: vec![],
-                footers: vec![],
-                all_folders: false,
-                connections: DEFAULT_CONNECTIONS,
+                ..Account::default()
             })
             .collect();
 
@@ -612,17 +868,29 @@ mod tests {
     fn account_named(name: &str) -> Account {
         Account {
             name: name.to_string(),
-            host: "imap.example.com".to_string(),
-            user: "me@example.com".to_string(),
-            port: DEFAULT_PORT,
-            password_command: Some("true".to_string()),
-            password_file: None,
-            password: None,
-            folders: vec![],
-            exclude: vec![],
-            footers: vec![],
+            imap: imap("imap.example.com", "me@example.com"),
             all_folders: true,
-            connections: DEFAULT_CONNECTIONS,
+            ..Account::default()
+        }
+    }
+
+    /// A submission server that validates, and names no login of its
+    /// own, so that it falls back to the IMAP one.
+    fn smtp(host: &str) -> SmtpConfig {
+        SmtpConfig {
+            host: host.to_string(),
+            ..SmtpConfig::default()
+        }
+    }
+
+    /// An IMAP server that validates: a host, a user, and a password
+    /// command that succeeds without prompting.
+    fn imap(host: &str, user: &str) -> ImapConfig {
+        ImapConfig {
+            host: host.to_string(),
+            user: user.to_string(),
+            password_command: Some("true".to_string()),
+            ..ImapConfig::default()
         }
     }
 
@@ -633,6 +901,8 @@ mod tests {
     const MINIMAL: &str = r#"
         [[account]]
         name = "work"
+
+        [account.imap]
         host = "imap.fastmail.com"
         user = "me@work.example"
         password_command = "pass show mail/work"
@@ -643,8 +913,10 @@ mod tests {
         let config = Config::parse(MINIMAL).unwrap();
         let account = &config.accounts[0];
 
-        assert_eq!(account.port, DEFAULT_PORT);
-        assert_eq!(account.connections, DEFAULT_CONNECTIONS);
+        assert_eq!(account.imap.port, DEFAULT_PORT);
+        assert_eq!(account.imap.connections, DEFAULT_CONNECTIONS);
+        assert_eq!(account.sent, SENT);
+        assert!(account.smtp.is_none());
         assert!(!account.all_folders);
         assert!(account.folders.is_empty());
         assert_eq!(config.search.count, DEFAULT_COUNT);
@@ -661,20 +933,24 @@ mod tests {
             r#"
             [[account]]
             name             = "work"
+            folders          = ["INBOX", "Archive", "Sent"]
+            exclude          = ["Trash", "Junk"]
+
+            [account.imap]
             host             = "imap.fastmail.com"
             port             = 993
             user             = "me@work.example"
             password_command = "pass show mail/work"
-            folders          = ["INBOX", "Archive", "Sent"]
-            exclude          = ["Trash", "Junk"]
             connections      = 8
 
             [[account]]
             name          = "personal"
+            all_folders   = true
+
+            [account.imap]
             host          = "imap.gmail.com"
             user          = "me@gmail.com"
             password_file = "~/.secrets/gmail"
-            all_folders   = true
 
             [search]
             count = 20
@@ -700,10 +976,12 @@ mod tests {
             r#"
             [[account]]
             name = "work"
+            fulders = ["INBOX"]
+
+            [account.imap]
             host = "imap.example.com"
             user = "me@example.com"
             password = "hunter2"
-            fulders = ["INBOX"]
         "#,
         );
 
@@ -716,12 +994,16 @@ mod tests {
             r#"
             [[account]]
             name = "work"
+
+            [account.imap]
             host = "a.example.com"
             user = "a@example.com"
             password = "x"
 
             [[account]]
             name = "work"
+
+            [account.imap]
             host = "b.example.com"
             user = "b@example.com"
             password = "y"
@@ -739,6 +1021,8 @@ mod tests {
             r#"
             [[account]]
             name = "work"
+
+            [account.imap]
             host = "imap.example.com"
             user = "me@example.com"
         "#,
@@ -756,6 +1040,8 @@ mod tests {
                 r#"
                 [[account]]
                 name = ""
+
+                [account.imap]
                 host = "imap.example.com"
                 user = "me@example.com"
                 password = "x"
@@ -769,40 +1055,45 @@ mod tests {
                 r#"
                 [[account]]
                 name = "work"
+
+                [account.imap]
                 host = ""
                 user = "me@example.com"
                 password = "x"
             "#
             ),
-            Err(Error::EmptyField { field: "host", .. })
+            Err(Error::EmptyField {
+                field: "imap.host",
+                ..
+            })
         ));
     }
 
     #[test]
     fn credential_precedence_is_command_then_file_then_literal() {
         let mut account = account_named("work");
-        account.password_command = Some("pass show x".to_string());
-        account.password_file = Some(PathBuf::from("/tmp/p"));
-        account.password = Some("hunter2".to_string());
+        account.imap.password_command = Some("pass show x".to_string());
+        account.imap.password_file = Some(PathBuf::from("/tmp/p"));
+        account.imap.password = Some("hunter2".to_string());
 
         assert_eq!(
             account.credential().unwrap(),
             Credential::Command("pass show x".to_string())
         );
 
-        account.password_command = None;
+        account.imap.password_command = None;
         assert_eq!(
             account.credential().unwrap(),
             Credential::File(PathBuf::from("/tmp/p"))
         );
 
-        account.password_file = None;
+        account.imap.password_file = None;
         assert_eq!(
             account.credential().unwrap(),
             Credential::Literal("hunter2".to_string())
         );
 
-        account.password = None;
+        account.imap.password = None;
         assert!(matches!(
             account.credential(),
             Err(Error::MissingCredential(_))
@@ -812,14 +1103,185 @@ mod tests {
     #[test]
     fn plaintext_password_is_flagged_only_when_it_is_used() {
         let mut account = account_named("work");
-        account.password_command = None;
-        account.password = Some("hunter2".to_string());
+        account.imap.password_command = None;
+        account.imap.password = Some("hunter2".to_string());
         assert!(account.has_plaintext_password());
 
         // A literal that precedence never reaches is not a risk worth
         // warning about.
-        account.password_command = Some("pass show x".to_string());
+        account.imap.password_command = Some("pass show x".to_string());
         assert!(!account.has_plaintext_password());
+    }
+
+    #[test]
+    fn a_submission_server_takes_the_imap_login() {
+        let mut account = account_named("work");
+        account.smtp = Some(smtp("smtp.example.com"));
+
+        assert_eq!(account.smtp_user().unwrap(), "me@example.com");
+        assert_eq!(
+            account.smtp_credential().unwrap(),
+            Credential::Command("true".to_string())
+        );
+    }
+
+    #[test]
+    fn a_submission_server_keeps_the_login_it_names() {
+        let mut account = account_named("work");
+        account.smtp = Some(SmtpConfig {
+            user: Some("submit@example.com".to_string()),
+            password_command: Some("pass show smtp".to_string()),
+            ..smtp("smtp.example.com")
+        });
+
+        assert_eq!(account.smtp_user().unwrap(), "submit@example.com");
+        assert_eq!(
+            account.smtp_credential().unwrap(),
+            Credential::Command("pass show smtp".to_string())
+        );
+    }
+
+    #[test]
+    fn a_submission_user_alone_still_takes_the_imap_password() {
+        // A provider that wants a different submission name, and the
+        // same secret, is the common case of a shared mailbox.
+        let mut account = account_named("work");
+        account.smtp = Some(SmtpConfig {
+            user: Some("submit@example.com".to_string()),
+            ..smtp("smtp.example.com")
+        });
+
+        assert_eq!(
+            account.smtp_credential().unwrap(),
+            Credential::Command("true".to_string())
+        );
+    }
+
+    #[test]
+    fn an_account_with_no_submission_server_says_so() {
+        let account = account_named("work");
+
+        assert!(account.smtp.is_none());
+        assert!(matches!(
+            account.smtp(),
+            Err(Error::NoSmtp(name)) if name == "work"
+        ));
+        assert!(matches!(account.smtp_user(), Err(Error::NoSmtp(_))));
+        assert!(matches!(account.smtp_credential(), Err(Error::NoSmtp(_))));
+    }
+
+    #[test]
+    fn a_submission_password_in_the_file_is_flagged_too() {
+        let mut account = account_named("work");
+        account.smtp = Some(SmtpConfig {
+            password: Some("hunter2".to_string()),
+            ..smtp("smtp.example.com")
+        });
+
+        // The IMAP side runs a command, so only the submission side is
+        // a literal, and the account is still worth a warning.
+        assert!(account.has_plaintext_password());
+    }
+
+    #[test]
+    fn the_sender_is_the_from_when_the_account_names_one() {
+        let mut account = account_named("work");
+        account.from = Some("Ada Lovelace <ada@example.com>".to_string());
+
+        assert_eq!(account.sender(), "Ada Lovelace <ada@example.com>");
+    }
+
+    #[test]
+    fn the_sender_without_a_from_is_the_login_that_submits() {
+        let mut account = account_named("work");
+        assert_eq!(account.sender(), "me@example.com");
+
+        account.smtp = Some(SmtpConfig {
+            user: Some("submit@example.com".to_string()),
+            ..smtp("smtp.example.com")
+        });
+        assert_eq!(account.sender(), "submit@example.com");
+    }
+
+    #[test]
+    fn parse_reads_a_submission_server_and_its_defaults() {
+        let config = Config::parse(
+            r#"
+            [[account]]
+            name = "work"
+            from = "Ada <ada@work.example>"
+            sent = "[Gmail]/Sent Mail"
+
+            [account.imap]
+            host = "imap.work.example"
+            user = "me@work.example"
+            password_command = "pass show mail/work"
+
+            [account.smtp]
+            host = "smtp.work.example"
+        "#,
+        )
+        .unwrap();
+
+        let account = &config.accounts[0];
+        let smtp = account.smtp().unwrap();
+
+        assert_eq!(smtp.port, DEFAULT_SMTP_PORT);
+        assert_eq!(smtp.tls, Tls::Implicit);
+        assert_eq!(account.sender(), "Ada <ada@work.example>");
+        assert_eq!(account.sent, "[Gmail]/Sent Mail");
+    }
+
+    #[test]
+    fn parse_reads_the_two_ways_that_tls_starts() {
+        let config = Config::parse(
+            r#"
+            [[account]]
+            name = "work"
+
+            [account.imap]
+            host = "imap.work.example"
+            user = "me@work.example"
+            password = "x"
+
+            [account.smtp]
+            host = "smtp.work.example"
+            port = 587
+            tls  = "start"
+        "#,
+        )
+        .unwrap();
+
+        let smtp = config.accounts[0].smtp().unwrap();
+
+        assert_eq!(smtp.port, 587);
+        assert_eq!(smtp.tls, Tls::Start);
+    }
+
+    #[test]
+    fn parse_rejects_a_submission_server_with_no_host() {
+        let err = Config::parse(
+            r#"
+            [[account]]
+            name = "work"
+
+            [account.imap]
+            host = "imap.work.example"
+            user = "me@work.example"
+            password = "x"
+
+            [account.smtp]
+            host = ""
+        "#,
+        );
+
+        assert!(matches!(
+            err,
+            Err(Error::EmptyField {
+                field: "smtp.host",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -987,9 +1449,9 @@ mod tests {
             tc.draw(gs::optional(gs::just("lit".to_string())));
 
         let mut account = account_named("work");
-        account.password_command = command.clone();
-        account.password_file = file.clone().map(PathBuf::from);
-        account.password = literal.clone();
+        account.imap.password_command = command.clone();
+        account.imap.password_file = file.clone().map(PathBuf::from);
+        account.imap.password = literal.clone();
 
         // The model: first present field, in declaration order, wins.
         let expected = match (&command, &file, &literal) {
@@ -1006,6 +1468,71 @@ mod tests {
                 Err(Error::MissingCredential(_))
             )),
         }
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_submission_falls_back_to_the_imap_login(tc: TestCase) {
+        let command: Option<String> =
+            tc.draw(gs::optional(gs::just("smtp-cmd".to_string())));
+        let file: Option<String> =
+            tc.draw(gs::optional(gs::just("smtp-file".to_string())));
+        let literal: Option<String> =
+            tc.draw(gs::optional(gs::just("smtp-lit".to_string())));
+        let user: Option<String> =
+            tc.draw(gs::optional(gs::just("submit@example.com".to_string())));
+
+        let mut account = account_named("work");
+        account.smtp = Some(SmtpConfig {
+            user: user.clone(),
+            password_command: command.clone(),
+            password_file: file.clone().map(PathBuf::from),
+            password: literal.clone(),
+            ..smtp("smtp.example.com")
+        });
+
+        // The model: the submission table decides only when it names a
+        // password at all. Otherwise the whole IMAP precedence applies,
+        // and `account_named` gives that a command.
+        let expected = match (&command, &file, &literal) {
+            (Some(c), _, _) => Credential::Command(c.clone()),
+            (None, Some(f), _) => Credential::File(PathBuf::from(f)),
+            (None, None, Some(l)) => Credential::Literal(l.clone()),
+            (None, None, None) => Credential::Command("true".to_string()),
+        };
+
+        assert_eq!(account.smtp_credential().unwrap(), expected);
+        assert_eq!(
+            account.smtp_user().unwrap(),
+            user.as_deref().unwrap_or("me@example.com")
+        );
+    }
+
+    #[hegel::test(test_cases = 200)]
+    fn prop_a_sender_is_never_empty(tc: TestCase) {
+        let from: Option<String> = tc
+            .draw(gs::optional(gs::just("Ada <ada@example.com>".to_string())));
+        let user: Option<String> =
+            tc.draw(gs::optional(gs::just("submit@example.com".to_string())));
+        let sends: bool = tc.draw(gs::booleans());
+
+        let mut account = account_named("work");
+        account.from = from.clone();
+        account.smtp = sends.then(|| SmtpConfig {
+            user: user.clone(),
+            ..smtp("smtp.example.com")
+        });
+
+        let sender = account.sender();
+
+        assert!(!sender.is_empty());
+        assert_eq!(
+            sender,
+            from.or(match sends {
+                true => user,
+                false => None,
+            })
+            .unwrap_or_else(|| "me@example.com".to_string())
+        );
     }
 
     #[hegel::test(test_cases = 200)]
@@ -1152,10 +1679,12 @@ mod tests {
             r#"
             [[account]]
             name     = "work"
+            footers  = ["^CONFIDENTIALITY NOTICE", "^Sent from my"]
+
+            [account.imap]
             host     = "imap.example.com"
             user     = "me@example.com"
             password = "x"
-            footers  = ["^CONFIDENTIALITY NOTICE", "^Sent from my"]
         "#,
         )
         .unwrap();
@@ -1176,10 +1705,12 @@ mod tests {
             r#"
             [[account]]
             name     = "work"
+            footers  = ["^Sent from ["]
+
+            [account.imap]
             host     = "imap.example.com"
             user     = "me@example.com"
             password = "x"
-            footers  = ["^Sent from ["]
         "#,
         );
 

@@ -86,6 +86,12 @@ pub enum Error {
     )]
     MissingCredential(String),
 
+    #[error(
+        "account `{0}` has no [account.smtp] — mailbert cannot send \
+         through it"
+    )]
+    NoSmtp(String),
+
     #[error("account `{account}` has an empty {field}")]
     EmptyField {
         account: String,

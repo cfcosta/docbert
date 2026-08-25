@@ -115,9 +115,11 @@ impl Report {
 ///
 /// The connection always takes TLS, because a password goes over it.
 pub fn server(account: &Account, password: &str) -> Server {
-    Server::at(&account.host, account.port, true)
-        .with_login(&account.user, password)
-        .with_connections(account.connections)
+    let imap = &account.imap;
+
+    Server::at(&imap.host, imap.port, true)
+        .with_login(&imap.user, password)
+        .with_connections(imap.connections)
 }
 
 /// Sync one account on the connections of one pool. (§2.1)
@@ -1066,7 +1068,10 @@ mod tests {
     use std::{future::Future, sync::Mutex, time::Duration};
 
     use hegel::{TestCase, generators as gs};
-    use mailbert_core::{config::Account, index::MailIndex};
+    use mailbert_core::{
+        config::{Account, ImapConfig},
+        index::MailIndex,
+    };
     use mailbert_imap::fake::{FakeFolder, FakeMessage, FakeServer, Plan};
     use serde_json::{Value, json};
     use tempfile::{TempDir, tempdir};
@@ -1121,17 +1126,16 @@ mod tests {
     fn an_account(port: u16, folders: &[&str]) -> Account {
         Account {
             name: "work".to_string(),
-            host: "127.0.0.1".to_string(),
-            user: "me".to_string(),
-            port,
-            password_command: None,
-            password_file: None,
-            password: Some("secret".to_string()),
+            imap: ImapConfig {
+                host: "127.0.0.1".to_string(),
+                user: "me".to_string(),
+                port,
+                password: Some("secret".to_string()),
+                connections: 3,
+                ..ImapConfig::default()
+            },
             folders: folders.iter().map(|name| (*name).to_string()).collect(),
-            exclude: Vec::new(),
-            footers: Vec::new(),
-            all_folders: false,
-            connections: 3,
+            ..Account::default()
         }
     }
 
@@ -1610,7 +1614,7 @@ mod tests {
                 .iter()
                 .map(|account| Watched {
                     account,
-                    pool: a_pool(account.port),
+                    pool: a_pool(account.imap.port),
                 })
                 .collect();
 

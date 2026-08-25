@@ -1351,7 +1351,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[[account]]\nname = \"work\"\nhost = \"a\"\nuser = \"b\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\nuser = \"b\"\n\
              password_command = \"true\"\n",
         )
         .expect("the file is writable");

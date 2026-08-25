@@ -54,7 +54,12 @@ use mailbert::{
     semantic::{self, Embedded, Embeds, Feed},
     sync::{self, How},
 };
-use mailbert_core::{MessageId, Store, config::Account, index::MailIndex};
+use mailbert_core::{
+    MessageId,
+    Store,
+    config::{Account, ImapConfig},
+    index::MailIndex,
+};
 use mailbert_imap::{
     Pool,
     Server,
@@ -208,17 +213,16 @@ async fn fresh(folders: u32, count: u32, size: usize) -> Bed {
         db,
         account: Account {
             name: "bench".to_string(),
-            host: "127.0.0.1".to_string(),
-            user: "me".to_string(),
-            port,
-            password_command: None,
-            password_file: None,
-            password: Some("secret".to_string()),
+            imap: ImapConfig {
+                host: "127.0.0.1".to_string(),
+                user: "me".to_string(),
+                port,
+                password: Some("secret".to_string()),
+                connections: CONNECTIONS,
+                ..ImapConfig::default()
+            },
             folders: names,
-            exclude: Vec::new(),
-            footers: Vec::new(),
-            all_folders: false,
-            connections: CONNECTIONS,
+            ..Account::default()
         },
         pool,
         _server: server,

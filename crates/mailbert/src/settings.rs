@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-use mailbert_core::config::{Account, Config, Credential};
+use mailbert_core::config::{Account, Config, Credential, Tls};
 
 use crate::error::{Error, Result};
 
@@ -37,51 +37,102 @@ pub fn read(path: &Path) -> Result<Config> {
 /// The warnings that §1.2 asks for.
 ///
 /// A password in the configuration file always gives a warning. A
-/// password file gives a warning if its mode is not `0600`.
+/// password file gives a warning if its mode is not `0600`. Both
+/// servers of an account are looked at, because a secret is no safer
+/// for being the submission one.
 pub fn warnings(config: &Config) -> Vec<String> {
     let home = home();
     let mut said = Vec::new();
 
     for account in &config.accounts {
-        let Ok(credential) = account.credential() else {
-            continue;
-        };
+        let smtp = account.smtp.is_some();
 
-        match credential {
-            Credential::Command(_) => {}
+        for credential in [
+            Some(account.credential()),
+            smtp.then(|| account.smtp_credential()),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        {
+            said.extend(about(&credential, account, home.as_deref()));
+        }
 
-            Credential::File(path) => {
-                let path = expand(&path, home.as_deref());
-
-                if open_wide(&path) {
-                    said.push(format!(
-                        "the password file `{}` of account `{}` is not \
-                         private. Set its mode to 0600.",
-                        path.display(),
-                        account.name
-                    ));
-                }
-            }
-
-            Credential::Literal(_) => said.push(format!(
-                "account `{}` keeps its password in the configuration \
-                 file. Use password_command, or password_file.",
+        // A submission server without TLS reads the password off the
+        // wire, so it is worth the same sentence as one in the file.
+        if account
+            .smtp
+            .as_ref()
+            .is_some_and(|smtp| smtp.tls == Tls::None)
+        {
+            said.push(format!(
+                "account `{}` submits without TLS. Its password crosses \
+                 the network in the clear.",
                 account.name
-            )),
+            ));
         }
     }
 
     said
 }
 
-/// The password of one account (§1.2).
+/// What is worth saying about where one password comes from.
+fn about(
+    credential: &Credential,
+    account: &Account,
+    home: Option<&Path>,
+) -> Option<String> {
+    match credential {
+        Credential::Command(_) => None,
+
+        Credential::File(path) => {
+            let path = expand(path, home);
+
+            open_wide(&path).then(|| {
+                format!(
+                    "the password file `{}` of account `{}` is not \
+                     private. Set its mode to 0600.",
+                    path.display(),
+                    account.name
+                )
+            })
+        }
+
+        Credential::Literal(_) => Some(format!(
+            "account `{}` keeps its password in the configuration \
+             file. Use password_command, or password_file.",
+            account.name
+        )),
+    }
+}
+
+/// The IMAP password of one account (§1.2).
 ///
 /// # Errors
 ///
 /// The function fails if the account has no credential, if the command
 /// fails, if the file is not there, or if the secret is empty.
 pub fn secret(account: &Account) -> Result<String> {
-    let found = match account.credential()? {
+    resolve(account.credential()?, account)
+}
+
+/// The submission password of one account. (§11.1)
+///
+/// An `[account.smtp]` that names no password of its own takes the IMAP
+/// one, so this usually runs the same `password_command` twice. That is
+/// two `pass show` calls for one `send`, which is cheap enough.
+///
+/// # Errors
+///
+/// The function fails for the reasons [`secret`] does, and also when
+/// the account has no `[account.smtp]` at all.
+pub fn smtp_secret(account: &Account) -> Result<String> {
+    resolve(account.smtp_credential()?, account)
+}
+
+/// Run one credential down to the password it names.
+fn resolve(credential: Credential, account: &Account) -> Result<String> {
+    let found = match credential {
         Credential::Command(line) => from_command(&line)?,
         Credential::File(path) => from_file(&expand(&path, home().as_deref()))?,
         Credential::Literal(text) => first_line(&text),
@@ -203,7 +254,7 @@ mod tests {
 
     fn account(body: &str) -> Account {
         let text = format!(
-            "[[account]]\nname = \"work\"\nhost = \"mail.example\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"mail.example\"\n\
              user = \"me@example\"\n{body}\n"
         );
         let config = Config::parse(&text).expect("a good account");
@@ -248,7 +299,7 @@ mod tests {
         let path = write(
             temp.path(),
             "config.toml",
-            "[[account]]\nname = \"work\"\nhost = \"mail.example\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"mail.example\"\n\
              user = \"me@example\"\npassword_command = \"true\"\n",
             0o600,
         );
@@ -278,7 +329,7 @@ mod tests {
     #[test]
     fn a_file_with_two_accounts_of_one_name_is_an_error() {
         let temp = tempfile::tempdir().expect("a temporary directory");
-        let one = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let one = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                    user = \"b\"\npassword = \"c\"\n";
         let path =
             write(temp.path(), "config.toml", &format!("{one}{one}"), 0o600);
@@ -296,7 +347,7 @@ mod tests {
 
     #[test]
     fn a_password_in_the_file_gives_a_warning() {
-        let text = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let text = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n";
         let config = Config::parse(text).expect("a good file");
 
@@ -308,7 +359,7 @@ mod tests {
 
     #[test]
     fn a_password_command_gives_no_warning() {
-        let text = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let text = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword_command = \"true\"\n";
         let config = Config::parse(text).expect("a good file");
 
@@ -321,7 +372,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("a temporary directory");
         let path = write(temp.path(), "secret", "hunter2\n", 0o644);
         let text = format!(
-            "[[account]]\nname = \"work\"\nhost = \"a\"\nuser = \"b\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\nuser = \"b\"\n\
              password_file = \"{}\"\n",
             path.display()
         );
@@ -339,7 +390,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("a temporary directory");
         let path = write(temp.path(), "secret", "hunter2\n", 0o600);
         let text = format!(
-            "[[account]]\nname = \"work\"\nhost = \"a\"\nuser = \"b\"\n\
+            "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\nuser = \"b\"\n\
              password_file = \"{}\"\n",
             path.display()
         );
@@ -416,9 +467,9 @@ mod tests {
 
     #[test]
     fn no_name_takes_every_account() {
-        let text = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let text = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n\
-                    [[account]]\nname = \"home\"\nhost = \"a\"\n\
+                    [[account]]\nname = \"home\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n";
         let config = Config::parse(text).expect("a good file");
 
@@ -430,9 +481,9 @@ mod tests {
 
     #[test]
     fn a_name_takes_one_account() {
-        let text = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let text = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n\
-                    [[account]]\nname = \"home\"\nhost = \"a\"\n\
+                    [[account]]\nname = \"home\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n";
         let config = Config::parse(text).expect("a good file");
 
@@ -444,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_name_that_is_not_there_is_an_error() {
-        let text = "[[account]]\nname = \"work\"\nhost = \"a\"\n\
+        let text = "[[account]]\nname = \"work\"\n[account.imap]\nhost = \"a\"\n\
                     user = \"b\"\npassword = \"c\"\n";
         let config = Config::parse(text).expect("a good file");
 
@@ -492,7 +543,7 @@ mod tests {
         write(temp.path(), "secret", "hunter2\n", 0o600);
         let account = account("password_file = \"~/secret\"");
         let path = expand(
-            account.password_file.as_deref().expect("a file"),
+            account.imap.password_file.as_deref().expect("a file"),
             Some(temp.path()),
         );
 
@@ -527,7 +578,7 @@ mod tests {
         let mut text = String::new();
         for name in &unique {
             text.push_str(&format!(
-                "[[account]]\nname = \"{name}\"\nhost = \"a\"\n\
+                "[[account]]\nname = \"{name}\"\n[account.imap]\nhost = \"a\"\n\
                  user = \"b\"\npassword = \"c\"\n"
             ));
         }

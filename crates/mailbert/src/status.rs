@@ -255,7 +255,7 @@ mod tests {
 
     use hegel::{TestCase, generators as gs};
     use mailbert_core::{
-        config::Account,
+        config::{Account, ImapConfig},
         date::Clock,
         message::{Location, Message},
         mime,
@@ -288,17 +288,15 @@ mod tests {
     fn account(name: &str) -> Account {
         Account {
             name: name.to_string(),
-            host: "mail.example.test".to_string(),
-            user: "me@cfcosta.com".to_string(),
-            port: 993,
-            password_command: None,
-            password_file: None,
-            password: Some("secret".to_string()),
-            folders: Vec::new(),
-            exclude: Vec::new(),
-            footers: Vec::new(),
+            imap: ImapConfig {
+                host: "mail.example.test".to_string(),
+                user: "me@cfcosta.com".to_string(),
+                password: Some("secret".to_string()),
+                connections: 1,
+                ..ImapConfig::default()
+            },
             all_folders: true,
-            connections: 1,
+            ..Account::default()
         }
     }
 
