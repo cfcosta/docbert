@@ -11,6 +11,8 @@ candle-core = "0.11.0"
 clap_complete = "4.6"
 docbert-core = { path = "../docbert-core" }
 docbert-plaid = { path = "../docbert-plaid" }
+# The left side of a Message-ID. lettre already brings it in.
+fastrand = "2"
 jiff = "0.2"
 lettre = { version = "0.11", default-features = false, features = [
   "builder",

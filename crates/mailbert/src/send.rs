@@ -33,7 +33,8 @@ use mailbert_core::{
     message::{Location, Message},
     mime,
 };
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Tool,
@@ -107,6 +108,84 @@ pub struct Draft {
     pub references: Vec<String>,
 }
 
+/// One message that a caller asks `send` to write. (§11)
+///
+/// The CLI of §2.1 fills this from its flags and the standard input,
+/// and the MCP tool of §2.2 takes it as the arguments of one call, so
+/// the two doors into `send` open on one room.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema,
+)]
+pub struct Letter {
+    /// The recipients. Required, unless `reply_to` names a message to
+    /// take them from.
+    #[serde(default)]
+    pub to: Vec<String>,
+
+    /// The carbon copies.
+    #[serde(default)]
+    pub cc: Vec<String>,
+
+    /// The blind carbon copies. No header names these, so a recipient
+    /// never learns that they took a copy.
+    #[serde(default)]
+    pub bcc: Vec<String>,
+
+    /// The subject. An answer that leaves it empty takes the answered
+    /// subject, with one `Re: ` on it.
+    #[serde(default)]
+    pub subject: String,
+
+    /// The body, as plain text.
+    #[serde(default)]
+    pub body: String,
+
+    /// The identity of a message to answer, or a prefix of it. (§4.1)
+    #[serde(default)]
+    pub reply_to: Option<String>,
+
+    /// Answer everyone the message named, and not its sender alone.
+    #[serde(default)]
+    pub reply_all: bool,
+
+    /// The account to send through. The one account that can send
+    /// speaks when this is absent.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+impl Letter {
+    /// The letter that the flags and the standard input describe.
+    ///
+    /// The body is `--body`, or the whole standard input when that
+    /// flag is absent, because §11 leaves the writing to your editor.
+    ///
+    /// # Errors
+    ///
+    /// The function fails if the input cannot be read.
+    pub fn read(args: &cli::Send, input: &mut dyn Read) -> Result<Self> {
+        let body = match &args.body {
+            Some(text) => text.clone(),
+            None => {
+                let mut text = String::new();
+                input.read_to_string(&mut text)?;
+                text
+            }
+        };
+
+        Ok(Self {
+            to: args.to.clone(),
+            cc: args.cc.clone(),
+            bcc: args.bcc.clone(),
+            subject: args.subject.clone().unwrap_or_default(),
+            body,
+            reply_to: args.reply_to.clone(),
+            reply_all: args.reply_all,
+            account: args.account.clone(),
+        })
+    }
+}
+
 /// Write one message, and file a copy. (§11)
 ///
 /// # Errors
@@ -117,29 +196,59 @@ pub struct Draft {
 pub fn command(tool: &Tool, args: &cli::Send) -> Result<()> {
     let config = tool.config()?;
     let store = tool.store()?;
-    let account = pick(&config, args.account.as_deref())?;
-
-    let draft = draft(&store, account, args, &mut std::io::stdin())?;
-    let message = compose(&draft)?;
-    let raw = message.formatted();
+    let letter = Letter::read(args, &mut std::io::stdin())?;
     let mut out = std::io::stdout().lock();
 
     // A dry run writes the message itself, and neither `--json` nor the
     // one-line report says anything a reader could not read there. It
     // is the only output of the tool that is bytes and not a report.
+    // It opens no index and reads no password, either.
     if args.dry_run {
-        out.write_all(&raw)?;
+        let account = pick(&config, letter.account.as_deref())?;
+        let message = compose(&draft(&store, account, &letter)?)?;
+
+        out.write_all(&message.formatted())?;
 
         return Ok(());
     }
 
+    let index = tool.index()?;
+    let answer = crate::block_on(run(&store, &index, &config, &letter))?;
+
+    match args.json {
+        true => write_json(&answer, &mut out),
+        false => write_text(&answer, &mut out),
+    }
+}
+
+/// Submit one letter, and file the copy. (§11)
+///
+/// This is what both doors into `send` walk through: the CLI of §2.1
+/// after it reads the standard input, and the MCP tool of §2.2 with
+/// the arguments of the call.
+///
+/// # Errors
+///
+/// The function fails if no account can send, if the letter names no
+/// recipient, if an address is not an address, if the server refuses
+/// the message, or if the store refuses the copy.
+pub async fn run(
+    store: &Store,
+    index: &MailIndex,
+    config: &Config,
+    letter: &Letter,
+) -> Result<Answer> {
+    let account = pick(config, letter.account.as_deref())?;
+    let draft = draft(store, account, letter)?;
+    let message = compose(&draft)?;
+    let raw = message.formatted();
     let password = settings::smtp_secret(account)?;
 
-    crate::block_on(submit(account, &password, message))?;
+    submit(account, &password, message).await?;
 
-    let index = tool.index()?;
-    let filed = file(&store, &index, account, &raw, crate::clock().now())?;
-    let answer = Answer {
+    let filed = file(store, index, account, &raw, crate::clock().now())?;
+
+    Ok(Answer {
         id: filed.id.full_hex(),
         message_id: filed.message_id.unwrap_or_default(),
         account: account.name.clone(),
@@ -149,12 +258,7 @@ pub fn command(tool: &Tool, args: &cli::Send) -> Result<()> {
         bcc: draft.bcc,
         subject: draft.subject,
         folder: account.sent.clone(),
-    };
-
-    match args.json {
-        true => write_json(&answer, &mut out),
-        false => write_text(&answer, &mut out),
-    }
+    })
 }
 
 /// The account that a `send` goes out through.
@@ -196,45 +300,41 @@ pub fn pick<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Account> {
     }
 }
 
-/// Build the draft that the flags and the standard input describe.
+/// Build the draft that one letter describes.
 ///
 /// # Errors
 ///
-/// The function fails if `--reply-to` names no message in the store,
-/// or if the body cannot be read.
+/// The function fails if `reply_to` names no message in the store, or
+/// if nothing is left holding a recipient.
 pub fn draft(
     store: &Store,
     account: &Account,
-    args: &cli::Send,
-    input: &mut dyn Read,
+    letter: &Letter,
 ) -> Result<Draft> {
-    let answered = args
+    let answered = letter
         .reply_to
         .as_deref()
         .map(|prefix| answered(store, prefix))
         .transpose()?;
 
-    let body = match &args.body {
-        Some(text) => text.clone(),
-        None => {
-            let mut text = String::new();
-            input.read_to_string(&mut text)?;
-            text
-        }
-    };
-
     let mut draft = Draft {
         from: account.sender(),
-        to: args.to.clone(),
-        cc: args.cc.clone(),
-        bcc: args.bcc.clone(),
-        subject: args.subject.clone().unwrap_or_default(),
-        body,
+        to: letter.to.clone(),
+        cc: letter.cc.clone(),
+        bcc: letter.bcc.clone(),
+        subject: letter.subject.clone(),
+        body: letter.body.clone(),
         ..Draft::default()
     };
 
     if let Some(answered) = answered {
-        inherit(&mut draft, &answered, args, account);
+        inherit(&mut draft, &answered, letter, account);
+    }
+
+    // The CLI of §2.1 has clap ask for a recipient, and a caller of
+    // §2.2 has nobody asking, so the check lives here for both.
+    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+        return Err(Error::NoRecipient);
     }
 
     Ok(draft)
@@ -259,7 +359,7 @@ fn answered(store: &Store, prefix: &str) -> Result<Message> {
 fn inherit(
     draft: &mut Draft,
     answered: &Message,
-    args: &cli::Send,
+    letter: &Letter,
     account: &Account,
 ) {
     if draft.to.is_empty() {
@@ -268,7 +368,7 @@ fn inherit(
 
     // `--reply-all` writes to everyone the message named, less the
     // addresses of this account, so that an answer does not go to you.
-    if args.reply_all {
+    if letter.reply_all {
         let mine = own(account);
         let named = answered
             .to
@@ -282,7 +382,7 @@ fn inherit(
         draft.cc.dedup();
     }
 
-    if args.subject.is_none() {
+    if draft.subject.is_empty() {
         draft.subject = answering(&answered.subject);
     }
 
@@ -337,11 +437,12 @@ fn strip_re(subject: &str) -> Option<&str> {
 /// The function fails if an address is not an address, or if lettre
 /// refuses the body.
 pub fn compose(draft: &Draft) -> Result<lettre::Message> {
+    let from = mailbox(&draft.from)?;
     let mut builder = MessageBuilder::new()
-        .from(mailbox(&draft.from)?)
+        .message_id(Some(identity(&from)))
+        .from(from)
         .subject(&draft.subject)
         .user_agent(AGENT.to_string())
-        .message_id(None)
         .date_now();
 
     for (addresses, field) in [
@@ -369,6 +470,22 @@ pub fn compose(draft: &Draft) -> Result<lettre::Message> {
     }
 
     Ok(builder.body(draft.body.clone())?)
+}
+
+/// The `Message-ID` of a new message, with its angle brackets.
+///
+/// RFC 5322 §3.6.4 asks for a right side that is unique in the world,
+/// and lettre writes the name of the machine there, which is unique to
+/// the machine and to nothing else: two people running mailbert on a
+/// laptop each named `battlecruiser` mint the same domain. The domain
+/// the message is sent from is the one name it already carries that a
+/// reader anywhere can resolve, so that is the one this uses.
+fn identity(from: &Mailbox) -> String {
+    let token: String = std::iter::repeat_with(fastrand::alphanumeric)
+        .take(24)
+        .collect();
+
+    format!("<{token}@{}>", from.email.domain())
 }
 
 /// Which of the three recipient headers one address goes into.
@@ -692,9 +809,9 @@ it weaves algebraic patterns
             ..flags()
         };
 
-        let draft =
-            draft(&box_.store, &sender(), &args, &mut "typed in\n".as_bytes())
-                .expect("a draft");
+        let letter = Letter::read(&args, &mut "typed in\n".as_bytes())
+            .expect("a letter");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         assert_eq!(draft.body, "typed in\n");
         assert_eq!(draft.from, "me@example.test");
@@ -710,9 +827,9 @@ it weaves algebraic patterns
             ..flags()
         };
 
-        let draft =
-            draft(&box_.store, &sender(), &args, &mut "ignored".as_bytes())
-                .expect("a draft");
+        let letter =
+            Letter::read(&args, &mut "ignored".as_bytes()).expect("a letter");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         assert_eq!(draft.body, "on the flag");
     }
@@ -721,14 +838,12 @@ it weaves algebraic patterns
     fn an_answer_goes_back_to_the_sender_and_the_thread() {
         let box_ = Mailbox::open();
         let id = box_.put(FROM_ADA);
-        let args = cli::Send {
+        let letter = Letter {
             reply_to: Some(id[..7].to_string()),
-            ..flags()
+            ..Letter::default()
         };
 
-        let draft =
-            draft(&box_.store, &sender(), &args, &mut "yes\n".as_bytes())
-                .expect("a draft");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         assert_eq!(draft.to, ["Ada Lovelace <ada@example.test>"]);
         assert!(draft.cc.is_empty(), "{:?}", draft.cc);
@@ -747,15 +862,13 @@ it weaves algebraic patterns
     fn an_answer_to_everyone_leaves_you_out() {
         let box_ = Mailbox::open();
         let id = box_.put(FROM_ADA);
-        let args = cli::Send {
+        let letter = Letter {
             reply_to: Some(id[..7].to_string()),
             reply_all: true,
-            ..flags()
+            ..Letter::default()
         };
 
-        let draft =
-            draft(&box_.store, &sender(), &args, &mut "yes\n".as_bytes())
-                .expect("a draft");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         assert_eq!(draft.to, ["Ada Lovelace <ada@example.test>"]);
         assert_eq!(
@@ -768,16 +881,14 @@ it weaves algebraic patterns
     fn a_flag_beats_what_the_answered_message_says() {
         let box_ = Mailbox::open();
         let id = box_.put(FROM_ADA);
-        let args = cli::Send {
+        let letter = Letter {
             to: vec!["someone@example.test".to_string()],
-            subject: Some("A new subject".to_string()),
+            subject: "A new subject".to_string(),
             reply_to: Some(id[..7].to_string()),
-            ..flags()
+            ..Letter::default()
         };
 
-        let draft =
-            draft(&box_.store, &sender(), &args, &mut "yes\n".as_bytes())
-                .expect("a draft");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         assert_eq!(draft.to, ["someone@example.test"]);
         assert_eq!(draft.subject, "A new subject");
@@ -857,6 +968,53 @@ it weaves algebraic patterns
 
         let parsed = mime::parse(&raw).expect("the bytes parse back");
         assert_eq!(parsed.subject, "Höhere Analysis — für Ada");
+    }
+
+    #[test]
+    fn the_message_id_names_the_domain_that_sent_it() {
+        let draft = Draft {
+            from: "Ada <ada@example.test>".to_string(),
+            to: vec!["grace@example.test".to_string()],
+            ..Draft::default()
+        };
+
+        let identity = |draft: &Draft| {
+            mime::parse(&compose(draft).expect("a message").formatted())
+                .expect("the bytes parse back")
+                .message_id
+                .expect("an identity")
+        };
+
+        let first = identity(&draft);
+        let second = identity(&draft);
+
+        // The name of this machine resolves on this machine alone, and
+        // RFC 5322 §3.6.4 wants a right side that resolves anywhere.
+        assert!(first.ends_with("@example.test"), "{first}");
+        assert_ne!(first, second, "two messages, two identities");
+    }
+
+    #[test]
+    fn a_letter_with_nobody_to_read_it_is_refused() {
+        let box_ = Mailbox::open();
+        let letter = Letter {
+            subject: "Hi".to_string(),
+            body: "there".to_string(),
+            ..Letter::default()
+        };
+
+        assert!(matches!(
+            draft(&box_.store, &sender(), &letter),
+            Err(Error::NoRecipient)
+        ));
+
+        // A blind copy is a recipient, even though no header says so.
+        let quiet = Letter {
+            bcc: vec!["quiet@example.test".to_string()],
+            ..letter
+        };
+
+        assert!(draft(&box_.store, &sender(), &quiet).is_ok());
     }
 
     #[test]
@@ -1015,12 +1173,11 @@ it weaves algebraic patterns
 
         let box_ = Mailbox::open();
         let id = box_.put(&raw);
-        let args = cli::Send {
+        let letter = Letter {
             reply_to: Some(id[..7].to_string()),
-            ..flags()
+            ..Letter::default()
         };
-        let draft = draft(&box_.store, &sender(), &args, &mut "x\n".as_bytes())
-            .expect("a draft");
+        let draft = draft(&box_.store, &sender(), &letter).expect("a draft");
 
         let mut want = chain;
         want.push("<last@example.test>".to_string());
@@ -1099,13 +1256,12 @@ it weaves algebraic patterns
 
         let box_ = Mailbox::open();
         let id = box_.put(&raw);
-        let args = cli::Send {
+        let letter = Letter {
             reply_to: Some(id[..7].to_string()),
             reply_all: true,
-            ..flags()
+            ..Letter::default()
         };
-        let draft = draft(&box_.store, &account, &args, &mut "x\n".as_bytes())
-            .expect("a draft");
+        let draft = draft(&box_.store, &account, &letter).expect("a draft");
 
         for one in draft.to.iter().chain(draft.cc.iter()) {
             for name in mine {
