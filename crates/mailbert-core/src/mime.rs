@@ -8,7 +8,8 @@
 //! The last job is a security rule, and not an optimization. The index
 //! is a plaintext file, and so is every backup of it. A message that
 //! the sender encrypted must stay encrypted at rest, so this module
-//! never decrypts. `mailbert view` calls gpg on demand instead.
+//! never decrypts. `mailbert view` asks gpg-agent on demand instead,
+//! and [`ciphertext`] is what it hands to the agent.
 
 use mail_parser::{
     HeaderValue,
@@ -30,6 +31,12 @@ pub const HTML_WIDTH: usize = 100;
 
 /// The first line of an inline PGP message. (RFC 4880)
 const PGP_ARMOR: &str = "-----BEGIN PGP MESSAGE-----";
+
+/// The last line of an inline PGP message. (RFC 4880)
+const PGP_ARMOR_END: &str = "-----END PGP MESSAGE-----";
+
+/// The subtype that RFC 3156 gives the ciphertext part of PGP/MIME.
+const PGP_MIME_PART: &str = "octet-stream";
 
 /// The subtypes of `application` that hold S/MIME ciphertext.
 const SMIME_SUBTYPES: [&str; 2] = ["pkcs7-mime", "x-pkcs7-mime"];
@@ -186,6 +193,89 @@ pub fn parse_with_footers(
         text: stripped.text,
         quote_only: stripped.quote_only,
         attachments: attachments(&message),
+    })
+}
+
+/// The ciphertext of an encrypted message, ready for a decrypter.
+///
+/// The variants say which scheme encrypted the message, because the
+/// two need different tools. mailbert opens OpenPGP, and it does not
+/// open S/MIME.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ciphertext {
+    /// An OpenPGP message, armored or binary, as RFC 4880 writes one.
+    OpenPgp(Vec<u8>),
+
+    /// A CMS blob, as S/MIME writes one. mailbert cannot open it.
+    SMime,
+}
+
+/// The ciphertext that an encrypted message carries. (§5.4)
+///
+/// The answer is `None` for a message that carries no ciphertext, so a
+/// caller that asks about ordinary mail gets nothing rather than an
+/// error. [`Parsed::is_encrypted`] and this function agree: a message
+/// that one calls encrypted is a message the other finds ciphertext in.
+///
+/// Three shapes carry ciphertext. RFC 3156 puts an OpenPGP message in
+/// the `application/octet-stream` part of a `multipart/encrypted`.
+/// Inline PGP opens the body with the armor of RFC 4880. S/MIME uses a
+/// content type of its own, and mailbert reports it rather than
+/// pretending to read it.
+///
+/// # Examples
+///
+/// ```
+/// use mailbert_core::mime::{Ciphertext, ciphertext};
+///
+/// let plain = b"From: a@x.test\r\n\r\nhello\r\n";
+///
+/// assert_eq!(ciphertext(plain), None);
+/// ```
+#[must_use]
+pub fn ciphertext(raw: &[u8]) -> Option<Ciphertext> {
+    let message = MessageParser::default().parse(raw)?;
+
+    if !is_encrypted(&message) {
+        return None;
+    }
+
+    if is_smime(&message) {
+        return Some(Ciphertext::SMime);
+    }
+
+    // RFC 3156 puts the control part first and the ciphertext second,
+    // so the part is found by its type and never by its position.
+    for part in message.parts.iter().skip(1) {
+        let is_ciphertext = part
+            .content_type()
+            .and_then(|kind| kind.subtype())
+            .is_some_and(|subtype| subtype.eq_ignore_ascii_case(PGP_MIME_PART));
+
+        if is_ciphertext {
+            return Some(Ciphertext::OpenPgp(part.contents().to_vec()));
+        }
+    }
+
+    // Inline PGP. The armor opens the body, and everything from it to
+    // the closing line is the message. Text after the armor is a
+    // signature block or a footer, and the parser refuses it.
+    let text = message.body_text(0)?;
+    let start = text.find(PGP_ARMOR)?;
+    let end = text[start..].find(PGP_ARMOR_END)? + start + PGP_ARMOR_END.len();
+
+    Some(Ciphertext::OpenPgp(text[start..end].as_bytes().to_vec()))
+}
+
+/// Whether the message carries S/MIME ciphertext.
+fn is_smime(message: &MailMessage<'_>) -> bool {
+    message.content_type().is_some_and(|content_type| {
+        content_type.ctype().eq_ignore_ascii_case("application")
+            && SMIME_SUBTYPES.iter().any(|known| {
+                content_type
+                    .subtype()
+                    .is_some_and(|subtype| subtype.eq_ignore_ascii_case(known))
+            })
     })
 }
 
@@ -412,6 +502,7 @@ mod tests {
     //! | `prop_addresses_are_lowercased` | invariant | `from:BOB@x` and `from:bob@x` are one person. |
     //! | `prop_the_subject_survives_the_round_trip` | round-trip | The subject carries a 2x boost in the index, so losing it costs the most. |
     //! | `prop_html_holds_no_tag` | invariant | A tag in the index matches queries that no reader means. |
+    //! | `prop_ciphertext_agrees_with_is_encrypted` | model-based | §5.4. A message that one call names encrypted and the other finds no ciphertext in is a message `view` cannot open. |
 
     use hegel::{TestCase, generators as gs};
 
@@ -659,6 +750,116 @@ mod tests {
         assert!(text.contains("Hello"));
         assert!(text.contains("world"));
         assert!(!text.contains('<'));
+    }
+
+    // -----------------------------------------------------------------
+    // The ciphertext that `view` opens. (§5.4)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn plain_mail_carries_no_ciphertext() {
+        assert_eq!(ciphertext(&raw(&plain("Hello.\n"))), None);
+    }
+
+    #[test]
+    fn takes_the_ciphertext_part_of_a_pgp_mime_message() {
+        let armor = format!("{PGP_ARMOR}\n\nhQIMA0abcdef\n{PGP_ARMOR_END}");
+        let found = ciphertext(&raw(&pgp_mime(&armor)));
+
+        let Some(Ciphertext::OpenPgp(bytes)) = found else {
+            panic!("a PGP/MIME message gives OpenPGP ciphertext: {found:?}");
+        };
+
+        let text = String::from_utf8(bytes).expect("the armor is text");
+
+        assert!(text.contains(PGP_ARMOR), "{text}");
+        assert!(text.contains("hQIMA0abcdef"), "{text}");
+    }
+
+    /// The control part comes first and holds no key. Taking it would
+    /// hand the agent a version number instead of a message.
+    #[test]
+    fn skips_the_control_part_of_a_pgp_mime_message() {
+        let armor = format!("{PGP_ARMOR}\n\nhQIMA0abcdef\n{PGP_ARMOR_END}");
+        let found = ciphertext(&raw(&pgp_mime(&armor)));
+
+        let Some(Ciphertext::OpenPgp(bytes)) = found else {
+            panic!("a PGP/MIME message gives OpenPGP ciphertext");
+        };
+
+        let text = String::from_utf8(bytes).expect("the armor is text");
+
+        assert!(!text.contains("Version: 1"), "{text}");
+    }
+
+    #[test]
+    fn takes_the_armor_of_an_inline_pgp_message() {
+        let body = format!("{PGP_ARMOR}\n\nhQIMA0abcdef\n{PGP_ARMOR_END}\n");
+        let found = ciphertext(&raw(&plain(&body)));
+
+        let Some(Ciphertext::OpenPgp(bytes)) = found else {
+            panic!("an inline PGP message gives OpenPGP ciphertext: {found:?}");
+        };
+
+        let text = String::from_utf8(bytes).expect("the armor is text");
+
+        assert!(text.starts_with(PGP_ARMOR), "{text}");
+        assert!(text.ends_with(PGP_ARMOR_END), "{text}");
+    }
+
+    /// A footer after the armor is not part of the message, and the
+    /// OpenPGP parser refuses a message that carries one.
+    #[test]
+    fn drops_what_follows_the_armor_of_an_inline_message() {
+        let body = format!(
+            "{PGP_ARMOR}\n\nhQIMA0abcdef\n{PGP_ARMOR_END}\n\nSent from my phone\n"
+        );
+        let found = ciphertext(&raw(&plain(&body)));
+
+        let Some(Ciphertext::OpenPgp(bytes)) = found else {
+            panic!("an inline PGP message gives OpenPGP ciphertext");
+        };
+
+        let text = String::from_utf8(bytes).expect("the armor is text");
+
+        assert!(!text.contains("Sent from my phone"), "{text}");
+    }
+
+    /// mailbert opens OpenPGP. It must say so about S/MIME rather than
+    /// hand a CMS blob to the agent and report a parse failure.
+    #[test]
+    fn names_an_smime_message_as_one_it_cannot_open() {
+        let message = "From: alice@example.test\n\
+             Subject: Secret\n\
+             Content-Type: application/pkcs7-mime; smime-type=enveloped-data\n\
+             \n\
+             MIIBigYJKoZIhvcNAQcDoIIBezCCAXcCAQ==\n";
+
+        assert_eq!(ciphertext(&raw(message)), Some(Ciphertext::SMime));
+    }
+
+    /// §5.4 must not disagree with itself: whatever `is_encrypted`
+    /// calls encrypted is what `view` will ask the agent to open.
+    #[test]
+    fn prop_ciphertext_agrees_with_is_encrypted() {
+        let armor = format!("{PGP_ARMOR}\n\nhQIMA0abcdef\n{PGP_ARMOR_END}");
+
+        let cases = [
+            plain("Hello.\n"),
+            plain(&format!("{armor}\n")),
+            pgp_mime(&armor),
+        ];
+
+        for case in cases {
+            let bytes = raw(&case);
+            let parsed = parse(&bytes).expect("a message that parses");
+
+            assert_eq!(
+                parsed.is_encrypted(),
+                ciphertext(&bytes).is_some(),
+                "the two answers differ for {case}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------
