@@ -11,11 +11,17 @@
 # docbert-core and the k-means / MaxSim kernels through
 # docbert-plaid, both of which build against a GPU.
 #
-# `gpg` stays a runtime lookup on `$PATH` (mailbert shells out to it
-# to open an encrypted body), not a build input — same as docbert
-# leaves its own external tools unwrapped.
+# `capnproto` is a build-time tool, not a runtime one: sequoia-ipc
+# (reached through sequoia-gpg-agent) generates its Cap'n Proto glue
+# in a build script and panics without `capnp` on `$PATH`. It is added
+# here rather than at each call site so every variant inherits it.
+#
+# Nothing external is needed at runtime. §5.4 opens an encrypted body
+# in-process with sequoia, and the one operation that needs a secret
+# key goes to gpg-agent over its socket, so no `gpg` is spawned.
 {
   mkPackage,
+  capnproto,
   name ? "mailbert",
   buildFeatures ? [ ],
   buildInputs ? [ ],
@@ -29,10 +35,11 @@ mkPackage {
     name
     buildFeatures
     buildInputs
-    nativeBuildInputs
     extraEnv
     extraPreBuild
     ;
+
+  nativeBuildInputs = nativeBuildInputs ++ [ capnproto ];
 
   shellCompletions = true;
 }

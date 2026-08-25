@@ -77,11 +77,44 @@ pub enum Error {
     #[diagnostic(help("Run `mailbert sync` to index the mail of the store."))]
     NotIndexed(String),
 
-    #[error("I cannot run `gpg`: {0}")]
+    #[error("gpg-agent did not answer: {0}")]
     #[diagnostic(help(
-        "Install gpg. `mailbert get` gives the ciphertext without it."
+        "Start the agent with `gpg-connect-agent /bye`. `mailbert get` \
+         gives the ciphertext without it."
     ))]
-    NoGpg(String),
+    AgentGone(String),
+
+    #[error("gpg-agent refused to open the message: {0}")]
+    #[diagnostic(help(
+        "The agent holds no secret key for any recipient of this \
+         message, or the passphrase was wrong."
+    ))]
+    AgentRefused(String),
+
+    #[error("these bytes are not an OpenPGP message: {0}")]
+    Malformed(String),
+
+    #[error("this message carries no ciphertext")]
+    #[diagnostic(help("`view` decrypts a message that `is:encrypted` finds."))]
+    NoCiphertext,
+
+    #[error("this message is S/MIME, and mailbert opens only OpenPGP")]
+    #[diagnostic(help(
+        "`mailbert get` gives the ciphertext, and `gpgsm` opens it."
+    ))]
+    SMime,
+
+    #[error("no public certificate at `{0}`")]
+    #[diagnostic(help(
+        "gpg-agent addresses a key by its keygrip, and the certificates \
+         say which key a message names. Set `certs` under `[pgp]`, or \
+         export them with `gpg --export`."
+    ))]
+    NoCerts(std::path::PathBuf),
+
+    #[error("I cannot find the GnuPG home")]
+    #[diagnostic(help("Set `$GNUPGHOME`, or `home` under `[pgp]`."))]
+    NoGnupgHome,
 
     #[error("no account is named `{0}`")]
     UnknownAccount(String),
@@ -111,6 +144,25 @@ impl Error {
     /// The error for a tag that the store refuses.
     pub fn bad_tag(word: &str) -> Self {
         Self::Core(mailbert_core::Error::InvalidTag(word.to_string()))
+    }
+
+    /// The agent is not there, or the home that names it is not.
+    ///
+    /// The argument is `Display` rather than one error type because
+    /// sequoia raises two: its own for the socket, and `anyhow` for
+    /// everything the OpenPGP layer reports.
+    pub fn agent_gone(problem: impl std::fmt::Display) -> Self {
+        Self::AgentGone(problem.to_string())
+    }
+
+    /// The agent answered, and the answer was no.
+    pub fn refused(problem: impl std::fmt::Display) -> Self {
+        Self::AgentRefused(problem.to_string())
+    }
+
+    /// The bytes that the message carried are not OpenPGP.
+    pub fn not_openpgp(problem: impl std::fmt::Display) -> Self {
+        Self::Malformed(problem.to_string())
     }
 }
 

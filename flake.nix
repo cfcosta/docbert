@@ -348,6 +348,9 @@
 
                   bacon
                   bun
+                  # sequoia-ipc generates its Cap'n Proto glue in a
+                  # build script, so `mailbert` needs `capnp` to build.
+                  capnproto
                   cargo-deny
                   cargo-mutants
                   cargo-nextest

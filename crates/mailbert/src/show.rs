@@ -8,15 +8,12 @@
 //! depth, highlights the code blocks of the body, and obeys `NO_COLOR`.
 //! It does not page, so a reader pipes it to `less -R`.
 //!
-//! Only `view` runs `gpg`. §5.4 keeps the ciphertext of an encrypted
+//! Only `view` decrypts. §5.4 keeps the ciphertext of an encrypted
 //! message out of the index, and out of `get`, because the index and
 //! its backup are plaintext files. A reader who wants the plaintext
-//! asks for it, and the tool asks `gpg` at that moment.
+//! asks for it, and [`crate::pgp`] asks gpg-agent at that moment.
 
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::io::Write;
 
 use mailbert_core::{
     Store,
@@ -37,9 +34,6 @@ use crate::{
     cli,
     error::{Error, Result},
 };
-
-/// The command that reads an encrypted body. (§5.4)
-pub const GPG: &str = "gpg";
 
 /// How wide the text is when nothing says otherwise.
 pub const WIDTH: usize = 100;
@@ -174,7 +168,7 @@ pub fn read(
 
     // §5.4: the parse keeps the ciphertext out of the text, so the read
     // takes the armor from the bytes. A ciphertext is not a plaintext,
-    // so `get` can show it, and a reader with no gpg still sees it.
+    // so `get` can show it, and a reader with no agent still sees it.
     let text = match head.encrypted {
         true => body_of(&raw),
         false => parsed.full,
@@ -316,7 +310,7 @@ pub fn render(
     }
 
     // §5.4: an encrypted body reaches here as its ciphertext unless
-    // the caller asked gpg for the plaintext. Say which one it is.
+    // the caller asked the agent for the plaintext. Say which one it is.
     if head.encrypted {
         writeln!(out, "\n[encrypted — mailbert did not index this body]")?;
     }
@@ -422,41 +416,6 @@ fn color(
     out
 }
 
-/// The plaintext of an encrypted body. (§5.4)
-///
-/// The bytes go to `gpg` on its standard input, and nothing of the
-/// plaintext reaches the store or the index.
-///
-/// # Errors
-///
-/// The function fails if `gpg` is not there, or if it refuses.
-pub fn decrypt(raw: &[u8]) -> Result<String> {
-    let mut child = Command::new(GPG)
-        .args(["--batch", "--quiet", "--decrypt"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|problem| Error::NoGpg(problem.to_string()))?;
-
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::NoGpg("gpg takes no input".to_string()))?
-        .write_all(raw)?;
-
-    let done = child.wait_with_output()?;
-
-    if !done.status.success() {
-        return Err(Error::CommandFailed {
-            command: GPG.to_string(),
-            status: done.status.code().unwrap_or(-1),
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&done.stdout).into_owned())
-}
-
 /// Do the work of `get`. (§10.2)
 ///
 /// # Errors
@@ -469,7 +428,7 @@ pub fn get(tool: &Tool, args: &cli::One) -> Result<()> {
     let (head, text) = read(&store, &id, crate::clock().utc_offset())?;
     let mut out = std::io::stdout().lock();
 
-    // §5.4: `get` never runs gpg. A reader who wants the plaintext of
+    // §5.4: `get` never decrypts. A reader who wants the plaintext of
     // an encrypted body asks `view` for it.
     match args.json {
         true => write_json(&Whole { head, text }, &mut out),
@@ -481,20 +440,20 @@ pub fn get(tool: &Tool, args: &cli::One) -> Result<()> {
 ///
 /// # Errors
 ///
-/// The function fails if the message is not there, if `gpg` refuses,
-/// or if the output does not take the text.
+/// The function fails if the message is not there, if gpg-agent
+/// refuses, or if the output does not take the text.
 pub fn view(tool: &Tool, args: &cli::Show) -> Result<()> {
     let config = tool.config()?;
     let store = tool.store()?;
     let id = resolve(&store, &args.id)?;
     let (mut head, body) = read(&store, &id, crate::clock().utc_offset())?;
 
-    // §5.4: only `view` asks gpg, and it asks at this moment. Nothing
-    // of the plaintext reaches the store or the index.
+    // §5.4: only `view` asks the agent, and it asks at this moment.
+    // Nothing of the plaintext reaches the store or the index.
     let text = match head.encrypted {
         true => {
             let raw = store.raw(&id)?.unwrap_or_default();
-            let plain = decrypt(&raw)?;
+            let plain = crate::pgp::decrypt(&config.pgp, &raw)?;
             head.encrypted = false;
 
             plain
@@ -817,19 +776,16 @@ mod tests {
         assert_eq!(body, "one\ntwo\n");
     }
 
-    /// The pipe to `gpg` must report a refusal, and never a plaintext.
-    /// The test passes with `gpg` and without it. Both give an error.
+    /// A body that carries no ciphertext must report that, and never a
+    /// plaintext. The test needs no agent, because the refusal comes
+    /// before mailbert opens the socket.
     #[test]
-    fn a_body_that_gpg_refuses_is_an_error() {
-        let result = decrypt(b"these bytes are not a message\n");
+    fn a_body_that_carries_no_ciphertext_is_an_error() {
+        let config = mailbert_core::config::PgpConfig::default();
+        let result =
+            crate::pgp::decrypt(&config, b"these bytes are not a message\n");
 
-        assert!(
-            matches!(
-                result,
-                Err(Error::CommandFailed { .. } | Error::NoGpg(_))
-            ),
-            "{result:?}"
-        );
+        assert!(matches!(result, Err(Error::NoCiphertext)), "{result:?}");
     }
 
     #[test]

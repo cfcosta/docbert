@@ -11,6 +11,7 @@ pub mod export;
 pub mod mcp;
 pub mod pass;
 pub mod paths;
+pub mod pgp;
 pub mod saved;
 pub mod search;
 pub mod semantic;

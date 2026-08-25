@@ -36,6 +36,13 @@ tokio = { version = "1", features = [
   "time",
 ] }
 xdg = "3.0.0"
+sequoia-openpgp = { version = "2", default-features = false, features = [
+  "crypto-rust",
+  "allow-experimental-crypto",
+  "allow-variable-time-crypto",
+  "compression",
+] }
+sequoia-gpg-agent = { version = "0.6", default-features = false }
 
 [features]
 default = []
