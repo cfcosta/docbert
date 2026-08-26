@@ -80,7 +80,7 @@ pub enum Command {
     Status(Status),
 
     /// Speak MCP on the standard input and output
-    Mcp,
+    Mcp(Mcp),
 
     /// Write the completions of one shell
     #[command(hide = true)]
@@ -103,7 +103,7 @@ impl Command {
             Self::Contacts(_) => "contacts",
             Self::Export(_) => "export",
             Self::Status(_) => "status",
-            Self::Mcp => "mcp",
+            Self::Mcp(_) => "mcp",
             Self::Completions(_) => "completions",
         }
     }
@@ -121,7 +121,7 @@ impl Command {
             Self::View(_)
             | Self::Tag(_)
             | Self::Export(_)
-            | Self::Mcp
+            | Self::Mcp(_)
             | Self::Completions(_) => false,
         }
     }
@@ -373,6 +373,14 @@ pub struct Status {
     pub json: bool,
 }
 
+/// `mailbert mcp [--read-only]`
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct Mcp {
+    /// Give only the tools that read, and none that write
+    #[arg(long)]
+    pub read_only: bool,
+}
+
 /// `mailbert completions <shell>`
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct Completions {
@@ -441,6 +449,7 @@ mod tests {
             vec!["mailbert", "export", "tag:todo", "/mail/todo"],
             vec!["mailbert", "status"],
             vec!["mailbert", "mcp"],
+            vec!["mailbert", "mcp", "--read-only"],
         ];
 
         for line in lines {

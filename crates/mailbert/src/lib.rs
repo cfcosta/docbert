@@ -157,7 +157,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Saved { action } => saved::command(&tool, action),
         Command::Contacts(args) => contacts::command(&tool, args),
         Command::Status(args) => status::command(&tool, args),
-        Command::Mcp => mcp::command(&tool),
+        Command::Mcp(args) => mcp::command(&tool, args),
 
         // `completions` left above, before the tool opened, because it
         // must run where no configuration and no store are there yet.

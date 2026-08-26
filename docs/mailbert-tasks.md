@@ -793,3 +793,27 @@ The parts that hold a message and find it again.
   back what the model read and logs what it could not, and the CLI door
   opens the embedding database before the message goes out so that a
   database that will not open is known beforehand.
+
+- [x] **T45** `mcp --read-only` hands out no tool that writes. (§2.2)
+  - [x] `Tools::Reading` takes `send` and `tag` out of the router, so
+        `tools/list` shows six and `tools/call` finds neither.
+  - [x] The instructions of a read-only server say that it writes
+        nothing.
+
+  The point of the flag is an agent that runs on a timer. It reads mail
+  that other people wrote, and mail is not a trustworthy instruction: a
+  message can ask a model to forward the thread above it, and the model
+  has no way to tell that request from the one its owner made. Every
+  answer to that problem which relies on the model deciding well is a
+  weaker answer than not giving it the tool. A server with no `send` in
+  its router cannot send, whatever the mail says.
+
+  Removing the route and not the method is what makes this hold. The
+  same `Server` still has `send` and `tag` on it, and the CLI still
+  sends, but `tools/list` and `tools/call` both read the router, so a
+  tool that is not in it can neither be seen nor called.
+
+  The instructions change with the set, because a model that believes
+  it can write asks for a tool that is not there and then reports that
+  it could not do what it was asked. A read-only server says so up
+  front instead.

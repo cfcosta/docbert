@@ -36,6 +36,7 @@ use serde::Deserialize;
 
 use crate::{
     Tool,
+    cli,
     contacts,
     error,
     paths::Paths,
@@ -444,24 +445,67 @@ fn answer<T: serde::Serialize>(
     Ok(result)
 }
 
+/// Which of the tools of §2.2 a server hands out.
+///
+/// An agent that runs on a timer reads mail that other people wrote,
+/// and mail is not a trustworthy instruction. A server that gives it
+/// no tool that writes cannot be talked into writing, whatever the
+/// mail says. (§2.2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tools {
+    /// Every tool, the two that write included.
+    All,
+
+    /// The six that only read. `tag` and `send` are not there.
+    Reading,
+}
+
+impl Tools {
+    /// The tools that change something. (§3.3)
+    ///
+    /// `tag` writes to mailbert alone and `send` reaches past the
+    /// machine, and a read-only server gives out neither.
+    pub const WRITES: [&'static str; 2] = ["send", "tag"];
+
+    /// Drop the tools that this set does not hand out.
+    fn keep(self, mut router: ToolRouter<Server>) -> ToolRouter<Server> {
+        if self == Self::All {
+            return router;
+        }
+
+        for name in Self::WRITES {
+            router.remove_route(name);
+        }
+
+        router
+    }
+}
+
 /// The MCP server of §2.2.
 #[derive(Clone)]
 pub struct Server {
     desk: Arc<Desk>,
+    tools: Tools,
     tool_router: ToolRouter<Self>,
 }
 
 impl Server {
-    /// A server over one desk.
+    /// A server over one desk, with every tool.
     pub fn new(desk: Desk) -> Self {
         Self::over(Arc::new(desk))
     }
 
     /// A server over a desk that a caller already holds.
     pub fn over(desk: Arc<Desk>) -> Self {
+        Self::with(desk, Tools::All)
+    }
+
+    /// A server that hands out the tools of one set. (§2.2)
+    pub fn with(desk: Arc<Desk>, tools: Tools) -> Self {
         Self {
             desk,
-            tool_router: sanitize(Self::tool_router()),
+            tools,
+            tool_router: sanitize(tools.keep(Self::tool_router())),
         }
     }
 }
@@ -652,21 +696,34 @@ impl ServerHandler for Server {
             .with_title("mailbert MCP")
             .with_description("Search and read your mail through MCP.");
 
+        let reading = "Pick a search tool by signal: bm25_search for an \
+             address, an identifier, or a phrase that the mail holds word \
+             for word, and search when the words of the question may differ \
+             from the words of the mail. Both take from:, to:, subject:, \
+             tag:, date:, is:, has:, and AND/OR/NOT. Turn a name into an \
+             address with contacts first. Read one message with get, and the \
+             whole conversation with thread.";
+
+        let writing = match self.tools {
+            Tools::All => {
+                " tag writes to mailbert alone. send is the one \
+                 tool that leaves the machine: it hands a message to the \
+                 submission server and files the copy locally, and neither \
+                 it nor tag ever writes to the mail server."
+            }
+            // A model that believes it can write asks for a tool that is
+            // not there, and then says it could not do what it was asked.
+            // Better that it knows before it tries.
+            Tools::Reading => {
+                " This server reads and writes nothing: there \
+                 is no tag and no send, so a message cannot be sent, tagged, \
+                 or changed from here."
+            }
+        };
+
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(about)
-            .with_instructions(
-                "Pick a search tool by signal: bm25_search for an address, an \
-                 identifier, or a phrase that the mail holds word for word, \
-                 and search when the words of the question may differ from \
-                 the words of the mail. Both take from:, to:, subject:, tag:, \
-                 date:, is:, has:, and AND/OR/NOT. Turn a name into an \
-                 address with contacts first. Read one message with get, and \
-                 the whole conversation with thread. tag writes to mailbert \
-                 alone. send is the one tool that leaves the machine: it \
-                 hands a message to the submission server and files the copy \
-                 locally, and neither it nor tag ever writes to the mail \
-                 server.",
-            )
+            .with_instructions(format!("{reading}{writing}"))
     }
 }
 
@@ -676,8 +733,12 @@ impl ServerHandler for Server {
 ///
 /// The function fails if the store, the index, or the transport
 /// refuses.
-pub fn command(tool: &Tool) -> error::Result<()> {
-    let server = Server::new(Desk::open(tool)?);
+pub fn command(tool: &Tool, args: &cli::Mcp) -> error::Result<()> {
+    let tools = match args.read_only {
+        true => Tools::Reading,
+        false => Tools::All,
+    };
+    let server = Server::with(Arc::new(Desk::open(tool)?), tools);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1224,6 +1285,55 @@ mod tests {
                 "thread",
             ]
         );
+    }
+
+    /// §2.2: an agent that runs on a timer reads mail that other
+    /// people wrote, and mail is not a trustworthy instruction. A
+    /// server that hands out no tool that writes cannot be talked into
+    /// writing, whatever the mail says.
+    #[test]
+    fn a_read_only_server_gives_the_six_tools_that_read() {
+        let shelf = Shelf::new();
+        let server = Server::with(shelf.desk.clone(), Tools::Reading);
+
+        assert_eq!(
+            names(&server),
+            vec![
+                "bm25_search",
+                "contacts",
+                "get",
+                "search",
+                "status",
+                "thread",
+            ]
+        );
+
+        // Both `tools/list` and `tools/call` read the router, so a tool
+        // that is not in it can neither be seen nor called.
+        for name in Tools::WRITES {
+            assert!(
+                !server.tool_router.has_route(name),
+                "{name} is still there"
+            );
+        }
+    }
+
+    /// A model that believes it can write asks for a tool that is not
+    /// there, and then reports that it could not do what it was asked.
+    #[test]
+    fn a_read_only_server_says_that_it_writes_nothing() {
+        let shelf = Shelf::new();
+        let told = Server::with(shelf.desk.clone(), Tools::Reading)
+            .get_info()
+            .instructions
+            .expect("the server tells the model how to work");
+
+        assert!(
+            told.contains("This server reads and writes nothing"),
+            "{told}"
+        );
+        assert!(!told.contains("send is the one tool"), "{told}");
+        assert!(told.contains("bm25_search"), "{told}");
     }
 
     /// Some clients refuse a schema that holds the `$schema` keyword.

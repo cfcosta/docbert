@@ -180,6 +180,7 @@ mailbert contacts caina              # what `from:caina` resolves to
 mailbert export "tag:todo" ~/mail/todo     # a maildir for your MUA
 mailbert status                      # the counts of the store and the index
 mailbert mcp                         # stdio MCP server
+mailbert mcp --read-only             # the six tools that read (§2.2)
 
 # The log
 mailbert sync --verbose              # say what the work does (§10.5)
@@ -205,6 +206,8 @@ The MCP server holds the model in memory, because the process is long-lived. Thi
 Two tools write. `tag` writes to mailbert's own tag table. `send` hands one message to the submission server of §11 and files the copy in the local store. Neither writes to the IMAP server, so §3.3 holds for an agent exactly as it holds for you.
 
 `send` is the one tool whose effect leaves the machine, and mail that has left cannot be recalled. Its description says so, and the server's instructions say so again, so a model that has not been told to send outright reads the message to you first.
+
+`mailbert mcp --read-only` gives the six tools that read, and neither of the two that write. An agent that runs unattended reads mail that other people wrote, and mail is not a trustworthy instruction: a message can ask a model to send its contents somewhere, and a model that has no `send` cannot be talked into it whatever the message says. The instructions of a read-only server say that it writes nothing, so a model asks for no tool that is not there. A model that must tag or send is one you are watching, and it gets the whole server.
 
 Each tool gives its answer two times. The text is what the CLI writes, and the fields are what `--json` writes. The text costs the model less to read. The fields carry what the text leaves out, such as the score.
 
