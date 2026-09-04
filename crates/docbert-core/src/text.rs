@@ -299,7 +299,11 @@ fn floor_char_boundary(text: &str, mut byte: usize) -> usize {
 
 fn truncate_snippet(mut snippet: String) -> String {
     if snippet.len() > DEFAULT_SNIPPET_MAX_CHARS {
-        snippet.truncate(DEFAULT_SNIPPET_MAX_CHARS);
+        // The cap is a byte budget, so it can land mid-codepoint on any text
+        // that isn't pure ASCII. `String::truncate` panics on a non-boundary
+        // index; back off to the last boundary at or below the cap.
+        let cut = floor_char_boundary(&snippet, DEFAULT_SNIPPET_MAX_CHARS);
+        snippet.truncate(cut);
         snippet.push_str("...");
     }
 
@@ -480,6 +484,18 @@ mod tests {
         let (snippet, _) = extract_snippet(&text, "a").unwrap();
         assert!(snippet.len() <= DEFAULT_SNIPPET_MAX_CHARS + 3); // +3 for "..."
         assert!(snippet.ends_with("..."));
+    }
+
+    #[test]
+    fn extract_snippet_truncates_long_multibyte_without_panicking() {
+        // Byte 400 falls in the middle of the first 'á' (bytes 399..401).
+        let line = format!("{}{}", "a".repeat(399), "á".repeat(50));
+        let text = format!("{line}\n{line}");
+        let (snippet, _) = extract_snippet(&text, "a").unwrap();
+
+        assert!(snippet.len() <= DEFAULT_SNIPPET_MAX_CHARS + 3);
+        assert!(snippet.ends_with("..."));
+        assert_eq!(snippet.trim_end_matches('.'), "a".repeat(399));
     }
 
     #[test]
