@@ -173,11 +173,7 @@ impl RotaryEmbedding {
         } else {
             k.contiguous()?
         };
-        let q_embed =
-            candle_nn::rotary_emb::rope_thd(&q, &self.cos, &self.sin)?;
-        let k_embed =
-            candle_nn::rotary_emb::rope_thd(&k, &self.cos, &self.sin)?;
-        Ok((q_embed, k_embed))
+        crate::rope_cuda::apply_rotary_pair(&q, &k, &self.cos, &self.sin)
     }
 
     /// Applies rope to `(total_tokens, heads, head_dim)` packed q/k.
@@ -213,11 +209,8 @@ impl RotaryEmbedding {
         } else {
             k.contiguous()?
         };
-        let q_embed =
-            candle_nn::rotary_emb::rope_thd(&q, &cos, &sin)?.squeeze(0)?;
-        let k_embed =
-            candle_nn::rotary_emb::rope_thd(&k, &cos, &sin)?.squeeze(0)?;
-        Ok((q_embed, k_embed))
+        let (q, k) = crate::rope_cuda::apply_rotary_pair(&q, &k, &cos, &sin)?;
+        Ok((q.squeeze(0)?, k.squeeze(0)?))
     }
 }
 

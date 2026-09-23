@@ -7,6 +7,8 @@ pub mod modernbert;
 pub mod pooling;
 #[cfg(feature = "cuda")]
 mod residual_norm_cuda;
+#[cfg(feature = "cuda")]
+mod rope_cuda;
 pub mod types;
 pub mod utils;
 

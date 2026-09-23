@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
-    let kernels = ["geglu", "residual_norm"];
+    let kernels = ["geglu", "residual_norm", "rope_pair"];
     println!("cargo::rerun-if-changed=build.rs");
     for kernel in kernels {
         println!("cargo::rerun-if-changed=src/kernels/{kernel}.cu");
