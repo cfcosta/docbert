@@ -12,7 +12,7 @@
 //! Usage:
 //!   encode_speed [--batch-size N] [--docs N] [--repeats N]
 //!                [--dtype f32|f16|bf16] [--uniform] [--queries]
-//!                [--cpu] [--dump PATH | --compare PATH]
+//!                [--cpu] [--parallel-batches] [--dump PATH | --compare PATH]
 //!
 //! Prints a single JSON object to stdout.
 //!
@@ -300,6 +300,7 @@ fn main() {
         flag("--repeats").map(|v| v.parse().unwrap()).unwrap_or(5);
     let uniform = has("--uniform");
     let bench_queries = has("--queries");
+    let should_parallelize_batches = has("--parallel-batches");
     let dump_path = flag("--dump");
     let compare_path = flag("--compare");
     let dtype = flag("--dtype").map(|v| match v.as_str() {
@@ -316,7 +317,8 @@ fn main() {
     };
     let mut builder = ColBERT::from(MODEL_ID)
         .with_device(device.clone())
-        .with_batch_size(batch_size);
+        .with_batch_size(batch_size)
+        .with_parallel_cuda_batches(should_parallelize_batches);
     if let Some(dtype) = dtype {
         builder = builder.with_dtype(dtype);
     }
@@ -324,6 +326,7 @@ fn main() {
         .try_into()
         .expect("load model (needs GTE-ModernColBERT-v1 in HF cache)");
 
+    let device = model.device.clone();
     let corpus = build_corpus(n_docs, uniform);
     let lengths = model
         .document_token_lengths(&corpus)
@@ -353,6 +356,7 @@ fn main() {
         "batch_size": batch_size,
         "docs": n_docs,
         "uniform": uniform,
+        "parallel_batches": should_parallelize_batches,
         "total_valid_tokens": total_tokens,
         "repeats": repeats,
         "wall_ms_best": best,

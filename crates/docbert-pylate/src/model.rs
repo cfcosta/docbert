@@ -231,14 +231,14 @@ pub(crate) fn compute_raw_similarity(
 /// PyLate ColBERT model we ship is built that way; anything else is a
 /// fail-fast in the loader rather than a silently-wrong projection.
 pub(crate) fn build_dense_layers(
-    dense_modules: Vec<DenseModuleData>,
+    dense_modules: &[DenseModuleData],
     dtype: DType,
     device: &Device,
 ) -> Result<Vec<DenseLayer>, ColbertError> {
     const SUPPORTED_ACTIVATION: &str = "torch.nn.modules.linear.Identity";
 
     let mut layers = Vec::with_capacity(dense_modules.len());
-    for (idx, module) in dense_modules.into_iter().enumerate() {
+    for (idx, module) in dense_modules.iter().enumerate() {
         let cfg: serde_json::Value =
             serde_json::from_slice(&module.config_bytes)?;
 
@@ -267,8 +267,8 @@ pub(crate) fn build_dense_layers(
         })? as usize;
         let use_residual = cfg["use_residual"].as_bool().unwrap_or(false);
 
-        let vb = VarBuilder::from_buffered_safetensors(
-            module.weights_bytes,
+        let vb = VarBuilder::from_slice_safetensors(
+            &module.weights_bytes,
             dtype,
             device,
         )?;
@@ -344,6 +344,16 @@ pub struct ColBERT {
     /// The dtype the transformer trunk and Dense projection run in.
     /// Public embedding tensors are always F32 regardless of this value.
     pub dtype: DType,
+    #[cfg(feature = "cuda")]
+    batch_worker: Option<BatchWorker>,
+}
+
+#[cfg(feature = "cuda")]
+struct BatchWorker {
+    model: Box<ColBERT>,
+    pool: rayon::ThreadPool,
+    #[cfg(test)]
+    batches_encoded: std::sync::atomic::AtomicUsize,
 }
 
 /// One tokenized batch, ready for a model forward pass.
@@ -387,6 +397,47 @@ impl ColBERT {
         device: &Device,
         dtype: Option<DType>,
     ) -> Result<Self, ColbertError> {
+        Self::load(
+            weights,
+            dense_modules,
+            tokenizer_bytes,
+            config_bytes,
+            query_prefix,
+            document_prefix,
+            query_prompt,
+            document_prompt,
+            mask_token,
+            do_query_expansion,
+            attend_to_expansion_tokens,
+            query_length,
+            document_length,
+            batch_size,
+            device,
+            dtype,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn load(
+        weights: Vec<u8>,
+        dense_modules: Vec<DenseModuleData>,
+        tokenizer_bytes: Vec<u8>,
+        config_bytes: Vec<u8>,
+        query_prefix: String,
+        document_prefix: String,
+        query_prompt: String,
+        document_prompt: String,
+        mask_token: String,
+        do_query_expansion: bool,
+        attend_to_expansion_tokens: bool,
+        query_length: Option<usize>,
+        document_length: Option<usize>,
+        batch_size: Option<usize>,
+        device: &Device,
+        dtype: Option<DType>,
+        should_parallelize_cuda_batches: bool,
+    ) -> Result<Self, ColbertError> {
         if dense_modules.is_empty() {
             return Err(ColbertError::Operation(
                 "ColBERT requires at least one Dense projection layer".into(),
@@ -419,30 +470,26 @@ impl ColBERT {
             }
         });
 
-        let vb = VarBuilder::from_buffered_safetensors(weights, dtype, device)?;
-
-        let model = match architectures {
-            "ModernBertModel" => {
-                let config: ModernBertConfig =
-                    serde_json::from_slice(&config_bytes)?;
-                let model = ModernBert::load(vb.clone(), &config)?;
-                BaseModel::ModernBert(model)
-            }
-            "BertForMaskedLM" | "BertModel" => {
-                let config: BertConfig = serde_json::from_slice(&config_bytes)?;
-                let model = BertModel::load(vb.clone(), &config)?;
-                BaseModel::Bert(model)
-            }
-            arch => {
-                return Err(ColbertError::Operation(format!(
-                    "Unsupported architecture: {}",
-                    arch
-                )));
-            }
+        #[cfg(not(feature = "cuda"))]
+        let _ = should_parallelize_cuda_batches;
+        #[cfg(feature = "cuda")]
+        let should_parallelize_cuda_batches = should_parallelize_cuda_batches
+            && device.is_cuda()
+            && dtype == DType::BF16;
+        #[cfg(feature = "cuda")]
+        let primary_device = if should_parallelize_cuda_batches {
+            // Explicit streams keep the same CUDA stream across Rayon threads.
+            Device::Cuda(candle_core::CudaDevice::new_with_stream(
+                device.as_cuda_device()?.cuda_stream().context().ordinal(),
+            )?)
+        } else {
+            device.clone()
         };
+        #[cfg(feature = "cuda")]
+        let device = &primary_device;
 
+        let vb = VarBuilder::from_buffered_safetensors(weights, dtype, device)?;
         let tokenizer = Tokenizer::from_bytes(&tokenizer_bytes)?;
-
         let mask_token_id =
             tokenizer.token_to_id(mask_token.as_str()).ok_or_else(|| {
                 ColbertError::Operation(format!(
@@ -451,33 +498,77 @@ impl ColBERT {
                 ))
             })?;
 
-        let dense_layers = build_dense_layers(dense_modules, dtype, device)?;
-
-        // If do_query_expansion is false, attend_to_expansion_tokens should also be false
-        let final_attend_to_expansion_tokens = if !do_query_expansion {
-            false
-        } else {
-            attend_to_expansion_tokens
+        // Reuse checkpoint bytes while loading fresh tensors and caches per device.
+        let load_model = |device: &Device| -> Result<Self, ColbertError> {
+            let vb = vb.clone().set_device(device.clone());
+            let model = match architectures {
+                "ModernBertModel" => {
+                    let config: ModernBertConfig =
+                        serde_json::from_slice(&config_bytes)?;
+                    BaseModel::ModernBert(ModernBert::load(vb, &config)?)
+                }
+                "BertForMaskedLM" | "BertModel" => {
+                    let config: BertConfig =
+                        serde_json::from_slice(&config_bytes)?;
+                    BaseModel::Bert(BertModel::load(vb, &config)?)
+                }
+                arch => {
+                    return Err(ColbertError::Operation(format!(
+                        "Unsupported architecture: {}",
+                        arch
+                    )));
+                }
+            };
+            let dense_layers =
+                build_dense_layers(&dense_modules, dtype, device)?;
+            Ok(Self {
+                model,
+                dense_layers,
+                tokenizer: tokenizer.clone(),
+                mask_token_id,
+                mask_token: mask_token.clone(),
+                query_prefix: query_prefix.clone(),
+                document_prefix: document_prefix.clone(),
+                query_prompt: query_prompt.clone(),
+                document_prompt: document_prompt.clone(),
+                do_query_expansion,
+                attend_to_expansion_tokens: do_query_expansion
+                    && attend_to_expansion_tokens,
+                query_length: query_length.unwrap_or(32),
+                document_length: document_length.unwrap_or(180),
+                batch_size: batch_size.unwrap_or(32),
+                device: device.clone(),
+                dtype,
+                #[cfg(feature = "cuda")]
+                batch_worker: None,
+            })
         };
-
-        Ok(Self {
-            model,
-            dense_layers,
-            tokenizer,
-            mask_token_id,
-            mask_token,
-            query_prefix,
-            document_prefix,
-            query_prompt,
-            document_prompt,
-            do_query_expansion,
-            attend_to_expansion_tokens: final_attend_to_expansion_tokens,
-            query_length: query_length.unwrap_or(32),
-            document_length: document_length.unwrap_or(180),
-            batch_size: batch_size.unwrap_or(32),
-            device: device.clone(),
-            dtype,
-        })
+        let model = load_model(device)?;
+        #[cfg(feature = "cuda")]
+        let model = if should_parallelize_cuda_batches {
+            let worker_device =
+                Device::Cuda(candle_core::CudaDevice::new_with_stream(
+                    device.as_cuda_device()?.cuda_stream().context().ordinal(),
+                )?);
+            let worker = load_model(&worker_device)?;
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .thread_name(|index| format!("colbert-batch-{index}"))
+                .build()
+                .map_err(|error| ColbertError::Operation(error.to_string()))?;
+            Self {
+                batch_worker: Some(BatchWorker {
+                    model: Box::new(worker),
+                    pool,
+                    #[cfg(test)]
+                    batches_encoded: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                ..model
+            }
+        } else {
+            model
+        };
+        Ok(model)
     }
 
     /// Creates a `ColbertBuilder` to construct a `ColBERT` model from a Hugging Face repository.
@@ -593,7 +684,7 @@ impl ColBERT {
     /// Encodes a batch of sentences (queries or documents) into embeddings.
     ///
     /// On CPU, this method leverages Rayon for parallel batch processing
-    /// to accelerate encoding. On accelerators (GPU), it processes batches sequentially.
+    /// to accelerate encoding. CUDA document batches can use two streams when opted in.
     pub fn encode(
         &mut self,
         sentences: &[String],
@@ -725,12 +816,9 @@ impl ColBERT {
             let mut all_embeddings = Vec::with_capacity(
                 sorted_encodings.len().div_ceil(self.batch_size),
             );
-            let padding = PaddingParams {
-                strategy: PaddingStrategy::BatchLongest,
-                ..Default::default()
-            };
             let max_tokens_per_batch =
                 self.batch_size * self.document_length.max(1);
+            let mut batch_sizes = Vec::new();
             let mut batch_start = 0usize;
             while batch_start < sorted_encodings.len() {
                 let first_len =
@@ -738,74 +826,54 @@ impl ColBERT {
                 let batch_cap = (max_tokens_per_batch / first_len).max(1);
                 let batch_end =
                     (batch_start + batch_cap).min(sorted_encodings.len());
-                let batch_encodings =
-                    &mut sorted_encodings[batch_start..batch_end];
-                let first_len = batch_encodings
-                    .first()
-                    .map_or(0, |encoding| encoding.get_ids().len());
-                let last_len = batch_encodings
-                    .last()
-                    .map_or(0, |encoding| encoding.get_ids().len());
-                let has_padding = first_len != last_len;
-                if has_padding {
-                    pad_encodings(batch_encodings, &padding)?;
-                }
-                // The batch's valid_lens come from attention-mask sums,
-                // which keep zeros on padding — never from the padded
-                // encoding widths, or flash varlen would attend [PAD]
-                // keys.
-                let batch = self.tensorize_encodings(batch_encodings, false)?;
-
-                let token_embeddings = {
-                    #[cfg(feature = "cuda")]
-                    {
-                        if !has_padding {
-                            if let BaseModel::ModernBert(model) = &self.model {
-                                model.forward_unmasked(&batch.token_ids)?
-                            } else {
-                                self.model.forward(
-                                    &batch.token_ids,
-                                    &batch.attention_mask,
-                                    &batch.token_type_ids,
-                                )?
-                            }
-                        } else if let BaseModel::ModernBert(model) = &self.model
-                        {
-                            model.forward_varlen_padded(
-                                &batch.token_ids,
-                                &batch.valid_lens,
-                            )?
-                        } else {
-                            self.model.forward(
-                                &batch.token_ids,
-                                &batch.attention_mask,
-                                &batch.token_type_ids,
-                            )?
-                        }
-                    }
-                    #[cfg(not(feature = "cuda"))]
-                    {
-                        self.model.forward(
-                            &batch.token_ids,
-                            &batch.attention_mask,
-                            &batch.token_type_ids,
-                        )?
-                    }
-                };
-                let token_embeddings = if token_embeddings.is_contiguous() {
-                    token_embeddings
-                } else {
-                    token_embeddings.contiguous()?
-                };
-                let projected_embeddings = self.project(&token_embeddings)?;
-                let final_embeddings = self.finalize_embeddings(
-                    &projected_embeddings,
-                    &batch.attention_mask,
-                    batch.max_valid_len,
-                    false,
-                )?;
-                all_embeddings.push(final_embeddings);
+                batch_sizes.push(batch_end - batch_start);
                 batch_start = batch_end;
+            }
+            let mut remaining_encodings = sorted_encodings.as_mut_slice();
+            for pair in batch_sizes.chunks(2) {
+                let (first, remaining) =
+                    remaining_encodings.split_at_mut(pair[0]);
+                remaining_encodings = remaining;
+                #[cfg(feature = "cuda")]
+                if let Some(worker) =
+                    self.batch_worker.as_ref().filter(|_| pair.len() == 2)
+                {
+                    use candle_core::cuda_backend::WrapErr;
+
+                    let (second, remaining) =
+                        remaining_encodings.split_at_mut(pair[1]);
+                    remaining_encodings = remaining;
+                    let (first, second) = worker.pool.install(|| {
+                        rayon::join(
+                            || self.encode_document_batch(first),
+                            || worker.model.encode_document_batch(second),
+                        )
+                    });
+                    let first = first?;
+                    let second = second?;
+                    #[cfg(test)]
+                    worker
+                        .batches_encoded
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let primary_stream =
+                        self.device.as_cuda_device()?.cuda_stream();
+                    let worker_stream =
+                        worker.model.device.as_cuda_device()?.cuda_stream();
+                    // Order the device-to-device copy after worker finalization.
+                    primary_stream.join(&worker_stream).w()?;
+                    let worker_embeddings = second.to_device(&self.device)?;
+                    // Keep the source allocation alive until the copy finishes.
+                    worker_stream.join(&primary_stream).w()?;
+                    all_embeddings.extend([first, worker_embeddings]);
+                    continue;
+                }
+                all_embeddings.push(self.encode_document_batch(first)?);
+                if let Some(&second_size) = pair.get(1) {
+                    let (second, remaining) =
+                        remaining_encodings.split_at_mut(second_size);
+                    remaining_encodings = remaining;
+                    all_embeddings.push(self.encode_document_batch(second)?);
+                }
             }
 
             let embeddings = concatenate_embedding_batches(all_embeddings)
@@ -894,6 +962,82 @@ impl ColBERT {
         documents_embeddings: &Tensor,
     ) -> Result<Tensor, ColbertError> {
         compute_raw_similarity(queries_embeddings, documents_embeddings)
+    }
+
+    fn encode_document_batch(
+        &self,
+        batch_encodings: &mut [Encoding],
+    ) -> Result<Tensor, ColbertError> {
+        let first_len = batch_encodings
+            .first()
+            .map_or(0, |encoding| encoding.get_ids().len());
+        let last_len = batch_encodings
+            .last()
+            .map_or(0, |encoding| encoding.get_ids().len());
+        let has_padding = first_len != last_len;
+        if has_padding {
+            pad_encodings(
+                batch_encodings,
+                &PaddingParams {
+                    strategy: PaddingStrategy::BatchLongest,
+                    ..Default::default()
+                },
+            )?;
+        }
+        // The batch's valid_lens come from attention-mask sums,
+        // which keep zeros on padding — never from the padded
+        // encoding widths, or flash varlen would attend [PAD]
+        // keys.
+        let batch = self.tensorize_encodings(batch_encodings, false)?;
+
+        let token_embeddings = {
+            #[cfg(feature = "cuda")]
+            {
+                if !has_padding {
+                    if let BaseModel::ModernBert(model) = &self.model {
+                        model.forward_unmasked(&batch.token_ids)?
+                    } else {
+                        self.model.forward(
+                            &batch.token_ids,
+                            &batch.attention_mask,
+                            &batch.token_type_ids,
+                        )?
+                    }
+                } else if let BaseModel::ModernBert(model) = &self.model {
+                    model.forward_varlen_padded(
+                        &batch.token_ids,
+                        &batch.valid_lens,
+                    )?
+                } else {
+                    self.model.forward(
+                        &batch.token_ids,
+                        &batch.attention_mask,
+                        &batch.token_type_ids,
+                    )?
+                }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                self.model.forward(
+                    &batch.token_ids,
+                    &batch.attention_mask,
+                    &batch.token_type_ids,
+                )?
+            }
+        };
+        let token_embeddings = if token_embeddings.is_contiguous() {
+            token_embeddings
+        } else {
+            token_embeddings.contiguous()?
+        };
+        let projected_embeddings = self.project(&token_embeddings)?;
+        self.finalize_embeddings(
+            &projected_embeddings,
+            &batch.attention_mask,
+            batch.max_valid_len,
+            false,
+        )
+        .map_err(ColbertError::from)
     }
 
     fn tensorize_encodings(
@@ -1917,5 +2061,192 @@ mod hegel_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod parallel_batch_tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    fn read_bits(tensor: &Tensor) -> candle_core::Result<Vec<u32>> {
+        Ok(tensor
+            .flatten_all()?
+            .to_vec1::<f32>()?
+            .into_iter()
+            .map(f32::to_bits)
+            .collect())
+    }
+
+    fn count_batches(
+        lengths: &[u32],
+        batch_size: usize,
+        document_length: usize,
+    ) -> usize {
+        let mut lengths = lengths.to_vec();
+        lengths.sort_unstable_by_key(|&length| Reverse(length));
+        let mut start = 0;
+        let mut batches = 0;
+        while start < lengths.len() {
+            start += (batch_size * document_length
+                / lengths[start].max(1) as usize)
+                .max(1);
+            batches += 1;
+        }
+        batches
+    }
+
+    fn build_documents(
+        count: usize,
+        has_mixed_lengths: bool,
+        is_alternate: bool,
+    ) -> Vec<String> {
+        (0..count)
+            .map(|index| {
+                let words = if has_mixed_lengths {
+                    1 + (index * 37) % 440
+                } else {
+                    400
+                };
+                let word = if is_alternate { "vector " } else { "document " };
+                format!("Document {index}: {}", word.repeat(words))
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "requires CUDA and cached GTE-ModernColBERT-v1; run alone"]
+    fn parallel_batches_preserve_embeddings_lengths_and_order()
+    -> anyhow::Result<()> {
+        let device = Device::new_cuda(0)?;
+        for batch_size in [16, 64] {
+            let mut serial: ColBERT =
+                ColBERT::from("lightonai/GTE-ModernColBERT-v1")
+                    .with_device(device.clone())
+                    .with_batch_size(batch_size)
+                    .try_into()?;
+            let mut parallel: ColBERT =
+                ColBERT::from("lightonai/GTE-ModernColBERT-v1")
+                    .with_device(device.clone())
+                    .with_batch_size(batch_size)
+                    .with_parallel_cuda_batches(true)
+                    .try_into()?;
+            assert!(serial.batch_worker.is_none());
+            assert_eq!(parallel.dtype, DType::BF16);
+            let worker =
+                parallel.batch_worker.as_ref().expect("CUDA BF16 worker");
+            assert!(!parallel.device.same_device(&worker.model.device));
+            let primary_stream =
+                parallel.device.as_cuda_device()?.cuda_stream();
+            let worker_stream =
+                worker.model.device.as_cuda_device()?.cuda_stream();
+            assert_ne!(primary_stream.cu_stream(), worker_stream.cu_stream());
+            assert!(primary_stream.cu_stream() as usize > 2);
+            assert!(worker_stream.cu_stream() as usize > 2);
+            assert_eq!(worker.pool.current_num_threads(), 2);
+            assert!(worker.model.batch_worker.is_none());
+            assert!(serial.encode_documents_with_lengths(&[]).is_err());
+            assert!(parallel.encode_documents_with_lengths(&[]).is_err());
+
+            // Changed content and shape revisits exercise both models' caches.
+            for is_alternate in [false, true, false] {
+                for (count, has_mixed_lengths, expected_batches) in [
+                    (1, false, Some(1)),
+                    (batch_size * 2 + 1, false, Some(3)),
+                    (batch_size * 2, false, Some(2)),
+                    (batch_size * 4 + 7, true, None),
+                ] {
+                    let documents =
+                        build_documents(count, has_mixed_lengths, is_alternate);
+                    let before = parallel
+                        .batch_worker
+                        .as_ref()
+                        .unwrap()
+                        .batches_encoded
+                        .load(Ordering::Relaxed);
+                    let (expected, expected_lengths) =
+                        serial.encode_documents_with_lengths(&documents)?;
+                    let (actual, actual_lengths) =
+                        parallel.encode_documents_with_lengths(&documents)?;
+                    let batches = count_batches(
+                        &expected_lengths,
+                        batch_size,
+                        serial.document_length,
+                    );
+                    if let Some(expected_batches) = expected_batches {
+                        assert_eq!(batches, expected_batches);
+                    } else {
+                        assert!(batches >= 2);
+                        assert!(
+                            expected_lengths
+                                .windows(2)
+                                .any(|pair| pair[0] != pair[1])
+                        );
+                    }
+                    assert_eq!(
+                        parallel
+                            .batch_worker
+                            .as_ref()
+                            .unwrap()
+                            .batches_encoded
+                            .load(Ordering::Relaxed)
+                            - before,
+                        batches / 2
+                    );
+                    assert!(actual.device().same_device(&parallel.device));
+                    assert_eq!(actual_lengths, expected_lengths);
+                    assert_eq!(actual.dims(), expected.dims());
+                    assert_eq!(
+                        read_bits(&actual)?,
+                        read_bits(&expected)?,
+                        "batch_size={batch_size}, documents={count}, mixed={has_mixed_lengths}, alternate={is_alternate}"
+                    );
+                    println!(
+                        "batch_size={batch_size} documents={count} batches={batches} mixed={has_mixed_lengths} alternate={is_alternate} embedding_bit_differences=0 lengths_match=true"
+                    );
+                }
+            }
+            let queries = vec!["find a document".to_string(); batch_size + 1];
+            let before = parallel
+                .batch_worker
+                .as_ref()
+                .unwrap()
+                .batches_encoded
+                .load(Ordering::Relaxed);
+            let expected = serial.encode(&queries, true)?;
+            let actual = parallel.encode(&queries, true)?;
+            assert_eq!(actual.dims(), expected.dims());
+            assert_eq!(read_bits(&actual)?, read_bits(&expected)?);
+            assert_eq!(
+                parallel
+                    .batch_worker
+                    .as_ref()
+                    .unwrap()
+                    .batches_encoded
+                    .load(Ordering::Relaxed),
+                before
+            );
+            println!(
+                "batch_size={batch_size} query_bit_differences=0 worker_batches=0"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires CUDA and cached GTE-ModernColBERT-v1; run alone"]
+    fn parallel_batches_keep_f32_on_the_original_device() -> anyhow::Result<()>
+    {
+        let device = Device::new_cuda(0)?;
+        let model: ColBERT = ColBERT::from("lightonai/GTE-ModernColBERT-v1")
+            .with_device(device.clone())
+            .with_dtype(DType::F32)
+            .with_parallel_cuda_batches(true)
+            .try_into()?;
+        assert!(model.batch_worker.is_none());
+        assert!(model.device.same_device(&device));
+        assert_eq!(model.dtype, DType::F32);
+        Ok(())
     }
 }

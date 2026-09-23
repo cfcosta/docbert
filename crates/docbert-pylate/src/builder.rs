@@ -50,6 +50,7 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     device: Option<Device>,
     dtype: Option<DType>,
+    should_parallelize_cuda_batches: bool,
 }
 
 impl ColbertBuilder {
@@ -69,6 +70,7 @@ impl ColbertBuilder {
             batch_size: None,
             device: None,
             dtype: None,
+            should_parallelize_cuda_batches: false,
         }
     }
 
@@ -131,6 +133,19 @@ impl ColbertBuilder {
     /// Sets the batch size for encoding. Defaults to 32.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Encodes consecutive document batches on two CUDA streams.
+    ///
+    /// Defaults to false. CUDA BF16 models load a second copy of the weights
+    /// and caches and reuse a two-thread pool. Other devices and dtypes keep
+    /// the ordinary path. Queries and single batches use the primary model.
+    pub fn with_parallel_cuda_batches(
+        mut self,
+        should_parallelize: bool,
+    ) -> Self {
+        self.should_parallelize_cuda_batches = should_parallelize;
         self
     }
 
@@ -257,7 +272,7 @@ impl TryFrom<ColbertBuilder> for ColBERT {
             st_config["document_length"].as_u64().map(|v| v as usize)
         });
 
-        ColBERT::new(
+        ColBERT::load(
             assets.weights,
             assets.dense_modules,
             assets.tokenizer,
@@ -274,6 +289,7 @@ impl TryFrom<ColbertBuilder> for ColBERT {
             builder.batch_size,
             &device,
             builder.dtype,
+            builder.should_parallelize_cuda_batches,
         )
     }
 }
