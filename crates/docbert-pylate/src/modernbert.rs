@@ -564,9 +564,14 @@ impl ModernBertMLP {
 impl Module for ModernBertMLP {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let xs = xs.apply(&self.wi)?;
-        let xs = xs.chunk(2, D::Minus1)?;
-        let xs = (&xs[0].gelu_erf()? * &xs[1])?.apply(&self.wo)?; // GeGLU
-        Ok(xs)
+        #[cfg(feature = "cuda")]
+        let xs = crate::geglu_cuda::apply_geglu(&xs)?;
+        #[cfg(not(feature = "cuda"))]
+        let xs = {
+            let xs = xs.chunk(2, D::Minus1)?;
+            (&xs[0].gelu_erf()? * &xs[1])?
+        };
+        xs.apply(&self.wo)
     }
 }
 

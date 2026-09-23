@@ -1,5 +1,7 @@
 pub mod builder;
 pub mod error;
+#[cfg(feature = "cuda")]
+mod geglu_cuda;
 pub mod model;
 pub mod modernbert;
 pub mod pooling;
