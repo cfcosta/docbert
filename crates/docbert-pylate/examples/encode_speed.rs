@@ -7,6 +7,7 @@
 //! just the uniform fast path). Also supports dumping embeddings to a
 //! file and comparing a later run against that dump, so optimization
 //! experiments can prove numerical parity.
+//! With `--queries`, dumps and comparisons use query embeddings instead.
 //!
 //! Usage:
 //!   encode_speed [--batch-size N] [--docs N] [--repeats N]
@@ -167,7 +168,7 @@ fn compare_with_dump(
     emb: &Tensor,
     lengths: &[u32],
     model: &ColBERT,
-    queries: &Tensor,
+    queries: Option<&Tensor>,
 ) -> serde_json::Value {
     let (b, t, d) = emb.dims3().expect("3d embeddings");
     let (rb, rt, rd) = reference.dims;
@@ -187,7 +188,7 @@ fn compare_with_dump(
     for i in 0..b {
         assert_eq!(
             lengths[i], reference.lengths[i],
-            "token length mismatch at doc {i}"
+            "token length mismatch at sequence {i}"
         );
         for j in 0..(lengths[i] as usize).min(t).min(rt) {
             let cur_row = &cur[(i * t + j) * d..(i * t + j + 1) * d];
@@ -208,6 +209,16 @@ fn compare_with_dump(
             n_tokens += 1;
         }
     }
+
+    let mut comparison = serde_json::json!({
+        "compared_tokens": n_tokens,
+        "min_token_cosine": min_cos,
+        "mean_token_cosine": sum_cos / n_tokens.max(1) as f64,
+        "max_abs_diff": max_abs,
+    });
+    let Some(queries) = queries else {
+        return comparison;
+    };
 
     // MaxSim deltas: score every query against every doc with both
     // embedding sets; report the largest absolute score difference and
@@ -258,16 +269,17 @@ fn compare_with_dump(
         }
     }
 
-    serde_json::json!({
-        "compared_tokens": n_tokens,
-        "min_token_cosine": min_cos,
-        "mean_token_cosine": sum_cos / n_tokens.max(1) as f64,
-        "max_abs_diff": max_abs,
+    let scores = serde_json::json!({
         "max_maxsim_delta": max_score_delta,
         "top1_changes": top1_changes,
         "top1_flip_margins": top1_flip_margins,
         "n_queries": ref_scores.len(),
-    })
+    });
+    comparison
+        .as_object_mut()
+        .unwrap()
+        .extend(scores.as_object().unwrap().clone());
+    comparison
 }
 
 fn main() {
@@ -368,21 +380,40 @@ fn main() {
     }
 
     if dump_path.is_some() || compare_path.is_some() {
-        // Fixed parity corpus, independent of --docs.
-        let parity_corpus = build_corpus(64, false);
-        let (emb, plens) = model
-            .encode_documents_with_lengths(&parity_corpus)
-            .expect("parity encode");
+        // Fixed parity corpora, independent of --docs. Query expansion rows
+        // participate in MaxSim, so query dumps include every padded row.
+        let (emb, plens) = if bench_queries {
+            let emb = model
+                .encode(&build_queries(32), true)
+                .expect("parity queries");
+            let (batch, tokens, _) = emb.dims3().expect("3d query embeddings");
+            (emb, vec![tokens as u32; batch])
+        } else {
+            model
+                .encode_documents_with_lengths(&build_corpus(64, false))
+                .expect("parity encode")
+        };
         if let Some(path) = dump_path {
             write_dump(&path, &emb, &plens);
             result["dumped"] = path.into();
         } else if let Some(path) = compare_path {
-            let queries = model
-                .encode(&build_queries(16), true)
-                .expect("parity queries");
+            let queries = if bench_queries {
+                None
+            } else {
+                Some(
+                    model
+                        .encode(&build_queries(16), true)
+                        .expect("parity queries"),
+                )
+            };
             let reference = read_dump(&path);
-            result["parity"] =
-                compare_with_dump(&reference, &emb, &plens, &model, &queries);
+            result["parity"] = compare_with_dump(
+                &reference,
+                &emb,
+                &plens,
+                &model,
+                queries.as_ref(),
+            );
         }
     }
 

@@ -671,20 +671,41 @@ impl ModernBertLayer {
     }
 
     #[cfg(feature = "cuda")]
+    fn normalize_attention_input(
+        &self,
+        xs: &Tensor,
+        pending: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        if let (Some(pending), Some(norm)) = (pending, &self.attn_norm) {
+            return crate::residual_norm_cuda::add_and_normalize(
+                xs, pending, norm,
+            );
+        }
+        let residual = match pending {
+            Some(pending) => (xs + pending)?,
+            None => xs.clone(),
+        };
+        let normalized = match &self.attn_norm {
+            Some(norm) => residual.apply(norm)?,
+            None => residual.clone(),
+        };
+        Ok((residual, normalized))
+    }
+
+    #[cfg(feature = "cuda")]
     #[allow(clippy::too_many_arguments)]
     fn forward_varlen_packed_input(
         &self,
         packed_xs: &Tensor,
+        pending: Option<&Tensor>,
         valid_lens: &[usize],
         positions: &Tensor,
         seqlens: &Tensor,
         max_seq_len: usize,
         local_window: Option<usize>,
-    ) -> Result<Tensor> {
-        let mut xs = packed_xs.clone();
-        if let Some(norm) = &self.attn_norm {
-            xs = xs.apply(norm)?;
-        }
+    ) -> Result<(Tensor, Tensor)> {
+        let (residual, xs) =
+            self.normalize_attention_input(packed_xs, pending)?;
         let attn_out = self.attn.forward_varlen_fully_packed(
             &xs,
             positions,
@@ -693,26 +714,29 @@ impl ModernBertLayer {
             max_seq_len,
             local_window,
         )?;
-        let xs = (attn_out + packed_xs)?;
-        let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
-        xs + mlp_out
+        let (residual, normalized) =
+            crate::residual_norm_cuda::add_and_normalize(
+                &attn_out,
+                &residual,
+                &self.mlp_norm,
+            )?;
+        let mlp_out = normalized.apply(&self.mlp)?;
+        Ok((residual, mlp_out))
     }
 
     #[cfg(feature = "cuda")]
+    #[allow(clippy::too_many_arguments)]
     fn forward_query_varlen(
         &self,
         xs: &Tensor,
+        pending: Option<&Tensor>,
         valid_lens: &[usize],
         seqlens_q: &Tensor,
         seqlens_k: &Tensor,
         max_seqlen_k: usize,
         local_window: Option<usize>,
-    ) -> Result<Tensor> {
-        let residual = xs.clone();
-        let mut xs = xs.clone();
-        if let Some(norm) = &self.attn_norm {
-            xs = xs.apply(norm)?;
-        }
+    ) -> Result<(Tensor, Tensor)> {
+        let (residual, xs) = self.normalize_attention_input(xs, pending)?;
 
         let xs = self.attn.forward_query_varlen(
             &xs,
@@ -722,10 +746,14 @@ impl ModernBertLayer {
             max_seqlen_k,
             local_window,
         )?;
-        let xs = (xs + residual)?;
-        let mlp_out = xs.apply(&self.mlp_norm)?.apply(&self.mlp)?;
-        let xs = (xs + mlp_out)?;
-        Ok(xs)
+        let (residual, normalized) =
+            crate::residual_norm_cuda::add_and_normalize(
+                &xs,
+                &residual,
+                &self.mlp_norm,
+            )?;
+        let mlp_out = normalized.apply(&self.mlp)?;
+        Ok((residual, mlp_out))
     }
 }
 
@@ -1062,6 +1090,7 @@ impl ModernBert {
         let full_attention_threshold = local_window * 2 + 1;
         let mut packed_xs =
             pack_varlen_bsd(&xs, valid_lens)?.apply(&self.norm)?;
+        let mut pending = None;
         for layer in self.layers.iter() {
             let effective_window = if layer.uses_local_attention
                 && max_seq_len > full_attention_threshold
@@ -1070,14 +1099,40 @@ impl ModernBert {
             } else {
                 None
             };
-            packed_xs = layer.forward_varlen_packed_input(
+            let (residual, mlp_out) = layer.forward_varlen_packed_input(
                 &packed_xs,
+                pending.as_ref(),
                 valid_lens,
                 &positions,
                 &seqlens,
                 max_seq_len,
                 effective_window,
             )?;
+            packed_xs = residual;
+            pending = Some(mlp_out);
+        }
+        if packed_xs.device().is_cuda() && packed_xs.dtype() == DType::BF16 {
+            let normalized = match pending {
+                Some(pending) => {
+                    crate::residual_norm_cuda::add_and_normalize(
+                        &packed_xs,
+                        &pending,
+                        &self.final_norm,
+                    )?
+                    .1
+                }
+                None => packed_xs.apply(&self.final_norm)?,
+            };
+            // Zero padding remains positive zero under the zero-bias CUDA norm.
+            return unpack_varlen_bsd(
+                &normalized,
+                valid_lens,
+                max_seq_len,
+                xs.device(),
+            );
+        }
+        if let Some(pending) = pending {
+            packed_xs = (packed_xs + pending)?;
         }
         let xs = unpack_varlen_bsd(
             &packed_xs,
@@ -1120,6 +1175,7 @@ impl ModernBert {
         let (seqlens_q, _) = cumulative_seqlens(&uniform_q, xs.device())?;
         let (seqlens_k, max_seqlen_k) =
             cumulative_seqlens(valid_lens, xs.device())?;
+        let mut pending = None;
         for layer in self.layers.iter() {
             let effective_window = if layer.uses_local_attention
                 && seq_len > full_attention_threshold
@@ -1128,16 +1184,27 @@ impl ModernBert {
             } else {
                 None
             };
-            xs = layer.forward_query_varlen(
+            let (residual, mlp_out) = layer.forward_query_varlen(
                 &xs,
+                pending.as_ref(),
                 valid_lens,
                 &seqlens_q,
                 &seqlens_k,
                 max_seqlen_k,
                 effective_window,
             )?;
+            xs = residual;
+            pending = Some(mlp_out);
         }
-        xs.apply(&self.final_norm)
+        match pending {
+            Some(pending) => Ok(crate::residual_norm_cuda::add_and_normalize(
+                &xs,
+                &pending,
+                &self.final_norm,
+            )?
+            .1),
+            None => xs.apply(&self.final_norm),
+        }
     }
 }
 
@@ -1243,5 +1310,164 @@ impl ModernBertForSequenceClassification {
             .forward(&last_hidden_state)?
             .apply(&self.classifier)?;
         Ok(xs)
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod residual_norm_tests {
+    use super::*;
+
+    fn assert_matches_bits(actual: &Tensor, expected: &Tensor) -> Result<()> {
+        assert_eq!(actual.dims(), expected.dims());
+        let bits = |tensor: &Tensor| -> Result<Vec<u32>> {
+            Ok(tensor
+                .flatten_all()?
+                .to_dtype(DType::F32)?
+                .to_vec1::<f32>()?
+                .into_iter()
+                .map(f32::to_bits)
+                .collect())
+        };
+        for (index, (actual, expected)) in
+            bits(actual)?.iter().zip(bits(expected)?).enumerate()
+        {
+            assert_eq!(*actual, expected, "encoder element {index}");
+        }
+        Ok(())
+    }
+
+    fn forward_documents_separately(
+        model: &ModernBert,
+        ids: &Tensor,
+        valid_lens: &[usize],
+    ) -> Result<Tensor> {
+        let embeddings = ids.apply(&model.word_embeddings)?;
+        let (seqlens, max_seq_len) =
+            cumulative_seqlens(valid_lens, ids.device())?;
+        let positions =
+            model.cached_packed_positions(valid_lens, ids.device())?;
+        let mut xs =
+            pack_varlen_bsd(&embeddings, valid_lens)?.apply(&model.norm)?;
+        for layer in &model.layers {
+            let normalized = match &layer.attn_norm {
+                Some(norm) => xs.apply(norm)?,
+                None => xs.clone(),
+            };
+            let window = (layer.uses_local_attention
+                && max_seq_len > model.local_attention_size + 1)
+                .then_some(model.local_attention_size / 2);
+            let attention = layer.attn.forward_varlen_fully_packed(
+                &normalized,
+                &positions,
+                valid_lens,
+                &seqlens,
+                max_seq_len,
+                window,
+            )?;
+            xs = (attention + xs)?;
+            let mlp = xs.apply(&layer.mlp_norm)?.apply(&layer.mlp)?;
+            xs = (xs + mlp)?;
+        }
+        unpack_varlen_bsd(&xs, valid_lens, max_seq_len, ids.device())?
+            .apply(&model.final_norm)
+    }
+
+    fn forward_queries_separately(
+        model: &ModernBert,
+        ids: &Tensor,
+        valid_lens: &[usize],
+    ) -> Result<Tensor> {
+        let (batch, seq_len) = ids.dims2()?;
+        let (seqlens_q, _) =
+            cumulative_seqlens(&vec![seq_len; batch], ids.device())?;
+        let (seqlens_k, max_seqlen_k) =
+            cumulative_seqlens(valid_lens, ids.device())?;
+        let mut xs = ids.apply(&model.word_embeddings)?.apply(&model.norm)?;
+        for layer in &model.layers {
+            let normalized = match &layer.attn_norm {
+                Some(norm) => xs.apply(norm)?,
+                None => xs.clone(),
+            };
+            let window = (layer.uses_local_attention
+                && seq_len > model.local_attention_size + 1)
+                .then_some(model.local_attention_size / 2);
+            let attention = layer.attn.forward_query_varlen(
+                &normalized,
+                valid_lens,
+                &seqlens_q,
+                &seqlens_k,
+                max_seqlen_k,
+                window,
+            )?;
+            xs = (attention + xs)?;
+            let mlp = xs.apply(&layer.mlp_norm)?.apply(&layer.mlp)?;
+            xs = (xs + mlp)?;
+        }
+        xs.apply(&model.final_norm)
+    }
+
+    #[test]
+    #[ignore = "requires CUDA and cached GTE-ModernColBERT-v1"]
+    fn residual_norm_matches_encoder_bits_including_padding()
+    -> anyhow::Result<()> {
+        let device = Device::new_cuda(0)?;
+        let colbert: crate::ColBERT =
+            crate::ColBERT::from("lightonai/GTE-ModernColBERT-v1")
+                .with_device(device.clone())
+                .with_dtype(DType::BF16)
+                .try_into()?;
+        let crate::BaseModel::ModernBert(model) = &colbert.model else {
+            panic!("expected ModernBERT");
+        };
+        assert!(model.layers[0].attn_norm.is_none());
+        for (seq_len, valid_lens, is_query) in [
+            (145, vec![145, 37, 1], false),
+            (7, vec![1, 7, 3], false),
+            (32, vec![5, 17, 31], true),
+            (32, vec![7], true),
+        ] {
+            let batch = valid_lens.len();
+            let ids = Tensor::from_vec(
+                (0..batch * seq_len)
+                    .map(|i| (i * 37 % 20000 + 1) as u32)
+                    .collect(),
+                (batch, seq_len),
+                &device,
+            )?;
+            let expected = if is_query {
+                forward_queries_separately(model, &ids, &valid_lens)?
+            } else {
+                forward_documents_separately(model, &ids, &valid_lens)?
+            };
+            let before = crate::residual_norm_cuda::DISPATCH_COUNT.get();
+            let actual = if is_query {
+                model.forward_query_varlen(&ids, &valid_lens)?
+            } else {
+                model.forward_varlen_padded(&ids, &valid_lens)?
+            };
+            assert_eq!(
+                crate::residual_norm_cuda::DISPATCH_COUNT.get() - before,
+                2 * model.layers.len()
+            );
+            assert_matches_bits(&actual, &expected)?;
+            if !is_query {
+                for (batch, len) in valid_lens.iter().copied().enumerate() {
+                    if len == seq_len {
+                        continue;
+                    }
+                    let padding =
+                        actual.i(batch)?.narrow(0, len, seq_len - len)?;
+                    assert!(
+                        padding
+                            .flatten_all()?
+                            .to_dtype(DType::F32)?
+                            .to_vec1::<f32>()?
+                            .iter()
+                            .all(|value| value.to_bits() == 0)
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }

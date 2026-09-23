@@ -5,6 +5,8 @@ mod geglu_cuda;
 pub mod model;
 pub mod modernbert;
 pub mod pooling;
+#[cfg(feature = "cuda")]
+mod residual_norm_cuda;
 pub mod types;
 pub mod utils;
 
