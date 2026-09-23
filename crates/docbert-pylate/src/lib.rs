@@ -1,4 +1,6 @@
 pub mod builder;
+#[cfg(feature = "cuda")]
+mod cutlass_geglu;
 pub mod error;
 #[cfg(feature = "cuda")]
 mod geglu_cuda;

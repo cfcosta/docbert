@@ -1922,6 +1922,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "criterion",
+ "cudaforge",
  "hegeltest",
  "hf-hub",
  "kodama",

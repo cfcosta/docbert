@@ -30,6 +30,7 @@ cuda = [
   "candle-nn/cuda",
   "candle-transformers/cuda",
   "dep:candle-flash-attn",
+  "dep:cudaforge",
 ]
 mkl = ["candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 accelerate = [
@@ -52,3 +53,6 @@ harness = false
 [[example]]
 name = "attention_parity"
 required-features = ["cuda"]
+
+[build-dependencies]
+cudaforge = { version = "0.1.6", optional = true }
