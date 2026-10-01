@@ -75,7 +75,7 @@
 
                         options = [
                           "--config-path"
-                          (toString ./rustfmt.toml)
+                          "${./rustfmt.toml}"
                         ];
                       };
                     };
