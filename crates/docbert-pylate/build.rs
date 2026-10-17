@@ -58,6 +58,10 @@ fn main() {
         ]);
         if !is_msvc {
             compiler.args(["-Xcompiler", "-fPIC"]);
+            // The pinned CUTLASS calls a misspelled `set_slice3x3` in
+            // uninstantiated templates of `matrix.h`; GCC 14+ rejects that
+            // by default.
+            compiler.args(["-Xcompiler", "-Wno-template-body"]);
         }
         let status = compiler
             .arg("-I")
