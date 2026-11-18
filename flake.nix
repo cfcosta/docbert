@@ -5,8 +5,11 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
+    # The toolchain and the package builder: Rust's own release
+    # manifests, and a builder that keeps compiled dependencies in a
+    # derivation of their own.
+    rust-dev-tools = {
+      url = "github:cfcosta/rust-dev-tools.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     bun2nix = {
@@ -24,7 +27,7 @@
       bun2nix,
       nvidia-cutlass,
       nixpkgs,
-      rust-overlay,
+      rust-dev-tools,
       treefmt-nix,
       ...
     }:
@@ -43,19 +46,24 @@
             let
               pkgs = import nixpkgs {
                 inherit system;
-                overlays = [
-                  (import rust-overlay)
-                  bun2nix.overlays.default
-                ];
+                overlays = [ bun2nix.overlays.default ];
                 config.allowUnfree = true;
               };
 
-              rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-
-              rustPlatform = pkgs.makeRustPlatform {
-                rustc = rust;
-                cargo = rust;
+              # Stable from rust-toolchain.toml, with rustfmt from a pinned
+              # nightly: rustfmt.toml's import options are nightly-only.
+              # The linker stays the platform default.
+              rdt = rust-dev-tools.setup pkgs {
+                name = "docbert";
+                rust = rust-dev-tools.version.fromToolchainFile ./rust-toolchain.toml // {
+                  rustfmt = rust-dev-tools.version.fromToolchain "nightly" "2026-08-04";
+                };
+                overrides = {
+                  linux.useMold = false;
+                  darwin.useLLD = false;
+                };
               };
+              inherit (rdt) rust;
 
               formatter =
                 (treefmt-nix.lib.evalModule pkgs {
@@ -175,40 +183,36 @@
                     $out/bin/${mainProgram} completions fish > $out/share/fish/vendor_completions.d/${mainProgram}.fish
                   '';
                 in
-                rustPlatform.buildRustPackage (
-                  {
-                    inherit name buildFeatures buildInputs;
-                    # `remove-references-to` (used in postInstall) strips the
-                    # rust toolchain path that rustc bakes into binary debug
-                    # info via `rust-src`. Without it the runtime closure drags
-                    # in the entire nightly toolchain (rustc/cargo/rust-src/
-                    # rust-docs/…), ~2 GiB per `*-cuda` output.
-                    nativeBuildInputs = nativeBuildInputs ++ [ pkgs.removeReferencesTo ];
-                    src = rustSrc;
-                    cargoBuildFlags = [
-                      "-p"
-                      cargoPackage
-                    ];
-                    cargoTestFlags = [
-                      "-p"
-                      cargoPackage
-                    ];
-                    doCheck = false;
-                    cargoLock.lockFile = ./Cargo.lock;
+                rdt.buildRustPackage {
+                  inherit
+                    name
+                    buildFeatures
+                    buildInputs
+                    nativeBuildInputs
+                    ;
+                  pname = cargoPackage;
+                  inherit ((builtins.fromTOML (builtins.readFile ./crates/${cargoPackage}/Cargo.toml)).package)
+                    version
+                    ;
+                  src = rustSrc;
+                  cargoPackages = [ cargoPackage ];
+                  doCheck = false;
+                  env = {
                     RUSTFLAGS = "-C target-cpu=native";
-                    meta.mainProgram = mainProgram;
-                    preBuild = uiPreBuild + extraPreBuild;
-                    postInstall = completionsPostInstall + ''
-                      for bin in "$out"/bin/*; do
-                        remove-references-to -t ${rust} "$bin"
-                      done
-                    '';
-                    # Guard: fail the build if a rust toolchain reference
-                    # survives, so this closure leak can't silently return.
-                    disallowedReferences = [ rust ];
                   }
-                  // extraEnv
-                );
+                  // extraEnv;
+                  meta.mainProgram = mainProgram;
+                  # `extraPreBuild` stages what build scripts read, and
+                  # dependencies (candle-flash-attn) have build scripts too.
+                  preBuildDependencies = extraPreBuild;
+                  preBuild = uiPreBuild + extraPreBuild;
+                  postInstall = completionsPostInstall;
+                  # rust-dev-tools remaps the toolchain's paths in panic
+                  # locations and debug info; fail the build if a reference
+                  # survives anyway, since it would pull the toolchain into
+                  # the closure (~2 GiB per `*-cuda` output).
+                  disallowedReferences = [ rust ];
+                };
 
               # Extended `callPackage` so each crate's `default.nix`
               # can take `mkPackage` as a function arg the same way it
