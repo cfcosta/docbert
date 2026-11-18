@@ -197,10 +197,7 @@
                   src = rustSrc;
                   cargoPackages = [ cargoPackage ];
                   doCheck = false;
-                  env = {
-                    RUSTFLAGS = "-C target-cpu=native";
-                  }
-                  // extraEnv;
+                  env = extraEnv;
                   meta.mainProgram = mainProgram;
                   # `extraPreBuild` stages what build scripts read, and
                   # dependencies (candle-flash-attn) have build scripts too.
