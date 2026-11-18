@@ -13,6 +13,7 @@
   nativeBuildInputs ? [ ],
   extraEnv ? { },
   extraPreBuild ? "",
+  crateOverrides ? { },
 }:
 
 mkPackage {
@@ -23,5 +24,6 @@ mkPackage {
     nativeBuildInputs
     extraEnv
     extraPreBuild
+    crateOverrides
     ;
 }

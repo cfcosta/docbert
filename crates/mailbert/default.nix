@@ -28,6 +28,7 @@
   nativeBuildInputs ? [ ],
   extraEnv ? { },
   extraPreBuild ? "",
+  crateOverrides ? { },
 }:
 
 mkPackage {
@@ -40,6 +41,10 @@ mkPackage {
     ;
 
   nativeBuildInputs = nativeBuildInputs ++ [ capnproto ];
+  # sequoia-ipc builds in a derivation of its own, from the unit plan.
+  crateOverrides = crateOverrides // {
+    sequoia-ipc = _: { nativeBuildInputs = [ capnproto ]; };
+  };
 
   shellCompletions = true;
 }

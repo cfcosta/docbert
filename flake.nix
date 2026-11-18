@@ -166,6 +166,7 @@
                   nativeBuildInputs ? [ ],
                   extraEnv ? { },
                   extraPreBuild ? "",
+                  crateOverrides ? { },
                 }:
                 let
                   uiPreBuild = pkgs.lib.optionalString bundleUi ''
@@ -204,6 +205,12 @@
                   preBuildDependencies = extraPreBuild;
                   preBuild = uiPreBuild + extraPreBuild;
                   postInstall = completionsPostInstall;
+                  # Cargo's unit graph, so each registry crate comes ready-made
+                  # from a derivation of its own: `nix run
+                  # github:cfcosta/rust-dev-tools.nix#plan` after dependency
+                  # changes.
+                  unitPlan = ./rust-units.json;
+                  inherit crateOverrides;
                   # rust-dev-tools remaps the toolchain's paths in panic
                   # locations and debug info; fail the build if a reference
                   # survives anyway, since it would pull the toolchain into
@@ -253,6 +260,22 @@
           cudaforgeEnv = cudaEnv // {
             CUDAFORGE_HOME = "/tmp/cudaforge-cache";
           };
+          # The registry crates whose build scripts compile CUDA, each
+          # built in a derivation of its own.
+          cudaCrateOverrides =
+            let
+              cuda = _: {
+                nativeBuildInputs = cudaNativeBuildInputs ++ [ pkgs.git ];
+                buildInputs = cudaBuildInputs;
+                env = cudaforgeEnv;
+                preBuild = cudaforgePreBuild;
+              };
+            in
+            {
+              candle-flash-attn = cuda;
+              candle-kernels = cuda;
+              cudarc = cuda;
+            };
           cudaforgePreBuild = ''
             dest=$CUDAFORGE_HOME/git/checkouts/cutlass-7d49e6c7e2f8896c
             mkdir -p $CUDAFORGE_HOME/git/checkouts
@@ -285,6 +308,7 @@
             buildInputs = cudaBuildInputs;
             extraEnv = cudaforgeEnv;
             extraPreBuild = cudaforgePreBuild;
+            crateOverrides = cudaCrateOverrides;
           };
 
           docbert-metal = docbert {
@@ -301,6 +325,7 @@
             buildInputs = cudaBuildInputs;
             extraEnv = cudaforgeEnv;
             extraPreBuild = cudaforgePreBuild;
+            crateOverrides = cudaCrateOverrides;
           };
 
           mailbert-metal = mailbert {
@@ -317,6 +342,7 @@
             buildInputs = cudaBuildInputs;
             extraEnv = cudaforgeEnv;
             extraPreBuild = cudaforgePreBuild;
+            crateOverrides = cudaCrateOverrides;
           };
 
           rustbert-metal = rustbert {
