@@ -34,12 +34,13 @@ use rmcp::{
         PaginatedRequestParams,
         PromptMessage,
         ReadResourceRequestParams,
+        ReadResourceResponse,
         ReadResourceResult,
         ResourceContents,
         ResourceTemplate,
         Role,
         ServerCapabilities,
-        ServerInfo,
+        ServerConfig,
     },
     prompt,
     prompt_handler,
@@ -606,7 +607,7 @@ docbert indexes local document collections and provides MCP tools for search and
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for DocbertMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
@@ -617,7 +618,7 @@ impl ServerHandler for DocbertMcpServer {
             .with_description("Search and read indexed documents through the Model Context Protocol.")
             .with_website_url("https://github.com/cfcosta/docbert");
 
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(server_info)
             .with_instructions(
                 "Pick a search tool by signal: bm25_search for exact terms / identifiers / verbatim strings, semantic_search for general concepts, search (hybrid) when the query mixes both. Once you find the right document, use get or multi_get to read it. status shows overall index health.",
@@ -636,24 +637,20 @@ impl ServerHandler for DocbertMcpServer {
             )
             .with_mime_type("text/markdown");
 
-        Ok(ListResourceTemplatesResult {
-            meta: None,
-            next_cursor: None,
-            resource_templates: vec![template],
-        })
+        Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         let config_db = self
             .state
             .open_config_db()
             .map_err(|e| mcp_error("failed to open config db", e))?;
         let contents = read_resource_contents(&config_db, &request.uri)?;
-        Ok(ReadResourceResult::new(vec![contents]))
+        Ok(ReadResourceResult::new(vec![contents]).into())
     }
 }
 

@@ -25,7 +25,7 @@ use rmcp::{
         ContentBlock,
         Implementation,
         ServerCapabilities,
-        ServerInfo,
+        ServerConfig,
     },
     tool,
     tool_handler,
@@ -691,7 +691,7 @@ impl Server {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Server {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let about = Implementation::new("mailbert", env!("CARGO_PKG_VERSION"))
             .with_title("mailbert MCP")
             .with_description("Search and read your mail through MCP.");
@@ -721,7 +721,7 @@ impl ServerHandler for Server {
             }
         };
 
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(about)
             .with_instructions(format!("{reading}{writing}"))
     }
