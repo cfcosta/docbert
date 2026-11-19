@@ -1876,7 +1876,7 @@ name = "docbert-web"
 version = "1.0.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "docbert-core",
  "docbert-webui",
  "pdf_oxide",
