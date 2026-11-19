@@ -108,33 +108,9 @@ confidence-threshold = 0.8
 #
 # Copyleft is not in the list above, and it must not be: a licence that
 # reaches into the tree that links it is a decision about docbert, not
-# about one dependency. The crates that need one are named below,
-# one at a time, so that adding another is a deliberate act.
-exceptions = [
-  # sequoia is the OpenPGP library that `mailbert view` opens an
-  # encrypted body with. (§5.4) The LGPL reaches a program that links
-  # it only if that program cannot be relinked against another build of
-  # the library, and docbert ships as an ordinary Rust binary that can.
-  { allow = ["LGPL-2.0-or-later"], crate = "sequoia-openpgp" },
-  { allow = ["LGPL-2.0-or-later"], crate = "sequoia-gpg-agent" },
-  { allow = ["LGPL-2.0-or-later"], crate = "sequoia-ipc" },
-  { allow = ["LGPL-2.0-or-later"], crate = "buffered-reader" },
-
-  # What sequoia reaches through: bzip2 for the compression that RFC
-  # 4880 allows inside a message, and xxhash for its own caches. Both
-  # licences are permissive; neither is on the list above because
-  # nothing else in the tree asks for them.
-  { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys" },
-  { allow = ["BSL-1.0"], crate = "xxhash-rust" },
-
-  # The LLVM exception only widens Apache-2.0, which is allowed above.
-  { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "ar_archive_writer" },
-
-  # lettre encodes a message body with this, for the submission server
-  # of §11. 0BSD asks for nothing at all, not even the notice that the
-  # BSD licences above ask for.
-  { allow = ["0BSD"], crate = "quoted_printable" },
-]
+# about one dependency. A crate that needs one is named here, one at a
+# time, so that adding it is a deliberate act.
+exceptions = []
 
 # Some crates don't have (easily) machine readable licensing information,
 # adding a clarification entry for it allows you to manually specify the
