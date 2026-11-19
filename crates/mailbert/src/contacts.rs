@@ -541,7 +541,7 @@ mod tests {
         ["alice@example.test", "bob@example.test", "me@cfcosta.com"];
 
     #[hegel::composite]
-    fn some_mail(tc: TestCase) -> Vec<(String, String)> {
+    fn some_mail(tc: &TestCase) -> Vec<(String, String)> {
         let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
         let mut found = Vec::new();
 

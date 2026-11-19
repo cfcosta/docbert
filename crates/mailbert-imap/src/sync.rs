@@ -1995,7 +1995,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[hegel::composite]
-    fn a_state(tc: TestCase) -> (FolderState, View, u32) {
+    fn a_state(tc: &TestCase) -> (FolderState, View, u32) {
         let validity = tc.draw(gs::integers::<u32>().min_value(1).max_value(3));
         let seen = tc.draw(gs::integers::<u32>().min_value(1).max_value(60));
         let more = tc.draw(gs::integers::<u32>().min_value(0).max_value(40));

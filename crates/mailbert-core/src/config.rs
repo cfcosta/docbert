@@ -754,7 +754,7 @@ mod tests {
     /// A folder name drawn from a small pool, so that overlap between
     /// `available`, `folders`, and `exclude` happens often enough to
     /// exercise the interesting paths.
-    fn folder_name() -> impl gs::Generator<String> {
+    fn folder_name() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "INBOX".to_string(),
             "Archive".to_string(),
@@ -768,7 +768,7 @@ mod tests {
 
     /// An attribute of RFC 6154, drawn from a small pool for the same
     /// reason as [`folder_name`].
-    fn attribute() -> impl gs::Generator<String> {
+    fn attribute() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "\\All".to_string(),
             "\\Trash".to_string(),
@@ -778,7 +778,7 @@ mod tests {
     }
 
     /// An entry of `folders` or of `exclude`: a name, or an attribute.
-    fn entry() -> impl gs::Generator<String> {
+    fn entry() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "INBOX".to_string(),
             "Archive".to_string(),
@@ -794,12 +794,12 @@ mod tests {
         ])
     }
 
-    fn entry_list() -> impl gs::Generator<Vec<String>> {
+    fn entry_list() -> impl gs::PrintableGenerator<Vec<String>> {
         gs::vecs(entry()).min_size(0).max_size(7)
     }
 
     #[hegel::composite]
-    fn listed_folder(tc: TestCase) -> Listed {
+    fn listed_folder(tc: &TestCase) -> Listed {
         let name: String = tc.draw(folder_name());
         let attributes: Vec<String> =
             tc.draw(gs::vecs(attribute()).min_size(0).max_size(2));
@@ -807,13 +807,13 @@ mod tests {
         Listed { name, attributes }
     }
 
-    fn listed_list() -> impl gs::Generator<Vec<Listed>> {
+    fn listed_list() -> impl gs::PrintableGenerator<Vec<Listed>> {
         gs::vecs(listed_folder()).min_size(0).max_size(7)
     }
 
     /// An account with every folder-selection field drawn independently.
     #[hegel::composite]
-    fn account_with_folders(tc: TestCase) -> (Account, Vec<Listed>) {
+    fn account_with_folders(tc: &TestCase) -> (Account, Vec<Listed>) {
         let available: Vec<Listed> = tc.draw(listed_list());
         let folders: Vec<String> = tc.draw(entry_list());
         let exclude: Vec<String> = tc.draw(entry_list());
@@ -834,7 +834,7 @@ mod tests {
     /// A whole config with pairwise-distinct account names, so it is
     /// valid by construction.
     #[hegel::composite]
-    fn valid_config(tc: TestCase) -> Config {
+    fn valid_config(tc: &TestCase) -> Config {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(0).max_value(4));
 

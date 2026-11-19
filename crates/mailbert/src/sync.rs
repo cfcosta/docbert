@@ -2762,7 +2762,7 @@ mod tests {
 
     /// A folder holds from 0 to 6 messages.
     #[hegel::composite]
-    fn some_counts(tc: TestCase) -> Vec<u32> {
+    fn some_counts(tc: &TestCase) -> Vec<u32> {
         tc.draw(
             gs::vecs(gs::integers::<u32>().min_value(0).max_value(6))
                 .min_size(1)

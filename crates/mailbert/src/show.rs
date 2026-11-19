@@ -1042,7 +1042,7 @@ mod tests {
 
     /// A line that carries no quote mark of its own.
     #[hegel::composite]
-    fn a_plain_line(tc: TestCase) -> String {
+    fn a_plain_line(tc: &TestCase) -> String {
         tc.draw(gs::text().alphabet("abc ,.").min_size(0).max_size(20))
     }
 

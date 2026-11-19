@@ -934,7 +934,7 @@ mod tests {
     // Generators.
     // -----------------------------------------------------------------
 
-    fn a_word() -> impl gs::Generator<String> {
+    fn a_word() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "invoice".to_string(),
             "quarterly".to_string(),
@@ -944,13 +944,13 @@ mod tests {
         ])
     }
 
-    fn a_field() -> impl gs::Generator<Field> {
+    fn a_field() -> impl gs::PrintableGenerator<Field> {
         gs::sampled_from(Field::ALL.to_vec())
     }
 
     /// A term that the grammar accepts, and the words it contributes.
     #[hegel::composite]
-    fn a_term(tc: TestCase) -> (String, Vec<String>) {
+    fn a_term(tc: &TestCase) -> (String, Vec<String>) {
         let word: String = tc.draw(a_word());
         let shape: usize =
             tc.draw(gs::integers::<usize>().min_value(0).max_value(4));
@@ -966,7 +966,7 @@ mod tests {
 
     /// A whole query, and the words that its free text must hold.
     #[hegel::composite]
-    fn a_query(tc: TestCase) -> (String, Vec<String>) {
+    fn a_query(tc: &TestCase) -> (String, Vec<String>) {
         let terms: Vec<(String, Vec<String>)> =
             tc.draw(gs::vecs(a_term()).min_size(1).max_size(4));
         let joiner: String = tc.draw(gs::sampled_from(vec![

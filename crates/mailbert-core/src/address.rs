@@ -361,7 +361,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// Already-normalized addresses, so a round trip can compare them.
-    fn address_text() -> impl gs::Generator<String> {
+    fn address_text() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "alice@example.com".to_string(),
             "bob.smith@work.example".to_string(),
@@ -372,7 +372,7 @@ mod tests {
     }
 
     /// Display names, including the ones that force quoting.
-    fn display_name() -> impl gs::Generator<Option<String>> {
+    fn display_name() -> impl gs::PrintableGenerator<Option<String>> {
         gs::sampled_from(vec![
             None,
             Some("Alice Example".to_string()),
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn an_address(tc: TestCase) -> Address {
+    fn an_address(tc: &TestCase) -> Address {
         Address {
             name: tc.draw(display_name()),
             address: tc.draw(address_text()),

@@ -1417,7 +1417,7 @@ mod tests {
 
     /// Folder names that are not the same, and are one or more.
     #[hegel::composite]
-    fn some_folders(tc: TestCase) -> Vec<String> {
+    fn some_folders(tc: &TestCase) -> Vec<String> {
         let drawn: Vec<String> = tc.draw(
             gs::vecs(gs::text().alphabet("AB/").min_size(1).max_size(3))
                 .min_size(1)
@@ -2171,7 +2171,7 @@ mod tests {
 
     /// A short list of passage keys, without repeats.
     #[hegel::composite]
-    fn a_key_set(tc: TestCase) -> Vec<u64> {
+    fn a_key_set(tc: &TestCase) -> Vec<u64> {
         let keys: Vec<u64> = tc.draw(
             gs::vecs(gs::integers::<u64>().min_value(1).max_value(8))
                 .min_size(0)
@@ -2193,7 +2193,7 @@ mod tests {
     /// The keys and the folders are few, so a batch holds one message
     /// twice, and holds one message in two folders.
     #[hegel::composite]
-    fn some_mail(tc: TestCase) -> Vec<(String, String, u32)> {
+    fn some_mail(tc: &TestCase) -> Vec<(String, String, u32)> {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
         let mut mail = Vec::new();
@@ -2551,7 +2551,7 @@ mod tests {
     /// The keys are few, so one message takes a key that another one
     /// held. The names are few, so a batch marks one message two times.
     #[hegel::composite]
-    fn some_marks(tc: TestCase) -> Vec<(String, Vec<u64>)> {
+    fn some_marks(tc: &TestCase) -> Vec<(String, Vec<u64>)> {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
         let mut marks = Vec::new();
@@ -2727,7 +2727,7 @@ mod tests {
     // Properties.
     // -----------------------------------------------------------------
 
-    fn a_key() -> impl gs::Generator<String> {
+    fn a_key() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "a".to_string(),
             "b".to_string(),
@@ -2736,7 +2736,7 @@ mod tests {
         ])
     }
 
-    fn a_folder() -> impl gs::Generator<String> {
+    fn a_folder() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "INBOX".to_string(),
             "Archive".to_string(),
@@ -2744,11 +2744,11 @@ mod tests {
         ])
     }
 
-    fn an_account() -> impl gs::Generator<String> {
+    fn an_account() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec!["work".to_string(), "personal".to_string()])
     }
 
-    fn a_tag() -> impl gs::Generator<String> {
+    fn a_tag() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "todo".to_string(),
             "rent".to_string(),
@@ -2757,7 +2757,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn a_copy(tc: TestCase) -> (Message, Vec<u8>) {
+    fn a_copy(tc: &TestCase) -> (Message, Vec<u8>) {
         let key = tc.draw(a_key());
         let account = tc.draw(an_account());
         let folder = tc.draw(a_folder());
@@ -2780,7 +2780,7 @@ mod tests {
         (found, raw)
     }
 
-    fn a_mailbox() -> impl gs::Generator<Vec<(Message, Vec<u8>)>> {
+    fn a_mailbox() -> impl gs::PrintableGenerator<Vec<(Message, Vec<u8>)>> {
         gs::vecs(a_copy()).min_size(0).max_size(8)
     }
 

@@ -35,7 +35,7 @@ metal = ["docbert-core/metal", "docbert-web/metal"]
 cuda = ["docbert-core/cuda", "docbert-web/cuda"]
 
 [dev-dependencies]
-hegeltest = "0.28"
+hegeltest = "0.53"
 rmcp = { version = "3", features = ["client", "transport-child-process"] }
 tempfile = "3"
 

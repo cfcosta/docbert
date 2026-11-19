@@ -1257,7 +1257,7 @@ it weaves algebraic patterns
 
     /// A subject, sometimes already answered a few times over.
     #[hegel::composite]
-    fn subject(tc: TestCase) -> String {
+    fn subject(tc: &TestCase) -> String {
         let stem: String =
             tc.draw(gs::text().alphabet("abc ").min_size(1).max_size(8));
         let depth: usize =

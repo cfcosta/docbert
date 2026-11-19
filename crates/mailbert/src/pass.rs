@@ -474,7 +474,7 @@ mod tests {
 
     /// One or more message keys, and none of them the same.
     #[hegel::composite]
-    fn some_keys(tc: TestCase) -> Vec<String> {
+    fn some_keys(tc: &TestCase) -> Vec<String> {
         let drawn: Vec<String> = tc.draw(
             gs::vecs(gs::text().alphabet("abcd").min_size(1).max_size(3))
                 .min_size(1)

@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn a_plan(tc: TestCase) -> Plan {
+    fn a_plan(tc: &TestCase) -> Plan {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
         let mut edits = Vec::new();
@@ -775,7 +775,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[hegel::composite]
-    fn some_tags(tc: TestCase) -> Vec<String> {
+    fn some_tags(tc: &TestCase) -> Vec<String> {
         tc.draw(
             gs::vecs(gs::sampled_from(vec![
                 "todo".to_string(),

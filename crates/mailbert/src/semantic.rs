@@ -1779,7 +1779,7 @@ mod tests {
 
     /// A few short bodies, one for each message of a mailbox.
     #[hegel::composite]
-    fn a_mailbox(tc: TestCase) -> Vec<String> {
+    fn a_mailbox(tc: &TestCase) -> Vec<String> {
         tc.draw(
             gs::vecs(gs::text().alphabet("abc ").min_size(1).max_size(30))
                 .min_size(1)

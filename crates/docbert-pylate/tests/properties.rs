@@ -60,7 +60,7 @@ fn test_device() -> Device {
 /// near zero (idempotence, scale invariance) should use
 /// [`tensor_3d_parts_nonzero`] instead.
 #[hegel::composite]
-fn tensor_3d_parts(tc: TestCase) -> (usize, usize, usize, Vec<f32>) {
+fn tensor_3d_parts(tc: &TestCase) -> (usize, usize, usize, Vec<f32>) {
     let batch: usize =
         tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let seq: usize =
@@ -86,7 +86,7 @@ fn tensor_3d_parts(tc: TestCase) -> (usize, usize, usize, Vec<f32>) {
 /// when the property only holds outside the epsilon-regularised regime
 /// (scale invariance, idempotence).
 #[hegel::composite]
-fn tensor_3d_parts_nonzero(tc: TestCase) -> (usize, usize, usize, Vec<f32>) {
+fn tensor_3d_parts_nonzero(tc: &TestCase) -> (usize, usize, usize, Vec<f32>) {
     let batch: usize =
         tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let seq: usize =
@@ -333,7 +333,7 @@ fn hierarchical_pooling_rejects_non_3d(tc: TestCase) {
 // ---------------------------------------------------------------------------
 
 #[hegel::composite]
-fn small_strings(tc: TestCase, max: usize) -> Vec<String> {
+fn small_strings(tc: &TestCase, max: usize) -> Vec<String> {
     let n: usize = tc.draw(gs::integers::<usize>().min_value(0).max_value(max));
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
@@ -343,7 +343,7 @@ fn small_strings(tc: TestCase, max: usize) -> Vec<String> {
 }
 
 #[hegel::composite]
-fn small_3d_f32(tc: TestCase) -> Vec<Vec<Vec<f32>>> {
+fn small_3d_f32(tc: &TestCase) -> Vec<Vec<Vec<f32>>> {
     let b: usize = tc.draw(gs::integers::<usize>().min_value(0).max_value(3));
     let s: usize = tc.draw(gs::integers::<usize>().min_value(0).max_value(6));
     let d: usize = tc.draw(gs::integers::<usize>().min_value(0).max_value(4));

@@ -554,7 +554,7 @@ mod tests {
 
     /// A ranked list of passages, and the message that owns each one.
     #[hegel::composite]
-    fn a_result(tc: TestCase) -> (Vec<(u64, f32)>, BTreeMap<u64, u64>) {
+    fn a_result(tc: &TestCase) -> (Vec<(u64, f32)>, BTreeMap<u64, u64>) {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
         let messages: usize =

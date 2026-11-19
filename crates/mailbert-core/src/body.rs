@@ -245,7 +245,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// A line of the sender's own text. Never quoted, never a separator.
-    fn original_line() -> impl gs::Generator<String> {
+    fn original_line() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "Yes, Tuesday works.".to_string(),
             "I pushed the fix.".to_string(),
@@ -255,7 +255,7 @@ mod tests {
         ])
     }
 
-    fn quoted_line() -> impl gs::Generator<String> {
+    fn quoted_line() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "> Can we meet Tuesday?".to_string(),
             ">> An older message.".to_string(),
@@ -266,7 +266,7 @@ mod tests {
         ])
     }
 
-    fn attribution() -> impl gs::Generator<String> {
+    fn attribution() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "On Mon, Jan 5, 2026 at 3:04 PM Alice <a@x.example> wrote:"
                 .to_string(),
@@ -277,7 +277,7 @@ mod tests {
     /// A body of original text, then an attribution, then a quote.
     /// Returns the body and the original lines it must keep.
     #[hegel::composite]
-    fn reply_body(tc: TestCase) -> (String, Vec<String>) {
+    fn reply_body(tc: &TestCase) -> (String, Vec<String>) {
         let original: Vec<String> =
             tc.draw(gs::vecs(original_line()).min_size(1).max_size(4));
         let quoted: Vec<String> =
@@ -298,7 +298,7 @@ mod tests {
 
     /// An arbitrary body built from every kind of line, in any order.
     #[hegel::composite]
-    fn any_body(tc: TestCase) -> String {
+    fn any_body(tc: &TestCase) -> String {
         let line = hegel::one_of!(
             original_line(),
             quoted_line(),

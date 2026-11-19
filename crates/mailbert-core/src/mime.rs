@@ -1125,7 +1125,7 @@ mod tests {
 
     /// Text that a header or a body can hold. Every value is printable
     /// and on one line, because a header that folds is a different test.
-    fn phrase() -> impl gs::Generator<String> {
+    fn phrase() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "The deposit is due on Friday".to_string(),
             "Can you look at the invoice?".to_string(),
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     /// A payload that must never appear in the indexed text.
-    fn secret() -> impl gs::Generator<String> {
+    fn secret() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "hQIMA0SECRET".to_string(),
             "wcBMA1PAYLOAD".to_string(),

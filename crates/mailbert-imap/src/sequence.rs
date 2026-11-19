@@ -355,7 +355,7 @@ mod tests {
 
     /// A list of UIDs, sorted, with no repeat.
     #[hegel::composite]
-    fn some_uids(tc: TestCase) -> Vec<u32> {
+    fn some_uids(tc: &TestCase) -> Vec<u32> {
         let drawn: Vec<u32> = tc.draw(
             gs::vecs(gs::integers::<u32>().min_value(1).max_value(200))
                 .min_size(0)

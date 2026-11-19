@@ -534,7 +534,7 @@ mod tests {
     // Generators.
     // -----------------------------------------------------------------
 
-    fn a_subject() -> impl gs::Generator<String> {
+    fn a_subject() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "Quick question".to_string(),
             "Re: Quick question".to_string(),
@@ -544,7 +544,7 @@ mod tests {
         ])
     }
 
-    fn an_address() -> impl gs::Generator<String> {
+    fn an_address() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "alice@x.example".to_string(),
             "bob@x.example".to_string(),
@@ -554,7 +554,7 @@ mod tests {
 
     /// A mailbox where some messages reply to an earlier one.
     #[hegel::composite]
-    fn a_mailbox(tc: TestCase) -> Vec<ThreadInput> {
+    fn a_mailbox(tc: &TestCase) -> Vec<ThreadInput> {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(0).max_value(8));
 

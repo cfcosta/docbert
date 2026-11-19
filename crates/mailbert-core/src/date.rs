@@ -576,7 +576,7 @@ mod tests {
 
     /// A year, a month, and a day that name a day that exists.
     #[hegel::composite]
-    fn a_civil_date(tc: TestCase) -> (i64, u32, u32) {
+    fn a_civil_date(tc: &TestCase) -> (i64, u32, u32) {
         let year: i64 =
             tc.draw(gs::integers::<i64>().min_value(1970).max_value(2200));
         let month: u32 =

@@ -67,7 +67,7 @@ cuda = ["candle-core/cuda", "docbert-core/cuda", "docbert-plaid/cuda"]
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-hegeltest = "0.28"
+hegeltest = "0.53"
 tempfile = "3"
 
 # The pipeline of §10.5. The bench measures the download, the index

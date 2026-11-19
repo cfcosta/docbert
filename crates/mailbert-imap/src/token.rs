@@ -374,8 +374,8 @@ mod tests {
 
     /// A whole answer.
     #[hegel::composite]
-    fn a_token_line(tc: TestCase) -> Vec<Token> {
-        draw_items(&tc, 0)
+    fn a_token_line(tc: &TestCase) -> Vec<Token> {
+        draw_items(tc, 0)
     }
 
     // -----------------------------------------------------------------

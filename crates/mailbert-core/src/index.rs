@@ -1284,7 +1284,7 @@ mod tests {
     // Properties.
     // -----------------------------------------------------------------
 
-    fn a_key() -> impl gs::Generator<String> {
+    fn a_key() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "a".to_string(),
             "b".to_string(),
@@ -1293,7 +1293,7 @@ mod tests {
         ])
     }
 
-    fn a_folder() -> impl gs::Generator<String> {
+    fn a_folder() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "INBOX".to_string(),
             "Archive".to_string(),
@@ -1301,11 +1301,11 @@ mod tests {
         ])
     }
 
-    fn an_account() -> impl gs::Generator<String> {
+    fn an_account() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec!["work".to_string(), "personal".to_string()])
     }
 
-    fn a_flag() -> impl gs::Generator<String> {
+    fn a_flag() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             SEEN.to_string(),
             FLAGGED.to_string(),
@@ -1314,7 +1314,7 @@ mod tests {
         ])
     }
 
-    fn a_tag() -> impl gs::Generator<String> {
+    fn a_tag() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "todo".to_string(),
             "rent".to_string(),
@@ -1324,7 +1324,7 @@ mod tests {
 
     /// A message in any of the states that `is:` names.
     #[hegel::composite]
-    fn a_message(tc: TestCase) -> (Message, BTreeSet<String>) {
+    fn a_message(tc: &TestCase) -> (Message, BTreeSet<String>) {
         let key = tc.draw(a_key());
         let account = tc.draw(an_account());
         let folder = tc.draw(a_folder());

@@ -176,7 +176,7 @@ mod tests {
     /// `@` and whitespace rules in [`CrateRef::parse`] never reject the
     /// generated input.
     #[hegel::composite]
-    fn arb_crate_ref(tc: hegel::TestCase) -> CrateRef {
+    fn arb_crate_ref(tc: &hegel::TestCase) -> CrateRef {
         use hegel::generators as gs;
 
         let name: String = tc.draw(

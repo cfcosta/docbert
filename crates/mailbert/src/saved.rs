@@ -398,7 +398,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[hegel::composite]
-    fn a_name(tc: TestCase) -> String {
+    fn a_name(tc: &TestCase) -> String {
         tc.draw(gs::text().alphabet("abcdef").min_size(1).max_size(5))
     }
 

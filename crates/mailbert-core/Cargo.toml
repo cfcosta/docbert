@@ -22,5 +22,5 @@ toml = "1"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
-hegeltest = "0.28"
+hegeltest = "0.53"
 tempfile = "3"

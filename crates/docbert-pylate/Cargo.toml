@@ -42,7 +42,7 @@ accelerate = [
 [dev-dependencies]
 anyhow = "1.0.103"
 criterion = { version = "0.8", features = ["html_reports"] }
-hegeltest = "0.28"
+hegeltest = "0.53"
 
 [[bench]]
 name = "encode_batch_size"

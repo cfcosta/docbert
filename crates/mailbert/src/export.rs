@@ -722,7 +722,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[hegel::composite]
-    fn some_flags(tc: TestCase) -> BTreeSet<String> {
+    fn some_flags(tc: &TestCase) -> BTreeSet<String> {
         let mut held = BTreeSet::new();
 
         for (flag, _) in LETTERS {

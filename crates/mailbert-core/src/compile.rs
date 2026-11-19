@@ -1291,7 +1291,7 @@ mod tests {
     // Properties.
     // -----------------------------------------------------------------
 
-    fn a_term() -> impl gs::Generator<String> {
+    fn a_term() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "invoice".to_string(),
             "lunch".to_string(),
@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn a_query_text(tc: TestCase) -> String {
+    fn a_query_text(tc: &TestCase) -> String {
         let terms: Vec<String> =
             tc.draw(gs::vecs(a_term()).min_size(1).max_size(3));
         let joiner = if tc.draw(gs::booleans()) { " " } else { " or " };

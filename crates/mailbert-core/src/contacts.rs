@@ -255,7 +255,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// A pool small enough that the same address appears repeatedly.
-    fn appearance() -> impl gs::Generator<(String, Seen)> {
+    fn appearance() -> impl gs::PrintableGenerator<(String, Seen)> {
         gs::sampled_from(vec![
             ("Alice Example <alice@x.example>".to_string(), Seen::Inbound),
             ("Alice <alice@x.example>".to_string(), Seen::Outbound),
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn appearances(tc: TestCase) -> Vec<(String, Seen)> {
+    fn appearances(tc: &TestCase) -> Vec<(String, Seen)> {
         tc.draw(gs::vecs(appearance()).min_size(0).max_size(20))
     }
 

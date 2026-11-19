@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn a_query(tc: TestCase) -> Vec<String> {
+    fn a_query(tc: &TestCase) -> Vec<String> {
         tc.draw(
             gs::vecs(
                 gs::text()

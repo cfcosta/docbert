@@ -1554,7 +1554,7 @@ three
     // -----------------------------------------------------------------
 
     #[hegel::composite]
-    fn a_mailbox(tc: TestCase) -> Vec<(u32, String, Vec<String>)> {
+    fn a_mailbox(tc: &TestCase) -> Vec<(u32, String, Vec<String>)> {
         let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
         let mut out = Vec::new();
 

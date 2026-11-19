@@ -141,7 +141,7 @@ mod tests {
 
     /// A short answer, and the bytes of it.
     #[hegel::composite]
-    fn an_answer(tc: TestCase) -> Vec<Token> {
+    fn an_answer(tc: &TestCase) -> Vec<Token> {
         let count: usize =
             tc.draw(gs::integers::<usize>().min_value(0).max_value(4));
 

@@ -34,5 +34,5 @@ tracing = "0.1"
 webpki-roots = "1"
 
 [dev-dependencies]
-hegeltest = "0.28"
+hegeltest = "0.53"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

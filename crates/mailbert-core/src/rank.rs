@@ -674,13 +674,13 @@ mod tests {
     // Properties.
     // -----------------------------------------------------------------
 
-    fn a_rank() -> impl gs::Generator<usize> {
+    fn a_rank() -> impl gs::PrintableGenerator<usize> {
         gs::integers::<usize>().min_value(0).max_value(5)
     }
 
     /// A ranked list of the keys of the corpus, without a repeat.
     #[hegel::composite]
-    fn a_leg(tc: TestCase) -> Vec<u64> {
+    fn a_leg(tc: &TestCase) -> Vec<u64> {
         let wanted = tc.draw(gs::integers::<usize>().min_value(0).max_value(6));
         let mut keys: Vec<u64> = (1..=6).collect();
         let mut leg = Vec::with_capacity(wanted);
@@ -701,7 +701,7 @@ mod tests {
         leg
     }
 
-    fn a_sort() -> impl gs::Generator<Sort> {
+    fn a_sort() -> impl gs::PrintableGenerator<Sort> {
         gs::sampled_from(vec![Sort::Best, Sort::Score, Sort::Date])
     }
 

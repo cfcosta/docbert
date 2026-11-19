@@ -1591,20 +1591,22 @@ dependencies = [
 
 [[package]]
 name = "dashu-base"
-version = "0.4.3"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993b95dc1b248e3f5747dcb017a41d6e75853a2e5ee4504f7d537c5b8dffdae4"
+checksum = "861a614e79388a4c72aa66b0bdabc91e3a4f30d53e0c8d962953e207d75884d0"
+dependencies = [
+ "num-modular",
+]
 
 [[package]]
 name = "dashu-int"
-version = "0.4.3"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49c05a0d5cb0b39fcc87c46432fdac24b90dce239857c7f6b798be4ffc3c42c6"
+checksum = "64a0490b40a6a3f6427970035f17f76fd59c01d3cd9f9140809672863a0d64c8"
 dependencies = [
  "cfg-if",
  "dashu-base",
  "num-modular",
- "rustversion",
  "static_assertions",
 ]
 
@@ -2875,43 +2877,38 @@ dependencies = [
 
 [[package]]
 name = "hegeltest"
-version = "0.28.8"
+version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0adb40fccb35b662e60694e7438765ae816cfa27acd3afce47f461a693219bda"
+checksum = "fa7bbca91c393c9895a4ff31c1e8dc7986a588ab57191253e3393cb351fff852"
 dependencies = [
- "crc32fast",
- "dashu-int",
  "hegeltest-c",
  "hegeltest-macros",
- "miniz_oxide 0.8.9",
  "parking_lot",
- "paste",
- "rand 0.10.4",
- "rustc-hash",
- "tempfile",
 ]
 
 [[package]]
 name = "hegeltest-c"
-version = "0.30.5"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7758b5ad120822e6f65428bce008564b7d574d666ef03b6e915fb9dae90552a4"
+checksum = "d853569ac49c8d6448f31ff6fbd4ba79a2d234695b568c2cd971a0c3d08b746c"
 dependencies = [
  "dashu-int",
  "hashbrown 0.17.1",
  "libm",
  "miniz_oxide 0.8.9",
- "parking_lot",
+ "once_cell",
  "rand 0.10.4",
  "rustc-hash",
- "tempfile",
+ "rustix",
+ "toml 1.2.1+spec-1.1.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "hegeltest-macros"
-version = "0.28.8"
+version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b21c727be5d17c6fb655bdd5a054772e0d4bc10834c6ac476bdffbcff138ff5f"
+checksum = "6afe79726360c40f6af69a226c1fce2076124dc986f907017fccf316a8fcfcb3"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -316,7 +316,7 @@ mod tests {
     /// letter so that uppercasing it is a real change, and the domain is
     /// always lowercase so that uppercasing it is also a real change.
     #[hegel::composite]
-    fn message_id_parts(tc: TestCase) -> (String, String) {
+    fn message_id_parts(tc: &TestCase) -> (String, String) {
         let head: String =
             tc.draw(gs::text().alphabet("abcdefgh").min_size(1).max_size(1));
         let tail: String = tc.draw(
@@ -337,7 +337,7 @@ mod tests {
 
     /// A set of pairwise-distinct identities, distinct by construction.
     #[hegel::composite]
-    fn distinct_ids(tc: TestCase) -> Vec<MessageId> {
+    fn distinct_ids(tc: &TestCase) -> Vec<MessageId> {
         let mut locals: Vec<String> = tc.draw(
             gs::vecs(
                 gs::text()

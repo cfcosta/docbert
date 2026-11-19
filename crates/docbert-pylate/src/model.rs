@@ -1348,7 +1348,7 @@ mod hegel_tests {
     /// right-padding (E1, E2).
     #[hegel::composite]
     fn embeddings_with_free_mask(
-        tc: TestCase,
+        tc: &TestCase,
         dev: Device,
     ) -> (Tensor, Tensor) {
         let b: usize =
@@ -1384,7 +1384,7 @@ mod hegel_tests {
     /// fast and compact paths must agree (E3, E4).
     #[hegel::composite]
     fn embeddings_with_right_padded_mask(
-        tc: TestCase,
+        tc: &TestCase,
         dev: Device,
     ) -> (Tensor, Tensor, usize) {
         let b: usize =
@@ -1423,7 +1423,7 @@ mod hegel_tests {
     /// varying per-batch sequence length. Used to exercise
     /// `concatenate_embedding_batches`.
     #[hegel::composite]
-    fn embedding_batch_list(tc: TestCase, dev: Device) -> Vec<Tensor> {
+    fn embedding_batch_list(tc: &TestCase, dev: Device) -> Vec<Tensor> {
         let n_batches: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
         let batch: usize =
@@ -1456,7 +1456,7 @@ mod hegel_tests {
     /// Draws query and document embeddings that share the last dim but can
     /// differ in batch size and token count. Used for every C-tier property.
     #[hegel::composite]
-    fn query_doc_pair(tc: TestCase, dev: Device) -> (Tensor, Tensor) {
+    fn query_doc_pair(tc: &TestCase, dev: Device) -> (Tensor, Tensor) {
         let dim: usize =
             tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
         let q_batch: usize =
@@ -1814,7 +1814,7 @@ mod hegel_tests {
     /// range so f32 matmul drift stays below the assert tolerance.
     #[hegel::composite]
     fn weight_matrix(
-        tc: TestCase,
+        tc: &TestCase,
         out_features: usize,
         in_features: usize,
         dev: Device,
@@ -1837,7 +1837,7 @@ mod hegel_tests {
     /// Generator: an `(batch, tokens, dim)` activation tensor, also bounded.
     #[hegel::composite]
     fn activations(
-        tc: TestCase,
+        tc: &TestCase,
         batch: usize,
         tokens: usize,
         dim: usize,

@@ -879,7 +879,7 @@ mod tests {
     // Properties.
     // -----------------------------------------------------------------
 
-    fn a_key() -> impl gs::Generator<String> {
+    fn a_key() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "a".to_string(),
             "b".to_string(),
@@ -887,11 +887,11 @@ mod tests {
         ])
     }
 
-    fn an_account() -> impl gs::Generator<String> {
+    fn an_account() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec!["work".to_string(), "personal".to_string()])
     }
 
-    fn a_folder() -> impl gs::Generator<String> {
+    fn a_folder() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             "INBOX".to_string(),
             "Archive".to_string(),
@@ -900,7 +900,7 @@ mod tests {
         ])
     }
 
-    fn a_flag() -> impl gs::Generator<String> {
+    fn a_flag() -> impl gs::PrintableGenerator<String> {
         gs::sampled_from(vec![
             r"\Seen".to_string(),
             r"\SEEN".to_string(),
@@ -926,7 +926,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn a_copy(tc: TestCase) -> Message {
+    fn a_copy(tc: &TestCase) -> Message {
         let key = tc.draw(a_key());
         let account = tc.draw(an_account());
         let folder = tc.draw(a_folder());
@@ -954,7 +954,7 @@ mod tests {
         )
     }
 
-    fn a_mailbox() -> impl gs::Generator<Vec<Message>> {
+    fn a_mailbox() -> impl gs::PrintableGenerator<Vec<Message>> {
         gs::vecs(a_copy()).min_size(0).max_size(12)
     }
 

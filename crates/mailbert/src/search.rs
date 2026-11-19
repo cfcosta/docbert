@@ -1401,7 +1401,7 @@ mod tests {
 
     /// Any text that a column can hold.
     #[hegel::composite]
-    fn a_value(tc: TestCase) -> String {
+    fn a_value(tc: &TestCase) -> String {
         tc.draw(gs::text().alphabet("aé漢 ").min_size(0).max_size(30))
     }
 

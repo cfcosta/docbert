@@ -33,7 +33,7 @@ use hegel::{HealthCheck, TestCase, generators as gs};
 /// otherwise tests that rely on `‖a‖ = 1` (e.g. self-dot = 1) fail on
 /// the all-near-zero corner.
 #[hegel::composite]
-fn unit_rows(tc: TestCase, dim: usize, n: usize) -> Vec<f32> {
+fn unit_rows(tc: &TestCase, dim: usize, n: usize) -> Vec<f32> {
     let total = n * dim;
     let mut v: Vec<f32> = tc.draw(
         gs::vecs(
@@ -65,7 +65,7 @@ fn unit_rows(tc: TestCase, dim: usize, n: usize) -> Vec<f32> {
 /// excluding NaN/infinity. Useful for algebraic tests where we only
 /// care about finite behaviour.
 #[hegel::composite]
-fn finite_floats(tc: TestCase, n: usize) -> Vec<f32> {
+fn finite_floats(tc: &TestCase, n: usize) -> Vec<f32> {
     tc.draw(
         gs::vecs(
             gs::floats::<f32>()
@@ -88,7 +88,7 @@ fn finite_floats(tc: TestCase, n: usize) -> Vec<f32> {
 /// accept the output without panicking.
 #[hegel::composite]
 fn corpus(
-    tc: TestCase,
+    tc: &TestCase,
     dim: usize,
     min_docs: usize,
     max_docs: usize,
@@ -138,7 +138,7 @@ fn corpus(
 /// can't panic on "need at least k tokens".
 #[hegel::composite]
 fn index_params(
-    tc: TestCase,
+    tc: &TestCase,
     dim: usize,
     max_k: usize,
     max_tokens: usize,
@@ -165,7 +165,7 @@ fn index_params(
 /// trailing bits from partially-filled bytes, and every per-token
 /// invariant downstream would need a bytes-equal-codes allowance.
 #[hegel::composite]
-fn codec_dim(tc: TestCase) -> usize {
+fn codec_dim(tc: &TestCase) -> usize {
     tc.draw(gs::sampled_from(vec![2usize, 4, 8, 16]))
 }
 
