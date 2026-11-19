@@ -11,7 +11,7 @@ bytemuck = { version = "1.25.1", features = ["derive"] }
 candle-core = "0.11.0"
 docbert-plaid = { path = "../docbert-plaid" }
 half = "2.7"
-heed = "0.22"
+heed = "0.23"
 ignore = "0.4"
 docbert-pylate = { path = "../docbert-pylate" }
 kodama = "0.3"

@@ -9,7 +9,7 @@ description = "Core library for mailbert — mail storage, MIME pipeline, thread
 blake3 = "1"
 chumsky = "0.14"
 docbert-core = { path = "../docbert-core" }
-heed = "0.22"
+heed = "0.23"
 html2text = "0.17.1"
 mail-parser = { version = "0.11.8", features = ["full_encoding"] }
 miette = { version = "7.6.0", features = ["derive"] }

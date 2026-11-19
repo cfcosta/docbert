@@ -2,6 +2,7 @@ use std::path::Path;
 
 use half::bf16;
 use heed::{
+    CommitOrAbort,
     Database,
     Env,
     byteorder::BigEndian,
@@ -139,7 +140,7 @@ fn serialize_embedding_matrix(
 /// with [`Error::LegacyDatabase`].
 pub struct EmbeddingDb {
     env: Env,
-    db: Database<U64<BigEndian>, Bytes>,
+    db: Database<'static, U64<BigEndian>, Bytes>,
 }
 
 impl EmbeddingDb {
@@ -161,10 +162,16 @@ impl EmbeddingDb {
     pub fn open(path: &Path) -> Result<Self> {
         heed_env::ensure_not_redb(path)?;
         let env = heed_env::open_heed_env(path, MAP_SIZE, EMBEDDINGS_MAX_DBS)?;
-        let mut wtxn = env.write_txn()?;
-        let db: Database<U64<BigEndian>, Bytes> =
-            env.create_database(&mut wtxn, Some(EMBEDDINGS_DB_NAME))?;
-        wtxn.commit()?;
+        let wtxn = env.write_txn()?;
+        let db = env
+            .create_databases_and_commit(wtxn, |dbo, wtxn| {
+                dbo.create_database::<U64<BigEndian>, Bytes>(
+                    wtxn,
+                    Some(EMBEDDINGS_DB_NAME),
+                )
+                .map(CommitOrAbort::<_, ()>::Commit)
+            })?
+            .unwrap_commit();
         Ok(Self { env, db })
     }
 

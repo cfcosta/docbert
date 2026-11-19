@@ -26,6 +26,7 @@ use std::{
 };
 
 use heed::{
+    CommitOrAbort,
     Database,
     Env,
     EnvFlags,
@@ -93,28 +94,28 @@ const TAG_BREAKS: [char; 3] = ['(', ')', '"'];
 /// The named databases of the store.
 struct Tables {
     /// The identity of a message, to the message.
-    messages: Database<Str, Bytes>,
+    messages: Database<'static, Str, Bytes>,
 
     /// The identity of a message, to the tags of that message.
-    tags: Database<Str, Bytes>,
+    tags: Database<'static, Str, Bytes>,
 
     /// The name of a saved search, to its query.
-    saved: Database<Str, Str>,
+    saved: Database<'static, Str, Str>,
 
     /// An account and a folder, to the state of the last sync.
-    state: Database<Str, Bytes>,
+    state: Database<'static, Str, Bytes>,
 
     /// An account, a folder, and a UID, to the message that sits there.
-    places: Database<Str, Str>,
+    places: Database<'static, Str, Str>,
 
     /// The identity of a message, to what the last embedding pass gave.
-    embeds: Database<Str, Bytes>,
+    embeds: Database<'static, Str, Bytes>,
 
     /// The key of a passage, to the message that owns it.
-    owners: Database<Str, Str>,
+    owners: Database<'static, Str, Str>,
 
     /// The identity of a message, to its raw bytes.
-    raw: Database<Str, Bytes>,
+    raw: Database<'static, Str, Bytes>,
 }
 
 /// The local store.
@@ -357,19 +358,40 @@ impl Store {
         let blobs =
             open_env(&dir.join(BLOB_FILE), BLOB_MAP_SIZE, BLOB_MAX_DBS)?;
 
-        let mut wtxn = meta.write_txn()?;
-        let messages = meta.create_database(&mut wtxn, Some(MESSAGES_DB))?;
-        let tags = meta.create_database(&mut wtxn, Some(TAGS_DB))?;
-        let saved = meta.create_database(&mut wtxn, Some(SAVED_DB))?;
-        let state = meta.create_database(&mut wtxn, Some(STATE_DB))?;
-        let places = meta.create_database(&mut wtxn, Some(PLACES_DB))?;
-        let embeds = meta.create_database(&mut wtxn, Some(EMBEDS_DB))?;
-        let owners = meta.create_database(&mut wtxn, Some(OWNERS_DB))?;
-        wtxn.commit()?;
+        let wtxn = meta.write_txn()?;
+        let (messages, tags, saved, state, places, embeds, owners) = meta
+            .create_databases_and_commit(
+                wtxn,
+                |dbo, wtxn| -> heed::Result<_> {
+                    Ok(CommitOrAbort::<_, ()>::Commit((
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(MESSAGES_DB),
+                        )?,
+                        dbo.create_database::<Str, Bytes>(wtxn, Some(TAGS_DB))?,
+                        dbo.create_database::<Str, Str>(wtxn, Some(SAVED_DB))?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(STATE_DB),
+                        )?,
+                        dbo.create_database::<Str, Str>(wtxn, Some(PLACES_DB))?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(EMBEDS_DB),
+                        )?,
+                        dbo.create_database::<Str, Str>(wtxn, Some(OWNERS_DB))?,
+                    )))
+                },
+            )?
+            .unwrap_commit();
 
-        let mut wtxn = blobs.write_txn()?;
-        let raw = blobs.create_database(&mut wtxn, Some(RAW_DB))?;
-        wtxn.commit()?;
+        let wtxn = blobs.write_txn()?;
+        let raw = blobs
+            .create_databases_and_commit(wtxn, |dbo, wtxn| {
+                dbo.create_database::<Str, Bytes>(wtxn, Some(RAW_DB))
+                    .map(CommitOrAbort::<_, ()>::Commit)
+            })?
+            .unwrap_commit();
 
         Ok(Self {
             meta,

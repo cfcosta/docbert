@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use heed::{
+    CommitOrAbort,
     Database,
     Env,
     byteorder::BigEndian,
@@ -89,14 +90,14 @@ const KEY_LLM_API_KEY: &str = "llm_api_key";
 /// ```
 pub struct ConfigDb {
     env: Env,
-    collections: Database<Str, Bytes>,
-    contexts: Database<Str, Bytes>,
-    document_metadata: Database<U64<BigEndian>, Bytes>,
-    conversations: Database<Str, Bytes>,
-    collection_merkle_snapshots: Database<Str, Bytes>,
-    settings: Database<Str, Bytes>,
-    doc_chunks: Database<U64<BigEndian>, Bytes>,
-    chunk_owners: Database<U64<BigEndian>, Bytes>,
+    collections: Database<'static, Str, Bytes>,
+    contexts: Database<'static, Str, Bytes>,
+    document_metadata: Database<'static, U64<BigEndian>, Bytes>,
+    conversations: Database<'static, Str, Bytes>,
+    collection_merkle_snapshots: Database<'static, Str, Bytes>,
+    settings: Database<'static, Str, Bytes>,
+    doc_chunks: Database<'static, U64<BigEndian>, Bytes>,
+    chunk_owners: Database<'static, U64<BigEndian>, Bytes>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -155,21 +156,57 @@ impl ConfigDb {
     pub fn open(path: &Path) -> Result<Self> {
         heed_env::ensure_not_redb(path)?;
         let env = heed_env::open_heed_env(path, MAP_SIZE, CONFIG_MAX_DBS)?;
-        let mut wtxn = env.write_txn()?;
-        let collections =
-            env.create_database(&mut wtxn, Some(COLLECTIONS_DB))?;
-        let contexts = env.create_database(&mut wtxn, Some(CONTEXTS_DB))?;
-        let document_metadata =
-            env.create_database(&mut wtxn, Some(DOCUMENT_METADATA_DB))?;
-        let conversations =
-            env.create_database(&mut wtxn, Some(CONVERSATIONS_DB))?;
-        let collection_merkle_snapshots = env
-            .create_database(&mut wtxn, Some(COLLECTION_MERKLE_SNAPSHOTS_DB))?;
-        let settings = env.create_database(&mut wtxn, Some(SETTINGS_DB))?;
-        let doc_chunks = env.create_database(&mut wtxn, Some(DOC_CHUNKS_DB))?;
-        let chunk_owners =
-            env.create_database(&mut wtxn, Some(CHUNK_OWNERS_DB))?;
-        wtxn.commit()?;
+        let wtxn = env.write_txn()?;
+        let (
+            collections,
+            contexts,
+            document_metadata,
+            conversations,
+            collection_merkle_snapshots,
+            settings,
+            doc_chunks,
+            chunk_owners,
+        ) = env
+            .create_databases_and_commit(
+                wtxn,
+                |dbo, wtxn| -> heed::Result<_> {
+                    Ok(CommitOrAbort::<_, ()>::Commit((
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(COLLECTIONS_DB),
+                        )?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(CONTEXTS_DB),
+                        )?,
+                        dbo.create_database::<U64<BigEndian>, Bytes>(
+                            wtxn,
+                            Some(DOCUMENT_METADATA_DB),
+                        )?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(CONVERSATIONS_DB),
+                        )?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(COLLECTION_MERKLE_SNAPSHOTS_DB),
+                        )?,
+                        dbo.create_database::<Str, Bytes>(
+                            wtxn,
+                            Some(SETTINGS_DB),
+                        )?,
+                        dbo.create_database::<U64<BigEndian>, Bytes>(
+                            wtxn,
+                            Some(DOC_CHUNKS_DB),
+                        )?,
+                        dbo.create_database::<U64<BigEndian>, Bytes>(
+                            wtxn,
+                            Some(CHUNK_OWNERS_DB),
+                        )?,
+                    )))
+                },
+            )?
+            .unwrap_commit();
         Ok(Self {
             env,
             collections,
