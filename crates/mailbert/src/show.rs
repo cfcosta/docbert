@@ -214,7 +214,7 @@ pub fn stamp(at: i64, offset: i32) -> String {
     };
 
     moment
-        .to_zoned(jiff::tz::TimeZone::fixed(offset))
+        .to_zoned_datetime(jiff::tz::TimeZone::fixed(offset))
         .strftime("%Y-%m-%d %H:%M %z")
         .to_string()
 }
