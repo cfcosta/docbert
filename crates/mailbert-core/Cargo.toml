@@ -7,7 +7,7 @@ description = "Core library for mailbert — mail storage, MIME pipeline, thread
 
 [dependencies]
 blake3 = "1"
-chumsky = "0.13.0"
+chumsky = "0.14"
 docbert-core = { path = "../docbert-core" }
 heed = "0.22"
 html2text = "0.17.1"
