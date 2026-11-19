@@ -24,7 +24,7 @@ pub enum ColbertError {
 
     /// Error originating from the `hf-hub` library for Hugging Face Hub interactions.
     #[error("Hugging Face Hub Error: {0}")]
-    Hub(#[from] hf_hub::api::sync::ApiError),
+    Hub(#[from] hf_hub::HFError),
 
     /// I/O errors, typically from reading model files.
     #[error("I/O Error: {0}")]

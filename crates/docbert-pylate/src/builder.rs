@@ -5,7 +5,7 @@ use std::{
 };
 
 use candle_core::{DType, Device};
-use hf_hub::{Repo, RepoType, api::sync::Api};
+use hf_hub::HFClientSync;
 use serde::Deserialize;
 
 use crate::{error::ColbertError, model::ColBERT};
@@ -363,14 +363,14 @@ fn load_local_assets(local_path: &Path) -> Result<LoadedAssets, ColbertError> {
 
 /// Downloads every required asset from the Hugging Face Hub.
 fn load_hub_assets(repo_id: &str) -> Result<LoadedAssets, ColbertError> {
-    let api = Api::new()?;
-    let repo = api.repo(Repo::with_revision(
-        repo_id.to_string(),
-        RepoType::Model,
-        "main".to_string(),
-    ));
+    // A short-form id such as `gpt2` has no owner.
+    let (owner, name) = repo_id.split_once('/').unwrap_or(("", repo_id));
+    let repo = HFClientSync::new()?.model(owner, name);
+    let get = |file: &str| {
+        repo.download_file().filename(file).revision("main").send()
+    };
 
-    let modules_path = repo.get("modules.json")?;
+    let modules_path = get("modules.json")?;
     let modules_bytes = fs::read(&modules_path)?;
     let dense_paths = discover_dense_module_paths(&modules_bytes)?;
 
@@ -378,8 +378,8 @@ fn load_hub_assets(repo_id: &str) -> Result<LoadedAssets, ColbertError> {
     for rel_path in dense_paths {
         let cfg_remote = format!("{rel_path}/config.json");
         let weights_remote = format!("{rel_path}/model.safetensors");
-        let cfg_path = repo.get(&cfg_remote)?;
-        let weights_path = repo.get(&weights_remote)?;
+        let cfg_path = get(&cfg_remote)?;
+        let weights_path = get(&weights_remote)?;
         dense_modules.push(DenseModuleData {
             config_bytes: fs::read(cfg_path)?,
             weights_bytes: fs::read(weights_path)?,
@@ -387,11 +387,11 @@ fn load_hub_assets(repo_id: &str) -> Result<LoadedAssets, ColbertError> {
     }
 
     Ok(LoadedAssets {
-        tokenizer: fs::read(repo.get("tokenizer.json")?)?,
-        weights: fs::read(repo.get("model.safetensors")?)?,
-        config: fs::read(repo.get("config.json")?)?,
-        st_config: fs::read(repo.get("config_sentence_transformers.json")?)?,
-        special_tokens_map: fs::read(repo.get("special_tokens_map.json")?)?,
+        tokenizer: fs::read(get("tokenizer.json")?)?,
+        weights: fs::read(get("model.safetensors")?)?,
+        config: fs::read(get("config.json")?)?,
+        st_config: fs::read(get("config_sentence_transformers.json")?)?,
+        special_tokens_map: fs::read(get("special_tokens_map.json")?)?,
         dense_modules,
     })
 }

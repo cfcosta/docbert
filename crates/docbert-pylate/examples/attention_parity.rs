@@ -115,13 +115,16 @@ fn main() {
         None => DType::F32,
     };
     let device = Device::new_cuda(0).expect("CUDA device 0 required");
-    let api = hf_hub::api::sync::Api::new().expect("hf hub api");
-    let repo = api.model(MODEL_ID.to_string());
-    let config_bytes = std::fs::read(repo.get("config.json").expect("config"))
+    let (owner, name) = MODEL_ID.split_once('/').unwrap_or(("", MODEL_ID));
+    let repo = hf_hub::HFClientSync::new()
+        .expect("hf hub client")
+        .model(owner, name);
+    let get = |file: &str| repo.download_file().filename(file).send();
+    let config_bytes = std::fs::read(get("config.json").expect("config"))
         .expect("read config");
     let config: Config =
         serde_json::from_slice(&config_bytes).expect("parse config");
-    let weights = repo.get("model.safetensors").expect("weights");
+    let weights = get("model.safetensors").expect("weights");
     let vb = unsafe {
         VarBuilder::from_mmaped_safetensors(&[weights], dtype, &device)
             .expect("varbuilder")
