@@ -60,49 +60,49 @@ The configuration is a TOML file at `$XDG_CONFIG_HOME/mailbert/config.toml`. Acc
 
 ```toml
 [[account]]
-name    = "work"
+name = "work"
 folders = ["INBOX", "Archive", "Sent"]
 exclude = ["Trash", "Junk"]
-from    = "Ada Lovelace <me@work.example>"   # the From that `send` writes
+from = "Ada Lovelace <me@work.example>" # the From that `send` writes
 
 [account.imap]
-host             = "imap.fastmail.com"
-port             = 993                       # default 993
-user             = "me@work.example"
-password_command = "pass show mail/work"     # or password_file, or password
-connections      = 8                         # parallel IMAP connections
+host = "imap.fastmail.com"
+port = 993 # default 993
+user = "me@work.example"
+password_command = "pass show mail/work" # or password_file, or password
+connections = 8 # parallel IMAP connections
 
 [account.smtp]
 host = "smtp.fastmail.com"
-port = 465                                   # default 465
+port = 465 # default 465
 # user and password default to the imap ones
 
 [[account]]
-name        = "personal"
+name = "personal"
 all_folders = true
-exclude     = ["\\Trash"]                    # an attribute, and not a name
+exclude = ["\\Trash"] # an attribute, and not a name
 
 [account.imap]
-host          = "imap.gmail.com"
-user          = "me@gmail.com"
+host = "imap.gmail.com"
+user = "me@gmail.com"
 password_file = "~/.secrets/gmail"
 
 [account.smtp]
 host = "smtp.gmail.com"
 port = 587
-tls  = "start"                               # implicit on 465, start on 587
+tls = "start" # implicit on 465, start on 587
 
 [search]
-count         = 20
+count = 20
 recency_half_life_days = 180
 
 [view]
-theme  = "base16-ocean.dark"
-width  = 100
+theme = "base16-ocean.dark"
+width = 100
 
 [pgp]
-home  = "~/.gnupg"                         # default $GNUPGHOME, then ~/.gnupg
-certs = "~/.gnupg/pubring.kbx"             # default: the keyring of `home`
+home = "~/.gnupg" # default $GNUPGHOME, then ~/.gnupg
+certs = "~/.gnupg/pubring.kbx" # default: the keyring of `home`
 ```
 
 **A folder that an attribute names.** An entry of `folders` or of `exclude` that starts with a backslash names an attribute of RFC 6154, and not a folder name. The server gives these attributes in its `LIST` answer, and the usual ones are `\All`, `\Trash`, `\Junk`, `\Sent`, and `\Drafts`. mailbert ignores the case of an attribute. This is necessary for Gmail, because Gmail gives `[Gmail]/All Mail` a different name in each language, and the attribute stays the same. A name never reads as an attribute, and an attribute never reads as a name.

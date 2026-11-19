@@ -438,7 +438,7 @@ A subsequent LRU policy with a `cache.max_bytes` limit is possible, if the cache
 
 ```toml
 [package]
-name    = "rustbert"
+name = "rustbert"
 version = "0.1.0"
 edition = "2024"
 
@@ -446,40 +446,40 @@ edition = "2024"
 docbert-core = { path = "../docbert-core" }
 
 # CLI + runtime
-clap            = { version = "4.6", features = ["derive", "env"] }
-tokio           = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
-tracing         = "0.1"
+clap = { version = "4.6", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Network + archive
-reqwest         = { version = "0.13.2", default-features = false, features = ["rustls", "stream"] }
-flate2          = "1"
-tar             = "0.4"
-semver          = { version = "1", features = ["serde"] }
-sha2            = "0.11"
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "stream"] }
+flate2 = "1"
+tar = "0.4"
+semver = { version = "1", features = ["serde"] }
+sha2 = "0.11"
 
 # Cargo / Rust parsing
-cargo-lock      = "10"
-syn             = { version = "2", features = ["full"] }
-proc-macro2     = { version = "1", features = ["span-locations"] }
-quote           = "1"
-toml            = "0.8"
+cargo-lock = "10"
+syn = { version = "2", features = ["full"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+toml = "0.8"
 
 # Index + filesystem helpers
-tantivy         = "0.26.0"
-globset         = "0.4"
+tantivy = "0.26.0"
+globset = "0.4"
 
 # Serialization + errors
-serde           = { version = "1", features = ["derive"] }
-serde_json      = "1"
-thiserror       = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 
 [features]
-default    = []
-mkl        = ["docbert-core/mkl"]
+default = []
+mkl = ["docbert-core/mkl"]
 accelerate = ["docbert-core/accelerate"]
-metal      = ["docbert-core/metal"]
-cuda       = ["docbert-core/cuda"]
+metal = ["docbert-core/metal"]
+cuda = ["docbert-core/cuda"]
 ```
 
 The MCP server is a hand-written JSON-RPC server through stdio. There is no `rmcp` or `schemars` runtime. There is no `xdg` dependency. rustbert does the data-dir resolution in-tree, with `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.

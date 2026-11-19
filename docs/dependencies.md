@@ -330,10 +330,9 @@ cuda = ["candle-core/cuda"]
 ```toml
 [features]
 default = []
-metal      = ["candle-core/metal",      "candle-nn/metal",      "candle-transformers/metal"]
-cuda       = ["candle-core/cuda",       "candle-nn/cuda",       "candle-transformers/cuda",
-              "dep:candle-flash-attn"]
-mkl        = ["candle-core/mkl",        "candle-nn/mkl",        "candle-transformers/mkl"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:candle-flash-attn"]
+mkl = ["candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 ```
 
@@ -382,11 +381,11 @@ accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transfor
 
 ```toml
 [features]
-default    = []
-mkl        = ["docbert-core/mkl"]
+default = []
+mkl = ["docbert-core/mkl"]
 accelerate = ["docbert-core/accelerate"]
-metal      = ["docbert-core/metal"]
-cuda       = ["docbert-core/cuda"]
+metal = ["docbert-core/metal"]
+cuda = ["docbert-core/cuda"]
 ```
 
 The `rustbert` MCP server uses JSON-RPC over stdio without a library. Thus `rustbert` has no dependency on `rmcp` or `schemars`. `rustbert` also has no `xdg` dependency. `rustbert` finds the data dir in the source tree from `RUSTBERT_DATA_DIR` and `XDG_DATA_HOME`.

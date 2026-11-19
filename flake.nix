@@ -73,7 +73,11 @@
                     allow-missing-formatter = true;
                     verbose = 0;
 
-                    global.excludes = [ "*.lock" ];
+                    global.excludes = [
+                      "*.lock"
+                      # Written by `nix run github:cfcosta/rust-dev-tools.nix#plan`.
+                      "rust-units.json"
+                    ];
 
                     formatter = {
                       nixfmt.options = [ "--strict" ];
