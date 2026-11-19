@@ -12,10 +12,12 @@
 //! and [`ciphertext`] is what it hands to the agent.
 
 use mail_parser::{
-    HeaderValue,
+    AddressList,
+    ContentType,
     Message as MailMessage,
     MessageParser,
-    MimeHeaders,
+    PartKind,
+    TextList,
 };
 use regex::Regex;
 use thiserror::Error;
@@ -246,14 +248,14 @@ pub fn ciphertext(raw: &[u8]) -> Option<Ciphertext> {
 
     // RFC 3156 puts the control part first and the ciphertext second,
     // so the part is found by its type and never by its position.
-    for part in message.parts.iter().skip(1) {
+    for part in message.parts().skip(1) {
         let is_ciphertext = part
             .content_type()
             .and_then(|kind| kind.subtype())
             .is_some_and(|subtype| subtype.eq_ignore_ascii_case(PGP_MIME_PART));
 
         if is_ciphertext {
-            return Some(Ciphertext::OpenPgp(part.contents().to_vec()));
+            return Some(Ciphertext::OpenPgp(part.decoded().into_owned()));
         }
     }
 
@@ -380,9 +382,10 @@ fn is_encrypted(message: &MailMessage<'_>) -> bool {
 /// Choose the one part that the index reads. See §5.1.
 fn select_body(message: &MailMessage<'_>) -> (Source, String) {
     let plain = message
-        .text_part(0)
-        .filter(|part| !part.is_text_html())
-        .and_then(|part| part.text_contents())
+        .text_body()
+        .next()
+        .filter(|part| !matches!(part.kind(), PartKind::Html))
+        .and_then(|part| part.text())
         .filter(|text| !text.trim().is_empty());
 
     if let Some(text) = plain {
@@ -390,9 +393,10 @@ fn select_body(message: &MailMessage<'_>) -> (Source, String) {
     }
 
     let html = message
-        .html_part(0)
-        .and_then(|part| part.text_contents())
-        .map(html_to_text)
+        .html_body()
+        .next()
+        .and_then(|part| part.text())
+        .map(|html| html_to_text(&html))
         .filter(|text| !text.trim().is_empty());
 
     match html {
@@ -408,13 +412,13 @@ fn attachments(message: &MailMessage<'_>) -> Vec<Attachment> {
         .map(|part| Attachment {
             name: part.attachment_name().map(str::to_string),
             content_type: media_type(part.content_type()),
-            size: part.len() as u64,
+            size: part.decoded_len() as u64,
         })
         .collect()
 }
 
 /// The media type of a part, lowercased, with a safe default.
-fn media_type(content_type: Option<&mail_parser::ContentType<'_>>) -> String {
+fn media_type(content_type: Option<ContentType<'_>>) -> String {
     let Some(content_type) = content_type else {
         return "application/octet-stream".to_string();
     };
@@ -431,9 +435,12 @@ fn media_type(content_type: Option<&mail_parser::ContentType<'_>>) -> String {
 
 /// Whether the message is mail to a list, or is automatic.
 fn is_bulk(message: &MailMessage<'_>, has_list_id: bool) -> bool {
+    let listed = |list: Option<AddressList<'_>>| {
+        list.is_some_and(|list| !list.is_empty())
+    };
     if has_list_id
-        || !message.list_unsubscribe().is_empty()
-        || !message.list_post().is_empty()
+        || listed(message.list_unsubscribe())
+        || listed(message.list_post())
     {
         return true;
     }
@@ -453,7 +460,8 @@ fn is_bulk(message: &MailMessage<'_>, has_list_id: bool) -> bool {
 
 /// A raw header, unfolded, with its whitespace collapsed.
 fn header_text(message: &MailMessage<'_>, name: &str) -> Option<String> {
-    let raw = message.header_raw(name)?;
+    let raw = String::from_utf8_lossy(message.headers().get(name)?.raw_value())
+        .into_owned();
     let found = raw.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     match found.is_empty() {
@@ -463,27 +471,22 @@ fn header_text(message: &MailMessage<'_>, name: &str) -> Option<String> {
 }
 
 /// The normalized identifiers of a `References` or `In-Reply-To`.
-fn identifiers(value: &HeaderValue<'_>) -> Vec<String> {
-    match value {
-        HeaderValue::Text(one) => {
-            message_id::normalize_message_id(one).into_iter().collect()
-        }
-        HeaderValue::TextList(many) => many
-            .iter()
-            .filter_map(|one| message_id::normalize_message_id(one))
-            .collect(),
-        _ => Vec::new(),
-    }
+fn identifiers(value: Option<TextList<'_>>) -> Vec<String> {
+    value
+        .iter()
+        .flat_map(TextList::iter)
+        .filter_map(message_id::normalize_message_id)
+        .collect()
 }
 
 /// The addresses of one header, with the groups made flat.
-fn addresses(header: Option<&mail_parser::Address<'_>>) -> Vec<Address> {
+fn addresses(header: Option<AddressList<'_>>) -> Vec<Address> {
     let Some(header) = header else {
         return Vec::new();
     };
 
     header
-        .iter()
+        .mailboxes()
         .filter_map(|found| Address::new(found.name(), found.address()?))
         .collect()
 }
